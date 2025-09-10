@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sales vs. Returns Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      /* Custom colors for charts and KPIs */
+      :root {
+        --color-sales: #14b8a6; /* teal-500 */
+        --color-returns: #f43f5e; /* rose-500 */
+      }
+      .text-sales { color: var(--color-sales); }
+      .text-returns { color: var(--color-returns); }
+      .bg-sales { background-color: var(--color-sales); }
+      .bg-returns { background-color: var(--color-returns); }
+      .border-sales { border-color: var(--color-sales); }
+      .border-returns { border-color: var(--color-returns); }
+
+      /* NOTE: The visibility of screen vs. print layouts is now controlled by React state and Tailwind classes ('hidden', 'block'), not by CSS rules. This ensures the PDF generation library can "see" the print layout. */
+      
+      /* Styles for PDF/Printing */
+      @media print {
+        /* Force a page break after each designated section */
+        .print-page-break {
+          page-break-after: always !important;
+        }
+
+        /* Fix for TopItemsTable: remove fixed height and scrollbar */
+        .top-items-table {
+            height: auto !important;
+            page-break-inside: avoid !important; /* Keep table content together */
+        }
+        .top-items-table .overflow-y-auto {
+            overflow-y: visible !important;
+            height: auto !important;
+        }
+        
+        /* General print styles */
+        html, body, .bg-white.dark\:bg-slate-800, .bg-slate-100.dark\:bg-slate-900 {
+          background-color: #fff !important;
+          color: #1e293b !important;
+        }
+        * {
+          -webkit-print-color-adjust: exact !important;
+          color-adjust: exact !important;
+        }
+        
+        /* Adjust KPI values font size to prevent overflow */
+        .kpi-card-print-wrapper .kpi-value {
+          font-size: 1.5rem !important;
+          line-height: 2rem !important;
+          white-space: nowrap;
+        }
+        
+        /* Remove shadows and add a border for definition */
+        .print-no-shadow {
+          box-shadow: none !important;
+          border: 1px solid #e2e8f0 !important;
+          padding: 1rem !important;
+        }
+        
+        /* Make sure chart text is visible */
+        .recharts-text, .recharts-legend-item-text {
+          fill: #334155 !important;
+        }
+
+        /* Tweak chart heights to better fit on one page */
+        .recharts-responsive-container {
+            height: 300px !important;
+        }
+
+        /* Override dark mode for any remaining elements */
+        [class*="dark:text-"] { color: inherit !important; }
+        .dark\:bg-slate-800 { background-color: #fff !important; }
+        .dark\:bg-slate-700 { background-color: #f8fafc !important; }
+        .dark\:border-slate-700 { border-color: #e2e8f0 !important; }
+      }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" integrity="sha512-GsLlZN/3F2ErC5ifS5QtgpiJtWd43JWSuIgh7mbzZ8zBps+dvLusV+eNQATqgA/HdeKFVgA5v3S/cIrLF7QnIg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script type="importmap">
+{
+  "imports": {
+    "recharts": "https://aistudiocdn.com/recharts@^3.1.2",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.1.1/",
+    "react": "https://aistudiocdn.com/react@^19.1.1",
+    "xlsx": "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/xlsx.mjs",
+    "react/": "https://aistudiocdn.com/react@^19.1.1/"
+  }
+}
+</script>
+</head>
+  <body class="bg-slate-100 dark:bg-slate-900">
+    <div id="root"></div>
+    <script type="module" src="./index.tsx"></script>
+  </body>
+</html>

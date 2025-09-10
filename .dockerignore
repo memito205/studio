@@ -1,0 +1,25 @@
+# Docker ignore file
+
+# Git files
+.git
+.gitignore
+
+# Node modules - these will be installed inside the container
+node_modules
+
+# Build output - this will be generated inside the container
+.next
+
+# Local environment variables
+.env.local
+
+# Docker files
+Dockerfile
+.dockerignore
+
+# Other unnecessary files
+README.md
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
