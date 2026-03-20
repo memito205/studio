@@ -1,5 +1,3 @@
-
-
 import { RemisionEntry, PackerProductivity, ProcessedReportData, HourlyProductivity, BrandProductivity, ProductCategory, ProductTypeProductivity, ProductivityGoals, BrandProductTypeGoals, BrandPackerBreakdown, DeadTimeEntry, PackerBrandProductivityDetail, DetectedBreakDetail, DeadTimeSummaryEntry, PackerHourlyPerformance, ManualProductClassifications, ManualJustifications, JustificationType, UniqueReference, ReferenceCorrections, ManualOperatorMappings, IncidentLogEntry, ProductDatabaseItem, DiscardedRecord, ProductTypePackerBreakdown, HourlyOperatorDetail } from '@/types';
 import { parseFlexibleDate, excelSerialDateToJSDate } from '@/lib/parsingUtils';
 
@@ -62,6 +60,7 @@ const BRAND_CODE_MAP: { [code: string]: string } = {
 export const parseTime = (timeStr: string, date: Date): Date => {
   const [hours, minutes] = timeStr.split(':').map(Number);
   const newDate = new Date(date);
+  // Use setHours to respect local timezone, matching browser behavior.
   newDate.setHours(hours, minutes, 0, 0);
   return newDate;
 };
@@ -80,8 +79,8 @@ function standardizeData(
         const newRow: { [key: string]: any } = {};
         for (const key in row) {
             // Do not process date column here, pass it through as is
-            if(key.toLowerCase().trim() === 'fecha lectura' || key.toLowerCase().trim() === 'fechalectura') {
-                newRow[key] = row[key];
+            if(key.toLowerCase().trim() === 'fecha lectura' || key.toLowerCase().trim() === 'fechalectura' || key === 'fechaDeLectura') {
+                newRow['fechaDeLectura'] = row[key];
                 continue;
             }
 
@@ -153,7 +152,7 @@ function inferClassificationFromDescription(description: string, originalBrand: 
 }
 
 export function classifyProduct(
-    entry: Omit<RemisionEntry, 'productType' | 'fechaDeLectura'>,
+    entry: Omit<RemisionEntry, 'productType'>,
     manualClassifications: ManualProductClassifications,
     referenceCorrections: ReferenceCorrections,
     productMap: Map<string, ProductDatabaseItem>
@@ -185,8 +184,8 @@ export function classifyProduct(
     let { brand, productType } = inferClassificationFromDescription(descriptionToUse, originalMarca, grupo);
     
     // Prioridad 4: Anulación por Clasificación Manual Final
-    const termToClassify = descriptionToUse.toUpperCase().substring(3).trim().split(' ')[0];
-    const manualClass = termToClassify ? manualClassifications[termToClassify] : undefined;
+    const termToAnalyze = descriptionToUse.toUpperCase().substring(3).trim().split(' ')[0];
+    const manualClass = termToAnalyze ? manualClassifications[termToAnalyze] : undefined;
     
     if (manualClass) {
         if(manualClass.brand) brand = manualClass.brand;
@@ -201,7 +200,7 @@ export function getSanitizedData(
     rawData: any[],
     reportDateStr: string,
     manualOperatorMappings: ManualOperatorMappings
-): { sanitizedData: (Omit<RemisionEntry, 'productType' | 'fechaDeLectura'> & { fechaDeLectura: Date, grupo?: string })[], discardedRecords: DiscardedRecord[] } {
+): { sanitizedData: RemisionEntry[], discardedRecords: DiscardedRecord[] } {
     
     const discardedRecords: DiscardedRecord[] = [];
     
@@ -213,7 +212,12 @@ export function getSanitizedData(
     }
     
     const keptRecords: any[] = [];
-    const reportDateToCompare = reportDateStr.split('T')[0];
+    const reportDateToCompare = parseFlexibleDate(reportDateStr);
+
+    if (!reportDateToCompare) {
+        rawData.forEach(row => discardedRecords.push({ reason: 'Fecha del reporte inválida', rowData: row }));
+        return { sanitizedData: [], discardedRecords };
+    }
 
     rawData.forEach(row => {
         const rowDateValue = row[fechaKey];
@@ -221,29 +225,36 @@ export function getSanitizedData(
             discardedRecords.push({ reason: `Valor de fecha vacío o nulo`, rowData: row });
             return;
         }
-
+        
+        // This function now handles Date objects and strings robustly
         const rowDate = parseFlexibleDate(rowDateValue);
-        if (!rowDate) {
+
+        if (!rowDate || isNaN(rowDate.getTime())) {
             discardedRecords.push({ reason: `Formato de fecha inválido: "${rowDateValue}"`, rowData: row });
             return;
         }
         
-        const rowDateLocalStr = new Date(rowDate.getTime() - (rowDate.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+        // Compare only the date part, ignoring time, to avoid timezone issues.
+        const isSameDay = 
+            rowDate.getFullYear() === reportDateToCompare.getFullYear() &&
+            rowDate.getMonth() === reportDateToCompare.getMonth() &&
+            rowDate.getDate() === reportDateToCompare.getDate();
         
-        if (rowDateLocalStr !== reportDateToCompare) {
-            discardedRecords.push({ reason: `Fuera de la fecha del reporte (${reportDateToCompare})`, rowData: row });
+        if (!isSameDay) {
+            discardedRecords.push({ reason: `Fuera de la fecha del reporte (${reportDateToCompare.toISOString().split('T')[0]})`, rowData: row });
             return;
         }
         
-        keptRecords.push({ ...row, fechaDeLecturaObj: rowDate });
+        // Pass the valid Date object through.
+        keptRecords.push({ ...row, fechaDeLectura: rowDate });
     });
 
     const standardizedKeptData = standardizeData(keptRecords, manualOperatorMappings);
     
-    const mappedAndFilteredData: (Omit<RemisionEntry, 'productType' | 'fechaDeLectura'> & { fechaDeLectura: Date, grupo?: string })[] = [];
+    const mappedAndFilteredData: RemisionEntry[] = [];
 
     standardizedKeptData.forEach(row => {
-        const fechaDeLectura = row.fechaDeLecturaObj;
+        const fechaDeLectura = row.fechaDeLectura;
         
         const unidadEmpaque = String(row.unidadDeEmpaque || '').toUpperCase();
         if (unidadEmpaque.startsWith('EVI') || unidadEmpaque.startsWith('INT')) {
@@ -252,7 +263,7 @@ export function getSanitizedData(
             mappedAndFilteredData.push({
                 ...row,
                 fechaDeLectura,
-            });
+            } as RemisionEntry);
         }
     });
 
@@ -276,18 +287,25 @@ function detectAllPauses(
     }, {} as { [key: string]: RemisionEntry[] });
 
     for (const packerName in entriesByPacker) {
-        const sortedEntries = entriesByPacker[packerName].sort((a, b) => a.fechaDeLectura.getTime() - b.fechaDeLectura.getTime());
+        const sortedEntries = entriesByPacker[packerName].map(e => ({
+            ...e,
+            // Ensure fechaDeLectura is a valid Date object before sorting
+            fechaDeLectura: parseFlexibleDate(e.fechaDeLectura)
+        }))
+        .filter(e => e.fechaDeLectura && !isNaN(e.fechaDeLectura.getTime()))
+        .sort((a, b) => a.fechaDeLectura!.getTime() - b.fechaDeLectura!.getTime());
+
         if (sortedEntries.length === 0) continue;
         
         // Pausas intermedias: Entre escaneos consecutivos
         for (let i = 0; i < sortedEntries.length - 1; i++) {
-            const timeDiff = (sortedEntries[i + 1].fechaDeLectura.getTime() - sortedEntries[i].fechaDeLectura.getTime()) / 60000;
+            const timeDiff = (sortedEntries[i + 1].fechaDeLectura!.getTime() - sortedEntries[i].fechaDeLectura!.getTime()) / 60000;
             if (timeDiff >= 1) {
                 deadTimes.push({
-                    id: `${packerName}-${sortedEntries[i].fechaDeLectura.toISOString()}`,
+                    id: `${packerName}-${sortedEntries[i].fechaDeLectura!.toISOString()}`,
                     packerName,
-                    startTime: sortedEntries[i].fechaDeLectura,
-                    endTime: sortedEntries[i + 1].fechaDeLectura,
+                    startTime: sortedEntries[i].fechaDeLectura!,
+                    endTime: sortedEntries[i + 1].fechaDeLectura!,
                     duration: Math.round(timeDiff),
                     status: 'No Justificado',
                 });
@@ -295,7 +313,7 @@ function detectAllPauses(
         }
 
         // Pausa Final: Desde el último escaneo hasta el fin del reporte
-        const lastScanTime = sortedEntries[sortedEntries.length - 1].fechaDeLectura;
+        const lastScanTime = sortedEntries[sortedEntries.length - 1].fechaDeLectura!;
         if (lastScanTime < reportEndTime) {
             const finalDiff = (reportEndTime.getTime() - lastScanTime.getTime()) / 60000;
             if (finalDiff >= 1) {
@@ -443,15 +461,23 @@ export function preProcessDeadTimes(
     reportEndTime: string,
     manualJustifications: ManualJustifications
 ): DeadTimeEntry[] {
-    if (!reportDate || !reportStartTime || !reportEndTime) return [];
+    if (!reportDate || !reportStartTime || !reportEndTime || !data) return [];
     
-    const reportDateObj = new Date(reportDate);
-    const tzOffset = reportDateObj.getTimezoneOffset() * 60000;
-    const reportDateUTC = new Date(reportDateObj.getTime() + tzOffset);
-    const reportStartDate = parseTime(reportStartTime, reportDateUTC);
-    const reportEndDate = parseTime(reportEndTime, reportDateUTC);
+    // Create the base date object from the string, ensuring it's treated as local.
+    const reportDateObj = parseFlexibleDate(reportDate);
+    if (!reportDateObj) return [];
     
-    const dataInTimeRange = data.filter(entry => 
+    // These parseTime functions correctly combine the date part with the time part in the local timezone.
+    const reportStartDate = parseTime(reportStartTime, reportDateObj);
+    const reportEndDate = parseTime(reportEndTime, reportDateObj);
+    
+    // Ensure all entry dates are valid Date objects before processing.
+    const validData = data.filter(entry => {
+        const d = parseFlexibleDate(entry.fechaDeLectura);
+        return d && !isNaN(d.getTime());
+    }).map(entry => ({...entry, fechaDeLectura: parseFlexibleDate(entry.fechaDeLectura)!}));
+        
+    const dataInTimeRange = validData.filter(entry => 
       entry.fechaDeLectura >= reportStartDate && entry.fechaDeLectura <= reportEndDate
     );
         
@@ -1259,11 +1285,14 @@ export function processReport(
     selectedPackers: string[],
     incidentLog: IncidentLogEntry[]
 ): ProcessedReportData {
-    const reportDateObj = new Date(reportDate);
-    const tzOffset = reportDateObj.getTimezoneOffset() * 60000;
-    const reportDateUTC = new Date(reportDateObj.getTime() + tzOffset);
-    const reportStartTime = parseTime(reportStartTimeStr, reportDateUTC);
-    const reportEndTime = parseTime(reportEndTimeStr, reportDateUTC);
+    // Create UTC-based dates for start and end to avoid timezone issues during filtering
+    const reportDateObj = parseFlexibleDate(reportDate);
+    if (!reportDateObj) {
+        throw new Error("Invalid report date provided for processing.");
+    }
+    
+    const reportStartTime = parseTime(reportStartTimeStr, reportDateObj);
+    const reportEndTime = parseTime(reportEndTimeStr, reportDateObj);
 
     const fullDataInTimeRange = data.filter(entry => 
       entry.fechaDeLectura >= reportStartTime && entry.fechaDeLectura <= reportEndTime
@@ -1441,7 +1470,7 @@ export function preScanForUnclassifiedProducts(
 }
 
 export function extractUniqueReferences(
-    data: (Omit<RemisionEntry, "productType" | "fechaDeLectura"> & { fechaDeLectura: Date; grupo?: string | undefined; })[], 
+    data: RemisionEntry[], 
     productMap: Map<string, ProductDatabaseItem>
 ): UniqueReference[] {
     const uniqueRefs = new Map<string, UniqueReference>();
@@ -1472,6 +1501,11 @@ export function extractUniqueReferences(
 
 
     
+
+
+
+
+
 
 
 

@@ -1,10 +1,10 @@
 
 
-import { format, parse, addMonths, addDays, differenceInDays, setDate, setMonth, getYear, getDate, setYear, lastDayOfMonth } from "date-fns";
+import { format, addMonths, addDays, differenceInDays, setDate, setMonth, getYear, getDate, setYear, lastDayOfMonth } from "date-fns";
 import { es } from "date-fns/locale";
 import { showError } from "@/lib/toast";
 import type { AmortizationRow, CreditCalculationResult } from "@/types";
-import { parseFlexibleDate, excelSerialDateToJSDate } from "@/lib/parsingUtils";
+import { parseFlexibleDate } from "@/lib/parsingUtils";
 
 // Function to convert annual effective rate to monthly effective rate (now exported)
 export const convertAnnualToMonthlyRate = (annualRate: number): number => {
@@ -189,4 +189,3 @@ export const calculateAmortization = (
     uncollectedAmountGracePeriod: parseFloat(uncollectedAmountGracePeriod.toFixed(2)),
   };
 };
-

@@ -49,7 +49,7 @@ interface ConfigurationScreenProps {
   initialPackers: string[];
   configSelectedPacker: string[];
   onConfigSelectedPackerChange: (packer: string, isChecked: boolean) => void;
-  onCalculate: () => void; 
+  onCalculate: (processedData: RemisionEntry[]) => void; 
   onReset: () => void;
   onReturnToSuite: () => void;
   isLoading: boolean;
@@ -60,7 +60,6 @@ interface ConfigurationScreenProps {
   sanitizedRecordCount: number;
   discardedRecords: DiscardedRecord[];
   deadTimes: DeadTimeEntry[];
-  onProcessedDataChange: (data: RemisionEntry[]) => void; // Add this prop
 }
 
 export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
@@ -103,7 +102,6 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
   sanitizedRecordCount,
   discardedRecords,
   deadTimes,
-  onProcessedDataChange,
 }) => {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [shareStatus, setShareStatus] = React.useState<'idle' | 'copied'>('idle');
@@ -129,10 +127,6 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
     });
   }, [rawData, manualClassifications, combinedCorrections, productMap]);
 
-  useEffect(() => {
-    onProcessedDataChange(fullyProcessedData);
-  }, [fullyProcessedData, onProcessedDataChange]);
-
   const derivedState = React.useMemo(() => {
     const brands = extractBrandsFromReport(fullyProcessedData);
     const unclassifiedProducts = preScanForUnclassifiedProducts(fullyProcessedData);
@@ -140,6 +134,10 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
 
     return { brands, unclassifiedProducts, unmappedPackers };
   }, [fullyProcessedData, rawData, manualOperatorMappings]);
+  
+  const handleCalculateClick = () => {
+    onCalculate(fullyProcessedData);
+  }
 
   const getFullConfiguration = React.useCallback((): ReportConfiguration => {
     return {
@@ -403,7 +401,7 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
 
       <div className="flex justify-end pt-4">
         <Button
-          onClick={onCalculate}
+          onClick={handleCalculateClick}
           disabled={isLoading || !reportDate}
           size="lg"
           className="w-full sm:w-auto"

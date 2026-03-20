@@ -7,7 +7,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Package, CheckCircle, Percent } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Legend, Tooltip } from 'recharts';
 import { useToast } from '@/hooks/use-toast';
-import { loadReceptionOperations, getAllScannedItems } from '@/app/actions';
+import { loadReceptionOperations } from '@/app/reception/actions';
+import { getAllScannedItems } from '@/app/reception/actions';
 import type { ReceptionOperation, ScannedItem } from '@/types';
 import { Button } from './ui/button';
 import { ArrowLeft } from 'lucide-react';
@@ -190,3 +191,5 @@ export const ReceptionDashboard: React.FC<ReceptionDashboardProps> = ({ onReturn
     </div>
   );
 };
+
+  

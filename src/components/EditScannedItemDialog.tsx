@@ -15,11 +15,11 @@ import {
 import { Input } from '@/components/ui/input';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { useToast } from '@/hooks/use-toast';
-import { updateScannedItem } from '@/app/actions';
-import type { ScannedItem, PackedItem } from '@/types';
+import { updateScannedItem } from '@/app/reception/actions';
+import type { ScannedItem } from '@/types';
 
 interface EditScannedItemDialogProps {
-  item: PackedItem; // Changed to PackedItem
+  item: ScannedItem; 
   onSave: () => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -42,23 +42,23 @@ const EditScannedItemDialog: React.FC<EditScannedItemDialogProps> = ({
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      quantity: item.packedQuantity,
+      quantity: item.quantity,
     },
   });
 
   useEffect(() => {
     form.reset({
-      quantity: item.packedQuantity,
+      quantity: item.quantity,
     });
   }, [item, form, open]);
 
   const onSubmit = async (values: z.infer<typeof formSchema>) => {
     try {
-      if (!item.scannedItemId) {
+      if (!item.id) {
         toast({ variant: 'destructive', title: 'Error', description: 'ID de ítem escaneado no encontrado para la edición.' });
         return;
       }
-      const result = await updateScannedItem(item.scannedItemId, { quantity: values.quantity });
+      const result = await updateScannedItem(item.id, { quantity: values.quantity });
       if(result.success) {
         toast({ title: 'Éxito', description: 'Ítem escaneado actualizado correctamente.' });
         onSave();
@@ -77,7 +77,7 @@ const EditScannedItemDialog: React.FC<EditScannedItemDialogProps> = ({
         <DialogHeader>
           <DialogTitle>Editar Ítem Escaneado</DialogTitle>
           <DialogDescription>
-            Modifica la cantidad del ítem {item.item.codigoBarras}.
+            Modifica la cantidad del ítem {item.barcode}.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>

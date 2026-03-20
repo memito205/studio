@@ -41,11 +41,11 @@ const DATE_COLUMNS_TO_FORMAT = [
 
 // Map for negotiated values
 const negotiatedValueMap: { [key: string]: number } = {
-    'NextDayMED1MED1': 7190,
-    'NextDayMDE1MDE1': 7190,
-    'NextDayBOG1BOG1': 7190,
-    'NextDayBOG1MED1': 13430,
-    'NextDayBOG1MDE1': 13430,
+    'NextDayMED1MED1': 8125,
+    'NextDayMDE1MDE1': 8125,
+    'NextDayBOG1BOG1': 8125,
+    'NextDayBOG1MED1': 15176,
+    'NextDayBOG1MDE1': 15176,
     'RetornoMED1MED1': 10590,
     'RetornoMDE1MDE1': 10590,
 };
@@ -420,8 +420,8 @@ export const useFileProcessor = () => {
         const actualDateColumnsToFormat = DATE_COLUMNS_TO_FORMAT.map(col => findCaseInsensitiveKey(minutosData[0], col)).filter((col): col is string => !!col);
 
         let matchedRows = 0;
-        const processedMinutosData: CsvRow[] = minutosData.map(row => {
-            const newRow = { ...row };
+        const processedMinutosData: CsvRow[] = minutosData.map((row, index) => {
+            const newRow: CsvRow = { ...row, originalIndex: index, uniqueId: `minutos-row-${index}` };
 
             // SIOP cross-referencing
             if (actualMinutosGuideCol) {
@@ -562,5 +562,7 @@ export const useFileProcessor = () => {
     }
   }, []);
 
-  return { isLoading, error, results, processFiles };
+  return { isLoading, error, results, processFiles, setResults };
 };
+
+    

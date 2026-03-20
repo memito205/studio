@@ -1,0 +1,2036 @@
+
+
+"use client";
+
+import React, { useState, useMemo, ChangeEvent, useRef, useCallback, useEffect } from 'react';
+import * as XLSX from 'xlsx';
+import { Button } from '@/components/ui/button';
+import { ArrowLeft, UploadCloud, Truck, FileSignature, Search, Download, Trash2, Plus, File, Package, X, Check, Save, History, Eye, Printer, PackageCheck, Loader2, ScanLine, CircleDot, FileDown, MoreHorizontal, ChevronsUpDown } from 'lucide-react';
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/card';
+import { Input } from './ui/input';
+import { useToast } from '@/hooks/use-toast';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import type { TransferEntry, TransferStatus, DeliveryManifest, UserRole, CollectionLog, AppUser, RouteEntry } from '@/types';
+import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus } from '@/app/actions';
+import { getAllUserProfiles } from '@/app/reception/actions';
+import { parseFlexibleDate } from '@/lib/parsingUtils';
+import { Badge } from './ui/badge';
+import { useAuth } from '@/hooks/use-auth-context';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
+import { exportToXlsx } from '@/services/export';
+import { Checkbox } from './ui/checkbox';
+import { format } from 'date-fns';
+import { es } from 'date-fns/locale';
+import { Label } from './ui/label';
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import JsBarcode from 'jsbarcode';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import html2canvas from 'html2canvas';
+import { cn } from '@/lib/utils';
+import { CollectionLogDetailsDialog } from './CollectionLogDetailsDialog';
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from './ui/collapsible';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { TransferLogDialog } from './TransferLogDialog';
+
+
+const getStatusBadge = (status: TransferStatus) => {
+    switch (status) {
+        case 'Recibido en Bodega': return <Badge variant="success">Recibido en Bodega</Badge>;
+        case 'Enviado a Destino': return <Badge variant="default">Enviado a Destino</Badge>;
+        case 'Recolectado en Ruta': return <Badge variant="warning">Recolectado en Ruta</Badge>;
+        case 'Entregado en Ruta': return <Badge className="bg-blue-500 text-white">Entregado en Ruta</Badge>;
+        case 'Validado Supervisor': return <Badge className="bg-purple-500 text-white">Validado Supervisor</Badge>;
+        case 'En Tránsito':
+        default:
+            return <Badge variant="secondary">En Tránsito</Badge>;
+    }
+};
+
+const FAILURE_REASONS = ["No lo tienen listo", "Ya se envio", "TF que no se va enviar"];
+
+const DESTINOS_PREDEFINIDOS = [
+    "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10",
+    "B11", "B12", "B13", "B14", "B15", "B16", "B17", "B18", "B19", "B20",
+    "B21", "B22", "B23", "MOLINOS", "BODEGA PIONEROS", "OFICINA"
+].sort();
+
+const TransferLabel: React.FC<{ transfer: TransferEntry }> = ({ transfer }) => {
+  const barcodeRef = React.useRef<HTMLCanvasElement>(null);
+  const barcodeValue = `${transfer.bodegaDestino}-${transfer.numeroTF}`.toUpperCase();
+
+  React.useEffect(() => {
+    if (barcodeRef.current) {
+      try {
+        JsBarcode(barcodeRef.current, barcodeValue, {
+          format: "CODE128",
+          displayValue: false, // The value is displayed separately
+          margin: 0,
+          height: 30,
+          width: 1.5,
+        });
+      } catch (e) {
+        console.error('Error generating barcode', e);
+      }
+    }
+  }, [barcodeValue]);
+
+  return (
+    <div id={`transfer-label-to-print-${transfer.id}`} className="p-3 border border-gray-300 rounded-lg bg-white text-black flex flex-col" style={{ width: '10cm', height: '5cm' }}>
+      
+      {/* Header */}
+      <div className="flex justify-between items-start text-xs font-sans border-b pb-1 mb-1">
+        <p className="font-bold">TRANSFERENCIA INTERNA</p>
+        <p>Fecha: <span className="font-semibold">{transfer.fecha.toLocaleDateString('es-CO')}</span></p>
+      </div>
+
+      {/* Main content area */}
+      <div className="flex-grow flex flex-col items-center justify-center pt-1">
+        {/* Destino / Unidades */}
+        <div className="flex justify-around w-full items-center">
+            <div>
+                <p className="font-sans text-lg font-semibold">Destino:</p>
+                <p className="font-sans text-2xl font-bold">{transfer.bodegaDestino}</p>
+            </div>
+            <div>
+                <p className="font-sans text-lg font-semibold">Unidades:</p>
+                <p className="font-sans text-2xl font-bold">{transfer.cantidad || 1}</p>
+            </div>
+        </div>
+        
+        {/* Large TF number */}
+        <div className="text-center font-sans text-3xl font-bold tracking-wider my-2">
+          {transfer.numeroTF}
+        </div>
+        
+        {/* Barcode and its text */}
+        <div className="flex flex-col items-center mt-1">
+          <canvas ref={barcodeRef} />
+           <div className="font-sans text-xs tracking-widest mt-1">{barcodeValue}</div>
+        </div>
+      </div>
+      
+      {/* Footer */}
+       <div className="mt-auto border-t pt-1">
+        <p className="text-xs font-semibold">Recibido por:</p>
+        <div className="h-4 border-b border-black"></div>
+       </div>
+    </div>
+  );
+};
+
+
+const TransferLabelDialog: React.FC<{
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  transfer: TransferEntry | null;
+  onConfirm: (transfer: TransferEntry) => Promise<void>;
+  isSaving: boolean;
+}> = ({ isOpen, onOpenChange, transfer, onConfirm, isSaving }) => {
+  const { toast } = useToast();
+  
+  const handleConfirmAndPrint = async () => {
+    if (!transfer) return;
+    await onConfirm(transfer);
+  };
+  
+  if (!transfer) return null;
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Rótulo para Transferencia</DialogTitle>
+          <DialogDescription>
+            Rótulo para el TF: {transfer.numeroTF} con destino a {transfer.bodegaDestino}. Al imprimir se marcará como recibido.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="py-4 flex justify-center">
+          <TransferLabel transfer={transfer} />
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
+            Cerrar
+          </Button>
+          <Button onClick={handleConfirmAndPrint} disabled={isSaving}>
+            {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Printer className="mr-2 h-4 w-4"/>}
+            Imprimir y Marcar como Recibido
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+
+const StatusChangeDialog: React.FC<{
+    isOpen: boolean;
+    onOpenChange: (open: boolean) => void;
+    transfer: TransferEntry | null;
+    onConfirm: (newStatus: TransferStatus, justification: string) => void;
+    isSaving: boolean;
+}> = ({ isOpen, onOpenChange, transfer, onConfirm, isSaving }) => {
+    const [newStatus, setNewStatus] = useState<TransferStatus | ''>('');
+    const [justification, setJustification] = useState('');
+
+    useEffect(() => {
+        if (isOpen && transfer) {
+            setNewStatus(transfer.status);
+            setJustification('');
+        }
+    }, [isOpen, transfer]);
+
+    const handleConfirm = () => {
+        if (newStatus && justification) {
+            onConfirm(newStatus, justification);
+        }
+    };
+
+    if (!transfer) return null;
+
+    return (
+        <AlertDialog open={isOpen} onOpenChange={onOpenChange}>
+            <AlertDialogContent>
+                <AlertDialogHeader>
+                    <AlertDialogTitle>Cambiar Estado de Transferencia</AlertDialogTitle>
+                    <AlertDialogDescription>
+                        TF: <span className="font-mono font-bold">{transfer.numeroTF}</span> | Destino: {transfer.bodegaDestino}
+                    </AlertDialogDescription>
+                </AlertDialogHeader>
+                <div className="space-y-4 py-4">
+                    <div className="space-y-2">
+                        <Label htmlFor="new-status">Nuevo Estado</Label>
+                        <Select value={newStatus} onValueChange={(val) => setNewStatus(val as TransferStatus)}>
+                            <SelectTrigger id="new-status"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="En Tránsito">En Tránsito</SelectItem>
+                                <SelectItem value="Recolectado en Ruta">Recolectado en Ruta</SelectItem>
+                                <SelectItem value="Entregado en Ruta">Entregado en Ruta</SelectItem>
+                                <SelectItem value="Validado Supervisor">Validado Supervisor</SelectItem>
+                                <SelectItem value="Recibido en Bodega">Recibido en Bodega</SelectItem>
+                                <SelectItem value="Enviado a Destino">Enviado a Destino</SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
+                    <div className="space-y-2">
+                        <Label htmlFor="justification">Justificación del Cambio (Obligatoria)</Label>
+                        <Input id="justification" value={justification} onChange={(e) => setJustification(e.target.value)} placeholder="Motivo del cambio manual..." />
+                    </div>
+                </div>
+                <AlertDialogFooter>
+                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                    <AlertDialogAction onClick={handleConfirm} disabled={isSaving || !newStatus || !justification}>
+                        {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}
+                        Confirmar Cambio
+                    </AlertDialogAction>
+                </AlertDialogFooter>
+            </AlertDialogContent>
+        </AlertDialog>
+    );
+};
+
+const FailureDialog: React.FC<{
+    isOpen: boolean;
+    onOpenChange: (open: boolean) => void;
+    onConfirm: (reason: string) => void;
+}> = ({ isOpen, onOpenChange, onConfirm }) => {
+    const [reason, setReason] = useState("");
+    const [otherReason, setOtherReason] = useState("");
+
+    const handleConfirm = () => {
+        const finalReason = reason === 'Otro' ? otherReason : reason;
+        if (finalReason) {
+            onConfirm(finalReason);
+        }
+    };
+
+    return (
+        <AlertDialog open={isOpen} onOpenChange={onOpenChange}>
+            <AlertDialogContent>
+                <AlertDialogHeader>
+                    <AlertDialogTitle>Registrar Fallo</AlertDialogTitle>
+                    <AlertDialogDescription>Seleccione o ingrese el motivo del fallo.</AlertDialogDescription>
+                </AlertDialogHeader>
+                <div className="space-y-4 py-4">
+                    <Select value={reason} onValueChange={(value) => setReason(value)}>
+                        <SelectTrigger><SelectValue placeholder="Seleccione un motivo..." /></SelectTrigger>
+                        <SelectContent>
+                            {FAILURE_REASONS.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                            <SelectItem value="Otro">Otro</SelectItem>
+                        </SelectContent>
+                    </Select>
+                    {reason === 'Otro' && (
+                        <Input value={otherReason} onChange={(e) => setOtherReason(e.target.value)} placeholder="Especifique el motivo..." />
+                    )}
+                </div>
+                <AlertDialogFooter>
+                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                    <AlertDialogAction onClick={handleConfirm} disabled={!reason || (reason === 'Otro' && !otherReason)}>Confirmar</AlertDialogAction>
+                </AlertDialogFooter>
+            </AlertDialogContent>
+        </AlertDialog>
+    );
+};
+
+const AddManualEntryDialog: React.FC<{
+    isOpen: boolean;
+    onOpenChange: (open: boolean) => void;
+    onConfirm: (numeroTF: string, almacenDestino: string) => void;
+    route: RouteEntry[];
+}> = ({ isOpen, onOpenChange, onConfirm, route }) => {
+    const [numeroTF, setNumeroTF] = useState("");
+    const [almacenDestino, setAlmacenDestino] = useState("");
+    
+    return (
+        <AlertDialog open={isOpen} onOpenChange={onOpenChange}>
+            <AlertDialogContent>
+                <AlertDialogHeader>
+                    <AlertDialogTitle>Agregar Entrada Manual</AlertDialogTitle>
+                </AlertDialogHeader>
+                <div className="space-y-4 py-4">
+                    <div className="space-y-2">
+                        <Label htmlFor="tf-manual">Número TF</Label>
+                        <Input id="tf-manual" value={numeroTF} onChange={(e) => setNumeroTF(e.target.value)} />
+                    </div>
+                     <div className="space-y-2">
+                        <Label htmlFor="destino-manual">Almacén Destino</Label>
+                         <Select value={almacenDestino} onValueChange={setAlmacenDestino}>
+                            <SelectTrigger><SelectValue placeholder="Seleccionar destino..." /></SelectTrigger>
+                            <SelectContent>
+                                {DESTINOS_PREDEFINIDOS.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                                <SelectItem value="OTRO">OTRO (Especificar)</SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
+                </div>
+                <AlertDialogFooter>
+                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => onConfirm(numeroTF, almacenDestino)} disabled={!numeroTF || !almacenDestino}>Agregar</AlertDialogAction>
+                </AlertDialogFooter>
+            </AlertDialogContent>
+        </AlertDialog>
+    );
+}
+
+const FinalizeDestinationDialog: React.FC<{
+    isOpen: boolean;
+    onOpenChange: (open: boolean) => void;
+    onConfirm: (personName: string) => void;
+}> = ({ isOpen, onOpenChange, onConfirm }) => {
+    const [personName, setPersonName] = useState("");
+
+    return (
+        <AlertDialog open={isOpen} onOpenChange={onOpenChange}>
+            <AlertDialogContent>
+                <AlertDialogHeader>
+                    <AlertDialogTitle>Finalizar Destino</AlertDialogTitle>
+                    <AlertDialogDescription>Ingrese el nombre de la persona que recibió o entregó la mercancía.</AlertDialogDescription>
+                </AlertDialogHeader>
+                <div className="py-4">
+                    <Input value={personName} onChange={(e) => setPersonName(e.target.value)} placeholder="Nombre completo..." />
+                </div>
+                <AlertDialogFooter>
+                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => onConfirm(personName)} disabled={!personName}>Confirmar Finalización</AlertDialogAction>
+                </AlertDialogFooter>
+            </AlertDialogContent>
+        </AlertDialog>
+    );
+}
+
+const ManifestDetailsDialog: React.FC<{
+  manifest: DeliveryManifest | null;
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+}> = ({ manifest, isOpen, onOpenChange }) => {
+  const [transfers, setTransfers] = useState<TransferEntry[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isPrinting, setIsPrinting] = useState(false);
+  const { toast } = useToast();
+
+  useEffect(() => {
+    if (manifest && isOpen) {
+      const fetchDetails = async () => {
+        setIsLoading(true);
+        const result = await getTransfersByIds(manifest.transferIds);
+        if (result.success && result.data) {
+          setTransfers(result.data);
+        } else {
+          console.error("Failed to fetch transfer details:", result.error);
+          toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los detalles del manifiesto.' });
+        }
+        setIsLoading(false);
+      }
+      fetchDetails();
+    }
+  }, [manifest, isOpen, toast]);
+  
+  const groupedByDestination = useMemo(() => {
+    if (!transfers) return {};
+    return transfers.reduce((acc, transfer) => {
+        const dest = transfer.bodegaDestino.trim().toUpperCase();
+        if (!acc[dest]) {
+            acc[dest] = [];
+        }
+        acc[dest].push(transfer);
+        return acc;
+    }, {} as Record<string, TransferEntry[]>);
+  }, [transfers]);
+
+  const handlePrint = async () => {
+      if (!manifest) {
+        toast({ variant: 'destructive', title: 'Error', description: 'No hay datos de manifiesto.' });
+        return;
+      }
+      
+      setIsPrinting(true);
+  
+      try {
+          const doc = new jsPDF({ orientation: 'p', unit: 'pt', format: 'a4' });
+          const PADDING = 40;
+          let y = PADDING;
+          const pageHeight = doc.internal.pageSize.getHeight();
+  
+          // Overall Header
+          doc.setFontSize(16);
+          doc.text("RELACIÓN DE ENTREGA", doc.internal.pageSize.getWidth() / 2, y, { align: 'center' });
+          y += 20;
+          doc.setFontSize(12);
+          doc.text(`MANIFIESTO #${manifest.manifestId}`, doc.internal.pageSize.getWidth() / 2, y, { align: 'center' });
+          y += 25;
+          
+          doc.setFontSize(10);
+          const headerInfo = [
+              [`Fecha: ${manifest.createdAt ? format(new Date(manifest.createdAt), "PPP", { locale: es }) : 'N/A'}`, `Recurso/Placa: ${manifest.resource}`],
+              [`Conductor: ${manifest.driver || 'N/A'}`, `Auxiliares: ${manifest.assistants || 'N/A'}`],
+          ];
+          autoTable(doc, {
+              body: headerInfo,
+              startY: y,
+              theme: 'plain',
+              styles: { fontSize: 10, cellPadding: 2 },
+          });
+          y = (doc as any).lastAutoTable.finalY + 20;
+  
+          // Iterate over destinations
+          for (const [destination, transferList] of Object.entries(groupedByDestination)) {
+              const tableBody = transferList.map(t => [
+                  '', // Checkbox placeholder
+                  t.numeroTF,
+                  t.bodegaOrigen,
+              ]);
+  
+              const blockHeaderHeight = 30;
+              const tableHeaderHeight = 25;
+              const oneRowHeight = 20;
+              const signatureHeight = 60; // Increased space for signatures
+              const requiredHeight = blockHeaderHeight + tableHeaderHeight + (oneRowHeight * tableBody.length) + signatureHeight;
+
+              if (y + requiredHeight > pageHeight - PADDING) {
+                  doc.addPage();
+                  y = PADDING;
+              }
+  
+              doc.setFontSize(12);
+              doc.setFont('helvetica', 'bold');
+              doc.text(`Destino: ${destination} (${transferList.length} TFs)`, PADDING, y);
+              y += 20;
+  
+              autoTable(doc, {
+                  startY: y,
+                  head: [['Recibido', '# TF', 'Origen']],
+                  body: tableBody,
+                  theme: 'grid',
+                  headStyles: { fillColor: [22, 22, 22], textColor: 255, fontSize: 9 },
+                  styles: { fontSize: 9, cellPadding: 4 },
+                  columnStyles: {
+                      0: { cellWidth: 60, halign: 'center' }
+                  },
+                  didDrawCell: (data: any) => {
+                      if (data.column.index === 0 && data.section === 'body') {
+                          const checkboxSize = 10;
+                          const cell = data.cell;
+                          doc.setDrawColor(0);
+                          doc.rect(cell.x + (cell.width / 2) - (checkboxSize / 2), cell.y + (cell.height / 2) - (checkboxSize / 2), checkboxSize, checkboxSize);
+                      }
+                  }
+              });
+  
+              y = (doc as any).lastAutoTable.finalY + 30; // Increased space after table
+
+              const signatureY = y; 
+  
+              if (signatureY + 40 > pageHeight - PADDING) {
+                  doc.addPage();
+                  y = PADDING;
+              }
+
+              doc.line(PADDING, y + 20, PADDING + 150, y + 20);
+              doc.text("Firma y C.C. Quien Entrega", PADDING, y + 30);
+              doc.text(`(${manifest.driver || '____________________'})`, PADDING, y + 40);
+  
+              const rightSignatureX = doc.internal.pageSize.getWidth() - PADDING - 150;
+              doc.line(rightSignatureX, y + 20, rightSignatureX + 150, y + 20);
+              doc.text("Firma y C.C. Quien Recibe en Destino", rightSignatureX, y + 30);
+              
+              y += 60; // Increased space for next section
+          }
+  
+          doc.autoPrint();
+          window.open(doc.output('bloburl'), '_blank');
+          
+      } catch (err) {
+          console.error("Error al generar PDF:", err);
+          toast({
+              variant: "destructive",
+              title: "Error al Generar PDF",
+              description: "Ocurrió un problema al crear el documento.",
+          });
+      } finally {
+          setIsPrinting(false);
+      }
+    };
+
+
+  const handleExport = () => {
+    if (!transfers || transfers.length === 0) {
+      toast({
+        variant: 'destructive',
+        title: 'Sin Datos',
+        description: 'No hay transferencias en este manifiesto para exportar.',
+      });
+      return;
+    }
+    const dataToExport = transfers.map(t => ({
+      'Numero TF': t.numeroTF,
+      'Origen': t.bodegaOrigen,
+      'Destino': t.bodegaDestino,
+    }));
+    exportToXlsx(dataToExport, `Manifiesto_${manifest?.manifestId || 'desconocido'}`);
+  };
+
+  if (!manifest) return null;
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-4xl h-[90vh] flex flex-col">
+        <DialogHeader className="print-hide">
+          <DialogTitle>Relación de Entrega #{manifest.manifestId}</DialogTitle>
+          <DialogDescription>
+             Creada el {manifest.createdAt ? format(new Date(manifest.createdAt), "PPP p", { locale: es }) : 'N/A'}. Recurso: {manifest.resource}.
+          </DialogDescription>
+        </DialogHeader>
+        
+        <ScrollArea className="flex-grow">
+          <div id="manifest-to-print" className="p-4 bg-white text-black">
+            {isLoading ? (
+                <div className="flex justify-center items-center h-full">
+                    <Loader2 className="animate-spin text-2xl"/>
+                </div>
+            ) : (
+                <>
+                    {/* Content for PDF is now generated directly, this is a visual preview */}
+                    <div className="text-center mb-8">
+                      <h1 className="text-2xl font-bold text-black">VISTA PREVIA - RELACIÓN DE ENTREGA #{manifest.manifestId}</h1>
+                    </div>
+                    {Object.entries(groupedByDestination).map(([destination, transferList]) => (
+                        <div key={destination} className="mb-8">
+                          <h3 className="text-xl font-bold mb-2 p-2 bg-gray-100 rounded-md">Destino: {destination} ({transferList.length} TFs)</h3>
+                          <div className="border rounded-md">
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead># TF</TableHead>
+                                  <TableHead>Origen</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {transferList.map(t => (
+                                  <TableRow key={t.id}>
+                                    <TableCell>{t.numeroTF}</TableCell>
+                                    <TableCell>{t.bodegaOrigen}</TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </div>
+                        </div>
+                    ))}
+                </>
+              )}
+            </div>
+        </ScrollArea>
+
+        <DialogFooter className="mt-4 flex-shrink-0 print-hide">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cerrar</Button>
+          <Button onClick={handleExport} disabled={isLoading}>
+            <FileDown className="mr-2 h-4 w-4" /> Exportar Excel
+          </Button>
+          <Button onClick={handlePrint} disabled={isPrinting || isLoading}>
+              {isPrinting ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Printer className="mr-2 h-4 w-4"/>}
+              Imprimir
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
+const WarehouseReceptionView: React.FC<{
+  transfers: TransferEntry[];
+  collectionLogs: CollectionLog[];
+  onRefresh: () => void;
+}> = ({ transfers, collectionLogs, onRefresh }) => {
+    const { toast } = useToast();
+    const [isLoading, setIsLoading] = useState(false);
+    const [searchPlate, setSearchPlate] = useState('');
+    const [foundTransfers, setFoundTransfers] = useState<TransferEntry[]>([]);
+    const [selectedTransfers, setSelectedTransfers] = useState(new Set<string>());
+    const [transfersToPrint, setTransfersToPrint] = useState<TransferEntry[]>([]);
+    const [isPrinting, setIsPrinting] = useState(false);
+    
+    // This state is for the individual label dialog
+    const [isLabelDialogOpen, setIsLabelDialogOpen] = useState(false);
+    const [transferForLabel, setTransferForLabel] = useState<TransferEntry | null>(null);
+
+
+    const handleSearchByPlate = () => {
+        setIsLoading(true);
+        const plate = searchPlate.trim().toUpperCase();
+        if (!plate) {
+            toast({ variant: 'destructive', title: 'Error', description: 'Por favor ingrese una placa.' });
+            setIsLoading(false);
+            return;
+        }
+
+        const relevantLogs = collectionLogs.filter(log => log.placa === plate);
+        const transferIdsFromLogs = new Set(relevantLogs.flatMap(log => log.transferIds));
+
+        const transfersForPlate = transfers.filter(t => 
+            transferIdsFromLogs.has(t.id) && t.status === 'Validado Supervisor'
+        );
+
+        setFoundTransfers(transfersForPlate);
+        setSelectedTransfers(new Set()); // Reset selection
+        setIsLoading(false);
+        if (transfersForPlate.length === 0) {
+            toast({ title: 'Sin Resultados', description: `No se encontraron TFs validadas por supervisor para la placa ${plate}.` });
+        }
+    };
+    
+    const handleSelectTransfer = (id: string, checked: boolean) => {
+        setSelectedTransfers(prev => {
+            const newSet = new Set(prev);
+            if (checked) newSet.add(id); else newSet.delete(id);
+            return newSet;
+        });
+    };
+
+    const handleSelectAll = (checked: boolean) => {
+        if (checked) {
+            setSelectedTransfers(new Set(foundTransfers.map(t => t.id)));
+        } else {
+            setSelectedTransfers(new Set());
+        }
+    };
+    
+    const handleConfirmAndPrint = useCallback(async (transfer: TransferEntry) => {
+        if (!transfer) return;
+        
+        try {
+            const result = await updateTransferStatus(transfer.id, 'Recibido en Bodega');
+            if (result.success) {
+                toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
+                onRefresh();
+            } else {
+                throw new Error(result.error);
+            }
+        } catch(error: any) {
+             toast({ variant: 'destructive', title: 'Error', description: error.message });
+        }
+    }, [onRefresh, toast]);
+
+
+    const handleBulkReceive = async (andPrint: boolean) => {
+        if (selectedTransfers.size === 0) {
+            toast({ variant: 'destructive', title: 'Sin selección', description: 'Debe seleccionar al menos una transferencia.' });
+            return;
+        }
+        setIsLoading(true);
+        const transferIdsToUpdate = Array.from(selectedTransfers);
+        const result = await batchUpdateTransferStatus(transferIdsToUpdate, 'Recibido en Bodega');
+        if (result.success) {
+            toast({ title: 'Éxito', description: `${transferIdsToUpdate.length} transferencias marcadas como 'Recibido en Bodega'.` });
+            
+            if (andPrint) {
+                const transfersToUpdate = foundTransfers.filter(t => transferIdsToUpdate.includes(t.id));
+                setTransfersToPrint(transfersToUpdate);
+            }
+            
+            onRefresh();
+            setSelectedTransfers(new Set());
+            setFoundTransfers(prev => prev.filter(t => !transferIdsToUpdate.includes(t.id))); // Optimistically update UI
+        } else {
+            toast({ variant: 'destructive', title: 'Error', description: result.error });
+        }
+        setIsLoading(false);
+    };
+
+    useEffect(() => {
+        const generateBulkPdf = async () => {
+            if (transfersToPrint.length === 0 || isPrinting) return;
+        
+            setIsPrinting(true);
+            toast({ title: 'Generando PDF...', description: `Preparando ${transfersToPrint.length} rótulos para imprimir.` });
+        
+            try {
+                const doc = new jsPDF({
+                    orientation: 'landscape',
+                    unit: 'cm',
+                    format: [10, 5] // Matching the label size
+                });
+        
+                for (let i = 0; i < transfersToPrint.length; i++) {
+                    const transfer = transfersToPrint[i];
+                    const input = document.getElementById(`transfer-label-to-print-${transfer.id}`);
+                    if (!input) {
+                        console.error(`Element for transfer ${transfer.id} not found!`);
+                        continue;
+                    }
+            
+                    if (i > 0) {
+                        doc.addPage();
+                    }
+            
+                    const canvas = await html2canvas(input, {
+                        scale: 3, // Higher scale for better quality
+                        useCORS: true,
+                        backgroundColor: '#ffffff',
+                    });
+            
+                    const imgData = canvas.toDataURL('image/png');
+                    doc.addImage(imgData, 'PNG', 0, 0, 10, 5);
+                }
+        
+                doc.autoPrint();
+                window.open(doc.output('bloburl'), '_blank');
+            } catch (error) {
+                console.error("Error generating PDF:", error);
+                toast({
+                    variant: 'destructive',
+                    title: 'Error de Impresión',
+                    description: 'No se pudo generar el PDF de los rótulos.',
+                });
+            } finally {
+                setIsPrinting(false);
+                setTransfersToPrint([]);
+            }
+        };
+    
+        generateBulkPdf();
+      }, [transfersToPrint, isPrinting, toast]);
+      
+    const handlePrintLabelClick = (transfer: TransferEntry) => {
+        setTransferForLabel(transfer);
+        setIsLabelDialogOpen(true);
+    };
+
+
+    return (
+        <>
+             <TransferLabelDialog
+                isOpen={isLabelDialogOpen}
+                onOpenChange={setIsLabelDialogOpen}
+                transfer={transferForLabel}
+                onConfirm={handleConfirmAndPrint}
+                isSaving={isPrinting}
+            />
+            <Card>
+                <CardHeader>
+                    <CardTitle>Recepción de Transferencias en Bodega</CardTitle>
+                    <CardDescription>Busque por placa para ver las TFs validadas y listas para recibir en bodega.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <div className="flex w-full items-center justify-between space-x-2 flex-wrap gap-4">
+                        <div className="flex items-center space-x-2">
+                            <Input
+                                placeholder="Buscar por placa..."
+                                value={searchPlate}
+                                onChange={e => setSearchPlate(e.target.value.toUpperCase())}
+                                onKeyDown={(e) => e.key === 'Enter' && handleSearchByPlate()}
+                                disabled={isLoading}
+                                className="max-w-xs"
+                            />
+                            <Button onClick={handleSearchByPlate} disabled={isLoading || !searchPlate.trim()}>
+                                {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Search className="mr-2 h-4 w-4"/>}
+                                Buscar
+                            </Button>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <Button onClick={() => handleBulkReceive(false)} disabled={isLoading || selectedTransfers.size === 0}>
+                                <Check className="mr-2 h-4 w-4" />
+                                Recibir Seleccionados ({selectedTransfers.size})
+                            </Button>
+                            <Button onClick={() => handleBulkReceive(true)} disabled={isLoading || selectedTransfers.size === 0}>
+                                <Printer className="mr-2 h-4 w-4"/>
+                                Imprimir y Recibir ({selectedTransfers.size})
+                            </Button>
+                        </div>
+                    </div>
+                    
+                    <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead className="w-12">
+                                        <Checkbox
+                                            checked={foundTransfers.length > 0 && selectedTransfers.size === foundTransfers.length}
+                                            onCheckedChange={(checked) => handleSelectAll(!!checked)}
+                                            disabled={foundTransfers.length === 0}
+                                        />
+                                    </TableHead>
+                                    <TableHead># TF</TableHead>
+                                    <TableHead>Origen</TableHead>
+                                    <TableHead>Destino</TableHead>
+                                    <TableHead>Estado Actual</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {isLoading ? (
+                                    <TableRow><TableCell colSpan={5} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
+                                ) : foundTransfers.length > 0 ? foundTransfers.map(t => (
+                                    <TableRow key={t.id} data-state={selectedTransfers.has(t.id) ? "selected" : ""}>
+                                        <TableCell><Checkbox checked={selectedTransfers.has(t.id)} onCheckedChange={(checked) => handleSelectTransfer(t.id, !!checked)} /></TableCell>
+                                        <TableCell>{t.numeroTF}</TableCell>
+                                        <TableCell>{t.bodegaOrigen}</TableCell>
+                                        <TableCell>{t.bodegaDestino}</TableCell>
+                                        <TableCell>{getStatusBadge(t.status)}</TableCell>
+                                    </TableRow>
+                                )) : (
+                                    <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground">Ingrese una placa y presione buscar para ver los resultados.</TableCell></TableRow>
+                                )}
+                            </TableBody>
+                        </Table>
+                    </div>
+                </CardContent>
+            </Card>
+            <div style={{ position: 'absolute', left: '-9999px', top: 0 }}>
+                {transfersToPrint.map(transfer => (
+                    <TransferLabel key={transfer.id} transfer={transfer} />
+                ))}
+            </div>
+        </>
+    );
+};
+interface AdminViewProps {
+    transfers: TransferEntry[];
+    collectionLogs: CollectionLog[];
+    isLoading: boolean;
+    onRefresh: () => void;
+    role: UserRole;
+    users: AppUser[];
+    isUploading: boolean;
+    onFileChange: (e: ChangeEvent<HTMLInputElement>) => void;
+    fileInputRef: React.RefObject<HTMLInputElement>;
+    setIsManualEntryOpen: (isOpen: boolean) => void;
+}
+
+const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoading, onRefresh, role, users, isUploading, onFileChange, fileInputRef, setIsManualEntryOpen }) => {
+    const { toast } = useToast();
+    const [manifests, setManifests] = useState<DeliveryManifest[]>([]);
+    const [isLoadingManifests, setIsLoadingManifests] = useState(false);
+    const [selectedForManifest, setSelectedForManifest] = useState(new Set<string>());
+    const [isCreateManifestOpen, setIsCreateManifestOpen] = useState(false);
+    const [manifestDetails, setManifestDetails] = useState<{ resource: string, driver: string, assistants: string }>({ resource: '', driver: '', assistants: '' });
+    const [isSavingManifest, setIsSavingManifest] = useState(false);
+    const [selectedManifest, setSelectedManifest] = useState<DeliveryManifest | null>(null);
+    const [isManifestDetailsOpen, setIsManifestDetailsOpen] = useState(false);
+    const [selectedCollectionLog, setSelectedCollectionLog] = useState<CollectionLog | null>(null);
+    const [isMigrating, setIsMigrating] = useState(false);
+    
+    // State for manifest creation tab
+    const [manifestFilters, setManifestFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' });
+    const [scanInput, setScanInput] = useState('');
+    const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all' });
+    
+    const [statusChangeState, setStatusChangeState] = useState<{ isOpen: boolean; transfer: TransferEntry | null }>({ isOpen: false, transfer: null });
+    const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+
+    const [isLabelDialogOpen, setIsLabelDialogOpen] = useState(false);
+    const [transferForLabel, setTransferForLabel] = useState<TransferEntry | null>(null);
+    const [isPrinting, setIsPrinting] = useState(false);
+
+    const [isLogOpen, setIsLogOpen] = useState(false);
+    const [selectedTransferForLog, setSelectedTransferForLog] = useState<TransferEntry | null>(null);
+
+    const handleViewLog = (transfer: TransferEntry) => {
+        setSelectedTransferForLog(transfer);
+        setIsLogOpen(true);
+    };
+
+    const handleConfirmPrintAndReceive = useCallback(async (transfer: TransferEntry) => {
+        if (!transfer) return;
+        setIsPrinting(true);
+        try {
+            const result = await updateTransferStatus(transfer.id, 'Recibido en Bodega');
+            if (result.success) {
+                toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
+                onRefresh();
+                
+                const input = document.getElementById(`transfer-label-to-print-${transfer.id}`);
+                if (!input) {
+                    throw new Error('Elemento del rótulo no encontrado.');
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, 100));
+                const canvas = await html2canvas(input, { scale: 3, useCORS: true, backgroundColor: '#ffffff' });
+                const imgData = canvas.toDataURL('image/png');
+                const pdf = new jsPDF({ orientation: 'landscape', unit: 'cm', format: [10, 5] });
+                pdf.addImage(imgData, 'PNG', 0, 0, 10, 5);
+                pdf.autoPrint();
+                window.open(doc.output('bloburl'), '_blank');
+            } else {
+                throw new Error(result.error);
+            }
+        } catch(error: any) {
+             toast({ variant: 'destructive', title: 'Error', description: error.message });
+        } finally {
+            setIsPrinting(false);
+            setIsLabelDialogOpen(false); // Close the dialog after everything
+        }
+    }, [onRefresh, toast]);
+    
+    const handlePrintLabelClick = (transfer: TransferEntry) => {
+        setTransferForLabel(transfer);
+        setIsLabelDialogOpen(true);
+    };
+
+    const handleManualStatusUpdate = async (newStatus: TransferStatus, justification: string) => {
+        if (!statusChangeState.transfer) return;
+        setIsUpdatingStatus(true);
+        try {
+            const result = await updateTransferStatus(statusChangeState.transfer.id, newStatus, justification);
+            if (result.success) {
+                toast({ title: 'Éxito', description: 'El estado de la transferencia ha sido actualizado.' });
+                onRefresh();
+            } else {
+                toast({ variant: 'destructive', title: 'Error', description: result.error });
+            }
+        } catch (e: any) {
+            toast({ variant: 'destructive', title: 'Error inesperado', description: e.message });
+        } finally {
+            setIsUpdatingStatus(false);
+            setStatusChangeState({ isOpen: false, transfer: null });
+        }
+    };
+
+    const transferIdToPlacaMap = useMemo(() => {
+        const map = new Map<string, string>();
+        if (!collectionLogs) return map;
+        collectionLogs.forEach(log => {
+            log.transferIds.forEach(id => {
+                map.set(id, log.placa);
+            });
+        });
+        return map;
+    }, [collectionLogs]);
+
+
+    const handleMigrationClick = async () => {
+        setIsMigrating(true);
+        const result = await migrateLegacyTransferStatus();
+        if (result.success) {
+            toast({ title: 'Migración Completa', description: `Se actualizaron ${result.updatedCount} registros con el estado antiguo.` });
+            onRefresh();
+        } else {
+            toast({ variant: 'destructive', title: 'Error en Migración', description: result.error });
+        }
+        setIsMigrating(false);
+    };
+    
+    const fetchManifestData = useCallback(async () => {
+        setIsLoadingManifests(true);
+        const result = await getDeliveryManifests();
+        if(result.success && result.data) setManifests(result.data);
+        setIsLoadingManifests(false);
+    }, []);
+
+    useEffect(() => {
+        fetchManifestData();
+    }, [fetchManifestData]);
+
+    const filteredTransfers = useMemo(() => {
+        return transfers.filter(t => 
+            (filters.numeroTF ? t.numeroTF.toLowerCase().includes(filters.numeroTF.toLowerCase()) : true) &&
+            (filters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(filters.bodegaOrigen.toLowerCase()) : true) &&
+            (filters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(filters.bodegaDestino.toLowerCase()) : true) &&
+            (filters.status === 'all' ? true : t.status === filters.status)
+        );
+    }, [transfers, filters]);
+    
+    const supervisorValidationTransfers = useMemo(() => {
+        const filtered = transfers.filter(t => t.status === 'Recolectado en Ruta');
+        return filtered.filter(t => 
+            (filters.numeroTF ? t.numeroTF.toLowerCase().includes(filters.numeroTF.toLowerCase()) : true) &&
+            (filters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(filters.bodegaOrigen.toLowerCase()) : true) &&
+            (filters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(filters.bodegaDestino.toLowerCase()) : true) &&
+            (filters.placa ? (transferIdToPlacaMap.get(t.id) || '').toLowerCase().includes(filters.placa.toLowerCase()) : true)
+        );
+    }, [transfers, filters, transferIdToPlacaMap]);
+
+
+    const transfersForManifest = useMemo(() => {
+        return transfers.filter(t => t.status === 'Recibido en Bodega' || t.status === 'Validado Supervisor');
+    }, [transfers]);
+    
+    const filteredTransfersForManifest = useMemo(() => {
+        return transfersForManifest.filter(t =>
+            (manifestFilters.numeroTF ? t.numeroTF.toLowerCase().includes(manifestFilters.numeroTF.toLowerCase()) : true) &&
+            (manifestFilters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(manifestFilters.bodegaOrigen.toLowerCase()) : true) &&
+            (manifestFilters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(manifestFilters.bodegaDestino.toLowerCase()) : true)
+        );
+    }, [transfersForManifest, manifestFilters]);
+    
+    const handleUpdateStatus = async (transfer: TransferEntry, newStatus: TransferStatus) => {
+        const result = await updateTransferStatus(transfer.id, newStatus);
+        if (result.success) {
+            toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como '${newStatus}'.`});
+            onRefresh();
+        } else {
+            toast({ variant: 'destructive', title: 'Error al Actualizar', description: result.error });
+        }
+    };
+
+    const handleSelectForManifest = (id: string, checked: boolean) => {
+        setSelectedForManifest(prev => {
+            const newSet = new Set(prev);
+            if (checked) newSet.add(id);
+            else newSet.delete(id);
+            return newSet;
+        });
+    };
+    
+    const handleCreateManifest = async () => {
+        if (!manifestDetails.resource || !manifestDetails.driver) {
+            toast({ variant: 'destructive', title: 'Datos incompletos', description: 'Placa y conductor son obligatorios.'});
+            return;
+        }
+        if (selectedForManifest.size === 0) {
+            toast({ variant: 'destructive', title: 'Sin selección', description: 'Debe seleccionar al menos una transferencia.'});
+            return;
+        }
+        setIsSavingManifest(true);
+        const result = await createDeliveryManifest({
+            ...manifestDetails,
+            transferIds: Array.from(selectedForManifest),
+            summary: {
+                totalTransfers: manifestSummary.totalItems,
+                destinations: Object.entries(manifestSummary.destinations).reduce((acc, [key, value]) => {
+                    acc[key] = value.itemCount;
+                    return acc;
+                }, {} as Record<string, number>),
+            }
+        });
+        if (result.success) {
+            toast({ title: 'Manifiesto Creado', description: 'La relación de entrega ha sido guardada.' });
+            onRefresh();
+            setSelectedForManifest(new Set());
+            setIsCreateManifestOpen(false);
+            fetchManifestData(); // Refresh the manifest history tab
+        } else {
+            toast({ variant: 'destructive', title: 'Error al Crear', description: result.error });
+        }
+        setIsSavingManifest(false);
+    };
+
+    const handleDeleteTransfer = async (transferId: string) => {
+        const result = await deleteTransfer(transferId);
+        if (result.success) {
+          toast({ title: 'Éxito', description: 'Transferencia eliminada.' });
+          onRefresh();
+        } else {
+          toast({ variant: 'destructive', title: 'Error', description: result.error });
+        }
+    };
+    
+    const usersMap = useMemo(() => new Map(users.map(u => [u.uid, u.displayName || u.email])), [users]);
+    
+    const handleScanForManifest = (e: React.FormEvent) => {
+      e.preventDefault();
+      const normalizedCode = scanInput.trim().toUpperCase().replace(/['\/]/g, '-');
+      if (!normalizedCode) return;
+      
+      const codeParts = normalizedCode.split('-');
+      const tfToFind = (codeParts.length > 1 ? codeParts.slice(1).join('-') : normalizedCode).trim();
+      const destinoScanned = (codeParts.length > 1 ? codeParts[0] : null);
+
+      const transfer = filteredTransfersForManifest.find(t => t.numeroTF.trim().toUpperCase() === tfToFind);
+
+      if (transfer) {
+          if (destinoScanned && transfer.bodegaDestino.toUpperCase() !== destinoScanned) {
+              toast({
+                  variant: 'destructive',
+                  title: 'Destino Incorrecto',
+                  description: `La TF '${tfToFind}' fue encontrada, pero su destino es '${transfer.bodegaDestino}', no '${destinoScanned}'.`
+              });
+          } else {
+              if (selectedForManifest.has(transfer.id)) {
+                  toast({ variant: 'default', title: 'Ya Seleccionado', description: `La TF '${transfer.numeroTF}' ya está en la lista.` });
+              } else {
+                  handleSelectForManifest(transfer.id, true);
+                  toast({ title: 'TF Agregada', description: `Se añadió '${transfer.numeroTF}' al manifiesto.` });
+              }
+          }
+      } else {
+          toast({ variant: 'destructive', title: 'No Encontrada', description: `La TF '${tfToFind}' no está disponible o no coincide con los filtros.` });
+      }
+      setScanInput('');
+    };
+
+    const manifestSummary = useMemo(() => {
+        if (selectedForManifest.size === 0) {
+            return { totalTFs: 0, totalItems: 0, destinations: {} };
+        }
+        const selectedTFs = transfers.filter(t => selectedForManifest.has(t.id));
+        
+        const totalTFs = selectedTFs.length; // Count of TF documents
+        const totalItems = selectedTFs.reduce((sum, t) => sum + (t.cantidad || 1), 0); // Sum of quantities
+
+        const destinations = selectedTFs.reduce((acc, t) => {
+            const dest = t.bodegaDestino || 'N/A';
+            if (!acc[dest]) {
+                acc[dest] = { tfCount: 0, itemCount: 0 };
+            }
+            acc[dest].tfCount += 1;
+            acc[dest].itemCount += (t.cantidad || 1);
+            return acc;
+        }, {} as Record<string, { tfCount: number, itemCount: number }>);
+        
+        return {
+            totalTFs,
+            totalItems,
+            destinations
+        };
+    }, [selectedForManifest, transfers]);
+
+
+    return (
+    <>
+      <TransferLogDialog
+        isOpen={isLogOpen}
+        onOpenChange={setIsLogOpen}
+        transfer={selectedTransferForLog}
+      />
+      <TransferLabelDialog
+        isOpen={isLabelDialogOpen}
+        onOpenChange={setIsLabelDialogOpen}
+        transfer={transferForLabel}
+        onConfirm={handleConfirmPrintAndReceive}
+        isSaving={isPrinting}
+      />
+      <StatusChangeDialog
+        isOpen={statusChangeState.isOpen}
+        onOpenChange={(open) => setStatusChangeState({ isOpen: open, transfer: null })}
+        transfer={statusChangeState.transfer}
+        onConfirm={handleManualStatusUpdate}
+        isSaving={isUpdatingStatus}
+      />
+      <Dialog open={isCreateManifestOpen} onOpenChange={setIsCreateManifestOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Crear Relación de Entrega (Manifiesto)</DialogTitle>
+            <DialogDescription>
+                Se creará un manifiesto con {selectedForManifest.size} transferencia(s) seleccionada(s), sumando un total de {manifestSummary.totalItems} unidades.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="resource">Recurso / Placa</Label>
+                <Input id="resource" value={manifestDetails.resource} onChange={(e) => setManifestDetails(prev => ({...prev, resource: e.target.value}))} />
+              </div>
+               <div className="space-y-2">
+                <Label htmlFor="driver">Conductor</Label>
+                <Input id="driver" value={manifestDetails.driver} onChange={(e) => setManifestDetails(prev => ({...prev, driver: e.target.value}))} />
+              </div>
+               <div className="space-y-2">
+                <Label htmlFor="assistants">Auxiliares</Label>
+                <Input id="assistants" value={manifestDetails.assistants} onChange={(e) => setManifestDetails(prev => ({...prev, assistants: e.target.value}))} />
+              </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsCreateManifestOpen(false)}>Cancelar</Button>
+            <Button onClick={handleCreateManifest} disabled={isSavingManifest}>
+              {isSavingManifest && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}
+              Confirmar y Crear
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <ManifestDetailsDialog manifest={selectedManifest} isOpen={isManifestDetailsOpen} onOpenChange={setIsManifestDetailsOpen} />
+      <CollectionLogDetailsDialog log={selectedCollectionLog} isOpen={!!selectedCollectionLog} onOpenChange={() => setSelectedCollectionLog(null)} />
+      
+        <Tabs defaultValue="general">
+            <TabsList className="flex flex-wrap h-auto justify-start">
+                <TabsTrigger value="general">Consulta General</TabsTrigger>
+                <TabsTrigger value="collection">Registrar Recolección</TabsTrigger>
+                <TabsTrigger value="validation">Validación Supervisor</TabsTrigger>
+                <TabsTrigger value="reception">Recepción en Bodega</TabsTrigger>
+                <TabsTrigger value="manifest">Crear Relación de Entrega</TabsTrigger>
+                <TabsTrigger value="history_manifest">Historial de Manifiestos</TabsTrigger>
+                <TabsTrigger value="history_collection">Historial de Recolecciones</TabsTrigger>
+            </TabsList>
+            <TabsContent value="reception" className="mt-6">
+                 <WarehouseReceptionView onRefresh={onRefresh} collectionLogs={collectionLogs} transfers={transfers}/>
+            </TabsContent>
+             <TabsContent value="validation" className="mt-6">
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Validación de Recolecciones en Ruta</CardTitle>
+                        <CardDescription>Confirme la llegada a bodega de las TFs o márquelas como entregadas directamente en ruta.</CardDescription>
+                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 pt-4">
+                            <Input placeholder="Filtrar por # TF..." value={filters.numeroTF} onChange={e => setFilters(prev => ({...prev, numeroTF: e.target.value}))} />
+                            <Input placeholder="Filtrar por Origen..." value={filters.bodegaOrigen} onChange={e => setFilters(prev => ({...prev, bodegaOrigen: e.target.value}))} />
+                            <Input placeholder="Filtrar por Destino..." value={filters.bodegaDestino} onChange={e => setFilters(prev => ({...prev, bodegaDestino: e.target.value}))} />
+                            <Input placeholder="Filtrar por Placa..." value={filters.placa} onChange={e => setFilters(prev => ({...prev, placa: e.target.value}))} />
+                         </div>
+                    </CardHeader>
+                    <CardContent>
+                       <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+                            <Table>
+                                <TableHeader>
+                                    <TableRow>
+                                        <TableHead>Fecha Recolección</TableHead>
+                                        <TableHead>Placa</TableHead>
+                                        <TableHead># TF</TableHead>
+                                        <TableHead>Destino</TableHead>
+                                        <TableHead className="text-right">Acciones</TableHead>
+                                    </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                    {supervisorValidationTransfers.length > 0 ? supervisorValidationTransfers.map(t => (
+                                        <TableRow key={t.id}>
+                                            <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
+                                            <TableCell>{transferIdToPlacaMap.get(t.id) || 'N/A'}</TableCell>
+                                            <TableCell>{t.numeroTF}</TableCell>
+                                            <TableCell>{t.bodegaDestino}</TableCell>
+                                            <TableCell className="text-right space-x-2">
+                                                <Button size="sm" variant="outline" onClick={() => handleUpdateStatus(t, 'Entregado en Ruta')}>Entregado en Ruta</Button>
+                                                <Button size="sm" onClick={() => handleUpdateStatus(t, 'Validado Supervisor')}>Validar en Bodega</Button>
+                                            </TableCell>
+                                        </TableRow>
+                                    )) : (
+                                        <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground">No hay transferencias pendientes de validación.</TableCell></TableRow>
+                                    )}
+                                </TableBody>
+                            </Table>
+                       </div>
+                    </CardContent>
+                </Card>
+            </TabsContent>
+            <TabsContent value="general" className="mt-6">
+                <Card>
+                  <CardHeader>
+                    <div className="flex justify-between items-center">
+                        <div>
+                            <CardTitle>Transferencias</CardTitle>
+                            <CardDescription>Visualice y gestione todas las transferencias de mercancía.</CardDescription>
+                        </div>
+                        <div className="flex gap-2">
+                            <input type="file" ref={fileInputRef} onChange={onFileChange} className="hidden" accept=".xlsx, .xls" />
+                            <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
+                                {isUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <UploadCloud className="mr-2 h-4 w-4"/>}
+                                Actualizar Base
+                            </Button>
+                             <Button onClick={() => setIsManualEntryOpen(true)}><Plus className="mr-2 h-4 w-4"/> Agregar Manual</Button>
+                            <DownloadTemplateButton/>
+                        </div>
+                    </div>
+                     <div className="mt-4">
+                        <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                                <Button variant="secondary" size="sm" disabled={isMigrating}>
+                                    {isMigrating ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <History className="mr-2 h-4 w-4" />}
+                                    Corregir Estados Antiguos ("Recibido")
+                                </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                                <AlertDialogHeader>
+                                    <AlertDialogTitle>¿Confirmar corrección de datos?</AlertDialogTitle>
+                                    <AlertDialogDescription>
+                                        Esta acción buscará todas las transferencias con el estado antiguo "Recibido" y las actualizará al nuevo estado "Recibido en Bodega". Es una operación segura que solo debe ejecutarse una vez.
+                                    </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                    <AlertDialogAction onClick={handleMigrationClick}>Sí, corregir datos</AlertDialogAction>
+                                </AlertDialogFooter>
+                            </AlertDialogContent>
+                        </AlertDialog>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                        <Input placeholder="Filtrar por # TF..." value={filters.numeroTF} onChange={e => setFilters(prev => ({...prev, numeroTF: e.target.value}))} />
+                        <Input placeholder="Filtrar por Origen..." value={filters.bodegaOrigen} onChange={e => setFilters(prev => ({...prev, bodegaOrigen: e.target.value}))} />
+                        <Input placeholder="Filtrar por Destino..." value={filters.bodegaDestino} onChange={e => setFilters(prev => ({...prev, bodegaDestino: e.target.value}))} />
+                         <Select value={filters.status} onValueChange={val => setFilters(prev => ({...prev, status: val}))}>
+                            <SelectTrigger><SelectValue placeholder="Filtrar por estado..." /></SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">Todos los Estados</SelectItem>
+                                <SelectItem value="En Tránsito">En Tránsito</SelectItem>
+                                <SelectItem value="Recolectado en Ruta">Recolectado en Ruta</SelectItem>
+                                <SelectItem value="Entregado en Ruta">Entregado en Ruta</SelectItem>
+                                <SelectItem value="Validado Supervisor">Validado Supervisor</SelectItem>
+                                <SelectItem value="Recibido en Bodega">Recibido en Bodega</SelectItem>
+                                <SelectItem value="Enviado a Destino">Enviado a Destino</SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
+                    <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead>Fecha</TableHead>
+                                    <TableHead>Número TF</TableHead>
+                                    <TableHead>Origen</TableHead>
+                                    <TableHead>Destino</TableHead>
+                                    <TableHead>Cantidad</TableHead>
+                                    <TableHead>Estado</TableHead>
+                                    <TableHead>Placa Recolección</TableHead>
+                                    <TableHead>Fecha Recibido</TableHead>
+                                    <TableHead>Fecha Enviado</TableHead>
+                                    <TableHead className="text-right">Acciones</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {isLoading ? (
+                                    <TableRow><TableCell colSpan={10} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
+                                ) : filteredTransfers.length > 0 ? (
+                                    filteredTransfers.map(t => {
+                                        const placa = transferIdToPlacaMap.get(t.id) || 'N/A';
+                                        return (
+                                        <TableRow key={t.id}>
+                                            <TableCell>{t.fecha.toLocaleDateString('es-CO')}</TableCell>
+                                            <TableCell className="font-medium">{t.numeroTF}</TableCell>
+                                            <TableCell>{t.bodegaOrigen}</TableCell>
+                                            <TableCell>{t.bodegaDestino}</TableCell>
+                                            <TableCell>{t.cantidad || 1}</TableCell>
+                                            <TableCell>{getStatusBadge(t.status)}</TableCell>
+                                            <TableCell>{placa}</TableCell>
+                                            <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
+                                            <TableCell>{t.enviadoAt ? format(t.enviadoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
+                                            <TableCell className="text-right space-x-1">
+                                                <DropdownMenu>
+                                                    <DropdownMenuTrigger asChild>
+                                                        <Button variant="ghost" size="icon">
+                                                            <MoreHorizontal className="h-4 w-4" />
+                                                        </Button>
+                                                    </DropdownMenuTrigger>
+                                                    <DropdownMenuContent align="end">
+                                                         <DropdownMenuItem onSelect={() => handleViewLog(t)}>
+                                                            <History className="mr-2 h-4 w-4" /> Ver Historial
+                                                        </DropdownMenuItem>
+                                                        <DropdownMenuItem onSelect={() => handlePrintLabelClick(t)} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
+                                                            <Printer className="mr-2 h-4 w-4" />
+                                                            Imprimir Rótulo
+                                                        </DropdownMenuItem>
+                                                        {role === 'admin' && (
+                                                            <>
+                                                                <DropdownMenuSeparator />
+                                                                <DropdownMenuItem onSelect={() => setStatusChangeState({ isOpen: true, transfer: t })}>
+                                                                    Cambiar Estado Manualmente
+                                                                </DropdownMenuItem>
+                                                                <DropdownMenuSeparator />
+                                                                <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                                                                    <AlertDialog>
+                                                                        <AlertDialogTrigger asChild>
+                                                                            <span className="text-destructive w-full text-left relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50">Eliminar Transferencia</span>
+                                                                        </AlertDialogTrigger>
+                                                                        <AlertDialogContent>
+                                                                            <AlertDialogHeader>
+                                                                                <AlertDialogTitle>¿Está seguro?</AlertDialogTitle>
+                                                                                <AlertDialogDescription>
+                                                                                    Esta acción eliminará permanentemente el registro del TF: {t.numeroTF}.
+                                                                                </AlertDialogDescription>
+                                                                            </AlertDialogHeader>
+                                                                            <AlertDialogFooter>
+                                                                                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                                                                <AlertDialogAction onClick={() => handleDeleteTransfer(t.id)}>Eliminar</AlertDialogAction>
+                                                                            </AlertDialogFooter>
+                                                                        </AlertDialogContent>
+                                                                    </AlertDialog>
+                                                                </DropdownMenuItem>
+                                                            </>
+                                                        )}
+                                                    </DropdownMenuContent>
+                                                </DropdownMenu>
+                                            </TableCell>
+                                        </TableRow>
+                                    )})
+                                ) : (
+                                    <TableRow><TableCell colSpan={10} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
+                                )}
+                            </TableBody>
+                        </Table>
+                    </div>
+                  </CardContent>
+                </Card>
+            </TabsContent>
+            <TabsContent value="collection" className="mt-6">
+                <CollectionTabView transfers={transfers} onRefresh={onRefresh} onOpenManualEntry={() => setIsManualEntryOpen(true)} />
+            </TabsContent>
+            <TabsContent value="manifest" className="mt-6">
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Crear Relación de Entrega (Manifiesto)</CardTitle>
+                        <CardDescription>Seleccione las transferencias recibidas en bodega para generar un nuevo manifiesto de despacho.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                         <div className="md:col-span-2 space-y-4">
+                           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                             <Input placeholder="Filtrar por # TF..." value={manifestFilters.numeroTF} onChange={(e) => setManifestFilters(prev => ({...prev, numeroTF: e.target.value}))} />
+                             <Input placeholder="Filtrar por Origen..." value={manifestFilters.bodegaOrigen} onChange={(e) => setManifestFilters(prev => ({...prev, bodegaOrigen: e.target.value}))} />
+                             <Input placeholder="Filtrar por Destino..." value={manifestFilters.bodegaDestino} onChange={(e) => setManifestFilters(prev => ({...prev, bodegaDestino: e.target.value}))} />
+                           </div>
+                           <form onSubmit={handleScanForManifest}>
+                             <div className="flex gap-2">
+                               <Input
+                                   placeholder="Escanear o digitar TF para agregar..."
+                                   value={scanInput}
+                                   onChange={e => setScanInput(e.target.value)}
+                                   className="font-mono"
+                               />
+                               <Button type="submit" variant="secondary"><ScanLine className="mr-2 h-4 w-4"/> Agregar</Button>
+                             </div>
+                           </form>
+                         </div>
+                         <Card className="p-4 bg-muted/50">
+                            <h4 className="font-semibold text-center mb-2">Resumen de Selección</h4>
+                            <div className="space-y-2 text-sm">
+                                <div className="flex justify-between font-bold">
+                                    <span>TFs Seleccionadas:</span>
+                                    <span>{manifestSummary.totalTFs}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span>Unidades Totales:</span>
+                                    <span>{manifestSummary.totalItems}</span>
+                                </div>
+                                {Object.keys(manifestSummary.destinations).length > 0 && (
+                                <div className="text-xs mt-2 pt-2 border-t border-muted-foreground/20">
+                                    <p className="font-bold mb-1">Desglose por Destino:</p>
+                                    {Object.entries(manifestSummary.destinations).map(([dest, counts]) => (
+                                        <div key={dest} className="flex justify-between text-muted-foreground">
+                                            <span>{dest}:</span>
+                                            <span>{counts.tfCount} TF(s) / {counts.itemCount} und.</span>
+                                        </div>
+                                    ))}
+                                </div>
+                                )}
+                            </div>
+                        </Card>
+                       </div>
+
+                       <div className="flex justify-end mb-4">
+                           <Button onClick={() => setIsCreateManifestOpen(true)} disabled={selectedForManifest.size === 0}>
+                               <FileSignature className="mr-2 h-4 w-4" /> Crear Manifiesto con {manifestSummary.totalTFs} TF(s)
+                           </Button>
+                       </div>
+                       <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+                            <Table>
+                                <TableHeader>
+                                    <TableRow>
+                                        <TableHead>
+                                            <Checkbox
+                                                checked={filteredTransfersForManifest.length > 0 && selectedForManifest.size === filteredTransfersForManifest.length}
+                                                onCheckedChange={(checked) => {
+                                                    const ids = filteredTransfersForManifest.map(t => t.id);
+                                                    if(checked) {
+                                                        setSelectedForManifest(new Set([...selectedForManifest, ...ids]));
+                                                    } else {
+                                                        const newSet = new Set(selectedForManifest);
+                                                        ids.forEach(id => newSet.delete(id));
+                                                        setSelectedForManifest(newSet);
+                                                    }
+                                                }}
+                                            />
+                                        </TableHead>
+                                        <TableHead># TF</TableHead>
+                                        <TableHead>Origen</TableHead>
+                                        <TableHead>Destino</TableHead>
+                                        <TableHead>Fecha Recepción</TableHead>
+                                        <TableHead>Estado Actual</TableHead>
+                                    </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                    {filteredTransfersForManifest.length > 0 ? filteredTransfersForManifest.map(t => (
+                                        <TableRow key={t.id} data-state={selectedForManifest.has(t.id) ? "selected" : ""}>
+                                            <TableCell><Checkbox checked={selectedForManifest.has(t.id)} onCheckedChange={(checked) => handleSelectForManifest(t.id, !!checked)} /></TableCell>
+                                            <TableCell>{t.numeroTF}</TableCell>
+                                            <TableCell>{t.bodegaOrigen}</TableCell>
+                                            <TableCell>{t.bodegaDestino}</TableCell>
+                                            <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yyyy HH:mm") : 'N/A'}</TableCell>
+                                            <TableCell><Badge>{t.status}</Badge></TableCell>
+                                        </TableRow>
+                                    )) : (
+                                        <TableRow><TableCell colSpan={6} className="h-24 text-center text-muted-foreground">No hay transferencias disponibles con los filtros actuales.</TableCell></TableRow>
+                                    )}
+                                </TableBody>
+                            </Table>
+                       </div>
+                    </CardContent>
+                </Card>
+            </TabsContent>
+            <TabsContent value="history_manifest" className="mt-6">
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Manifiestos Creados</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                       <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+                           <Table>
+                               <TableHeader><TableRow><TableHead>ID Manifiesto</TableHead><TableHead>Fecha</TableHead><TableHead>Recurso</TableHead><TableHead>Total Unidades</TableHead><TableHead className="text-right">Acciones</TableHead></TableRow></TableHeader>
+                               <TableBody>
+                                   {isLoadingManifests ? (
+                                     <TableRow><TableCell colSpan={5} className="text-center h-24"><Loader2 className="animate-spin mx-auto"/></TableCell></TableRow>
+                                   ) : manifests.length > 0 ? manifests.map(m => (
+                                       <TableRow key={m.id}>
+                                           <TableCell>#{m.manifestId}</TableCell>
+                                           <TableCell>{m.createdAt ? format(new Date(m.createdAt), "PPP p", { locale: es }) : 'N/A'}</TableCell>
+                                           <TableCell>{m.resource}</TableCell>
+                                           <TableCell>{m.summary?.totalTransfers || 0}</TableCell>
+                                           <TableCell className="text-right"><Button variant="outline" size="sm" onClick={() => { setSelectedManifest(m); setIsManifestDetailsOpen(true); }}>Ver e Imprimir</Button></TableCell>
+                                       </TableRow>
+                                   )) : (
+                                      <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground">No hay manifiestos creados.</TableCell></TableRow>
+                                   )}
+                               </TableBody>
+                           </Table>
+                       </div>
+                    </CardContent>
+                </Card>
+            </TabsContent>
+            <TabsContent value="history_collection" className="mt-6">
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Historial de Recolecciones en Ruta</CardTitle>
+                        <CardDescription>Registro de todas las recolecciones confirmadas por los operarios.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="border rounded-md max-h-[70vh] overflow-y-auto">
+                            <Table>
+                                <TableHeader>
+                                    <TableRow>
+                                        <TableHead>Fecha Recolección</TableHead>
+                                        <TableHead>Placa Vehículo</TableHead>
+                                        <TableHead>Recolectado Por</TableHead>
+                                        <TableHead>Destinos</TableHead>
+                                <TableHead className="text-right">Total TFs</TableHead>
+                                        <TableHead className="text-right">Acciones</TableHead>
+                                    </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                    {isLoading ? (
+                                        <TableRow><TableCell colSpan={6} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
+                                    ) : collectionLogs.length > 0 ? collectionLogs.map(log => (
+                                        <TableRow key={log.id}>
+                                            <TableCell>{format(log.createdAt, "PPP p", { locale: es })}</TableCell>
+                                            <TableCell>{log.placa}</TableCell>
+                                            <TableCell>{usersMap.get(log.recolectadoPor) || log.recolectadoPor}</TableCell>
+                                            <TableCell>{Object.keys(log.summary?.destinations || {}).join(', ')}</TableCell>
+                                            <TableCell className="text-right">{log.summary?.totalTransfers || 0}</TableCell>
+                                            <TableCell className="text-right">
+                                                <Button variant="outline" size="sm" onClick={() => setSelectedCollectionLog(log)}>Ver Detalles</Button>
+                                            </TableCell>
+                                        </TableRow>
+                                    )) : (
+                                        <TableRow><TableCell colSpan={6} className="h-24 text-center text-muted-foreground">No hay recolecciones registradas.</TableCell></TableRow>
+                                    )}
+                                </TableBody>
+                            </Table>
+                        </div>
+                    </CardContent>
+                </Card>
+            </TabsContent>
+        </Tabs>
+        </>
+    )
+};
+const OperatorView: React.FC<{
+  allTransfers: TransferEntry[];
+  collectionLogs: CollectionLog[];
+  isLoading: boolean;
+  onRefresh: () => void;
+}> = ({ allTransfers, collectionLogs, isLoading, onRefresh }) => {
+    const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', status: 'all' });
+    const { toast } = useToast();
+
+    const transferIdToPlacaMap = useMemo(() => {
+        const map = new Map<string, string>();
+        if (!collectionLogs) return map;
+        collectionLogs.forEach(log => {
+            log.transferIds.forEach(id => {
+                map.set(id, log.placa);
+            });
+        });
+        return map;
+    }, [collectionLogs]);
+
+    const handleDeleteTransfer = async (transferId: string) => {
+        const result = await deleteTransfer(transferId);
+        if (result.success) {
+          toast({ title: 'Éxito', description: 'Transferencia eliminada.' });
+          onRefresh();
+        } else {
+          toast({ variant: 'destructive', title: 'Error', description: result.error });
+        }
+    };
+
+    const filteredTransfers = useMemo(() => {
+        return allTransfers.filter(t => 
+            (filters.numeroTF ? t.numeroTF.toLowerCase().includes(filters.numeroTF.toLowerCase()) : true) &&
+            (filters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(filters.bodegaOrigen.toLowerCase()) : true) &&
+            (filters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(filters.bodegaDestino.toLowerCase()) : true) &&
+            (filters.status === 'all' ? true : t.status === filters.status)
+        );
+    }, [allTransfers, filters]);
+    
+    return (
+        <Card>
+          <CardHeader><CardTitle>Consulta de TFs en Bodega</CardTitle></CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                <Input placeholder="Filtrar por # TF..." value={filters.numeroTF} onChange={e => setFilters(prev => ({...prev, numeroTF: e.target.value}))} />
+                <Input placeholder="Filtrar por Origen..." value={filters.bodegaOrigen} onChange={e => setFilters(prev => ({...prev, bodegaOrigen: e.target.value}))} />
+                <Input placeholder="Filtrar por Destino..." value={filters.bodegaDestino} onChange={e => setFilters(prev => ({...prev, bodegaDestino: e.target.value}))} />
+                 <Select value={filters.status} onValueChange={val => setFilters(prev => ({...prev, status: val}))}>
+                    <SelectTrigger><SelectValue placeholder="Filtrar por estado..." /></SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value="all">Todos los Estados</SelectItem>
+                        <SelectItem value="En Tránsito">En Tránsito</SelectItem>
+                        <SelectItem value="Recolectado en Ruta">Recolectado en Ruta</SelectItem>
+                        <SelectItem value="Entregado en Ruta">Entregado en Ruta</SelectItem>
+                        <SelectItem value="Validado Supervisor">Validado Supervisor</SelectItem>
+                        <SelectItem value="Recibido en Bodega">Recibido en Bodega</SelectItem>
+                        <SelectItem value="Enviado a Destino">Enviado a Destino</SelectItem>
+                    </SelectContent>
+                </Select>
+            </div>
+            <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+              <Table>
+                <TableHeader>
+                    <TableRow>
+                        <TableHead>Fecha</TableHead>
+                        <TableHead>Número TF</TableHead>
+                        <TableHead>Origen</TableHead>
+                        <TableHead>Destino</TableHead>
+                        <TableHead>Cantidad</TableHead>
+                        <TableHead>Estado</TableHead>
+                        <TableHead>Placa Recolección</TableHead>
+                        <TableHead>Fecha Recibido</TableHead>
+                        <TableHead>Fecha Enviado</TableHead>
+                    </TableRow>
+                </TableHeader>
+                <TableBody>
+                    {isLoading ? (
+                        <TableRow><TableCell colSpan={9} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
+                    ) : filteredTransfers.length > 0 ? (
+                        filteredTransfers.map(t => {
+                            const placa = transferIdToPlacaMap.get(t.id) || 'N/A';
+                            return (
+                            <TableRow key={t.id}>
+                                <TableCell>{t.fecha.toLocaleDateString('es-CO')}</TableCell>
+                                <TableCell className="font-medium">{t.numeroTF}</TableCell>
+                                <TableCell>{t.bodegaOrigen}</TableCell>
+                                <TableCell>{t.bodegaDestino}</TableCell>
+                                <TableCell>{t.cantidad || 1}</TableCell>
+                                <TableCell>{getStatusBadge(t.status)}</TableCell>
+                                <TableCell>{placa}</TableCell>
+                                <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
+                                <TableCell>{t.enviadoAt ? format(t.enviadoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
+                            </TableRow>
+                        )})
+                    ) : (
+                        <TableRow><TableCell colSpan={9} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
+                    )}
+                </TableBody>
+            </Table>
+            </div>
+          </CardContent>
+        </Card>
+    );
+};
+
+const CollectionTabView: React.FC<{
+  transfers: TransferEntry[];
+  onRefresh: () => void;
+  onOpenManualEntry?: () => void;
+}> = ({ transfers, onRefresh, onOpenManualEntry }) => {
+    const { user } = useAuth();
+    const { toast } = useToast();
+    const [isLoading, setIsLoading] = useState(false);
+    const [selectedPlate, setSelectedPlate] = useState('');
+    const [selectedTransfers, setSelectedTransfers] = useState(new Set<string>());
+    const [debouncedFilters, setDebouncedFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' });
+    const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' });
+    useEffect(() => {
+        const handler = setTimeout(() => {
+            setDebouncedFilters(filters);
+        }, 300); // Wait 300ms after user stops typing
+        return () => clearTimeout(handler);
+    }, [filters]);
+
+    const availableTransfers = useMemo(() => {
+        return transfers.filter(t => 
+            t.status === 'En Tránsito' &&
+            (debouncedFilters.numeroTF ? t.numeroTF.toLowerCase().includes(debouncedFilters.numeroTF.toLowerCase()) : true) &&
+            (debouncedFilters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(debouncedFilters.bodegaOrigen.toLowerCase()) : true) &&
+            (debouncedFilters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(debouncedFilters.bodegaDestino.toLowerCase()) : true)
+        );
+    }, [transfers, debouncedFilters]);
+    
+    const handleConfirmCollection = async () => {
+        if (!user) {
+            toast({ variant: 'destructive', title: 'Error', description: 'No se pudo identificar al usuario.' });
+            return;
+        }
+        if (selectedTransfers.size === 0) {
+            toast({ variant: 'destructive', title: 'Error', description: 'Debe seleccionar al menos una transferencia.' });
+            return;
+        }
+        setIsLoading(true);
+        const result = await createCollectionLog(selectedPlate, Array.from(selectedTransfers), user.uid);
+        if (result.success) {
+            toast({ title: 'Éxito', description: `${selectedTransfers.size} transferencias marcadas como recolectadas.` });
+            onRefresh();
+            setSelectedTransfers(new Set());
+        } else {
+            toast({ variant: 'destructive', title: 'Error', description: result.error });
+        }
+        setIsLoading(false);
+    };
+
+    const handleSelectTransfer = (id: string, checked: boolean) => {
+        setSelectedTransfers(prev => {
+            const newSet = new Set(prev);
+            if (checked) newSet.add(id); else newSet.delete(id);
+            return newSet;
+        });
+    };
+    
+    return (
+        <Card>
+            <CardHeader>
+                <div className="flex justify-between items-center">
+                    <div>
+                        <CardTitle>Registrar Recolección en Ruta</CardTitle>
+                        <CardDescription>Seleccione las transferencias que está recolectando y confirme.</CardDescription>
+                    </div>
+                    {onOpenManualEntry && (
+                         <Button onClick={onOpenManualEntry} variant="secondary">
+                            <Plus className="mr-2 h-4 w-4"/> Agregar Manual
+                         </Button>
+                    )}
+                </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+                <div className="flex flex-col sm:flex-row items-center gap-4">
+                    <Input placeholder="Ingrese su placa..." value={selectedPlate} onChange={e => setSelectedPlate(e.target.value.toUpperCase())} className="max-w-xs" />
+                    <Button onClick={handleConfirmCollection} disabled={isLoading || selectedTransfers.size === 0 || !selectedPlate.trim()}>
+                        {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}
+                        Confirmar Recolección de ({selectedTransfers.size}) TFs
+                    </Button>
+                </div>
+                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 p-4 border rounded-lg bg-muted/50">
+                    <Input placeholder="Filtrar por # TF..." value={filters.numeroTF} onChange={e => setFilters(prev => ({...prev, numeroTF: e.target.value}))} />
+                    <Input placeholder="Filtrar por Origen..." value={filters.bodegaOrigen} onChange={e => setFilters(prev => ({...prev, bodegaOrigen: e.target.value}))} />
+                    <Input placeholder="Filtrar por Destino..." value={filters.bodegaDestino} onChange={e => setFilters(prev => ({...prev, bodegaDestino: e.target.value}))} />
+                    <Button variant="ghost" onClick={() => setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' })}>Limpiar Filtros</Button>
+                </div>
+                 <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead className="w-12">
+                                  <Checkbox
+                                    checked={selectedTransfers.size === availableTransfers.length && availableTransfers.length > 0}
+                                    onCheckedChange={(checked) => setSelectedTransfers(checked ? new Set(availableTransfers.map(t => t.id)) : new Set())}
+                                  />
+                                </TableHead>
+                                <TableHead># TF</TableHead>
+                                <TableHead>Origen</TableHead>
+                                <TableHead>Destino</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {availableTransfers.length > 0 ? availableTransfers.map(t => (
+                                <TableRow key={t.id} data-state={selectedTransfers.has(t.id) ? "selected" : ""}>
+                                    <TableCell><Checkbox checked={selectedTransfers.has(t.id)} onCheckedChange={(checked) => handleSelectTransfer(t.id, !!checked)} /></TableCell>
+                                    <TableCell>{t.numeroTF}</TableCell>
+                                    <TableCell>{t.bodegaOrigen}</TableCell>
+                                    <TableCell>{t.bodegaDestino}</TableCell>
+                                </TableRow>
+                            )) : (
+                                <TableRow><TableCell colSpan={4} className="h-24 text-center text-muted-foreground">No hay transferencias en tránsito que coincidan con los filtros.</TableCell></TableRow>
+                            )}
+                        </TableBody>
+                    </Table>
+                 </div>
+            </CardContent>
+        </Card>
+    );
+};
+
+const DownloadTemplateButton: React.FC = () => {
+    const handleDownload = () => {
+        const headers = ["Fecha", "Numero TF", "Bodega Origen", "Bodega Destino", "Cantidad"];
+        const exampleData = [
+            {
+                "Fecha": "2024-07-29",
+                "Numero TF": "TF-101",
+                "Bodega Origen": "BODEGA PPA",
+                "Bodega Destino": "TIENDA BELLO",
+                "Cantidad": 1
+            }
+        ];
+        
+        const worksheet = XLSX.utils.json_to_sheet(exampleData, { header: headers });
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'Plantilla Transferencias');
+        
+        const colWidths = headers.map(header => ({
+            wch: Math.max(header.length, ...exampleData.map(row => String(row[header as keyof typeof row] || '').length)) + 5
+        }));
+        worksheet["!cols"] = colWidths;
+        
+        XLSX.writeFile(workbook, `Plantilla_Carga_Transferencias.xlsx`);
+    };
+
+    return (
+        <Button onClick={handleDownload} variant="secondary" size="sm">
+            <Download className="mr-2 h-4 w-4" />
+            Descargar Plantilla
+        </Button>
+    );
+};
+
+const ManualEntryDialog: React.FC<{
+    isOpen: boolean;
+    onOpenChange: (open: boolean) => void;
+    onConfirm: (data: { numeroTF: string; bodegaDestino: string; origen?: string; status?: TransferStatus }) => void;
+    isSaving: boolean;
+}> = ({ isOpen, onOpenChange, onConfirm, isSaving }) => {
+    const [numeroTF, setNumeroTF] = useState('');
+    const [bodegaDestino, setBodegaDestino] = useState('');
+    const [origen, setOrigen] = useState('');
+    const [status, setStatus] = useState<TransferStatus>('En Tránsito');
+
+    return (
+        <Dialog open={isOpen} onOpenChange={onOpenChange}>
+            <DialogContent>
+                <DialogHeader><DialogTitle>Agregar Transferencia Manual</DialogTitle></DialogHeader>
+                <div className="space-y-4 py-4">
+                    <div className="space-y-2">
+                        <Label htmlFor="tf-manual">Número TF</Label>
+                        <Input id="tf-manual" value={numeroTF} onChange={e => setNumeroTF(e.target.value)} />
+                    </div>
+                    <div className="space-y-2">
+                        <Label htmlFor="destino-manual">Bodega Destino</Label>
+                        <Input id="destino-manual" value={bodegaDestino} onChange={e => setBodegaDestino(e.target.value)} />
+                    </div>
+                    <div className="space-y-2">
+                        <Label htmlFor="origen-manual">Origen (Opcional, defecto: BODEGA PPA)</Label>
+                        <Input id="origen-manual" value={origen} onChange={e => setOrigen(e.target.value)} />
+                    </div>
+                    <div className="space-y-2">
+                        <Label htmlFor="status-manual">Estado Inicial</Label>
+                        <Select value={status} onValueChange={(val) => setStatus(val as TransferStatus)}>
+                            <SelectTrigger><SelectValue/></SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="En Tránsito">En Tránsito</SelectItem>
+                                <SelectItem value="Recibido en Bodega">Recibido en Bodega</SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
+                </div>
+                <DialogFooter>
+                    <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancelar</Button>
+                    <Button onClick={() => onConfirm({ numeroTF, bodegaDestino, origen, status })} disabled={isSaving || !numeroTF || !bodegaDestino}>
+                        {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}
+                        Agregar
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+};
+
+
+// Main Component
+export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ onReturnToSuite }) => {
+    const [allTransfers, setAllTransfers] = useState<TransferEntry[]>([]);
+    const [allUsers, setAllUsers] = useState<AppUser[]>([]);
+    const [collectionLogs, setCollectionLogs] = useState<CollectionLog[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const { toast } = useToast();
+    const { role } = useAuth();
+    const isAdminOrSupervisor = role === 'admin' || role === 'supervisor';
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const [isManualEntryOpen, setIsManualEntryOpen] = useState(false);
+    const [isSavingManualEntry, setIsSavingManualEntry] = useState(false);
+
+    const fetchData = useCallback(async () => {
+        setIsLoading(true);
+        const [transfersResult, usersResult, collectionLogsResult] = await Promise.all([
+          loadAllTransfers(),
+          getAllUserProfiles(),
+          getCollectionLogs()
+        ]);
+        
+        if (transfersResult.error) {
+            toast({ variant: 'destructive', title: 'Error al cargar transferencias', description: transfersResult.error });
+        } else {
+            setAllTransfers(transfersResult.data || []);
+        }
+
+        if (usersResult) {
+            setAllUsers(usersResult);
+        } else {
+            toast({ variant: 'destructive', title: 'Error al cargar usuarios' });
+        }
+
+        if (collectionLogsResult.success && collectionLogsResult.data) {
+            setCollectionLogs(collectionLogsResult.data);
+        } else {
+            toast({ variant: 'destructive', title: 'Error al cargar historial de recolecciones', description: collectionLogsResult.error });
+        }
+
+        setIsLoading(false);
+    }, [toast]);
+    
+    const handleManualEntryConfirm = async (data: { numeroTF: string; bodegaDestino: string; origen?: string; status?: TransferStatus }) => {
+      setIsSavingManualEntry(true);
+      const result = await createManualTransfer(data);
+      if(result.success) {
+        toast({ title: 'Éxito', description: 'Transferencia manual creada.' });
+        fetchData();
+        setIsManualEntryOpen(false);
+      } else {
+        toast({ variant: 'destructive', title: 'Error', description: result.error });
+      }
+      setIsSavingManualEntry(false);
+    }
+
+    const handleFileChange = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+  
+      setIsLoading(true);
+      try {
+          const data = await file.arrayBuffer();
+          const workbook = XLSX.read(data);
+          const sheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[sheetName];
+          const json: any[] = XLSX.utils.sheet_to_json(worksheet);
+  
+          const newRoutes: Omit<TransferEntry, 'id' | 'status'>[] = json.map((row, index) => {
+              const fecha = parseFlexibleDate(row['Fecha']);
+              if (!fecha) {
+                  console.warn(`Fila '${index+2}' omitida por fecha inválida.`);
+                  return null;
+              }
+              return {
+                  fecha,
+                  numeroTF: String(row['Numero TF'] || 'N/A'),
+                  bodegaOrigen: String(row['Bodega Origen'] || 'N/A'),
+                  bodegaDestino: String(row['Bodega Destino'] || 'N/A'),
+                  cantidad: Number(row['Cantidad'] || 1),
+              };
+          }).filter((r): r is Omit<TransferEntry, 'id' | 'status'> => r !== null);
+          
+          if(newRoutes.length === 0) {
+            throw new Error("No se encontraron transferencias válidas en el archivo.");
+          }
+          
+          const result = await saveTransfers(newRoutes);
+  
+          if(result.summary) {
+              toast({ title: "Base de Datos Actualizada", description: `Se añadieron ${result.summary.added} TFs nuevas y se eliminaron ${result.summary.removed} TFs antiguas (no protegidas).` });
+              fetchData();
+          } else if (result.error) {
+               throw new Error(result.error);
+          }
+  
+      } catch(error: any) {
+          toast({ variant: 'destructive', title: "Error al cargar archivo", description: error.message });
+      } finally {
+          setIsLoading(false);
+          if (e.target) e.target.value = '';
+      }
+    }, [fetchData, toast]);
+
+    useEffect(() => {
+        fetchData();
+    }, [fetchData]);
+    
+    return (
+    <div className="space-y-8">
+      <ManualEntryDialog
+        isOpen={isManualEntryOpen}
+        onOpenChange={setIsManualEntryOpen}
+        onConfirm={handleManualEntryConfirm}
+        isSaving={isSavingManualEntry}
+      />
+      <Card>
+        <CardHeader className="flex flex-row justify-between items-center">
+          <div>
+            <CardTitle>Módulo de Transferencias</CardTitle>
+            <CardDescription>
+              Gestione las transferencias de mercancía entre diferentes bodegas y tiendas.
+            </CardDescription>
+          </div>
+          <Button onClick={onReturnToSuite} variant="outline">
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Volver a la Suite
+          </Button>
+        </CardHeader>
+      </Card>
+      
+      {isAdminOrSupervisor ? (
+          <AdminView 
+            transfers={allTransfers}
+            collectionLogs={collectionLogs}
+            isLoading={isLoading}
+            onRefresh={fetchData}
+            role={role}
+            users={allUsers}
+            isUploading={isLoading}
+            onFileChange={handleFileChange}
+            fileInputRef={fileInputRef}
+            setIsManualEntryOpen={setIsManualEntryOpen}
+          />
+      ) : role === 'conductor' ? (
+        <CollectionTabView
+            transfers={allTransfers}
+            onRefresh={fetchData}
+        />
+      ) : (
+          <OperatorView
+            allTransfers={allTransfers}
+            collectionLogs={collectionLogs}
+            isLoading={isLoading}
+            onRefresh={fetchData}
+          />
+      )}
+    </div>
+  );
+};
+    

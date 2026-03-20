@@ -1,3 +1,4 @@
+
 import type { HeaderConfig } from '../types';
 
 export const MAIN_CONSUMPTION_DOC_TYPES: string[] = ['RMV', 'RMP'];
@@ -58,8 +59,10 @@ export const BODEGAS_TO_EXCLUDE_FOR_DISTRIBUTION: string[] = [
   "BODPN" 
 ].map(b => b.toUpperCase()); 
 
-export const DISTRIBUTION_COVERAGE_DAYS: number = 15; // Default coverage
+// Default coverage in days if not specified in special list
+export const DISTRIBUTION_COVERAGE_DAYS: number = 15; 
 
+// List of bodegas with a different, specific coverage in days
 export const SPECIAL_COVERAGE_BODEGAS: { [bodegaCode: string]: number } = {
   "20301": 30,
   "30701": 30,
@@ -69,14 +72,32 @@ export const SPECIAL_COVERAGE_BODEGAS: { [bodegaCode: string]: number } = {
   "20601": 30,
 };
 
+// NUEVAS REGLAS DE NEGOCIO
+// =================================================
+
+// Define el MÚLTIPLO al cual redondear la cantidad a comprar para ítems específicos.
+// Esto representa la unidad mínima de empaque del proveedor.
 export const ITEM_SPECIFIC_ROUNDING_RULES: { [itemCode: string]: number } = {
   "9615": 25,
   "9618": 50,
-  "9619": 50, // Actualizado a 50
+  "9619": 50,
   "27650": 25,
 };
 
+// Si un ítem no está en la lista de arriba, se redondeará a la unidad más cercana.
 export const DEFAULT_ROUNDING_MULTIPLE = 1; 
+
+// Define un FACTOR MULTIPLICADOR MÍNIMO para meses de alta temporada.
+// El sistema usará el valor más alto entre este mínimo y el índice estadístico que calcule.
+// La clave es el número del mes (1 = Enero, 12 = Diciembre).
+export const MINIMUM_SEASONAL_FACTORS: { [month: number]: number } = {
+  1: 1.20,   // Enero
+  5: 1.20,   // Mayo
+  6: 1.20,   // Junio
+  10: 1.20,  // Octubre
+  11: 1.75,  // Noviembre (Aumento del 75%)
+  12: 2.20,  // Diciembre (Aumento del 120%)
+};
 
 // Constantes para el modelo de distribución HÍBRIDO
 // Número mínimo de meses con ventas para que una bodega sea candidata a un pronóstico directo
@@ -85,7 +106,6 @@ export const MIN_MONTHS_FOR_DIRECT_FORECAST = 12;
 // CV = Desviación Estándar / Media. Un valor de 1.0 significa que la desviación es tan grande como la media.
 export const MAX_CV_FOR_DIRECT_FORECAST = 1.0; 
 
-
-// Constantes para Ajuste Estacional Manual
-export const HIGH_SEASON_MONTHS: number[] = [1, 5, 6, 10, 11, 12]; // Ene, May, Jun, Oct, Nov, Dic
-export const MANUAL_SEASONAL_ADJUSTMENT_FACTOR = 1.20; // 20% increase for high season months if statistical indices are unavailable.
+// Constantes obsoletas que se eliminan para evitar confusión
+// export const HIGH_SEASON_MONTHS: number[] = [1, 5, 6, 10, 11, 12];
+// export const MANUAL_SEASONAL_ADJUSTMENT_FACTOR = 1.20;

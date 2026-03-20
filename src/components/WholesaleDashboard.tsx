@@ -1,5 +1,4 @@
 
-
 "use client";
 
 import React, { useEffect, useState } from 'react';
@@ -165,7 +164,6 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
 
   const { toast } = useToast();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
-  const dbFileInputRef = React.useRef<HTMLInputElement>(null);
   
   // Optimization: Fetch all packed items at once when the component mounts or orders change.
   useEffect(() => {
@@ -203,7 +201,7 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
     });
   };
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, fileType: 'orders' | 'database') => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     e.preventDefault();
     const file = e.target.files?.[0];
     if (!file) return;
@@ -211,105 +209,76 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
     setIsProcessing(true);
     try {
         const fileContent = await file.arrayBuffer();
-        if (fileType === 'orders') {
-            const workbook = XLSX.read(fileContent, { type: 'binary', cellDates: true });
-            const sheetName = workbook.SheetNames[0];
-            const sheet = workbook.Sheets[sheetName];
-            const data = XLSX.utils.sheet_to_json(sheet);
-            
-            const ordersMap = new Map<string, WholesaleOrder>();
-            
-            data.forEach((row: any) => {
-                const orderId = String(row['Nro documento'] || '').trim();
-                if (!orderId) return;
+        const workbook = XLSX.read(fileContent, { type: 'binary', cellDates: true });
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        const data = XLSX.utils.sheet_to_json(sheet);
+        
+        const ordersMap = new Map<string, WholesaleOrder>();
+        
+        data.forEach((row: any) => {
+            const orderId = String(row['Nro documento'] || '').trim();
+            if (!orderId) return;
 
-                if (!ordersMap.has(orderId)) {
-                    let orderDate: Date;
-                    const rawDate = row['Fecha'];
+            if (!ordersMap.has(orderId)) {
+                let orderDate: Date;
+                const rawDate = row['Fecha'];
 
-                    if (rawDate instanceof Date) {
-                        orderDate = rawDate;
-                    } else if (typeof rawDate === 'number') {
-                        orderDate = excelSerialDateToJSDate(rawDate);
-                    } else if (typeof rawDate === 'string') {
-                        const parsedDate = new Date(rawDate);
-                        orderDate = isNaN(parsedDate.getTime()) ? new Date() : parsedDate;
-                    } else {
-                        orderDate = new Date();
-                    }
-
-                    ordersMap.set(orderId, {
-                        id: orderId,
-                        vendedor: String(row['Nombre vendedor'] || ''),
-                        fecha: orderDate,
-                        bodega: String(row['Bodega'] || ''),
-                        cliente: String(row['Razón social cliente despacho'] || ''),
-                        sucursal: String(row['Sucursal factura'] || ''),
-                        ordenDeCompra: String(row['Orden de compra'] || ''),
-                        cantidadTotal: 0,
-                        valorNetoTotal: 0,
-                        status: 'Pte Empaque',
-                        details: [],
-                    });
-                }
-
-                const order = ordersMap.get(orderId)!;
-                
-                const newDetail: WholesaleOrderDetail = {
-                    referencia: String(row['Referencia'] || '').trim(),
-                    item: String(row['Item'] || '').trim(),
-                    talla: String(row['Detalle ext. 1'] || '').trim(),
-                    cantidad: Number(row['Cant. comprom.']),
-                };
-
-                order.cantidadTotal += newDetail.cantidad;
-                order.valorNetoTotal += Number(row['Valor neto']) || 0;
-                
-                const detailKey = `${newDetail.referencia}-${newDetail.talla}-${newDetail.item}`;
-                const existingDetail = order.details.find(d => `${d.referencia}-${d.talla}-${d.item}` === detailKey);
-                
-                if (existingDetail) {
-                    existingDetail.cantidad += newDetail.cantidad;
+                if (rawDate instanceof Date) {
+                    orderDate = rawDate;
+                } else if (typeof rawDate === 'number') {
+                    orderDate = excelSerialDateToJSDate(rawDate);
+                } else if (typeof rawDate === 'string') {
+                    const parsedDate = new Date(rawDate);
+                    orderDate = isNaN(parsedDate.getTime()) ? new Date() : parsedDate;
                 } else {
-                    order.details.push(newDetail);
+                    orderDate = new Date();
                 }
-            });
 
-            const newOrders = Array.from(ordersMap.values());
-            const result = await processAndSaveWholesaleFile(newOrders);
-            if (result.error) {
-                toast({ variant: "destructive", title: "Error al procesar pedidos", description: result.error });
-            } else {
-                toast({ title: "Proceso completado", description: `Se procesaron ${result.data?.processedCount || 0} pedidos.` });
-                fetchOrders();
+                ordersMap.set(orderId, {
+                    id: orderId,
+                    vendedor: String(row['Nombre vendedor'] || ''),
+                    fecha: orderDate,
+                    bodega: String(row['Bodega'] || ''),
+                    cliente: String(row['Razón social cliente despacho'] || ''),
+                    sucursal: String(row['Sucursal factura'] || ''),
+                    ordenDeCompra: String(row['Orden de compra'] || ''),
+                    cantidadTotal: 0,
+                    valorNetoTotal: 0,
+                    status: 'Pte Empaque',
+                    details: [],
+                });
             }
+
+            const order = ordersMap.get(orderId)!;
+            
+            const newDetail: WholesaleOrderDetail = {
+                referencia: String(row['Referencia'] || '').trim(),
+                item: String(row['Item'] || '').trim(),
+                talla: String(row['Detalle ext. 1'] || '').trim(),
+                cantidad: Number(row['Cant. comprom.']),
+            };
+
+            order.cantidadTotal += newDetail.cantidad;
+            order.valorNetoTotal += Number(row['Valor neto']) || 0;
+            
+            const detailKey = `${newDetail.referencia}-${newDetail.talla}-${newDetail.item}`;
+            const existingDetail = order.details.find(d => `${d.referencia}-${d.talla}-${d.item}` === detailKey);
+            
+            if (existingDetail) {
+                existingDetail.cantidad += newDetail.cantidad;
+            } else {
+                order.details.push(newDetail);
+            }
+        });
+
+        const newOrders = Array.from(ordersMap.values());
+        const result = await processAndSaveWholesaleFile(newOrders);
+        if (result.error) {
+            toast({ variant: "destructive", title: "Error al procesar pedidos", description: result.error });
         } else {
-            // Processing for product database
-            const workbook = XLSX.read(fileContent, { type: 'binary', cellDates: true });
-            const sheetName = workbook.SheetNames[0];
-            const sheet = workbook.Sheets[sheetName];
-            const json = XLSX.utils.sheet_to_json(sheet);
-            
-            const items: ProductDatabaseItem[] = json.map((row: any) => ({
-                codigoBarras: String(row['Código'] || row['CODIGO BARRAS'] || row['codigoBarras'] || '').trim(),
-                referencia: String(row['Referencia'] || row['REFERENCIA'] || row['referencia'] || '').trim(),
-                talla: String(row['Detalle ext. 1'] || row['TALLA'] || row['talla'] || '').trim(),
-                item: String(row['Item'] || row['ITEM'] || row['item'] || '').trim(),
-                marca: String(row['MARCA'] || row['marca'] || '').trim(),
-                fecha: String(row['FECHA'] || row['fecha'] || '').trim(),
-                grupo: String(row['GRUPO'] || row['grupo'] || '').trim(),
-            })).filter(item => item.codigoBarras && item.referencia && item.talla);
-
-            if (items.length > 0) {
-                const result = await saveProductDatabaseItems(items);
-                if (result.error) {
-                    toast({ variant: 'destructive', title: 'Error al guardar productos', description: result.error });
-                } else {
-                    toast({ title: 'Base de datos de productos actualizada', description: `${result.data?.processedCount} productos procesados.` });
-                }
-            } else {
-                toast({ variant: "destructive", title: "No se encontraron productos", description: "El archivo no contiene productos válidos." });
-            }
+            toast({ title: "Proceso completado", description: `Se procesaron ${result.data?.processedCount || 0} pedidos.` });
+            fetchOrders();
         }
     } catch(err: any) {
         toast({ variant: 'destructive', title: 'Error', description: `Error al procesar el archivo: ${err.message}` });
@@ -330,7 +299,6 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
   };
 
   const onUploadClick = () => fileInputRef.current?.click();
-  const onDbUploadClick = () => dbFileInputRef.current?.click();
 
   const ordersByStatus = React.useMemo(() => {
     return orders.reduce((acc, order) => {
@@ -358,13 +326,7 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
               <p className="text-muted-foreground">Cargue el archivo de Excel o CSV con los pedidos para comenzar a procesarlos.</p>
           </div>
           <div className="flex gap-2 flex-wrap">
-            <input type="file" ref={fileInputRef} className="hidden" onChange={(e) => handleFileChange(e, 'orders')} accept=".xlsx, .xls, .csv, .txt" />
-            <input type="file" ref={dbFileInputRef} className="hidden" onChange={(e) => handleFileChange(e, 'database')} accept=".xlsx, .xls, .csv, .txt" />
-            
-            <Button onClick={onDbUploadClick} disabled={isProcessing} variant="outline">
-                <Database className="mr-2 h-4 w-4" />
-                Cargar Base de Datos
-            </Button>
+            <input type="file" ref={fileInputRef} className="hidden" onChange={(e) => handleFileChange(e)} accept=".xlsx, .xls, .csv, .txt" />
             <Button onClick={onUploadClick} disabled={isProcessing}>
               {isProcessing ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

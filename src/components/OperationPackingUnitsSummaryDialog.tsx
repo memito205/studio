@@ -19,10 +19,10 @@ import {
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/hooks/use-toast';
-import type { PackingUnit, ScannedItem, Location, PackedItem } from '@/types';
+import type { PackingUnit, ScannedItem, Location, PackedItem, ProductDatabaseItem } from '@/types';
 import { Eye } from 'lucide-react';
 import PackingUnitDetailsDialog from '@/components/PackingUnitDetailsDialog';
-import { getPackingUnitsForOperation, getScannedItemsByReception } from '@/app/actions';
+import { getPackingUnitsForOperation, getScannedItemsByReception, getProductsByBarcodes } from '@/app/reception/actions';
 
 interface OperationPackingUnitsSummaryDialogProps {
   receptionId: string;
@@ -39,6 +39,8 @@ export const OperationPackingUnitsSummaryDialog: React.FC<OperationPackingUnitsS
 }) => {
   const [open, setOpen] = useState(false);
   const [packingUnitSummaries, setPackingUnitSummaries] = useState<PackingUnitSummary[]>([]);
+  const [allScannedItemsForOp, setAllScannedItemsForOp] = useState<ScannedItem[]>([]);
+  const [productDB, setProductDB] = useState<ProductDatabaseItem[]>([]);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
 
@@ -48,11 +50,20 @@ export const OperationPackingUnitsSummaryDialog: React.FC<OperationPackingUnitsS
   const fetchPackingUnitData = useCallback(async () => {
     setLoading(true);
     try {
-      const unitsResult = await getPackingUnitsForOperation(receptionId);
-      const scannedItemsResult = await getScannedItemsByReception(receptionId);
+      const [unitsResult, scannedItemsResult] = await Promise.all([
+        getPackingUnitsForOperation(receptionId),
+        getScannedItemsByReception(receptionId)
+      ]);
       
       const units = unitsResult.data || [];
       const scannedItems = scannedItemsResult.data || [];
+      setAllScannedItemsForOp(scannedItems);
+
+      const barcodes = [...new Set(scannedItems.map(i => i.barcode))];
+      if (barcodes.length > 0) {
+        const productsRes = await getProductsByBarcodes(barcodes);
+        if (productsRes.data) setProductDB(productsRes.data);
+      }
       
       const itemCounts = new Map<string, number>();
       scannedItems.forEach(item => {
@@ -81,10 +92,28 @@ export const OperationPackingUnitsSummaryDialog: React.FC<OperationPackingUnitsS
   }, [open, fetchPackingUnitData]);
 
   const handleViewPackingUnitDetails = (unit: PackingUnit) => {
-    // This is now synchronous as we pass all needed data
+    const itemsInUnit = allScannedItemsForOp.filter(item => item.packing_unit_id === unit.firestoreId);
+    
+    const productMap = new Map(productDB.map(p => [p.codigoBarras, p]));
+
+    const packedItems: PackedItem[] = itemsInUnit.map(scannedItem => {
+        const productDetails = productMap.get(scannedItem.barcode);
+        return {
+            item: productDetails || { 
+                codigoBarras: scannedItem.barcode, 
+                referencia: scannedItem.reference,
+                talla: scannedItem.talla,
+                item: scannedItem.item,
+                id: scannedItem.barcode
+            } as ProductDatabaseItem,
+            packedQuantity: scannedItem.quantity,
+            scannedItemId: scannedItem.id
+        };
+    });
+    
     setSelectedUnitData({
         unit,
-        items: [] // The details dialog will now fetch its own item data
+        items: packedItems
     });
     setIsPackingUnitDetailsDialogOpen(true);
   };

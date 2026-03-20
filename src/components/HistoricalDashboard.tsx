@@ -2,32 +2,28 @@
 
 "use client";
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import type { ProcessedReportData, ReportSummary } from '@/types';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Calendar as CalendarIcon, Download, ChevronsRight, Loader2, Info, Eye } from 'lucide-react';
+import { ArrowLeft, Calendar as CalendarIcon, Download, ChevronsRight, Loader2, Info, Eye, BarChart2, Clock, Package, Search } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
-import { format, isSameDay } from "date-fns";
+import { format, isSameDay, subDays } from "date-fns";
+import { DateRange } from "react-day-picker";
 import { es } from 'date-fns/locale';
 import { exportToXlsx } from '@/services/export';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { Badge } from './ui/badge';
-import { consolidateDailyReports, previewConsolidatedReport } from '@/app/actions';
+import { loadHistoricalReports, consolidateDailyReports, previewConsolidatedReport } from '@/app/actions';
 import { Dashboard } from './Dashboard';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Checkbox } from './ui/checkbox';
-
+import { Label } from './ui/label';
 
 interface HistoricalDashboardProps {
-  data: ReportSummary[];
   onReturnToMain: () => void;
   onConsolidate: (snapshotIds: string[]) => Promise<{ success: boolean; error?: string; consolidatedReportId?: string }>;
   theme: 'light' | 'dark';
@@ -39,39 +35,63 @@ type DailyGroup = {
   snapshots: ReportSummary[];
 };
 
-export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ data, onReturnToMain, onConsolidate, theme }) => {
+export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onReturnToMain, onConsolidate, theme }) => {
   const { toast } = useToast();
   
+  const [reports, setReports] = useState<ReportSummary[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
+  const [dateRange, setDateRange] = useState<DateRange | undefined>({ from: subDays(new Date(), 30), to: new Date() });
+
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
   const [isConsolidating, setIsConsolidating] = useState(false);
   const [view, setView] = useState<'main' | 'snapshots'>('main');
   const [selectedSnapshots, setSelectedSnapshots] = useState<Set<string>>(new Set());
   
-  // State for the preview modal
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [previewData, setPreviewData] = useState<ProcessedReportData | null>(null);
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
 
-
-  const handleExport = () => {
-    if (view === 'snapshots' && selectedDate) {
-      const snapshotsForDay = dailyGroups.find(g => isSameDay(new Date(g.date + 'T00:00:00'), selectedDate))?.snapshots || [];
-      if (snapshotsForDay.length > 0) {
-        const dataToExport = snapshotsForDay.map(d => ({
-          Fecha_Reporte: d.reportDate ? new Date(d.reportDate).toLocaleDateString('es-CO') : 'N/A',
-          Fecha_Snapshot: d.snapshotCreatedAt ? new Date(d.snapshotCreatedAt).toLocaleString('es-CO') : 'N/A',
-          Cumplimiento_General: d.overallCompliance.toFixed(2),
-          Unidades_Totales: d.totalQuantity,
-          Operarios_Activos: d.operatorCount
-        }));
-        exportToXlsx(dataToExport, `historico_snapshots_${format(new Date(selectedDate), 'yyyy-MM-dd')}`);
-      } else {
-        toast({ variant: 'destructive', title: "No hay snapshots para exportar." });
-      }
-    } else {
-        toast({ variant: 'destructive', title: "No implementado", description: "La exportación general aún no está disponible." });
+  const handleQuery = useCallback(async () => {
+    if (!dateRange?.from) {
+        toast({ variant: 'destructive', title: 'Fecha de inicio requerida' });
+        return;
     }
-  };
+    const endDate = dateRange.to || dateRange.from; // Use 'from' date if 'to' is not selected
+
+    setIsLoading(true);
+    setHasSearched(true);
+    const result = await loadHistoricalReports({ 
+        startDate: dateRange.from.toISOString(), 
+        endDate: endDate.toISOString() 
+    });
+    if (result.data) {
+        setReports(result.data);
+    } else {
+        toast({ variant: 'destructive', title: 'Error al consultar', description: result.error });
+        setReports([]);
+    }
+    setIsLoading(false);
+  }, [dateRange, toast]);
+
+  const dailyGroups = useMemo((): DailyGroup[] => {
+    const groups = new Map<string, { consolidated?: ReportSummary; snapshots: ReportSummary[] }>();
+    reports.forEach(report => {
+      const dateKey = new Date(report.reportDate).toISOString().split('T')[0];
+      if (!groups.has(dateKey)) {
+        groups.set(dateKey, { snapshots: [] });
+      }
+      const group = groups.get(dateKey)!;
+      if (report.isConsolidated) {
+        group.consolidated = report;
+      } else {
+        group.snapshots.push(report);
+      }
+    });
+    return Array.from(groups.entries())
+      .map(([date, groupData]) => ({ date, ...groupData }))
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [reports]);
 
   const handleSnapshotSelection = (snapshotId: string) => {
     setSelectedSnapshots(prev => {
@@ -97,6 +117,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ data, 
     if(result.success) {
         toast({ title: 'Éxito', description: `Reporte diario consolidado creado con ID: ${result.consolidatedReportId}` });
         setView('main');
+        handleQuery(); // Refresh the main view
     } else {
         toast({ variant: 'destructive', title: 'Error al Consolidar', description: result.error });
     }
@@ -121,28 +142,8 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ data, 
     setIsPreviewing(false);
   };
 
-  const dailyGroups = useMemo((): DailyGroup[] => {
-    const groups = new Map<string, { consolidated?: ReportSummary; snapshots: ReportSummary[] }>();
-    data.forEach(report => {
-      const dateKey = new Date(report.reportDate).toISOString().split('T')[0];
-      if (!groups.has(dateKey)) {
-        groups.set(dateKey, { snapshots: [] });
-      }
-      const group = groups.get(dateKey)!;
-      if (report.isConsolidated) {
-        group.consolidated = report;
-      } else {
-        group.snapshots.push(report);
-      }
-    });
-    return Array.from(groups.entries())
-      .map(([date, groupData]) => ({ date, ...groupData }))
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [data]);
-
   const snapshotsForSelectedDay = useMemo(() => {
     if (!selectedDate) return [];
-    // Correctly compare dates by ignoring the time part.
     const group = dailyGroups.find(g => isSameDay(new Date(g.date + "T00:00:00"), selectedDate));
     return group ? group.snapshots.sort((a,b) => new Date(b.snapshotCreatedAt).getTime() - new Date(a.snapshotCreatedAt).getTime()) : [];
   }, [selectedDate, dailyGroups]);
@@ -153,44 +154,76 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ data, 
         <div className="flex justify-between items-center">
             <div>
                 <CardTitle>Dashboard Histórico</CardTitle>
-                <CardDescription>Análisis de todos los reportes guardados. Haga clic en una fila para ver los snapshots.</CardDescription>
+                <CardDescription>Análisis de todos los reportes guardados.</CardDescription>
             </div>
             <Button onClick={onReturnToMain} variant="outline"><ArrowLeft className="mr-2 h-4 w-4" /> Volver</Button>
         </div>
       </CardHeader>
       <CardContent>
-          <Table>
-              <TableHeader>
-                  <TableRow>
-                      <TableHead>Fecha del Reporte</TableHead>
-                      <TableHead>Estado</TableHead>
-                      <TableHead>Cumplimiento General</TableHead>
-                      <TableHead>Operarios</TableHead>
-                      <TableHead>Unidades Totales</TableHead>
-                  </TableRow>
-              </TableHeader>
-              <TableBody>
-                  {dailyGroups.map(group => {
-                      const reportToShow = group.consolidated || group.snapshots[0]; // Show consolidated or first snapshot as representative
-                      if (!reportToShow) return null;
-                      return (
-                      <TableRow key={group.date} className="cursor-pointer" onClick={() => { setSelectedDate(new Date(group.date + 'T00:00:00')); setView('snapshots'); setSelectedSnapshots(new Set()); }}>
-                          <TableCell className="font-semibold">{format(new Date(group.date + 'T00:00:00'), 'PPP', { locale: es })}</TableCell>
-                          <TableCell>
-                            {group.consolidated ? (
-                                <Badge variant="default">Consolidado</Badge>
-                            ) : (
-                                <Badge variant="secondary">{group.snapshots.length} Snapshot(s)</Badge>
-                            )}
-                          </TableCell>
-                          <TableCell>{reportToShow.overallCompliance.toFixed(2)}%</TableCell>
-                          <TableCell>{reportToShow.operatorCount}</TableCell>
-                          <TableCell>{reportToShow.totalQuantity.toLocaleString()}</TableCell>
-                      </TableRow>
-                  )})}
-              </TableBody>
-          </Table>
-          {dailyGroups.length === 0 && <p className="text-muted-foreground text-center py-8">No hay reportes históricos para mostrar.</p>}
+          <div className="flex flex-wrap items-end gap-4 mb-6 p-4 border rounded-lg bg-muted/50">
+             <div className="flex-grow space-y-1">
+                <Label>Rango de Fechas</Label>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button id="date" variant={"outline"} className={cn("w-full justify-start text-left font-normal", !dateRange && "text-muted-foreground")}>
+                      <CalendarIcon className="mr-2 h-4 w-4" />
+                      {dateRange?.from ? (dateRange.to ? (<>{format(dateRange.from, "LLL dd, y", { locale: es })} - {format(dateRange.to, "LLL dd, y", { locale: es })}</>) : (format(dateRange.from, "LLL dd, y", { locale: es }))) : (<span>Seleccione un rango</span>)}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0" align="start">
+                    <Calendar initialFocus mode="range" defaultMonth={dateRange?.from} selected={dateRange} onSelect={setDateRange} numberOfMonths={2} locale={es}/>
+                  </PopoverContent>
+                </Popover>
+             </div>
+             <Button onClick={handleQuery} disabled={isLoading}>
+                {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Search className="mr-2 h-4 w-4"/>}
+                Consultar Reportes
+             </Button>
+          </div>
+          
+          {isLoading ? (
+             <div className="flex justify-center items-center h-64"><Loader2 className="h-8 w-8 animate-spin" /></div>
+          ) : (
+          <>
+            <Table>
+                <TableHeader>
+                    <TableRow>
+                        <TableHead>Fecha del Reporte</TableHead>
+                        <TableHead>Estado</TableHead>
+                        <TableHead>Cumplimiento</TableHead>
+                        <TableHead>Operarios</TableHead>
+                        <TableHead>Unidades</TableHead>
+                        <TableHead>Horas</TableHead>
+                        <TableHead>Productividad</TableHead>
+                    </TableRow>
+                </TableHeader>
+                <TableBody>
+                    {dailyGroups.map(group => {
+                        const reportToShow = group.consolidated || group.snapshots[0];
+                        if (!reportToShow) return null;
+                        return (
+                        <TableRow key={group.date} className="cursor-pointer" onClick={() => { setSelectedDate(new Date(group.date + 'T00:00:00')); setView('snapshots'); setSelectedSnapshots(new Set()); }}>
+                            <TableCell className="font-semibold">{format(new Date(group.date + 'T00:00:00'), 'PPP', { locale: es })}</TableCell>
+                            <TableCell>
+                              {group.consolidated ? (
+                                  <Badge variant="default">Consolidado</Badge>
+                              ) : (
+                                  <Badge variant="secondary">{group.snapshots.length} Snapshot(s)</Badge>
+                              )}
+                            </TableCell>
+                            <TableCell>{reportToShow.overallCompliance.toFixed(2)}%</TableCell>
+                            <TableCell>{reportToShow.operatorCount}</TableCell>
+                            <TableCell>{reportToShow.totalQuantity.toLocaleString()}</TableCell>
+                            <TableCell>{reportToShow.totalHours?.toFixed(2) || 'N/A'}</TableCell>
+                            <TableCell>{reportToShow.avgProductivity?.toFixed(2) || 'N/A'}</TableCell>
+                        </TableRow>
+                    )})}
+                </TableBody>
+            </Table>
+            {!isLoading && reports.length === 0 && hasSearched && <p className="text-muted-foreground text-center py-8">No se encontraron reportes para el rango de fechas seleccionado.</p>}
+            {!isLoading && !hasSearched && <p className="text-muted-foreground text-center py-8">Seleccione un rango de fechas y haga clic en "Consultar" para empezar.</p>}
+          </>
+          )}
       </CardContent>
     </Card>
   );
@@ -301,3 +334,5 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ data, 
     </div>
   );
 };
+
+  

@@ -1,4 +1,5 @@
 
+
 /** @jsxImportSource react */
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -6,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Loader2, ArrowLeft } from 'lucide-react';
 import type { ReceptionOperation } from '@/types';
-import { loadReceptionOperations, getIdleTimeReport } from '@/app/actions';
+import { loadReceptionOperations, getIdleTimeReport } from '@/app/reception/actions';
 import { showError } from '@/lib/toast';
 import IdleTimeDetailsDialog from './IdleTimeDetailsDialog';
 

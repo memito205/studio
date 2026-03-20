@@ -1,6 +1,5 @@
 /** @jsxImportSource react */
 import React, { useState, useEffect, useCallback } from 'react';
-import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -11,10 +10,13 @@ import {
 } from '@/components/ui/dialog';
 import { OperationDetailedReport } from './OperationDetailedReport';
 import type { ReceptionOperation, ScannedItem, ItemNovelty, PackingUnit, ProductivitySettings, AppUser, ProductDatabaseItem, ReceptionExpectedItem, Location } from '@/types';
-import { getScannedItemsByReception, getNoveltiesByReception, getPackingUnitsForOperation, getProductivitySettings, getAllUserProfiles, getProductsByBarcodes, getLocations } from '@/app/actions';
+import { getNoveltiesByReception, getPackingUnitsForOperation, getProductsByBarcodes, getLocations, getScannedItemsByReception, exportBasicOperationReport, getProductivitySettings, getAllUserProfiles } from '@/app/reception/actions';
 import { Loader2, Download } from 'lucide-react';
 import { showError } from '@/lib/toast';
 import { exportToXlsx } from '@/services/export';
+import { Button } from './ui/button';
+import * as XLSX from 'xlsx';
+import { useToast } from '@/hooks/use-toast';
 
 interface OperationDetailedReportDialogProps {
   operation: ReceptionOperation;
@@ -36,6 +38,8 @@ export const OperationDetailedReportDialog: React.FC<OperationDetailedReportDial
       productDB: ProductDatabaseItem[];
       allLocations: Location[];
   } | null>(null);
+  const [isExporting, setIsExporting] = useState<string | null>(null);
+  const { toast } = useToast();
 
   const fetchDialogData = useCallback(async () => {
     if (!open || !operation) return;
@@ -89,56 +93,23 @@ export const OperationDetailedReportDialog: React.FC<OperationDetailedReportDial
     }
   }, [open, operation]);
   
-  const handleExportBasic = () => {
-    if (!reportData) return;
+  const handleExportBasic = async () => {
+    if (!operation.id) return;
+    setIsExporting(operation.id);
+    const result = await exportBasicOperationReport(operation.id);
 
-    const locationMap = new Map<string, string>();
-    reportData.productDB.forEach(p => {
-        const key = `${(p.referencia || p.reference || '').trim()}-${(p.talla || p.size || '').trim()}`;
-        if (key !== '-') {
-            locationMap.set(key, p.location || 'N/A');
-        }
-    });
-
-    const unitIdMap = new Map<string, number>(
-        reportData.allPackingUnits.map(unit => [unit.firestoreId, unit.id])
-    );
-
-    const summary = new Map<string, { referencia: string; talla: string; caja: number; cantidadLeida: number }>();
-
-    reportData.allScannedItems.forEach(item => {
-      const cajaId = unitIdMap.get(item.packing_unit_id) || 0;
-      const key = `${(item.reference || '').trim()}-${(item.talla || '').trim()}-${cajaId}`;
-      
-      const entry = summary.get(key) || {
-        referencia: item.reference,
-        talla: item.talla,
-        caja: cajaId,
-        cantidadLeida: 0,
-      };
-
-      entry.cantidadLeida += item.quantity;
-      summary.set(key, entry);
-    });
-
-    const dataToExport = Array.from(summary.values())
-      .map(item => {
-          const locationKey = `${(item.referencia || '').trim()}-${(item.talla || '').trim()}`;
-          return {
-            'Referencia': item.referencia,
-            'Talla': item.talla,
-            'Ubicacion': locationMap.get(locationKey) || 'N/A',
-            'Caja': item.caja,
-            'Cantidad Leida': item.cantidadLeida,
-          };
-      })
-      .sort((a, b) => {
-        const refCompare = a['Referencia'].localeCompare(b['Referencia']);
-        if (refCompare !== 0) return refCompare;
-        return a['Caja'] - b['Caja'];
-      });
-
-    exportToXlsx(dataToExport, `Reporte_Basico_${operation.rk_identifier}`);
+    if (result.success && result.sheets) {
+        const workbook = XLSX.utils.book_new();
+        result.sheets.forEach(sheetInfo => {
+            const worksheet = XLSX.utils.json_to_sheet(sheetInfo.data);
+            XLSX.utils.book_append_sheet(workbook, worksheet, sheetInfo.sheetName);
+        });
+        XLSX.writeFile(workbook, `Reporte_Completo_${operation.rk_identifier}.xlsx`);
+        toast({ title: 'Éxito', description: 'El reporte completo ha sido exportado.' });
+    } else {
+        toast({ variant: 'destructive', title: 'Error', description: result.error || 'No se pudo generar el reporte completo.' });
+    }
+    setIsExporting(null);
   };
 
 
@@ -161,8 +132,9 @@ export const OperationDetailedReportDialog: React.FC<OperationDetailedReportDial
                 RK: {operation.rk_identifier} - {operation.supplier}
               </DialogDescription>
             </div>
-            <Button onClick={handleExportBasic} variant="outline" disabled={!reportData || loading}>
-              <Download className="mr-2 h-4 w-4" /> Exportar Básico
+            <Button onClick={handleExportBasic} variant="outline" disabled={isExporting === operation.id || loading}>
+               {isExporting === operation.id ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Download className="mr-2 h-4 w-4" />}
+               Exportar Completo
             </Button>
           </div>
         </DialogHeader>

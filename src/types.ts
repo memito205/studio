@@ -1,12 +1,11 @@
 
-
 export enum TransactionType {
   Sale = 'FVE',
   Return = 'NCE',
 }
 
 // Types for interactive filtering
-export type FilterCategory = 'brand' | 'gender' | 'group' | 'returnReason' | 'pdv' | 'reference';
+export type FilterCategory = 'brand' | 'gender' | 'group' | 'returnReason' | 'pdv' | 'reference' | 'tienda' | 'transportadora' | 'date';
 export type Filters = Partial<Record<FilterCategory, string[]>>;
 
 export interface RawTransaction {
@@ -48,7 +47,7 @@ export interface MonthlyConsumption {
   ajsQuantity: number;  // Consumo de AJS
   totalQuantity: number; // mainQuantity + ajsQuantity
   date: Date; // For sorting and full date context
-  originalTotalQuantity?: number; // Para guardar el valor antes del ajuste de outliers
+  originalTotalQuantity?: number;
 }
 
 export type ItemMonthlyData = MonthlyConsumption[];
@@ -78,7 +77,7 @@ export interface PeriodForecastValue {
   adjustedValue?: number | null; // Pronóstico con ajuste AJS (y estacional si aplica)
   startDate?: Date; // Fecha de inicio del período
   endDate?: Date;   // Fecha de fin del período
-  neededToBuyForPeriod?: number | null; // Cantidad a comprar para este período específico, considerando inventario proyectado
+  neededToBuyForPeriod?: number | null; // Cantidad a comprar para este período específico, considerando el inventario proyectado
   projectedInventoryAfterDemand?: number | null; // Inventario proyectado después de cubrir la demanda de este período
 }
 
@@ -96,17 +95,27 @@ export interface ItemParameters {
 export interface CalculationTrace {
     notes?: string[];
     winningMethod?: string | null;
-    shortfall_dailyRate?: number;
+    outliersAdjusted?: boolean;
+    statisticalSeasonalIndices?: number[] | null;
+    deseasonalizedData?: number[];
+    shortfall_dailyRate: number;
     shortfall_daysInPeriod?: number;
     shortfall_baseDemand?: number;
     shortfall_avgMonthlyDemand?: number;
     shortfall_monthsUsedForAvg?: number[];
+    shortfall_dailyRate_source?: string;
     future_periods?: Array<{
         trendForecast?: number | null;
         trendForecast_inputData?: number[];
         seasonalIndex?: number | null;
+        seasonalIndex_components?: {
+            statisticalFactor: string;
+            minimumFactor: string;
+            yoyGrowthFactor: string;
+            finalFactor: string;
+        };
     }>;
-    calculationMethod?: 'Pronóstico Directo' | 'Participación Histórica' | 'Promedio Histórico Corto'; // Modificado
+    calculationMethod?: 'Pronóstico Directo' | 'Promedio Histórico Corto' | 'Promedio Histórico Total' | 'Participación Histórica' | 'Sin Historial';
     directForecastEligibility?: DirectForecastEligibility;
     localWinningMethod?: string;
     localMonthlyForecast?: number;
@@ -119,6 +128,7 @@ export interface CalculationTrace {
     coverageDays: number;
     targetInventory: number;
     currentBodegaInventory: number;
+    currentInventoryCoverageDays: number | null;
     quantityToSend_PreRounding: number;
     roundingMultiple: number;
     quantityToSend_Final: number;
@@ -215,9 +225,33 @@ export interface DistributionResult {
   currentBodegaInventory: number;
   forecastedDemandForCoverage: number | null;
   targetInventoryForCoverage: number | null;
+  currentInventoryCoverageDays: number | null;
   quantityToSend: number;
   notes?: string;
   calculationTrace?: Partial<CalculationTrace>;
+}
+
+export interface TulaRotation {
+  fecha: Date;
+  numeroDocumento: string;
+  grupo: string;
+  bodegaOrigen: string;
+  bodegaDestino: string;
+  cantidad: number;
+}
+
+export interface AnalysisResults {
+  peakTulasNeeded: number;
+  peakSmallPackagesNeeded: number;
+  isStockSufficient: boolean;
+  stockDifference: number;
+  smallRotationsPercentage: number;
+  smallRotationsByStore: { store: string; rotationCount: number; recommendedStock: number; }[];
+  stockByStore: { store: string; recommendedStock: number; rotationCount: number; weeklyAvg: number; dailyAvg: number; }[];
+  rotationsByWeek: { week: string; count: number; }[];
+  rotationsByMonth: { month: string; count: number; }[];
+  dailyCirculationData: { date: string; tulasEnCirculacion: number }[];
+  dailySimulationLog: { date: string; tulasOut: number; tulasIn: number; tulasInCirculacion: number; }[];
 }
 
 // Types for Carrier Conciliation modules
@@ -290,6 +324,86 @@ export interface GeneralSummary {
   quincenalInstallmentCounts: Record<number, number>;
   mensualInstallmentCounts: Record<number, number>;
   overallMonthlyGraceCostBreakdown: Record<string, { total: number; baseAmount: number; compoundingBase: number; quincenal: number; mensual: number; other: number }>;
+}
+
+// VTEX Shipping Rates Type
+export interface VtexRate {
+  ZipCodeStart: string;
+  ZipCodeEnd: string;
+  PolygonName: string;
+  WeightStart: number;
+  WeightEnd: number;
+  AbsoluteMoneyCost: number;
+  PricePercent: number;
+  PriceByExtraWeight: number;
+  MaxVolume: number;
+  TimeCost: string; // Format: "d.hh:mm:ss"
+  Country: string;
+  MinimumValueInsurance: number;
+}
+
+// Route Module Types
+export type RouteStatus = 'Programado' | 'Recogido' | 'Entregado' | 'Recolección Fallida' | 'Entrega Fallida';
+
+export interface RouteEntry {
+    id: string;
+    fecha: Date;
+    vehiculo: string;
+    responsable: string;
+    almacenDestino: string;
+    originalAlmacenDestino?: string;
+    numeroTF: string;
+    tipoServicio: string;
+    status?: RouteStatus;
+    failureReason?: string;
+    isManual?: boolean;
+    updatedAt?: Date;
+    completedBy?: string;
+}
+
+// Types for Transfers Module
+export type TransferStatus = 'En Tránsito' | 'Recolectado en Ruta' | 'Entregado en Ruta' | 'Recibido en Bodega' | 'Validado Supervisor' | 'Enviado a Destino';
+
+
+export interface TransferEntry {
+  id: string;
+  fecha: Date;
+  numeroTF: string;
+  bodegaOrigen: string;
+  bodegaDestino: string;
+  cantidad?: number;
+  status: TransferStatus;
+  recibidoAt?: Date;
+  enviadoAt?: Date;
+  validatedAt?: Date;
+  deliveredAt?: Date;
+  manualStatusChangeJustification?: string;
+  }
+
+export interface DeliveryManifest {
+    id: string;
+    manifestId: number; // Consecutive ID
+    createdAt: Date;
+    resource: string;
+    driver?: string;
+    assistants?: string;
+    transferIds: string[];
+    summary?: {
+        totalTransfers: number;
+        destinations: { [key: string]: number };
+    };
+}
+
+export interface CollectionLog {
+  id: string;
+  createdAt: Date;
+  placa: string;
+  transferIds: string[];
+  summary: {
+    totalTransfers: number;
+    destinations: { [key: string]: number };
+  };
+  recolectadoPor: string;
 }
 
 
@@ -532,6 +646,8 @@ export interface ReportSummary {
     overallCompliance: number;
     operatorCount: number;
     totalQuantity: number;
+    totalHours: number;
+    avgProductivity: number;
     brandCompliance?: { brandName: string; compliance: number }[];
     operatorNames?: string[];
     isConsolidated?: boolean;
@@ -683,6 +799,9 @@ export interface PackedItem {
     quantity: number;
     packerId: string;
     scannedAt: Date;
+    scannedItemId?: string; // Optional: Link to the original scanned item if migrating
+    packedQuantity?: number; // Optional: For compatibility with old structure
+    item?: ProductDatabaseItem; // Optional: For compatibility with old structure
 }
 
 
@@ -759,7 +878,7 @@ export interface GeneralLabel {
     usedBy?: string;
 }
 
-export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'credit_simulator' | 'dispatching' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report';
+export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora';
 
 // Types for Merchandise Reception
 export interface ReceptionOperation {
@@ -993,3 +1112,184 @@ export interface DiscardedRecord {
   reason: string;
   rowData: { [key: string]: any };
 }
+
+// Types for Merchandise Labeling Module
+export type LabelingOperationStatus = 'Pendiente' | 'Asignada' | 'En Progreso' | 'Pausada' | 'Completada';
+
+export interface LabelingOperation {
+  id: string; // Firestore document ID
+  receptionOperationId: string; // Link to the original reception
+  rk_identifier: string;
+  supplier: string;
+  reference: string; // The specific reference being labeled
+  sizes: { [size: string]: number }; // e.g., { "S": 50, "M": 100 }
+  totalUnits: number; // Total units for this specific task
+  status: LabelingOperationStatus;
+  assignedOperatorId: string; // Single operator per task
+  standard_units_per_hour?: number;
+  createdAt: string;
+  updatedAt: string;
+  parentTaskId?: string; // ID of the original task if this is a residual one
+  completedUnits?: number; // How many units were actually completed in this task session
+}
+
+export type LabelingActivityType = 'START' | 'PAUSE' | 'RESUME' | 'FINISH';
+
+export interface LabelingActivityLog {
+  id?: string; // Firestore document ID
+  labelingOperationId: string;
+  operatorId: string;
+  type: LabelingActivityType;
+  timestamp: string; // ISO 8601 string
+  pauseReason?: string; // Only for PAUSE events
+}
+
+export interface Justification {
+  text: string;
+  date: Date;
+  userId: string;
+  userName?: string;
+  bitrixTaskCreationDate?: Date;
+  bitrixTaskId?: string;
+  almacen?: string;
+}
+
+export interface DelayedOrderLog {
+  id: string; // orderId
+  orderId: string;
+  detectionDates: Date[];
+  justifications: Justification[];
+  isResolved: boolean;
+  resolvedAt?: Date;
+  lastStatus: string;
+}
+
+export interface EcommerceOrder {
+  id: string; // PED_ID
+  tienda: string; // NOMBRE
+  valorTotal: number; // PED_VALOR_TOTAL
+  transportadora: string; // TRA_NOMBRE
+  dispatchDate?: Date; // NEW
+
+  // Other columns from image
+  ped_cli_env?: string;
+  cli_nombre_cto?: string;
+  ped_direccion?: string;
+  ped_barrio?: string;
+  ped_ciudad?: string;
+  ped_departamento?: string;
+  ped_telefono?: string;
+  ped_celular?: string;
+  ped_factura?: string;
+
+  // These are optional as they are not in the image
+  fechaPedido?: Date;
+  estado?: string;
+  sku?: string;
+  cantidad?: number;
+}
+    
+// Types for Sample Control Module
+export interface SampleReference {
+  id: string; // The reference number itself will be the document ID
+  lastUploaded: Date;
+  sourceFile: string;
+}
+
+export interface SampleDelivery {
+  id: string; // Firestore document ID
+  reference: string;
+  transferNumber: string;
+  deliveryDate: Date;
+  sourceWarehouse: string;
+  destinationWarehouse: string;
+}
+
+export interface ComparisonResult {
+    reference: string;
+    status: 'En Base de Datos' | 'Muestra Nueva Requerida' | 'Advertencia: Entregada pero sin Foto';
+    deliveryHistory?: SampleDelivery[];
+}
+
+export interface SavedSampleVerification {
+  id: string;
+  name: string;
+  createdAt: Date;
+  savedById: string;
+  savedBy: string;
+  results: ComparisonResult[];
+  stats: {
+    total: number;
+    scanned: number;
+    pending: number;
+  };
+  status?: 'pending' | 'in-progress' | 'completed';
+}
+
+// Types for Merchandise Dispatch Manager Module
+export interface MerchandiseItem {
+  codigo: string;
+  fechaCreacion: Date;
+  orden: string;
+  tipoOrd: string;
+  tipo: string;
+  gr: string;
+  contenido: string;
+  tf: string;
+  origen: string;
+  destino: string;
+  cant: number;
+  pKg: number;
+  vM3: number;
+  estado: string;
+  detalle: string;
+  etiqueta: string;
+  relacion: string;
+  verLog: string;
+  ordDesp: string;
+  fechaEmpaque: string;
+  empacador: string;
+  // Joined fields from File 2
+  tftMatch?: string;
+  tftFecha?: Date;
+  tftCantidad?: number;
+}
+
+export interface TFTItem {
+  tft: string;
+  fecha: Date;
+  cantidad: number;
+  numeroDocumento: string; // Añadido para consistencia
+}
+
+export interface VerificationItem {
+  codigo: string;
+  tftCruce: string;
+  fechaTft: string;
+  cantTft: string;
+  destino: string;
+  empacador: string;
+  contenidoOriginal: string;
+  tfOriginal: string;
+  scanned: boolean;
+  scanTime?: Date;
+}
+
+export interface SavedVerification {
+  id: string;
+  name: string;
+  createdAt: Date;
+  savedById: string;
+  savedBy: string;
+  results: VerificationItem[];
+  unmatchedResults?: VerificationItem[];
+  stats: {
+    total: number;
+    scanned: number;
+    pending: number;
+  };
+  status?: 'pending' | 'in-progress' | 'completed';
+}
+
+
+export type SortOrder = 'asc' | 'desc';

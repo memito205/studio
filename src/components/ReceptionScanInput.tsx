@@ -6,7 +6,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { lookupBarcode } from '@/app/actions';
+import { lookupBarcode } from '@/app/reception/actions';
 import { useToast } from '@/hooks/use-toast';
 import { Search, Loader2 } from 'lucide-react';
 import type { PackingUnit, ProductDatabaseItem, PackingScanResult, ReceptionExpectedItem } from '@/types';
@@ -45,8 +45,8 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
   
   const [unexpectedItem, setUnexpectedItem] = useState<ProductDatabaseItem | null>(null);
 
-  const expectedBarcodes = useMemo(() => new Set(expectedItems.map(item => item.barcode)), [expectedItems]);
-  const expectedRefSizePairs = useMemo(() => new Set(expectedItems.map(item => `${(item.reference || '').trim()}|${String(item.size || '').trim()}`)), [expectedItems]);
+  const expectedBarcodes = useMemo(() => new Set(expectedItems.map(item => String(item.barcode).trim())), [expectedItems]);
+  const expectedRefSizePairs = useMemo(() => new Set(expectedItems.map(item => `${String(item.reference || '').trim()}|${String(item.size || '').trim()}`)), [expectedItems]);
 
   useEffect(() => {
     if (!isSubmitting) {
@@ -67,25 +67,22 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
 
     setIsSubmitting(true);
     const scannedBarcode = barcodeInput.trim();
-    const result: PackingScanResult = await lookupBarcode(scannedBarcode);
+    const result: PackingScanResult = await lookupBarcode(scannedBarcode, receptionId);
 
     if (result.status === 'success' && result.item) {
-        const itemRef = result.item.referencia || result.item.reference || '';
-        const itemSize = result.item.talla || result.item.size || '';
-        const refSizeKey = `${itemRef.trim()}|${String(itemSize).trim()}`;
+        const itemRef = (result.item.referencia || result.item.reference || '').trim();
+        const itemSize = (result.item.talla || result.item.size || 'N/A').trim();
+        const refSizeKey = `${itemRef}|${itemSize}`;
         
-        const isExpectedByBarcode = expectedBarcodes.has(result.item.codigoBarras);
-        const isExpectedByRefSize = expectedRefSizePairs.has(refSizeKey);
-        const isExpected = isExpectedByBarcode || isExpectedByRefSize;
+        const isExpected = expectedBarcodes.has(result.item.codigoBarras) || expectedRefSizePairs.has(refSizeKey);
         
         const productWithCorrectedLocation = { ...result.item };
-        const knownLocation = referenceLocationMap.get(itemRef.trim());
+        const knownLocation = referenceLocationMap.get(itemRef);
 
         if (isExpected) {
              if (knownLocation) productWithCorrectedLocation.location = knownLocation;
             onItemScanned(productWithCorrectedLocation);
             onProductLookedUp(productWithCorrectedLocation);
-            setBarcodeInput('');
         } else {
             productWithCorrectedLocation.location = knownLocation || 'SIGUIENTE';
             setUnexpectedItem(productWithCorrectedLocation);
@@ -94,36 +91,33 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
       onProductLookedUp(null);
       onProductNotFound(scannedBarcode);
     }
+    
+    setBarcodeInput('');
     setIsSubmitting(false);
+    if(inputRef.current) {
+        inputRef.current.focus();
+    }
   };
   
   const productsData = useMemo(() => {
     if (!expectedItems) return [];
     
-    // Create a Map to store unique references and their first location found.
     const referenceLocationMap = new Map<string, string>();
     
     expectedItems.forEach(item => {
         const ref = (item.reference || '').trim();
-        // Assuming location is part of ReceptionExpectedItem, if not, we need to adjust this.
-        // For now, let's assume `item.location` exists or can be derived.
-        // As it's not on the type, I will assume it's not there and this logic needs to be simpler
-        // or the data source for locations needs to be provided. Let's fallback to a simpler logic.
     });
 
     return expectedItems.map(item => ({
         ...item,
         referencia: item.reference,
-        // location: referenceLocationMap.get((item.reference || '').trim()) || 'N/A' 
-        // This mapping logic is complex without a direct location source on expectedItems.
-        // Let's assume for now that if an item is unexpected, the location is handled as per the new logic.
     }));
   }, [expectedItems]);
 
   const handleConfirmUnexpectedItem = () => {
       if (unexpectedItem) {
         onItemScannedWithNovelty(unexpectedItem);
-        onProductLookedUp(unexpectedItem); // Show the details of the item added, including its corrected location.
+        onProductLookedUp(unexpectedItem);
         toast({ title: 'Ítem Añadido con Novedad', description: `Se registró el ítem inesperado ${unexpectedItem.referencia || unexpectedItem.reference}.` });
         setBarcodeInput('');
       }
@@ -178,12 +172,17 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
             </Button>
         </form>
         
-        <div className="w-full max-w-sm text-center space-y-1 h-12 flex items-center justify-center">
+        <div className="w-full max-w-sm text-center space-y-1 h-24 flex flex-col items-center justify-center">
             {activePackingUnit ? (
-                <p>Unidad de Empaque Activa: 
-                    <span className="text-primary text-3xl font-bold"> {activePackingUnit.id} </span>
-                    <span className="text-muted-foreground text-lg">({totalItemsInActiveUnit} items)</span>
-                </p>
+                <>
+                    <p className="text-lg">Unidad de Empaque Activa: 
+                        <span className="text-primary text-3xl font-bold"> {activePackingUnit.id} </span>
+                    </p>
+                    <p className="text-7xl font-bold text-primary leading-none">
+                        {totalItemsInActiveUnit}
+                        <span className="text-2xl font-normal text-muted-foreground ml-2">items</span>
+                    </p>
+                </>
             ) : (
                 <p className="text-muted-foreground italic">No hay unidad activa. El próximo escaneo creará una.</p>
             )}
@@ -196,3 +195,7 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
     </div>
   );
 };
+
+      
+
+    

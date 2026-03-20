@@ -1,4 +1,5 @@
 
+
 import React from 'react';
 import { Modal } from '@/components/bag-distribution/common/Modal';
 import type { ItemForecast } from '@/types';
@@ -26,7 +27,7 @@ const DetailRow: React.FC<{
     </div>
     {value !== undefined && (
         <span className={`text-sm text-right pl-2 ${isHeader ? 'font-semibold text-sky-300 text-lg' : isSubHeader ? 'font-medium text-sky-400' : 'text-slate-100'}`}>
-        {value === null || value === undefined ? 'N/D' : typeof value === 'number' ? value.toLocaleString(undefined, {maximumFractionDigits: 2}) : value}
+        {value === null || value === undefined ? 'N/D' : typeof value === 'number' ? value.toLocaleString('es-CO', {maximumFractionDigits: 2}) : value}
         </span>
     )}
   </div>
@@ -55,12 +56,12 @@ export const TechnicalSummaryModal: React.FC<DistributionExplanationModalProps> 
         
         <div className="pt-2">
             <DetailRow isSubHeader label="B. Demanda Período de Faltante" value={forecast.calculatedDemandForShortfallPeriod} calculation={forecast.nextPeriodShortfallDateRangeLabel || ''} />
-            <DetailRow indent label="Demanda Diaria Pronosticada" value={trace.shortfall_dailyRate?.toFixed(2)} />
-            {trace.shortfall_avgMonthlyDemand && trace.shortfall_monthsUsedForAvg && trace.shortfall_monthsUsedForAvg.length > 0 && (
-                 <DetailRow isCalculation indent label="Basado en promedio últimos meses:" value={`[${trace.shortfall_monthsUsedForAvg.map(v => v.toLocaleString()).join(', ')}]`} />
+            {trace.shortfall_dailyRate_source && (
+                <DetailRow indent label="Fuente del Cálculo Diario" value={trace.shortfall_dailyRate_source} />
             )}
+            <DetailRow indent label="Demanda Diaria Pronosticada" value={trace.shortfall_dailyRate?.toFixed(2)} />
             <DetailRow indent label="Días en Período" value={trace.shortfall_daysInPeriod} />
-            <DetailRow indent label="Demanda Base del Período" value={trace.shortfall_baseDemand?.toFixed(2)} calculation={`${trace.shortfall_dailyRate?.toFixed(2)} * ${trace.shortfall_daysInPeriod}`}/>
+            <DetailRow indent label="Demanda Base del Período" value={trace.shortfall_baseDemand?.toFixed(2)} calculation={`${trace.shortfall_dailyRate?.toFixed(2)} * ${trace.shortfall_daysInPeriod?.toFixed(2)}`}/>
             <DetailRow indent label="Ajuste % AJS" value={`${(forecast.ajsConsumptionPercentage || 0).toFixed(1)}%`} />
             <DetailRow indent label="Cálculo Final (B)" value={forecast.calculatedDemandForShortfallPeriod?.toLocaleString()} calculation={`${trace.shortfall_baseDemand?.toFixed(0)} * (1 + ${(forecast.ajsConsumptionPercentage || 0)/100})`} className="font-semibold" />
         </div>

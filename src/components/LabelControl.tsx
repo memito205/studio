@@ -1,17 +1,18 @@
 
+
 "use client";
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, User, Store, Loader2, Printer, FileDown } from 'lucide-react';
+import { ArrowLeft, User, Store, Loader2, Printer, FileDown, Search } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
 import type { GeneralLabel, GeneralLabelOwnerType } from '@/types';
-import { generateAndSaveGeneralLabels, getLabelsForOwner } from '@/app/actions';
+import { generateAndSaveGeneralLabels, getLabelsForOwner, markGeneralLabelsAsUsed, searchGeneralLabels } from '@/app/actions';
 import { LabelReport } from './LabelReport';
 import { ScrollArea } from './ui/scroll-area';
 import { Checkbox } from './ui/checkbox';
@@ -21,6 +22,7 @@ import { exportToXlsx } from '@/services/export';
 
 const LabelCard: React.FC<{ label: GeneralLabel, isSelected: boolean, isExported: boolean, onSelect: (id: string, checked: boolean) => void }> = ({ label, isSelected, isExported, onSelect }) => {
     const displayValue = label.id.split('-').pop() || label.id;
+    const formattedId = label.ownerType === 'packer' ? label.id.replace(/-/g, '/') : label.id;
     return (
         <div className="relative p-3 border border-gray-300 rounded-lg bg-white text-black break-inside-avoid flex flex-col" style={{ width: '10cm', height: '5cm' }}>
             <Checkbox
@@ -40,7 +42,7 @@ const LabelCard: React.FC<{ label: GeneralLabel, isSelected: boolean, isExported
             </div>
             <div className="flex-grow flex flex-col items-center justify-center pt-1">
                 <div className="text-center font-mono text-5xl leading-none whitespace-nowrap p-2 border-2 border-dashed tracking-widest" style={{ fontFamily: "'Libre Barcode 128', cursive" }}>{displayValue}</div>
-                <div className="font-sans text-xs tracking-widest mt-1">{label.id}</div>
+                <div className="font-sans text-xs tracking-widest mt-1">{formattedId}</div>
             </div>
             <div className="mt-1 border-t pt-1">
                 <p className="text-xs font-semibold">Destino:</p>
@@ -58,13 +60,19 @@ const GenerateDialog: React.FC<{
 }> = ({ isOpen, onOpenChange, ownerId, onConfirm, isLoading }) => {
     const [quantity, setQuantity] = useState(1);
     const handleConfirm = () => { if (quantity > 0) onConfirm(quantity); };
+    
+    const handleQuantityChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const value = e.target.value;
+        setQuantity(value === '' ? 1 : Math.max(1, parseInt(value, 10)));
+    };
+
     return (
         <Dialog open={isOpen} onOpenChange={onOpenChange}>
             <DialogContent><DialogHeader>
                 <DialogTitle>Generar Etiquetas para {ownerId}</DialogTitle>
                 <DialogDescription>¿Cuántas etiquetas desea generar?</DialogDescription>
             </DialogHeader>
-            <div className="py-4"><Input type="number" value={quantity} onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value, 10)))} min="1" /></div>
+            <div className="py-4"><Input type="number" value={quantity} onChange={handleQuantityChange} min="1" /></div>
             <DialogFooter>
                 <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancelar</Button>
                 <Button onClick={handleConfirm} disabled={isLoading}>{isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Confirmar</Button>
@@ -74,24 +82,31 @@ const GenerateDialog: React.FC<{
 };
 
 const PACKERS = [
-    "OBED SAUCEDO CONTRERAS",
-    "OSME VALENCIA FLOREZ",
-    "JHON JAMER CORDOBA CORDOBA",
     "ABEL FELIPE TRUJILLO DAVID",
-    "SEBASTIAN HERACLIO GIRALDO PALACIO",
-    "JOSE MARCIAL DIAZ CASTRO",
-    "CARLOS MARIO CHALARCA ACOSTA",
+    "ADRIAN MONTOYA ECHAVARRIA",
+    "AMX",
+    "ARLEY GABRIEL GIRALDO VELEZ",
     "AVELINO MOSQUERA PALACIOS",
     "CARLOS ALBERTO HERRERA ECHEVERRI",
-    "VICTOR MENA COSSIO",
-    "JORGE DE JESUS AVALOS ALVAREZ",
-    "ARLEY GABRIEL GIRALDO VELEZ",
-    "VICTOR HUGO RESTREPO ARIAS",
-    "JHON FREDY LONDONO CARVAJAL",
-    "JHON MARIO HERNANDEZ VELEZ",
+    "CARLOS MARIO CHALARCA ACOSTA",
+    "DARIO ALEJANDRO VANEGAS HINCAPIE",
+    "DAYRON ALBERTO OROZCO MIRA",
+    "DIEGO ALEXIS MANYOMA SANCHEZ",
     "EDWAR SAMUEL RANGEL RANGEL",
+    "EMPAQUES Y SOLUCIONES",
     "JHON ALONSO BASTIDAS MARIN",
-    "ADRIAN MONTOYA ECHAVARRIA",
+    "JHON FREDY LONDONO CARVAJAL",
+    "JHON JAMER CORDOBA CORDOBA",
+    "JHON MARIO HERNANDEZ VELEZ",
+    "JORGE DE JESUS AVALOS ALVAREZ",
+    "JOSE MARCIAL DIAZ CASTRO",
+    "OBED SAUCEDO CONTRERAS",
+    "OSME VALENCIA FLOREZ",
+    "REYNEL GARZON",
+    "SEBASTIAN HERACLIO GIRALDO PALACIO",
+    "SEBASTIAN ZAPATA",
+    "VICTOR HUGO RESTREPO ARIAS",
+    "VICTOR MENA COSSIO",
 ].sort();
 
 const STORES = [
@@ -134,37 +149,60 @@ const PrintDialog: React.FC<{
         setSelectedLabels(new Set());
         const { data, error } = await getLabelsForOwner(ownerId);
         if (error) { toast({ variant: 'destructive', title: 'Error', description: error }); }
-        else { setLabels(data || []); }
+        else { 
+            const fetchedLabels = data || [];
+            setLabels(fetchedLabels);
+            // Initialize exported labels based on their status from Firestore
+            const alreadyUsed = new Set(fetchedLabels.filter(l => l.status === 'used').map(l => l.id));
+            setExportedLabels(alreadyUsed);
+        }
         setIsLoading(false);
     }, [ownerId, toast]);
 
-    useEffect(() => { if (isOpen) { fetchLabels(); } else { setExportedLabels(new Set()); } }, [isOpen, fetchLabels]);
+    useEffect(() => { 
+        if (isOpen) { 
+            fetchLabels(); 
+        } else { 
+            // Reset state when dialog closes to ensure fresh data on reopen
+            setLabels([]);
+            setSelectedLabels(new Set());
+            setExportedLabels(new Set());
+        } 
+    }, [isOpen, ownerId, fetchLabels]);
     
     const unprintedLabels = labels.filter(l => !exportedLabels.has(l.id));
     const printedLabels = labels.filter(l => exportedLabels.has(l.id));
 
-    const handleExportExcel = () => {
+    const handleExportExcel = async () => {
       if (selectedLabels.size === 0) {
         toast({ variant: 'destructive', title: 'Error', description: 'No hay etiquetas seleccionadas.' });
         return;
       }
       setIsExporting(true);
       try {
-        const labelsToExport = labels
-            .filter(l => selectedLabels.has(l.id))
+        const labelIdsToExport = Array.from(selectedLabels);
+        const labelsToExportData = labels
+            .filter(l => labelIdsToExport.includes(l.id))
             .map(l => ({ 
-                'ID Etiqueta': l.id,
+                'ID Etiqueta': l.id.replace(/-/g, '/'),
                 'Propietario': l.ownerId 
             }));
         
-        exportToXlsx(labelsToExport, `etiquetas_generales_${ownerId}`);
+        exportToXlsx(labelsToExportData, `etiquetas_generales_${ownerId}`);
         
-        toast({ title: 'Éxito', description: `Excel con ${labelsToExport.length} etiquetas generado.` });
-        setExportedLabels(prev => new Set([...prev, ...selectedLabels]));
-        setSelectedLabels(new Set());
-      } catch (error) {
-        console.error("Error generating Excel: ", error);
-        toast({ variant: 'destructive', title: 'Error al Exportar', description: 'No se pudo generar el archivo Excel.' });
+        // Mark as used in backend
+        const result = await markGeneralLabelsAsUsed(labelIdsToExport);
+        if (result.success) {
+            toast({ title: 'Éxito', description: `Excel con ${labelsToExportData.length} etiquetas generado y estado actualizado en la base de datos.` });
+            setExportedLabels(prev => new Set([...prev, ...selectedLabels]));
+            setSelectedLabels(new Set());
+        } else {
+            throw new Error(result.error);
+        }
+        
+      } catch (error: any) {
+        console.error("Error generating Excel or marking labels: ", error);
+        toast({ variant: 'destructive', title: 'Error', description: `No se pudo completar la operación: ${error.message}` });
       } finally {
         setIsExporting(false);
       }
@@ -179,16 +217,23 @@ const PrintDialog: React.FC<{
     };
 
     const handleSelectAllUnprinted = (checked: boolean) => {
-        if (checked) setSelectedLabels(new Set(unprintedLabels.map(l => l.id)));
-        else setSelectedLabels(new Set());
+        const unprintedIds = unprintedLabels.map(l => l.id);
+        if (checked) {
+            setSelectedLabels(new Set(unprintedIds));
+        } else {
+            const currentSelection = new Set(selectedLabels);
+            unprintedIds.forEach(id => currentSelection.delete(id));
+            setSelectedLabels(currentSelection);
+        }
     };
+
 
     const handleSelectBatch = () => {
         const nextBatch = unprintedLabels.slice(0, BATCH_SIZE);
         setSelectedLabels(new Set(nextBatch.map(l => l.id)));
     };
     
-    const isAllUnprintedSelected = unprintedLabels.length > 0 && selectedLabels.size === unprintedLabels.length;
+    const isAllUnprintedSelected = unprintedLabels.length > 0 && unprintedLabels.every(l => selectedLabels.has(l.id));
 
     const renderLabelGrid = (labelList: GeneralLabel[], isPrintedTab: boolean) => (
         <ScrollArea className="h-96 border rounded-lg bg-gray-100 p-4">
@@ -249,13 +294,47 @@ export const LabelControl: React.FC<LabelControlProps> = ({ onReturnToSuite }) =
     const [dialogState, setDialogState] = useState<{ isOpen: boolean; ownerId: string; ownerType: GeneralLabelOwnerType | null }>({ isOpen: false, ownerId: '', ownerType: null });
     const [printDialogState, setPrintDialogState] = useState<{ isOpen: boolean; ownerId: string; }>({ isOpen: false, ownerId: '' });
 
+    const [searchQuery, setSearchQuery] = useState('');
+    const [searchResults, setSearchResults] = useState<GeneralLabel[]>([]);
+    const [isSearching, setIsSearching] = useState(false);
+    const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+    const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const query = e.target.value;
+        setSearchQuery(query);
+
+        if (searchTimeoutRef.current) {
+            clearTimeout(searchTimeoutRef.current);
+        }
+
+        if (!query.trim()) {
+            setSearchResults([]);
+            setIsSearching(false);
+            return;
+        }
+
+        setIsSearching(true);
+        searchTimeoutRef.current = setTimeout(async () => {
+            const { data, error } = await searchGeneralLabels(query);
+            if (error) {
+                toast({ variant: 'destructive', title: 'Error de Búsqueda', description: error });
+            } else {
+                setSearchResults(data || []);
+            }
+            setIsSearching(false);
+        }, 300); // 300ms debounce
+    };
+
     const handleGenerateClick = (ownerId: string, ownerType: GeneralLabelOwnerType) => {
         setDialogState({ isOpen: true, ownerId, ownerType });
     };
 
     const handlePrintClick = (ownerId: string) => {
-        setPrintDialogState({ isOpen: true, ownerId: '' }); // Clear old ownerId first
-        setTimeout(() => setPrintDialogState({ isOpen: true, ownerId }), 0); // Then set new one to force re-render
+        // Reset state before opening to force re-render and data fetch in PrintDialog
+        setPrintDialogState({ isOpen: false, ownerId: '' });
+        setTimeout(() => {
+            setPrintDialogState({ isOpen: true, ownerId });
+        }, 0);
     };
 
     const handleConfirmGeneration = async (quantity: number) => {
@@ -266,8 +345,8 @@ export const LabelControl: React.FC<LabelControlProps> = ({ onReturnToSuite }) =
             toast({ variant: 'destructive', title: 'Error al generar etiquetas', description: error });
         } else {
             toast({ title: 'Éxito', description: `Se generaron ${data?.generatedCount} etiquetas para ${dialogState.ownerId}.` });
-            setDialogState({ isOpen: false, ownerId: '', ownerType: null });
-            handlePrintClick(dialogState.ownerId);
+            setDialogState({ ...dialogState, isOpen: false });
+            handlePrintClick(dialogState.ownerId); // Open print dialog with the new data
         }
         setIsLoading(false);
     };
@@ -302,10 +381,63 @@ export const LabelControl: React.FC<LabelControlProps> = ({ onReturnToSuite }) =
           onOpenChange={(open) => setPrintDialogState({ isOpen: open, ownerId: '' })}
           ownerId={printDialogState.ownerId}
       />
-      <Card>
+
+       <Card>
         <CardHeader className="flex flex-row justify-between items-center">
-          <div><CardTitle>Control de Etiquetas</CardTitle><CardDescription>Genere, imprima y gestione las etiquetas de despacho.</CardDescription></div>
-          <Button onClick={onReturnToSuite} variant="outline"><ArrowLeft className="mr-2 h-4 w-4" />Volver a la Suite</Button>
+            <div>
+                <CardTitle>Búsqueda Rápida de Etiquetas</CardTitle>
+                <CardDescription>Encuentre a qué propietario pertenece una etiqueta específica.</CardDescription>
+            </div>
+            <Button onClick={onReturnToSuite} variant="outline"><ArrowLeft className="mr-2 h-4 w-4" />Volver a la Suite</Button>
+        </CardHeader>
+        <CardContent>
+            <div className="flex items-center gap-2">
+                <Search className="h-5 w-5 text-muted-foreground" />
+                <Input
+                    type="text"
+                    placeholder="Escriba el ID de la etiqueta (ej. BOD-AFT-12345)..."
+                    value={searchQuery}
+                    onChange={handleSearchChange}
+                />
+            </div>
+            {isSearching && <div className="flex justify-center items-center py-4"><Loader2 className="h-6 w-6 animate-spin" /></div>}
+            {!isSearching && searchQuery && (
+                <div className="mt-4 border rounded-lg">
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead>ID Etiqueta</TableHead>
+                                <TableHead>Propietario</TableHead>
+                                <TableHead>Estado</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {searchResults.length > 0 ? (
+                                searchResults.map(label => (
+                                    <TableRow key={label.id}>
+                                        <TableCell className="font-mono">{label.id}</TableCell>
+                                        <TableCell>{label.ownerId}</TableCell>
+                                        <TableCell>{label.status}</TableCell>
+                                    </TableRow>
+                                ))
+                            ) : (
+                                <TableRow>
+                                    <TableCell colSpan={3} className="text-center text-muted-foreground">
+                                        No se encontraron etiquetas que coincidan con la búsqueda.
+                                    </TableCell>
+                                </TableRow>
+                            )}
+                        </TableBody>
+                    </Table>
+                </div>
+            )}
+        </CardContent>
+       </Card>
+
+      <Card>
+        <CardHeader>
+            <CardTitle>Generación y Gestión por Propietario</CardTitle>
+            <CardDescription>Genere, imprima y gestione las etiquetas de despacho por cada empacador o tienda.</CardDescription>
         </CardHeader>
         <CardContent>
             <Tabs defaultValue="packers">
@@ -321,3 +453,7 @@ export const LabelControl: React.FC<LabelControlProps> = ({ onReturnToSuite }) =
     </div>
   );
 };
+
+
+
+    

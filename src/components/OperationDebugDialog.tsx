@@ -14,7 +14,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Loader2 } from 'lucide-react';
 import type { ScannedItem, OperationPause } from '@/types';
-import { getScannedItemsByReception, getPausesForOperation } from '@/app/actions';
+import { getPausesForOperation, getScannedItemsByReception } from '@/app/reception/actions';
 import { showError } from '@/lib/toast';
 
 interface OperationDebugDialogProps {

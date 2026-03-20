@@ -1,9 +1,10 @@
 
+
 "use client";
 
 import React, { useState, useMemo } from "react";
 import * as XLSX from "xlsx";
-import { calculateAmortization, GeneralSummary, CreditCalculationResult, parseFlexibleDate, convertAnnualToMonthlyRate } from "@/services/creditCalculations";
+import { calculateAmortization, GeneralSummary, CreditCalculationResult, convertAnnualToMonthlyRate } from "@/services/creditCalculations";
 import { FinancialCalculatorUI } from './FinancialCalculatorUI';
 import { DiscardedRecordsViewer } from "@/components/discarded-records-viewer";
 import { showError, showSuccess } from "@/lib/toast";
@@ -11,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
 import type { DiscardedRecord } from "@/types";
 import { format, addMonths } from "date-fns";
-import { excelSerialDateToJSDate } from "@/lib/parsingUtils";
+import { excelSerialDateToJSDate, parseFlexibleDate } from "@/lib/parsingUtils";
 
 
 interface FinancialCalculatorProps {
@@ -159,10 +160,10 @@ export const FinancialCalculator: React.FC<FinancialCalculatorProps> = ({ onRetu
             amortizationTable,
             totalValorPagar,
             totalInterestPaid,
-            totalIvaFinancPaid,
-            uncollectedAmountGracePeriod,
             totalGracePeriodCost,
+            totalIvaFinancPaid,
             monthlyGraceCostBreakdown,
+            uncollectedAmountGracePeriod,
           });
 
           if (monthlyGraceCostBreakdown) {

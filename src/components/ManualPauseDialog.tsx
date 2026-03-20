@@ -17,7 +17,8 @@ import { Input } from '@/components/ui/input';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { createManualPause, getAllUserProfiles, loadReceptionOperations } from '@/app/actions';
+import { getAllUserProfiles, loadReceptionOperations } from '@/app/reception/actions';
+import { createManualPause } from '@/app/actions';
 import type { AppUser, ReceptionOperation } from '@/types';
 
 interface ManualPauseDialogProps {

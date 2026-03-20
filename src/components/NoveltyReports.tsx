@@ -10,8 +10,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from '@/components/ui/skeleton';
-import { getAllNovelties, loadReceptionOperations } from '@/app/actions';
-import { listAllUsers } from '@/app/admin/actions';
+import { getAllNovelties, loadReceptionOperations, getAllUserProfiles } from '@/app/reception/actions';
 import { showError } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { format, isSameDay } from 'date-fns';
@@ -95,11 +94,11 @@ export const NoveltyReports: React.FC<NoveltyReportsProps> = ({ onReturn }) => {
 
   useEffect(() => {
     const fetchUsers = async () => {
-      const usersResult = await listAllUsers();
-      if(usersResult.success && usersResult.data?.users) {
-        setAllUsers(usersResult.data.users);
+      const usersResult = await getAllUserProfiles();
+      if(usersResult) {
+        setAllUsers(usersResult);
         const userMap = new Map<string, string>();
-        usersResult.data.users.forEach(u => userMap.set(u.uid, u.displayName || u.email || u.uid));
+        usersResult.forEach(u => userMap.set(u.uid, u.displayName || u.email || u.uid));
         setAllUsersMap(userMap);
       } else {
         showError('Error al cargar usuarios para el filtro.');

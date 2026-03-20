@@ -1,4 +1,3 @@
-
 /**
  * @fileoverview Utility functions for robust data parsing.
  * This file centralizes common data transformation logic to be reused across different modules,
@@ -7,26 +6,39 @@
 
 /**
  * Converts an Excel serial date number to a JS Date object.
- * Correctly handles timezone offsets to prevent date shifting by treating the date as UTC.
+ * Correctly handles timezone offsets by treating the date as UTC.
  * @param serial The Excel serial number.
  * @returns A Date object.
  */
-export function excelSerialDateToJSDate(serial: number): Date {
-    if (isNaN(serial) || serial <= 0) {
-      // Return an invalid date for invalid serial numbers to prevent infinite loops or crashes.
-      return new Date(NaN);
-    }
-    // Excel's epoch starts on 1899-12-30 for Windows.
-    // We add the number of days (serial number) to this epoch.
-    // The result is calculated in milliseconds and then used to create a UTC date.
-    // 86400000 is the number of milliseconds in one day (24 * 60 * 60 * 1000).
-    const excelEpoch = Date.UTC(1899, 11, 30);
-    // Excel incorrectly considers 1900 a leap year. We subtract 1 for dates after Feb 28, 1900 (serial > 59).
-    const days = serial - (serial > 59 ? 1 : 0);
-    const dateInMilliseconds = excelEpoch + days * 86400000;
-    
-    // Create a new Date object from the UTC milliseconds. This correctly represents the date without timezone shifts.
-    return new Date(dateInMilliseconds);
+export function excelSerialDateToJSDate(serial: any): Date {
+  if (serial instanceof Date) {
+      return !isNaN(serial.getTime()) ? serial : new Date(NaN);
+  }
+  const serialNumber = Number(serial);
+  if (isNaN(serialNumber) || serialNumber <= 0) {
+    return new Date(NaN);
+  }
+
+  // This formula correctly converts Excel's serial number (based on 1900) to a JS Date.
+  // It accounts for Excel's incorrect assumption that 1900 was a leap year.
+  const utc_days = Math.floor(serialNumber - 25569);
+  const utc_value = utc_days * 86400;
+  const date_info = new Date(utc_value * 1000);
+
+  const fractional_day = serialNumber - Math.floor(serialNumber) + 0.0000001;
+  const total_seconds = Math.floor(86400 * fractional_day);
+  const seconds = total_seconds % 60;
+  const hours = Math.floor(total_seconds / (60 * 60));
+  const minutes = Math.floor(total_seconds / 60) % 60;
+
+  return new Date(
+    date_info.getUTCFullYear(),
+    date_info.getUTCMonth(),
+    date_info.getUTCDate(),
+    hours,
+    minutes,
+    seconds
+  );
 }
 
 
@@ -75,7 +87,7 @@ export const parseRobustNumber = (value: string | number | null | undefined): nu
 
 /**
  * Parses a date string from various common formats (DD/MM/YYYY, YYYY-MM-DD, Excel serial, full string date).
- * It attempts to parse directly first, then tries specific formats.
+ * It attempts to parse directly first, then tries specific formats. Avoids timezone shifts by treating dates as local.
  * @param dateStr The string or number representing the date.
  * @returns A Date object, or null if parsing fails.
  */
@@ -83,44 +95,68 @@ export const parseFlexibleDate = (dateStr: string | number | Date | null | undef
   if (!dateStr) return null;
   
   if (dateStr instanceof Date) {
-    if (!isNaN(dateStr.getTime())) {
-      return dateStr;
-    }
-    return null;
+    if (isNaN(dateStr.getTime())) return null;
+    // When a library like xlsx creates a Date object, it might be midnight UTC.
+    // In timezones behind UTC, this can result in the previous day.
+    // To correct this, we create a new Date from the UTC components of the input date.
+    // This effectively treats the input date as "local" regardless of how it was created.
+    return new Date(
+      dateStr.getUTCFullYear(),
+      dateStr.getUTCMonth(),
+      dateStr.getUTCDate(),
+      dateStr.getUTCHours(),
+      dateStr.getUTCMinutes(),
+      dateStr.getUTCSeconds()
+    );
   }
 
-  // Handling for Excel serial dates which come in as numbers
-  if (typeof dateStr === 'number' || !isNaN(Number(dateStr))) {
+  // Handle Excel serial numbers
+  if (typeof dateStr === 'number' || /^\d{5,}(\.\d+)?$/.test(String(dateStr))) {
      try {
         const date = excelSerialDateToJSDate(Number(dateStr));
-        if (!isNaN(date.getTime())) return date;
+        if (!isNaN(date.getTime())) {
+            return date;
+        }
     } catch (e) { /* ignore parsing error and proceed */ }
   }
   
   const str = String(dateStr).trim();
-
-  // Try direct parsing first for ISO and other standard formats
-  const directDate = new Date(str);
-  if (!isNaN(directDate.getTime())) {
-    // If it's a valid date, we must correct for timezone issues.
-    // An ISO-like string without timezone info is treated as UTC by new Date().
-    // We get the offset and add it back to get the "local" date the user intended.
-    return new Date(directDate.valueOf() + directDate.getTimezoneOffset() * 60 * 1000);
+  
+  // Try parsing full ISO-like string dates first ("YYYY-MM-DDTHH:mm:ss...")
+  // This will correctly handle timezone info if it's present.
+  const isoDate = new Date(str);
+  if (!isNaN(isoDate.getTime()) && (str.includes('T') || str.split(' ').length > 1 || str.includes(','))) {
+    return isoDate;
   }
 
-  // Prioritize DD-MM-YYYY format
-  const dmyParts = str.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
+  // Try parsing "DD/MM/YYYY HH:mm" or "DD/MM/YYYY"
+  const dmyParts = str.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})(?:[ T](\d{1,2}):(\d{1,2}))?/);
   if (dmyParts) {
     const day = parseInt(dmyParts[1], 10);
     const month = parseInt(dmyParts[2], 10);
     let year = parseInt(dmyParts[3], 10);
     if (year < 100) year += (year < 70 ? 2000 : 1900);
+    const hour = parseInt(dmyParts[4], 10) || 0;
+    const minute = parseInt(dmyParts[5], 10) || 0;
     
     if (day > 0 && day <= 31 && month > 0 && month <= 12 && year > 1000 && year < 3000) {
-      // Construct date as UTC to avoid local timezone from shifting the date.
-      const date = new Date(Date.UTC(year, month - 1, day, 12)); // Use midday to be safe
+      // Create date using local time parts to avoid timezone shifts
+      const date = new Date(year, month - 1, day, hour, minute);
       if(!isNaN(date.getTime())) return date;
     }
+  }
+
+  // Try parsing "YYYY-MM-DD" last as it's less common in the source files but good for ISO strings without time
+  const ymdParts = str.match(/^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})/);
+  if (ymdParts) {
+      const year = parseInt(ymdParts[1], 10);
+      const month = parseInt(ymdParts[2], 10);
+      const day = parseInt(ymdParts[3], 10);
+      if (day > 0 && day <= 31 && month > 0 && month <= 12 && year > 1000 && year < 3000) {
+        // Create date as local
+        const date = new Date(year, month - 1, day);
+        if (!isNaN(date.getTime())) return date;
+      }
   }
 
   console.warn(`Could not parse date: "${str}"`);
@@ -129,13 +165,90 @@ export const parseFlexibleDate = (dateStr: string | number | Date | null | undef
 
 
 /**
- * Finds a key in an object case-insensitively, also removing extra spaces.
+ * Finds a key in an object case-insensitively, also removing extra spaces and diacritics (accents).
  * @param obj The object to search within.
- * @param key The key to find.
+ * @param keys The keys to find, in order of preference.
  * @returns The original key from the object if found, otherwise undefined.
  */
-export const findCaseInsensitiveKey = (obj: { [key: string]: any } | undefined, key: string): string | undefined => {
+export const findCaseInsensitiveKey = (obj: { [key: string]: any } | undefined, ...keys: string[]): string | undefined => {
     if (!obj) return undefined;
-    const lowerCaseKey = key.toLowerCase().trim();
-    return Object.keys(obj).find(k => k.toLowerCase().trim() === lowerCaseKey);
+    
+    // Normalization function
+    const normalize = (str: string) => str
+        .toLowerCase()
+        .trim()
+        .normalize("NFD") // Decompose accented characters into base characters and diacritics
+        .replace(/[\u0300-\u036f]/g, "") // Remove the diacritics
+        .replace(/[_-]/g, ' '); // Replace underscores and hyphens with spaces
+
+    const lowercasedKeysToFind = keys.map(normalize);
+    const objectKeys = Object.keys(obj);
+
+    for (const keyToFind of lowercasedKeysToFind) {
+        const foundKey = objectKeys.find(objKey => normalize(objKey) === keyToFind);
+        if (foundKey) {
+            return foundKey;
+        }
+    }
+    return undefined;
+};
+
+
+/**
+ * Calculates the total number of business hours between two dates.
+ * Excludes Sundays, specified holidays, and Saturdays after 4 PM.
+ * @param startDate The start date.
+ * @param endDate The end date.
+ * @param holidays An array of holiday dates.
+ * @returns The total number of business hours.
+ */
+export const calculateSlaHours = (startDate: Date, endDate: Date, holidays: Date[]): number => {
+    if (!startDate || !endDate || isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return 0;
+    if (startDate > endDate) return 0;
+
+    let totalBusinessMs = 0;
+    
+    // Create localized string keys (YYYY-MM-DD) avoiding UTC shifts
+    const toLocalString = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const holidaySet = new Set(holidays.map(toLocalString));
+    
+    let current = new Date(startDate);
+
+    while (current < endDate) {
+        const dayOfWeek = current.getDay(); // Sunday is 0, Saturday is 6
+        const hourOfDay = current.getHours();
+        const dateString = toLocalString(current);
+
+        const isBusinessTime = !(
+            dayOfWeek === 0 || // Is Sunday
+            holidaySet.has(dateString) || // Is a holiday
+            (dayOfWeek === 6 && hourOfDay >= 16) // Is Saturday 4 PM or later
+        );
+
+        // Find the next time the business-hour status *could* change
+        let nextChangeTime: Date;
+        if (dayOfWeek === 6 && hourOfDay < 16) {
+            // On a working Saturday, the next change is at 4 PM
+            nextChangeTime = new Date(current);
+            nextChangeTime.setHours(16, 0, 0, 0);
+        } else {
+            // On a weekday, Sunday, holiday, or after-hours Saturday, the next change is the start of the next day
+            nextChangeTime = new Date(current);
+            nextChangeTime.setDate(nextChangeTime.getDate() + 1);
+            nextChangeTime.setHours(0, 0, 0, 0);
+        }
+
+        // The current segment ends either at the next status change or the overall end time, whichever is sooner
+        const endOfSegment = new Date(Math.min(endDate.getTime(), nextChangeTime.getTime()));
+
+        // If the current segment is within business hours, add its duration
+        if (isBusinessTime) {
+            totalBusinessMs += (endOfSegment.getTime() - current.getTime());
+        }
+
+        // Move to the end of the processed segment for the next iteration
+        current = endOfSegment;
+    }
+
+    return totalBusinessMs / (1000 * 60 * 60);
 };

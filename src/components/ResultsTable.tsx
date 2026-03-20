@@ -35,13 +35,13 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results, onDataChange, isEd
                 </TableHeader>
                 <TableBody>
                 {data.length > 0 ? (
-                    data.map((row) => {
+                    data.map((row, index) => {
                         const difFleteKey = findCaseInsensitiveKey(row, 'DIF FLETE');
                         const cobroDobleKey = findCaseInsensitiveKey(row, 'COBRO DOBLE');
                         const cargarAKey = findCaseInsensitiveKey(row, 'CARGAR A');
                         
                         return (
-                        <TableRow key={row.originalIndex} className="border-b border-slate-700 even:bg-slate-900/50 odd:bg-slate-800/50 hover:bg-slate-700/50">
+                        <TableRow key={row.uniqueId || `row-${row.originalIndex}` || `row-${index}`} className="border-b border-slate-700 even:bg-slate-900/50 odd:bg-slate-800/50 hover:bg-slate-700/50">
                             {headers.map((header) => {
                                 // Determine cell styling based on content
                                 const difFleteValue = difFleteKey ? Math.abs(parseFloat(String(row[difFleteKey]))) : 0;
@@ -58,7 +58,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results, onDataChange, isEd
                                 );
 
                                 return (
-                                <TableCell key={`${row.originalIndex}-${header}`} className="px-2 py-1 whitespace-nowrap">
+                                <TableCell key={`${row.uniqueId || row.originalIndex}-${header}`} className="px-2 py-1 whitespace-nowrap">
                                     {isEditable && onDataChange ? (
                                         <EditableCell
                                             value={row[header] ?? ''}

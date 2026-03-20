@@ -1,7 +1,27 @@
 
 import type { ProcessedRow, AllItemsMonthlyData, ItemMonthlyData } from '@/types';
 import { COLUMN_MAPPINGS, DOC_TYPES_TO_INCLUDE, MAIN_CONSUMPTION_DOC_TYPES, ADJUSTMENT_DOC_TYPES } from '@/components/bag-distribution/constants';
-import { parseRobustNumber } from '@/lib/parsingUtils';
+
+/**
+ * Parses a number string, correctly handling thousands separators (dots) and decimal commas.
+ * This is a local utility to ensure this module's parsing is independent.
+ * - "27.948" -> 27948
+ * - "1.234,56" -> 1234.56
+ */
+function parseSimpleNumber(value: string | number | null | undefined): number {
+    if (value === null || value === undefined) return NaN;
+    if (typeof value === 'number') return value;
+
+    const str = String(value).trim();
+    if (!str) return NaN;
+    
+    // Remove currency symbols and thousand separators (.), then replace comma with a dot for decimals
+    const cleanedStr = str.replace(/[$.]/g, '').replace(',', '.');
+  
+    if (!cleanedStr) return NaN;
+    const num = parseFloat(cleanedStr);
+    return isNaN(num) ? NaN : num;
+}
 
 
 function findColumnIndex(headerItems: string[], possibleNames: string[] | undefined): number {
@@ -95,8 +115,8 @@ export function processSingleFile(fileContent: string): ProcessedRow[] {
     if (isNaN(itemCodeAsNumber)) continue; // Skip if item code is not a valid number
     const itemCode = itemCodeAsNumber.toString();
     
-    // Use the robust number parsing function
-    const quantity = parseRobustNumber(values[quantityIdx] || '0');
+    // Use the new local number parsing function
+    const quantity = parseSimpleNumber(values[quantityIdx] || '0');
     
     const dateStr = values[dateIdx];
     const date = parseCustomDate(dateStr); // Use the new custom date parser

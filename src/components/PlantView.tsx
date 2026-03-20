@@ -71,6 +71,7 @@ export const PlantView: React.FC<PlantViewProps> = ({ data, onReturnToDashboard,
                     <TableRow>
                         <TableHead className="w-12 text-lg">#</TableHead>
                         <TableHead className="text-lg">Operario</TableHead>
+                        <TableHead className="text-center text-lg">Horas Productivas</TableHead>
                         <TableHead className="text-center text-lg">Productividad (u/hr)</TableHead>
                         <TableHead className="w-1/4 text-lg">Cumplimiento</TableHead>
                         <TableHead className="text-right text-lg">Unidades Totales</TableHead>
@@ -81,6 +82,7 @@ export const PlantView: React.FC<PlantViewProps> = ({ data, onReturnToDashboard,
                         <TableRow key={packer.packerName} className="h-16">
                             <TableCell className="text-2xl font-bold text-muted-foreground">{index + 1}</TableCell>
                             <TableCell className="text-xl font-semibold">{packer.packerName}</TableCell>
+                            <TableCell className="text-center text-2xl font-bold">{packer.hoursWorked.toFixed(2)}</TableCell>
                             <TableCell className="text-center text-2xl font-bold">{packer.productivity.toFixed(1)}</TableCell>
                             <TableCell>
                                 <div className="flex items-center gap-3">

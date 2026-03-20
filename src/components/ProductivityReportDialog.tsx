@@ -11,7 +11,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from './ui/button';
 import { Loader2 } from 'lucide-react';
-import { getPausesForOperation, getAllUserProfiles, getProductivitySettings, getUserGoals, getScannedItemsByReception } from '@/app/actions';
+import { getPausesForOperation, getScannedItemsByReception, getAllUserProfiles, getUserGoals, getProductivitySettings } from '@/app/reception/actions';
 import { showError } from '@/lib/toast';
 import type { ReceptionOperation, ScannedItem, OperationPause, AppUser, ProductivitySettings, UserGoal, UserProductivity, HourlyOperatorDetail } from '@/types';
 import { UserProductivityTable } from './UserProductivityTable';
@@ -122,11 +122,11 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
     setLoading(true);
 
     try {
-      const [allScannedItemsResult, allPausesResult, usersResult, settingsResult] = await Promise.all([
+      const [allScannedItemsResult, allPausesResult, settingsResult, allUsersResult] = await Promise.all([
         getScannedItemsByReception(operation.id),
         getPausesForOperation(operation.id),
-        getAllUserProfiles(),
         getProductivitySettings(),
+        getAllUserProfiles(),
       ]);
 
       const opData = operation;
@@ -141,9 +141,8 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
           start_time: new Date(p.start_time),
           end_time: p.end_time ? new Date(p.end_time) : null
       }));
-      const allUsersList = usersResult || [];
-      const usersMap = new Map(allUsersList.map(u => [u.uid, u.displayName || u.email || 'Desconocido']));
-
+      const usersMap = new Map((allUsersResult || []).map(u => [u.uid, u.displayName || u.email || 'Desconocido']));
+      
       const userIdsFromScans = new Set(allItems.map(item => item.user_id));
       const userIdsFromPauses = new Set(allPausesForOperation.map(pause => pause.user_id));
       const allRelevantUserIds = new Set([...userIdsFromScans, ...userIdsFromPauses]);
@@ -162,9 +161,7 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
       const operationHoursSet = new Set<string>();
       
       for (const userId of allRelevantUserIds) {
-        const user = allUsersList.find(u => u.uid === userId);
-        if (!user) continue;
-
+        const userName = usersMap.get(userId) || userId;
         const userItems = allItems.filter(i => i.user_id === userId);
         const userPauses = allPausesForOperation.filter(p => p.user_id === userId);
 
@@ -208,7 +205,7 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
         const totalScanned = userItems.reduce((sum, i) => sum + i.quantity, 0);
         const productivityPerHour = effectiveTimeMinutes > 0 ? (totalScanned / effectiveTimeMinutes) * 60 : 0;
         
-        const userGoals = goalsByUserId.get(user.uid);
+        const userGoals = goalsByUserId.get(userId);
         const goal = opData.standard_units_per_hour ?? userGoals?.hourly_productivity_goal ?? settingsResult.data?.standard_per_hour_goal ?? 0;
         const compliance = goal > 0 ? (productivityPerHour / goal) * 100 : 0;
 
@@ -216,14 +213,14 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
         allHours.forEach(hourKey => operationHoursSet.add(hourKey));
         
         hourlyPerformanceData.push({
-            userId: user.uid,
-            userName: usersMap.get(user.uid) || user.uid,
+            userId: userId,
+            userName: userName,
             hourlyProductivity: hourlyProductivity,
         });
 
         productivityData.push({
-          userId: user.uid,
-          userName: usersMap.get(user.uid) || user.uid,
+          userId: userId,
+          userName: userName,
           totalScanned,
           effectiveTimeMinutes,
           pausesCount: userPauses.length,

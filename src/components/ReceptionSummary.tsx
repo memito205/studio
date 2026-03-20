@@ -1,5 +1,3 @@
-
-
 /** @jsxImportSource react */
 import React, { useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -42,12 +40,12 @@ export const ReceptionSummary: React.FC<ReceptionSummaryProps> = ({
   const { timeSpentInMinutes, actualProductivity: userActualProductivity } = userProductivity;
 
   const { totalScannedForReference, uniquePackingUnitsForReference } = useMemo(() => {
-    const currentReference = currentScannedProductDetails?.referencia;
+    const currentReference = currentScannedProductDetails?.referencia || currentScannedProductDetails?.reference;
     if (!currentReference || !allScannedItemsForOperation) {
         return { totalScannedForReference: 0, uniquePackingUnitsForReference: 0 };
     }
     
-    const itemsForRef = allScannedItemsForOperation.filter(item => item.reference === currentReference);
+    const itemsForRef = allScannedItemsForOperation.filter(item => (item.reference || '').trim() === currentReference.trim());
     
     const totalForRef = itemsForRef.reduce((sum, item) => sum + item.quantity, 0);
 
@@ -64,11 +62,11 @@ export const ReceptionSummary: React.FC<ReceptionSummaryProps> = ({
 
 
  const { expectedQuantityForCurrentReference } = useMemo(() => {
-    const currentReference = currentScannedProductDetails?.referencia;
+    const currentReference = currentScannedProductDetails?.referencia || currentScannedProductDetails?.reference;
     if (!currentReference || !expectedItems) return { expectedQuantityForCurrentReference: 0 };
 
     const totalExpected = expectedItems
-      .filter(item => item.reference === currentReference)
+      .filter(item => (item.reference || '').trim() === currentReference.trim())
       .reduce((sum, item) => sum + item.expected_quantity, 0);
       
     return { expectedQuantityForCurrentReference: totalExpected };
@@ -143,7 +141,7 @@ export const ReceptionSummary: React.FC<ReceptionSummaryProps> = ({
         
         {currentScannedProductDetails && (
           <div className="col-span-2 border-t pt-4 mt-4">
-            <h4 className="text-md font-semibold mb-2">Resumen de Referencia: {currentScannedProductDetails.referencia}</h4>
+            <h4 className="text-md font-semibold mb-2">Resumen de Referencia: {currentScannedProductDetails.referencia || currentScannedProductDetails.reference}</h4>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 <p><strong>Esperado Total:</strong> {expectedQuantityForCurrentReference}</p>
                 <p><strong>Leído Total:</strong> {totalScannedForReference}</p>

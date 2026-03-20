@@ -18,10 +18,10 @@ export const ReceptionProductDetails: React.FC<ReceptionProductDetailsProps> = (
   const [isEditProductDialogOpen, setIsEditProductDialogOpen] = React.useState(false);
   
   const displayProductName = currentScannedProductDetails?.item || currentScannedProductDetails?.name || 'N/A';
-  const displayProductDescription = currentScannedProductDetails?.description || 'N/A';
+  const displayProductDescription = currentScannedProductDetails?.description || currentScannedProductDetails?.item || 'N/A';
   const displayProductReference = currentScannedProductDetails?.referencia || currentScannedProductDetails?.reference || 'N/A';
   const displayProductSize = currentScannedProductDetails?.talla || currentScannedProductDetails?.size || 'N/A';
-  const displayLocation = currentScannedProductDetails?.location || 'N/A';
+  const displayLocation = lastScannedItemLocationName || currentScannedProductDetails?.location || 'N/A';
 
   return (
     <>

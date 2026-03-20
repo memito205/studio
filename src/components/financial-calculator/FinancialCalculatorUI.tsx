@@ -3,7 +3,7 @@
 
 import React, { useRef } from "react";
 import jsPDF from "jspdf";
-import "jspdf-autotable";
+import autoTable from 'jspdf-autotable';
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, Download } from "lucide-react";
 import FileUploadSection from "@/components/financial-calculator/FileUploadSection";
@@ -64,7 +64,7 @@ export const FinancialCalculatorUI: React.FC<FinancialCalculatorUIProps> = ({
       doc.setFontSize(14);
       doc.text("Resumen General", PADDING, y);
       y += 10;
-      (doc as any).autoTable({
+      autoTable(doc, {
         startY: y,
         theme: 'grid',
         headStyles: { fillColor: [22, 163, 74] },
@@ -81,7 +81,7 @@ export const FinancialCalculatorUI: React.FC<FinancialCalculatorUIProps> = ({
       });
       y = (doc as any).lastAutoTable.finalY + 20;
       
-      const addTableToPdf = (title: string, head: any[], body: any[][]) => {
+      const addTableToPdf = (title: string, head: any[][], body: any[][]) => {
           if (y + 40 > doc.internal.pageSize.getHeight()) { // Check for page break
               doc.addPage();
               y = PADDING;
@@ -89,7 +89,7 @@ export const FinancialCalculatorUI: React.FC<FinancialCalculatorUIProps> = ({
           doc.setFontSize(14);
           doc.text(title, PADDING, y);
           y += 10;
-          (doc as any).autoTable({
+          autoTable(doc, {
               startY: y,
               head,
               body,

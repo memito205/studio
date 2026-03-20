@@ -1,4 +1,4 @@
-import { RawTransaction, Transaction, TransactionType } from '../types';
+import { RawTransaction, Transaction, TransactionType, TFTItem } from '../types';
 
 // Helper to find a value in a row by checking multiple possible keys (case-insensitive and trimmed)
 const getValueFromRow = (row: { [key: string]: any }, possibleKeys: string[]): any => {

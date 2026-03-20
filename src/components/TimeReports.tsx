@@ -10,7 +10,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from '@/components/ui/skeleton';
-import { getAllPauses, loadReceptionOperations, getAllUserProfiles } from '@/app/actions';
+import { getAllPauses, loadReceptionOperations, getAllUserProfiles } from '@/app/reception/actions';
 import { showError } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { format, isSameDay } from 'date-fns';
@@ -45,17 +45,15 @@ export const TimeReports: React.FC<TimeReportsProps> = ({ onReturn }) => {
   const fetchReports = useCallback(async () => {
     setLoading(true);
     try {
-        const [users, operations] = await Promise.all([
-            getAllUserProfiles(),
-            loadReceptionOperations({ statusFilter: ['pending', 'in_progress', 'completed', 'cancelled'] })
-        ]);
+        const users = await getAllUserProfiles();
 
         const userMap = new Map(users.map(u => [u.uid, u.displayName || u.email || 'Desconocido']));
         setAllUsers(users);
         
         let pausesResult = await getAllPauses();
         let allPauses = pausesResult.data || [];
-        const allOperations = operations.data?.operations || [];
+        const operationsResult = await loadReceptionOperations({ statusFilter: ['pending', 'in_progress', 'completed', 'cancelled'] });
+        const allOperations = operationsResult.data?.operations || [];
         
         const opsMap = new Map(allOperations.map(op => [op.id, op]));
 

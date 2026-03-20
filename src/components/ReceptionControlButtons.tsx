@@ -33,7 +33,7 @@ export const ReceptionControlButtons: React.FC<ReceptionControlButtonsProps> = (
   totalItemsInActiveUnit, // Usar la nueva propiedad
 }) => {
   const { role } = useAuth();
-  const isAdmin = role === 'admin';
+  const isPrivilegedUser = role === 'admin';
   const [destination, setDestination] = React.useState('');
 
   const handleConfirmClose = () => {
@@ -93,7 +93,7 @@ export const ReceptionControlButtons: React.FC<ReceptionControlButtonsProps> = (
 
       <AlertDialog>
         <AlertDialogTrigger asChild>
-          <Button variant="destructive" className="w-full sm:w-auto flex-grow" disabled={isOperationPaused || !isAdmin}>Cancelar Operación</Button>
+          <Button variant="destructive" className="w-full sm:w-auto flex-grow" disabled={isOperationPaused || !isPrivilegedUser}>Cancelar Operación</Button>
         </AlertDialogTrigger>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -111,7 +111,7 @@ export const ReceptionControlButtons: React.FC<ReceptionControlButtonsProps> = (
 
       <AlertDialog>
         <AlertDialogTrigger asChild>
-          <Button className="w-full sm:w-auto flex-grow" disabled={isOperationPaused || !isAdmin}>Finalizar Operación</Button>
+          <Button className="w-full sm:w-auto flex-grow" disabled={isOperationPaused || !isPrivilegedUser}>Finalizar Operación</Button>
         </AlertDialogTrigger>
         <AlertDialogContent>
           <AlertDialogHeader>

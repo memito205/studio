@@ -1,12 +1,11 @@
 
-
 "use client";
 
 import React, { useState, useEffect, useCallback, ChangeEvent, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
-import { ArrowLeft, PlusCircle, BarChartHorizontal, MapPin, ClipboardList, Boxes, BookUser, ArrowDownUp, ArrowRight, Upload, Settings, AlarmClockOff, FileCheck2, Send, Loader2 } from 'lucide-react';
+import { ArrowLeft, PlusCircle, BarChartHorizontal, MapPin, ClipboardList, Boxes, BookUser, ArrowDownUp, ArrowRight, Upload, Settings, AlarmClockOff, FileCheck2, Send, Loader2, Tag, Compass } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -32,14 +31,16 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import ReceptionOperationsTable from './ReceptionOperationsTable';
-import CreateReceptionOperationDialog from './CreateReceptionOperationDialog';
+import { CreateReceptionOperationDialog } from './CreateReceptionOperationDialog';
 import type { ReceptionOperation, Location, CsvRow } from '@/types';
 import { useToast } from '@/hooks/use-toast';
-import { loadReceptionOperations, getLocations, bulkUploadReceptionDataFromExcel } from '@/app/actions';
+import { loadReceptionOperations, getLocations, bulkUploadReceptionDataFromExcel } from '@/app/reception/actions';
 import { useAuth } from '@/hooks/use-auth-context';
 import { cn } from '@/lib/utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { ScrollArea, ScrollBar } from './ui/scroll-area';
+import { LabelingPreparationScreen } from './LabelingPreparationScreen';
+import { ReferenceTraceability } from './ReferenceTraceability'; // Import the new component
 
 
 const DataPreviewTable: React.FC<{ data: CsvRow[] }> = ({ data }) => {
@@ -87,6 +88,7 @@ interface MerchandiseReceptionProps {
 }
 
 type OperationStatusFilter = 'active' | 'history';
+type ReceptionView = 'operations_list' | 'labeling_prep' | 'reference_traceability';
 
 
 export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({ 
@@ -116,6 +118,8 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
   const { user, role } = useAuth();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   
+  const [view, setView] = useState<ReceptionView>('operations_list');
+  const [selectedOperation, setSelectedOperation] = useState<ReceptionOperation | null>(null);
 
   const fetchOperations = useCallback(async () => {
     setLoading(true);
@@ -157,8 +161,10 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
   
   
   useEffect(() => {
-    fetchOperations();
-  }, [fetchOperations, activeTab]);
+    if (view === 'operations_list') {
+        fetchOperations();
+    }
+  }, [fetchOperations, view, activeTab]);
   
   const handleSort = (column: keyof ReceptionOperation) => {
     const newSortOrder = sortBy === column && sortOrder === 'asc' ? 'desc' : 'asc';
@@ -220,9 +226,9 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
           const reader = new FileReader();
           reader.onload = async (e) => {
               const content = e.target?.result;
-              if (typeof content === 'string') {
-                  setUploadedFileContent(content); // Guardar contenido para procesamiento final
-                  const result = await bulkUploadReceptionDataFromExcel(content, user?.uid || '', true); // modo preview
+              if (content) {
+                  setUploadedFileContent(content as string); // Guardar contenido para procesamiento final
+                  const result = await bulkUploadReceptionDataFromExcel(content as string, user?.uid || '', true); // modo preview
                   if (result.success && result.previewData) {
                       setPreviewData(result.previewData);
                       toast({ title: 'Previsualización Lista', description: 'El archivo se ha cargado para su revisión. Confirme para procesar.' });
@@ -261,7 +267,7 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
         if (result.success) {
             toast({
                 title: 'Carga Masiva Exitosa',
-                description: `Se procesaron ${result.summary?.operations ?? 0} operaciones y ${result.summary?.products ?? 0} productos.`
+                description: `Se procesaron ${result.summary?.operations ?? 0} operaciones.`
             });
             fetchOperations(); // Refresh data
             setPreviewData(null); // Clear preview
@@ -280,7 +286,24 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
     }
   }
 
+  const handleRowClick = (operation: ReceptionOperation) => {
+    setSelectedOperation(operation);
+    setView('labeling_prep');
+  };
 
+  const handleReturnToOperationsList = () => {
+    setView('operations_list');
+    setSelectedOperation(null);
+    fetchOperations();
+  };
+  
+  if (view === 'labeling_prep' && selectedOperation) {
+    return <LabelingPreparationScreen operation={selectedOperation} onReturn={handleReturnToOperationsList} />;
+  }
+
+  if (view === 'reference_traceability') {
+    return <ReferenceTraceability onReturn={handleReturnToOperationsList} />;
+  }
   
   return (
     <div className="space-y-8">
@@ -308,6 +331,7 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
                         {role === 'admin' && (
                           <DropdownMenuItem onSelect={onNavigateToNoveltyManagement}><ClipboardList className="mr-2 h-4 w-4"/> Gestionar Novedades </DropdownMenuItem>
                         )}
+                        <DropdownMenuItem onSelect={() => setView('reference_traceability')}><Compass className="mr-2 h-4 w-4"/> Trazabilidad por Referencia </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuLabel>Analíticas</DropdownMenuLabel>
                         <DropdownMenuItem onSelect={onNavigateToDashboard}> <BarChartHorizontal className="mr-2 h-4 w-4"/> Ver Dashboard </DropdownMenuItem>
@@ -374,6 +398,7 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
                             sortDescriptor={{ column: sortBy, direction: sortOrder }}
                             onSortChange={handleSort}
                             allLocations={allLocations}
+                            onRowClick={handleRowClick}
                         />
                     </TabsContent>
                     <TabsContent value="history" className="mt-4">
@@ -386,6 +411,7 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
                             sortDescriptor={{ column: sortBy, direction: sortOrder }}
                             onSortChange={handleSort}
                             allLocations={allLocations}
+                            onRowClick={handleRowClick}
                         />
                     </TabsContent>
                 </Tabs>
@@ -430,3 +456,5 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
     </div>
   );
 };
+
+    

@@ -10,8 +10,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from '@/components/ui/skeleton';
-import { getAllNovelties, loadReceptionOperations } from '@/app/actions';
-import { getAllUserProfiles } from '@/app/actions';
+import { getAllNovelties, loadReceptionOperations, getAllUserProfiles } from '@/app/reception/actions';
 import { showError } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { format } from 'date-fns';

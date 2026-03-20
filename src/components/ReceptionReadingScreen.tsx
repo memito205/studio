@@ -1,18 +1,20 @@
 
+
 "use client";
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, PlusCircle, AlertTriangle } from 'lucide-react';
-import { getReceptionOperationById, getExpectedItemsByReception, startOperationPause, endOperationPause, updateReceptionOperation, addScannedItem, deleteScannedItem, getActivePauseForUser, getUserGoals, updatePackingUnit, getLocations, getProductivitySettings, getPausesForOperation, registerNovelty, getProductsByBarcodes, createPackingUnit, getScannedItemsByReception } from '@/app/actions';
+import { getReceptionOperationById, getExpectedItemsByReception, getProductsByBarcodes, getLocations, createPackingUnit, startOperationPause, endOperationPause, updateReceptionOperation, addScannedItem, deleteScannedItem, getActivePauseForUser, updatePackingUnit, registerNovelty, getScannedItemsByReception } from '@/app/reception/actions';
+import { getUserGoals, getProductivitySettings } from '@/app/actions';
 import type { ReceptionOperation, ScannedItem, ProductDatabaseItem, PackingUnit, Location, OperationPause, ReceptionExpectedItem, UserGoal, PackedItem, ProductivitySettings } from '@/types';
 import { ReceptionScanInput } from './ReceptionScanInput';
 import ReceptionScannedItemsList from './ReceptionScannedItemsList';
 import ReceptionSummary from './ReceptionSummary';
 import { ReceptionProductDetails } from './ReceptionProductDetails';
 import { ReceptionControlButtons } from './ReceptionControlButtons';
-import CreateProductDialog from './CreateProductDialog';
+import { CreateProductDialog } from './CreateProductDialog';
 import PauseReasonDialog from './PauseReasonDialog';
 import { firestore } from '@/services/firebase'; 
 import { collection, query, where, onSnapshot, doc } from 'firebase/firestore'; 
@@ -130,7 +132,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
         where("user_id", "==", user.uid)
     );
     const unsubscribeUserScans = onSnapshot(qUserScans, (querySnapshot) => {
-        const items: ScannedItem[] = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), scanned_at: doc.data().scanned_at?.toDate().toISOString() } as ScannedItem));
+        const items: ScannedItem[] = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), scanned_at: doc.data().scanned_at } as ScannedItem));
         items.sort((a, b) => new Date(b.scanned_at).getTime() - new Date(a.scanned_at).getTime());
         setUserScannedItems(items);
     }, (err) => console.error("Error escuchando los items del usuario:", err));
@@ -163,16 +165,23 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
   useEffect(() => {
     if (!operationId || !user?.uid) return;
 
-    const qPauses = query(collection(firestore, "operationPauses"), where("reception_id", "==", operationId));
+    const qPauses = query(
+        collection(firestore, "operationPauses"), 
+        where("reception_id", "==", operationId),
+        where("user_id", "==", user.uid)
+    );
     const unsubscribePauses = onSnapshot(qPauses, (querySnapshot) => {
-        const allOpPauses: OperationPause[] = querySnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data(),
-            start_time: (doc.data().start_time as any).toDate(),
-            end_time: (doc.data().end_time as any)?.toDate() || null,
-        } as any));
-        setAllPauses(allOpPauses);
-        setActivePause(allOpPauses.find(p => p.user_id === user.uid && !p.end_time) || null);
+        const userPauses: OperationPause[] = querySnapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+                id: doc.id,
+                ...data,
+                start_time: data.start_time.toDate(),
+                end_time: data.end_time ? data.end_time.toDate() : null,
+            } as OperationPause;
+        });
+        setAllPauses(userPauses);
+        setActivePause(userPauses.find(p => !p.end_time) || null);
     });
     
     const qUnits = query(collection(firestore, "packingUnits"), where("reception_id", "==", operationId));
@@ -195,7 +204,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
               return;
           }
 
-          const userPauses = allPauses.filter(p => p.user_id === user.uid);
+          const userPauses = allPauses; // Already filtered for the user
           const userItems = userScannedItems; // Use the dedicated state for user's items
 
           if (userItems.length === 0 && userPauses.length === 0) {
@@ -205,7 +214,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
 
           const activityTimes = [
               ...userItems.map(i => new Date(i.scanned_at).getTime()),
-              ...userPauses.map(p => p.start_time.getTime())
+              ...userPauses.map(p => new Date(p.start_time).getTime())
           ].filter(t => !isNaN(t));
 
           if (activityTimes.length === 0) {
@@ -216,7 +225,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
           const firstScanTime = Math.min(...activityTimes);
 
           let endTime;
-          if (operation.status === 'in_progress') {
+          if (operation.status === 'in_progress' || operation.status === 'paused') {
               endTime = new Date().getTime();
           } else if (operation.end_time) {
               endTime = new Date(operation.end_time).getTime();
@@ -231,8 +240,8 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
           const grossDurationMs = Math.max(0, endTime - firstScanTime);
 
           let totalPauseDurationMs = userPauses.reduce((sum, pause) => {
-              const start = pause.start_time.getTime();
-              const end = pause.end_time ? pause.end_time.getTime() : new Date().getTime();
+              const start = new Date(pause.start_time).getTime();
+              const end = pause.end_time ? new Date(pause.end_time).getTime() : new Date().getTime(); // If pause is active, count up to now
               return sum + (end - start);
           }, 0);
 
@@ -311,6 +320,8 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
             toast({ title: 'Operación iniciada', description: 'El estado ha cambiado a "En Curso".' });
         }
         
+        const expectedItemData = expectedItems.find(item => item.barcode === product.codigoBarras);
+
         const itemToAdd = {
             reception_id: operation.id,
             packing_unit_id: unitToUse.firestoreId,
@@ -319,6 +330,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
             reference: product.referencia || product.reference || 'N/A',
             talla: product.talla || product.size || 'N/A',
             item: product.item || product.name || 'N/A',
+            location_id: expectedItemData?.location || null
         };
                 
         const result = await addScannedItem(itemToAdd);
@@ -348,16 +360,17 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
   };
 
   const handlePause = async (reason: string) => {
-    if (!user || !operation) return;
+    if (!user || !operation || activePause) return;
     setIsSubmitting(true);
     const result = await startOperationPause(operation.id, user.uid, reason);
     if (result.success) {
       toast({ title: 'Éxito', description: 'La operación ha sido pausada.' });
+      // The onSnapshot listener will update the state, no need to setActivePause here
     } else {
       toast({ variant: 'destructive', title: 'Error', description: result.error });
     }
-    setIsPauseDialogOpen(false);
     setIsSubmitting(false);
+    setIsPauseDialogOpen(false);
   };
   
   const handleResume = async () => {
@@ -366,6 +379,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
     const result = await endOperationPause(activePause.id, user.uid);
     if(result.success) {
       toast({ title: 'Éxito', description: 'La operación ha sido reanudada.' });
+      // The onSnapshot listener will update the state
     } else {
       toast({ variant: 'destructive', title: 'Error', description: result.error });
     }
@@ -451,11 +465,31 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
   }, [operation, userGoals, productivitySettings]);
   
   const lastScannedItemLocationName = useMemo(() => {
-    if (userScannedItems.length === 0) return null;
-    const lastItem = userScannedItems[0];
-    if (!lastItem.location_id) return null;
-    return allLocations.find(loc => loc.id === lastItem.location_id)?.name || null;
-  }, [userScannedItems, allLocations]);
+    if (!currentScannedProductDetails) return null;
+
+    // PRIORITY 1: Find in the current operation's expected items by barcode.
+    const expectedItemByBarcode = expectedItems.find(
+      (item) => item.barcode === currentScannedProductDetails.codigoBarras
+    );
+    if (expectedItemByBarcode && expectedItemByBarcode.location) {
+        return expectedItemByBarcode.location;
+    }
+    
+    // NEW PRIORITY 2: Find in the current operation's expected items by reference and size.
+    const ref = currentScannedProductDetails.referencia || currentScannedProductDetails.reference;
+    const size = currentScannedProductDetails.talla || currentScannedProductDetails.size;
+    if(ref && size) {
+        const expectedItemByRef = expectedItems.find(
+          (item) => (item.reference || '').trim() === ref.trim() && (item.size || '').trim() === size.trim()
+        );
+        if (expectedItemByRef && expectedItemByRef.location) {
+            return expectedItemByRef.location;
+        }
+    }
+
+    // PRIORITY 3 (Fallback): Use the general location from the product master database.
+    return currentScannedProductDetails.location || 'N/A';
+  }, [currentScannedProductDetails, expectedItems]);
   
   const referenceLocationMap = useMemo(() => {
       const map = new Map<string, string>();

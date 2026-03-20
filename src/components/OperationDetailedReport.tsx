@@ -91,7 +91,7 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
 
   React.useEffect(() => {
     const packingUnitIdMap = new Map<string, number>(
-        allPackingUnits.map(unit => [unit.firestoreId, unit.id])
+        (allPackingUnits || []).map(unit => [unit.firestoreId, unit.id])
     );
     const expectedItemsMap = new Map<string, ReceptionExpectedItem>(
         (operation.expectedItems || []).map(item => [item.barcode, item])
@@ -194,7 +194,7 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
     setConsolidatedReportItems(consolidatedList);
 
     const unitSummariesMap = new Map<number, PackingUnitSummary>();
-    allPackingUnits.forEach(unit => {
+    (allPackingUnits || []).forEach(unit => {
       unitSummariesMap.set(unit.id, {
         id: unit.id,
         firestoreId: unit.firestoreId,
@@ -262,7 +262,7 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
   }, [filterText, packingUnitFilter, consolidatedReportItems]);
   
   const uniqueDestinations = useMemo(() => {
-    const destinations = new Set(allPackingUnits.map(unit => unit.destination).filter(Boolean) as string[]);
+    const destinations = new Set((allPackingUnits || []).map(unit => unit.destination).filter(Boolean) as string[]);
     return ['all', ...Array.from(destinations).sort()];
   }, [allPackingUnits]);
 
@@ -380,7 +380,7 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
 
 
   const handleViewPackingUnitDetails = (unitFirestoreId: string) => {
-    const unit = allPackingUnits.find(u => u.firestoreId === unitFirestoreId);
+    const unit = (allPackingUnits || []).find(u => u.firestoreId === unitFirestoreId);
     if (unit) {
         const itemsForUnit = allScannedItems
             .filter(item => item.packing_unit_id === unit.firestoreId)

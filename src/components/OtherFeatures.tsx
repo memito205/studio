@@ -1,4 +1,5 @@
 
+
 "use client";
 
 import React, { useState } from 'react';
@@ -9,13 +10,16 @@ import { SubModuleCard } from './SubModuleCard';
 import { FinancialCalculator } from './financial-calculator/FinancialCalculator';
 import { CreditSimulator } from './CreditSimulator';
 import { useRouter } from 'next/navigation';
+import { FletesVtex } from './FletesVtex';
+import { PropuestaTransportadora } from './PropuestaTransportadora';
+import { TulasDistribucion } from './TulasDistribucion';
 
 
 interface OtherFeaturesProps {
   onReturnToSuite: () => void;
 }
 
-type OtherFeaturesView = 'main' | 'financial_calculator' | 'credit_simulator' | 'returns_module';
+type OtherFeaturesView = 'main' | 'financial_calculator' | 'credit_simulator' | 'returns_module' | 'fletes_vtex' | 'propuesta_transportadora' | 'tulas_distribucion';
 
 export const OtherFeatures: React.FC<OtherFeaturesProps> = ({ onReturnToSuite }) => {
   const [view, setView] = useState<OtherFeaturesView>('main');
@@ -27,6 +31,18 @@ export const OtherFeatures: React.FC<OtherFeaturesProps> = ({ onReturnToSuite })
   
   if (view === 'credit_simulator') {
     return <CreditSimulator onReturn={() => setView('main')} />;
+  }
+
+  if (view === 'fletes_vtex') {
+    return <FletesVtex onReturn={() => setView('main')} />;
+  }
+
+  if (view === 'propuesta_transportadora') {
+    return <PropuestaTransportadora onReturn={() => setView('main')} />;
+  }
+
+  if (view === 'tulas_distribucion') {
+    return <TulasDistribucion onReturn={() => setView('main')} />;
   }
 
   // The returns module is now a dedicated page, so we navigate to it.
@@ -83,6 +99,27 @@ export const OtherFeatures: React.FC<OtherFeaturesProps> = ({ onReturnToSuite })
             description="Analice y procese archivos de devoluciones para generar reportes detallados."
             actionText="Acceder"
             onAction={() => router.push('/returns-module')}
+          />
+          <SubModuleCard
+            iconName="Ship"
+            title="Fletes VTEX"
+            description="Calcule y gestione los costos de fletes relacionados con la plataforma VTEX."
+            actionText="Acceder"
+            onAction={() => setView('fletes_vtex')}
+          />
+          <SubModuleCard
+            iconName="Rocket"
+            title="Propuesta Transportadora"
+            description="Analice y compare costos para encontrar la mejor opción de transportadora."
+            actionText="Acceder"
+            onAction={() => setView('propuesta_transportadora')}
+          />
+           <SubModuleCard
+            iconName="Archive"
+            title="Análisis de Rotación de Tulas"
+            description="Analice el movimiento de tulas para optimizar el stock y la distribución."
+            actionText="Acceder"
+            onAction={() => setView('tulas_distribucion')}
           />
         </div>
       </div>

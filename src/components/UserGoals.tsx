@@ -14,7 +14,8 @@ import {
 import { Input } from '@/components/ui/input';
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { useToast } from '@/hooks/use-toast';
-import { getUserGoals, upsertUserGoals, getAllUserProfiles } from '@/app/actions';
+import { upsertUserGoals, getUserGoals } from '@/app/actions';
+import { getAllUserProfiles } from '@/app/reception/actions';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/hooks/use-auth-context';
 import type { UserGoal, AppUser } from '@/types';

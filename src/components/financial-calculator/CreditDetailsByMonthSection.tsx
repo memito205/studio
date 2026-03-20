@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFoo
 import { Input } from "@/components/ui/input";
 import CreditAmortizationDetailDialog from "@/components/financial-calculator/CreditAmortizationDetailDialog";
 import { format } from "date-fns";
-import { parseFlexibleDate as parseDateString } from "@/lib/parsingUtils";
+import { parseFlexibleDate } from "@/lib/parsingUtils";
 import { Button } from "../ui/button";
 import { Eye } from "lucide-react";
 
@@ -27,7 +27,7 @@ const CreditDetailsByMonthSection: React.FC<CreditDetailsByMonthSectionProps> = 
 
   const monthSummaries = Object.entries(
     results.reduce((acc, credit) => {
-      const parsedDate = parseDateString(credit.fechaCredito);
+      const parsedDate = parseFlexibleDate(credit.fechaCredito);
       if (!parsedDate || isNaN(parsedDate.getTime())) {
         console.warn(`Skipping credit ${credit.creditId} due to invalid date: ${credit.fechaCredito}`);
         return acc;
@@ -122,7 +122,6 @@ const CreditDetailsByMonthSection: React.FC<CreditDetailsByMonthSectionProps> = 
                   <TableHead className="text-right text-gray-700 dark:text-gray-300">Valor Crédito</TableHead>
                   <TableHead className="text-right text-gray-700 dark:text-gray-300">Intereses</TableHead>
                   <TableHead className="text-right text-gray-700 dark:text-gray-300">Costo Gracia</TableHead>
-                  {/* Remove Acciones from header, it's part of the row now */}
                 </TableRow>
               </TableHeader>
               <TableBody>

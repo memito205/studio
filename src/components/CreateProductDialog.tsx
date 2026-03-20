@@ -16,7 +16,8 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { useToast } from '@/hooks/use-toast';
-import { createProduct, registerNovelty } from '@/app/actions';
+import { createProduct } from '@/app/reception/actions';
+import { registerNovelty } from '@/app/actions';
 import type { ReceptionProduct } from '@/types';
 import { useAuth } from '@/hooks/use-auth-context';
 
@@ -217,5 +218,3 @@ export const CreateProductDialog: React.FC<CreateProductDialogProps> = ({
     </Dialog>
   );
 };
-
-export default CreateProductDialog;

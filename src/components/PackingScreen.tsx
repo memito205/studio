@@ -1,3 +1,4 @@
+
 "use client";
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
@@ -9,7 +10,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ArrowLeft, LayoutGrid, Package, Check, AlertTriangle, ScanLine, Clock, X, Archive, ArchiveRestore, Tag, Search, Pencil, Trash2, FileDown, Timer, BarChartHorizontal, Play, Pause, Loader2, Trophy, AlarmClockOff, Eye, RotateCcw } from 'lucide-react';
 import type { WholesaleOrder, ProductDatabaseItem, PackingScanResult, PackingSession, PackingUnit, PackedItem, UnitSearchResult, WholesaleOrderDetail, PauseReason, LabelValidationResult, PackingPause } from '@/types';
-import { lookupBarcode, validateLabel, markLabelAsUsed, getProductByRefAndSize, savePackingSession, updateOrderStatus, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit } from '@/app/actions';
+import { validateLabel, markLabelAsUsed, getProductByRefAndSize, savePackingSession, updateOrderStatus, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, lookupBarcode } from '@/app/actions';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
@@ -293,73 +294,70 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
         const barcode = barcodeInput.value.trim();
         setIsLoading(true);
-        const result = await lookupBarcode(barcode);
-        setIsLoading(false);
 
-        setLastScan(result);
+        try {
+            const result = await lookupBarcode(barcode, packingOrder.order.id);
+            setLastScan(result);
 
-        if (result.status === 'success' && result.item) {
-            
-            // --- VALIDATION LOGIC ---
-            const itemKey = createItemKey(result.item.referencia, result.item.talla);
-            const detail = packingOrder.order.details.find(d => createItemKey(d.referencia, d.talla) === itemKey);
-            const orderedQty = detail?.cantidad || 0;
-            const packedQty = globalPackingProgress[itemKey] || 0;
-            
-            if (packedQty + 1 > orderedQty) {
-                setOverpackAlert({ isOpen: true, itemKey, packed: packedQty + 1, ordered: orderedQty });
-            }
-            
-            let unitToUse = activeUnit;
-            if (!unitToUse) {
-                const newUnitResult = await createPackingUnit(session.orderId, user.uid);
-                if (newUnitResult.success && newUnitResult.newUnit) {
-                    setSession(prev => ({ ...prev, units: [...prev.units, newUnitResult.newUnit!] }));
-                    unitToUse = newUnitResult.newUnit;
+            if (result.status === 'success' && result.item) {
+                const itemKey = createItemKey(result.item.referencia, result.item.talla);
+                const detail = packingOrder.order.details.find(d => createItemKey(d.referencia, d.talla) === itemKey);
+                const orderedQty = detail?.cantidad || 0;
+                const packedQty = globalPackingProgress[itemKey] || 0;
+
+                if (packedQty + 1 > orderedQty) {
+                    setOverpackAlert({ isOpen: true, itemKey, packed: packedQty + 1, ordered: orderedQty });
+                }
+
+                let unitToUse = activeUnit;
+                if (!unitToUse) {
+                    const newUnitResult = await createPackingUnit(session.orderId, user.uid);
+                    if (newUnitResult.success && newUnitResult.newUnit) {
+                        setSession(prev => ({ ...prev, units: [...prev.units, newUnitResult.newUnit!] }));
+                        unitToUse = newUnitResult.newUnit;
+                    } else {
+                        throw new Error(`No se pudo crear una nueva unidad de empaque: ${newUnitResult.error}`);
+                    }
+                }
+
+                if (!unitToUse?.firestoreId) {
+                    throw new Error(`La unidad de empaque activa no tiene un ID de base de datos válido.`);
+                }
+
+                const itemsInActiveUnit = allPackedItems.filter(item => item.packingUnitId === unitToUse?.firestoreId);
+                if (itemsInActiveUnit.length > 0) {
+                    const firstItemKey = itemsInActiveUnit[0].itemKey;
+                    const expectedReference = firstItemKey.split('-')[0];
+                    const newReference = result.item.referencia.trim();
+                    if (newReference !== expectedReference) {
+                        setMixedReferenceError({ show: true, expected: expectedReference, scanned: newReference });
+                        return;
+                    }
+                }
+
+                const itemData: Omit<PackedItem, 'id' | 'scannedAt' | 'quantity'> = {
+                    orderId: session.orderId,
+                    packingUnitId: unitToUse.firestoreId,
+                    itemKey,
+                    barcode: result.item.codigoBarras,
+                    packerId: user.uid,
+                };
+
+                const addResult = await addPackedItem(itemData);
+                if (addResult.success) {
+                    fetchPackedItems();
                 } else {
-                    toast({ variant: "destructive", title: "Error Crítico", description: `No se pudo crear una nueva unidad de empaque: ${newUnitResult.error}` });
-                    return;
+                    throw new Error(addResult.error);
                 }
             }
-            
-            if (!unitToUse?.firestoreId) {
-                 toast({ variant: "destructive", title: "Error Crítico", description: `La unidad de empaque activa no tiene un ID de base de datos válido.` });
-                 return;
+        } catch (error: any) {
+            toast({ variant: 'destructive', title: 'Error en Escaneo', description: error.message });
+        } finally {
+            setIsLoading(false);
+            if (barcodeInput) {
+                barcodeInput.value = '';
+                barcodeInput.focus();
             }
-
-            // --- SINGLE REFERENCE VALIDATION ---
-            const itemsInActiveUnit = allPackedItems.filter(item => item.packingUnitId === unitToUse?.firestoreId);
-            if (itemsInActiveUnit.length > 0) {
-                const firstItemKey = itemsInActiveUnit[0].itemKey;
-                const expectedReference = firstItemKey.split('-')[0];
-                const newReference = result.item.referencia.trim();
-
-                if (newReference !== expectedReference) {
-                    setMixedReferenceError({ show: true, expected: expectedReference, scanned: newReference });
-                    barcodeInput.value = '';
-                    return; // Stop processing
-                }
-            }
-            
-            const itemData: Omit<PackedItem, 'id' | 'scannedAt' | 'quantity'> = {
-                orderId: session.orderId,
-                packingUnitId: unitToUse.firestoreId,
-                itemKey,
-                barcode: result.item.codigoBarras,
-                packerId: user.uid,
-            };
-            
-            const addResult = await addPackedItem(itemData);
-            if(addResult.success) {
-                fetchPackedItems(); // Re-fetch to update the UI
-            } else {
-                toast({ variant: "destructive", title: "Error", description: addResult.error });
-            }
-        }
-        
-        if (barcodeInput) {
-            barcodeInput.value = '';
-            barcodeInput.focus();
         }
     };
 
@@ -1058,3 +1056,6 @@ const StatDisplay: React.FC<{title: string, value: string | number, variant?: 'd
         <p className={cn("text-4xl font-bold", variant === 'success' ? 'text-green-600' : 'text-foreground')}>{value}</p>
     </div>
 )
+
+
+    

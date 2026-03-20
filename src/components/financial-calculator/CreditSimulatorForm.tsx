@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { calculateAmortization, GeneralSummary, CreditCalculationResult, parseDateString, convertAnnualToMonthlyRate } from "@/services/creditCalculations";
+import { calculateAmortization, GeneralSummary, CreditCalculationResult, convertAnnualToMonthlyRate } from "@/services/creditCalculations";
 import GeneralSummarySection from "@/components/financial-calculator/GeneralSummarySection";
 import { showError, showSuccess } from "@/lib/toast";
 import {
@@ -81,7 +81,7 @@ const CreditSimulatorForm: React.FC = () => {
     const paymentModalityDistribution = { quincenal: 0, mensual: 0, other: 0 };
     const quincenalInstallmentCounts: Record<number, number> = {};
     const mensualInstallmentCounts: Record<number, number> = {};
-    const overallMonthlyGraceCostBreakdown: Record<string, { total: number; quincenal: number; mensual: number; other: number }> = {}; 
+    const overallMonthlyGraceCostBreakdown: Record<string, { total: number; baseAmount: number; compoundingBase: number; quincenal: number; mensual: number; other: number }> = {}; 
 
     const today = new Date();
     const formattedToday = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
@@ -159,15 +159,19 @@ const CreditSimulatorForm: React.FC = () => {
         totalIvaAdmonOverall += ivaAdmonCalculated;
         totalValorCreditoSumForAverage += avgCreditValue;
 
-        Object.entries(monthlyGraceCostBreakdown).forEach(([monthKey, costs]) => {
-          if (!overallMonthlyGraceCostBreakdown[monthKey]) {
-            overallMonthlyGraceCostBreakdown[monthKey] = { total: 0, quincenal: 0, mensual: 0, other: 0 };
-          }
-          overallMonthlyGraceCostBreakdown[monthKey].total += costs.total;
-          overallMonthlyGraceCostBreakdown[monthKey].quincenal += costs.quincenal;
-          overallMonthlyGraceCostBreakdown[monthKey].mensual += costs.mensual;
-          overallMonthlyGraceCostBreakdown[monthKey].other += costs.other;
-        });
+        if (monthlyGraceCostBreakdown) {
+          Object.entries(monthlyGraceCostBreakdown).forEach(([monthKey, costs]) => {
+            if (!overallMonthlyGraceCostBreakdown[monthKey]) {
+              overallMonthlyGraceCostBreakdown[monthKey] = { total: 0, baseAmount: 0, compoundingBase: 0, quincenal: 0, mensual: 0, other: 0 };
+            }
+            overallMonthlyGraceCostBreakdown[monthKey].total += costs.total;
+            overallMonthlyGraceCostBreakdown[monthKey].baseAmount += costs.baseAmount;
+            overallMonthlyGraceCostBreakdown[monthKey].compoundingBase += costs.compoundingBase;
+            overallMonthlyGraceCostBreakdown[monthKey].quincenal += costs.quincenal;
+            overallMonthlyGraceCostBreakdown[monthKey].mensual += costs.mensual;
+            overallMonthlyGraceCostBreakdown[monthKey].other += costs.other;
+          });
+        }
 
         if (modality.includes('quincenal')) {
           quincenalInstallmentCounts[numCuotas] = (quincenalInstallmentCounts[numCuotas] || 0) + 1;

@@ -1,15 +1,19 @@
 
+
 "use client";
 
 import React, { useState, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
-import type { ProcessedReportData, ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ReferenceCorrections, UniqueReference, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, ChatMessage, SmartAlert, ActionPlan, Annotations, TaggedReport, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, PackingUnit, PackingSession, AppStep, ReceptionOperation, JustificationType, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReportSummary, CreditCalculationResult, DispatchSessionInfo } from '@/types';
-import { processReport, getSanitizedData, extractUniqueReferences, extractPackersFromReport, preProcessDeadTimes } from '@/services/reportProcessor';
-import { handleExecutiveSummary, handleRootCauseAnalysis, handleGenerateSmartAlerts, handleGetJustificationSuggestions, saveReportToHistory, loadHistoricalReports, updateOrderStatus, savePackingSession, loadWholesaleOrders, getPackingSession, loadAllPackingSessions, getProductsByBarcodes, consolidateDailyReports, previewConsolidatedReport, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit } from '@/app/actions';
+import type { ProcessedReportData, ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ReferenceCorrections, UniqueReference, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, ChatMessage, SmartAlert, ActionPlan, Annotations, TaggedReport, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, PackingUnit, PackingSession, AppStep, ReceptionOperation, JustificationType, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReportSummary, CreditCalculationResult, DispatchSessionInfo, RouteEntry, TransferEntry, EcommerceOrder, DelayedOrderLog } from '@/types';
+import { processReport, getSanitizedData, extractUniqueReferences, extractPackersFromReport, preProcessDeadTimes, classifyProduct } from '@/services/reportProcessor';
+import { handleExecutiveSummary, handleRootCauseAnalysis, handleGenerateSmartAlerts, handleGetJustificationSuggestions, saveReportToHistory, loadHistoricalReports, updateOrderStatus, savePackingSession, loadWholesaleOrders, getPackingSession, loadAllPackingSessions, consolidateDailyReports, previewConsolidatedReport, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit } from '@/app/actions';
+import { getProductsByBarcodes } from '@/app/reception/actions';
 import { Loader2, AlertTriangle } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { parseFlexibleDate } from '@/lib/parsingUtils';
+import DispatchManager from './dispatch-manager/DispatchManager';
 
 // --- Dynamic Imports for Code Splitting ---
 
@@ -36,6 +40,8 @@ const LogisticsSubMenu = dynamic(() => import('@/components/LogisticsSubMenu').t
 const GeneralSettings = dynamic(() => import('@/components/GeneralSettings').then(mod => mod.GeneralSettings), { loading: () => <LoadingSpinner /> });
 const LabelControl = dynamic(() => import('@/components/LabelControl').then(mod => mod.LabelControl), { loading: () => <LoadingSpinner /> });
 const MerchandiseLabeling = dynamic(() => import('@/components/MerchandiseLabeling').then(mod => mod.MerchandiseLabeling), { loading: () => <LoadingSpinner /> });
+const LabelingOperatorView = dynamic(() => import('@/components/LabelingOperatorView').then(mod => mod.default), { loading: () => <LoadingSpinner /> });
+const AssignOperatorsDialog = dynamic(() => import('@/components/AssignOperatorsDialog').then(mod => mod.AssignOperatorsDialog), { loading: () => <LoadingSpinner /> });
 const BagDistribution = dynamic(() => import('@/components/BagDistribution').then(mod => mod.BagDistribution), { loading: () => <LoadingSpinner /> });
 const MerchandiseReception = dynamic(() => import('@/components/MerchandiseReception').then(mod => mod.MerchandiseReception), { loading: () => <LoadingSpinner /> });
 const ReceptionDashboard = dynamic(() => import('./ReceptionDashboard').then(mod => mod.ReceptionDashboard), { loading: () => <LoadingSpinner /> });
@@ -52,6 +58,12 @@ const DispatchScreen = dynamic(() => import('./DispatchScreen').then(mod => mod.
 const ReturnsModule = dynamic(() => import('./ReturnsModule').then(mod => mod.default), { loading: () => <LoadingSpinner /> });
 const DispatchDashboard = dynamic(() => import('./DispatchDashboard').then(mod => mod.DispatchDashboard), { loading: () => <LoadingSpinner /> });
 const DispatchReport = dynamic(() => import('./DispatchReport').then(mod => mod.DispatchReport), { loading: () => <LoadingSpinner /> });
+const FletesVtex = dynamic(() => import('./FletesVtex').then(mod => mod.FletesVtex), { loading: () => <LoadingSpinner /> });
+const RoutesModule = dynamic(() => import('./RoutesModule').then(mod => mod.RoutesModule), { loading: () => <LoadingSpinner /> });
+const DashboardsModule = dynamic(() => import('@/components/DashboardsModule').then(mod => mod.DashboardsModule), { loading: () => <LoadingSpinner /> });
+const SampleControl = dynamic(() => import('./sample-control/SampleControl').then(mod => mod.SampleControl), { loading: () => <LoadingSpinner /> });
+const TransfersModule = dynamic(() => import('./TransfersModule').then(mod => mod.TransfersModule), { loading: () => <LoadingSpinner /> });
+const PropuestaTransportadora = dynamic(() => import('./PropuestaTransportadora').then(mod => mod.PropuestaTransportadora), { loading: () => <LoadingSpinner /> });
 
 
 type Theme = 'light' | 'dark';
@@ -91,9 +103,7 @@ interface SuiteAppProps {
 export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const [appStep, setAppStep] = useState<AppStep>('suite');
   const [rawData, setRawData] = useState<any[] | null>(null);
-  const [processedDataForReport, setProcessedDataForReport] = useState<RemisionEntry[]>([]);
   const [reportData, setReportData] = useState<ProcessedReportData | null>(null);
-  const [historicalData, setHistoricalData] = useState<ReportSummary[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string>('');
@@ -105,6 +115,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   // Wholesale & Packing State
   const [orders, setOrders] = useState<WholesaleOrder[]>([]);
   const [allPackingSessions, setAllPackingSessions] = useState<PackingSession[]>([]);
+  const [delayedLogs, setDelayedLogs] = useState<DelayedOrderLog[]>([]);
   const [isLoadingOrders, setIsLoadingOrders] = useState(true);
   const [packingOrder, setPackingOrder] = useState<{ order: WholesaleOrder; details: WholesaleOrderDetail[] } | null>(null);
   const [dispatchShipmentId, setDispatchShipmentId] = useState<string | null>(null);
@@ -185,82 +196,67 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
 
   const handleFileProcess = useCallback(async (data: any[], name: string) => {
     setIsLoading(true);
+    setRawData(data); // Set raw data immediately
+    setFileName(name);
 
-    if (!data || data.length === 0) {
-        toast({ variant: "destructive", title: "Archivo Vacío", description: "El archivo cargado no contiene datos." });
-        setIsLoading(false);
-        return;
-    }
-    
-    const fechaKey = Object.keys(data[0]).find(k => k.toLowerCase().trim() === 'fecha lectura' || k.toLowerCase().trim() === 'fechalectura');
-
-    if (!fechaKey) {
-        toast({ variant: "destructive", title: "Error de Archivo", description: "La columna de fecha ('Fecha Lectura') no se encontró." });
-        setIsLoading(false);
-        return;
-    }
-    
-    let fileReportDate: Date | null = null;
-    for (const row of data) {
-        if (row[fechaKey] instanceof Date) {
-            fileReportDate = row[fechaKey];
-            break;
-        }
-    }
-    if (!fileReportDate) {
-        toast({ variant: "destructive", title: "Sin Datos Válidos", description: "No se encontraron fechas válidas en la columna de fecha." });
-        setIsLoading(false);
-        return;
-    }
-    const reportDateStr = fileReportDate.toISOString().split('T')[0];
-    setReportDate(reportDateStr);
-    
-    const barcodeKey = Object.keys(data[0]).find(k => k.toLowerCase().includes('codigo barras'));
-    if (!barcodeKey) {
-        toast({ variant: "destructive", title: "Error de Archivo", description: "La columna 'codigo barras' no se encontró." });
-        setIsLoading(false);
-        return;
-    }
-    
     try {
-      const uniqueBarcodes = [...new Set(data.map(row => String(row[barcodeKey]).trim()).filter(Boolean))];
-      const productsResult = await getProductsByBarcodes(uniqueBarcodes);
-      
-      if (productsResult.error) {
-          throw new Error(productsResult.error);
-      }
-      
-      const loadedProductDB = productsResult.data || [];
-      const productMap = new Map(loadedProductDB.map(p => [p.codigoBarras, p]));
-      setProductDB(loadedProductDB);
-      
-      const { sanitizedData, discardedRecords: newDiscardedRecords } = getSanitizedData(
-        data,
-        reportDateStr,
-        manualOperatorMappings,
-      );
-      
-      setSanitizedRecordCount(sanitizedData.length);
-      setDiscardedRecords(newDiscardedRecords);
-      
-      setRawData(sanitizedData);
-      setFileName(name);
+        // Now that rawData is set, the configuration screen can use it.
+        // We extract initial necessary info here to set up the config screen.
+        
+        const fechaKey = Object.keys(data[0] || {}).find(k => k.toLowerCase().trim() === 'fecha lectura' || k.toLowerCase().trim() === 'fechalectura');
+        if (!fechaKey) {
+            throw new Error("La columna de fecha ('Fecha Lectura') no se encontró.");
+        }
+        
+        const fileReportDate = data.map(row => parseFlexibleDate(row[fechaKey])).find(date => date instanceof Date && !isNaN(date.getTime()));
+        if (!fileReportDate) {
+            throw new Error("No se encontraron fechas válidas en la columna de fecha.");
+        }
+        const reportDateStr = fileReportDate.toISOString().split('T')[0];
+        setReportDate(reportDateStr);
+        
+        const barcodeKey = Object.keys(data[0]).find(k => k.toLowerCase().includes('codigo barras'));
+        if (!barcodeKey) {
+            throw new Error("La columna 'codigo barras' no se encontró.");
+        }
+        
+        const uniqueBarcodes = [...new Set(data.map(row => String(row[barcodeKey]).trim()).filter(Boolean))];
+        const productsResult = await getProductsByBarcodes(uniqueBarcodes);
+        
+        if (productsResult.error) {
+            throw new Error(productsResult.error);
+        }
+        
+        const loadedProductDB = productsResult.data || [];
+        const productMap = new Map(loadedProductDB.map(p => [p.codigoBarras, p]));
+        setProductDB(loadedProductDB);
+        
+        const { sanitizedData, discardedRecords: newDiscardedRecords } = getSanitizedData(
+            data,
+            reportDateStr,
+            manualOperatorMappings
+        );
+        
+        setSanitizedRecordCount(sanitizedData.length);
+        setDiscardedRecords(newDiscardedRecords);
+        setRawData(sanitizedData); // Overwrite with sanitized data
 
-      const referencesToCorrect = extractUniqueReferences(sanitizedData, productMap);
-      setUniqueReferences(referencesToCorrect);
+        const referencesToCorrect = extractUniqueReferences(sanitizedData, productMap);
+        setUniqueReferences(referencesToCorrect);
 
-      const extractedPackers = extractPackersFromReport(sanitizedData, manualOperatorMappings);
-      setInitialPackers(['all', ...extractedPackers]);
-      
-      setAppStep('configure');
+        const extractedPackers = extractPackersFromReport(sanitizedData, manualOperatorMappings);
+        setInitialPackers(['all', ...extractedPackers]);
+        
+        setAppStep('configure');
 
-    } catch(e: any) {
+    } catch (e: any) {
         console.error("Error durante el procesamiento:", e);
         setError("Error al procesar el archivo: " + e.message);
+        setRawData(null); // Clear raw data on error
+    } finally {
+        setIsLoading(false);
     }
-
-    setIsLoading(false);
-  }, [toast, manualOperatorMappings]);
+}, [manualOperatorMappings]);
   
     useEffect(() => {
         if (rawData && reportDate && reportStartTime && reportEndTime) {
@@ -272,44 +268,78 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
 
   const handleCalculate = useCallback(async () => {
     const calculationLogic = async () => {
-        setIsLoading(true);
-        setError(null);
-        setReportData(null);
-        
-        try {
-            const finalProcessedData = processReport(
-                processedDataForReport,
-                brandProductTypeGoals,
-                reportDate,
-                reportStartTime,
-                reportEndTime,
-                manualJustifications,
-                configSelectedPacker,
-                incidentLog
-            );
-            
-            if (finalProcessedData.packerProductivity.length === 0) {
-                setError("No se encontraron datos de productividad para los filtros seleccionados.");
-                setAppStep('configure');
-            } else {
-                finalProcessedData.annotations = annotations;
-                finalProcessedData.processedData = processedDataForReport; // Attach the processed data for saving
-                await saveReportToHistory(finalProcessedData);
-                setReportData(finalProcessedData);
-                
-                const newLearned = { ...learnedCorrections, ...referenceCorrections };
-                setLearnedCorrections(newLearned);
-                localStorage.setItem('learnedCorrections', JSON.stringify(newLearned));
-                
-                setAppStep('dashboard');
-            }
-        } catch (e: any) {
-            console.error(e);
-            setError("Ocurrió un error al procesar el archivo: " + e.message);
-            setAppStep('configure');
-        } finally {
-            setIsLoading(false);
+      if (!rawData) {
+        toast({
+          variant: "destructive",
+          title: "Error de Datos",
+          description: "No hay datos crudos para procesar. Por favor, cargue un archivo primero.",
+        });
+        return;
+      }
+
+      setIsLoading(true);
+      setError(null);
+      setReportData(null);
+
+      try {
+        const productMap = new Map(productDB.map(p => [p.codigoBarras, p]));
+        const combinedCorrections = { ...learnedCorrections, ...referenceCorrections };
+
+        const processedDataForReport = rawData.map(entry => {
+          const { productType, brand, finalDescription, finalReference } = classifyProduct(
+            entry,
+            manualClassifications,
+            combinedCorrections,
+            productMap
+          );
+          return {
+            ...entry,
+            productType,
+            marca: brand,
+            descripcion: finalDescription,
+            referencia: finalReference
+          };
+        });
+
+        const finalProcessedData = processReport(
+          processedDataForReport,
+          brandProductTypeGoals,
+          reportDate,
+          reportStartTime,
+          reportEndTime,
+          manualJustifications,
+          configSelectedPacker,
+          incidentLog
+        );
+
+        if (finalProcessedData.packerProductivity.length === 0) {
+          setError("No se encontraron datos de productividad para los filtros seleccionados.");
+          setAppStep('configure');
+          toast({
+            variant: "destructive",
+            title: "Cálculo sin resultados",
+            description: "No se generó productividad. Verifique los filtros (fecha, hora, operarios) y los datos de entrada.",
+            duration: 10000,
+          });
+        } else {
+          finalProcessedData.annotations = annotations;
+          finalProcessedData.processedData = processedDataForReport;
+          await saveReportToHistory(finalProcessedData);
+          setReportData(finalProcessedData);
+
+          const newLearned = { ...learnedCorrections, ...referenceCorrections };
+          setLearnedCorrections(newLearned);
+          localStorage.setItem('learnedCorrections', JSON.stringify(newLearned));
+
+          setAppStep('dashboard');
         }
+      } catch (e: any) {
+        console.error(e);
+        setError("Ocurrió un error al procesar el archivo: " + e.message);
+        setAppStep('configure');
+      } finally {
+        setIsLoading(false);
+      }
     };
 
     setCostWarning({
@@ -318,7 +348,22 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
         description: "Esta acción procesará los datos y guardará el reporte como un 'snapshot' en la base de datos (Firestore), lo que podría incurrir en costos. ¿Desea continuar?",
         onConfirm: calculationLogic,
     });
-  }, [brandProductTypeGoals, reportDate, reportStartTime, reportEndTime, manualJustifications, configSelectedPacker, incidentLog, annotations, learnedCorrections, referenceCorrections, processedDataForReport]);
+  }, [
+      rawData, 
+      productDB, 
+      learnedCorrections, 
+      referenceCorrections, 
+      manualClassifications, 
+      brandProductTypeGoals, 
+      reportDate, 
+      reportStartTime, 
+      reportEndTime, 
+      manualJustifications, 
+      configSelectedPacker, 
+      incidentLog, 
+      annotations, 
+      toast
+  ]);
 
   const handleSessionChange = useCallback(async (newSession: PackingSession) => {
     setCurrentSession(newSession);
@@ -390,7 +435,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
     else { alert("No se pudo obtener una sugerencia de la IA."); }
   };
   
-  const handleReset = () => { setReportData(null); setError(null); setHistoricalData([]); };
+  const handleReset = () => { setReportData(null); setError(null); };
   
   const handleReturnToSuite = () => { handleReset(); setAppStep('suite'); };
   const handleNavigateToPackingModule = () => setAppStep('upload');
@@ -411,6 +456,12 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const handleNavigateToProductsManagement = () => setAppStep('products_management');
   const handleNavigateToTimeReportsMenu = () => setAppStep('time_reports_menu'); // Updated to navigate to the new menu
   const handleNavigateToOtherFeaturesModule = () => setAppStep('other_features');
+  const handleNavigateToRoutesModule = () => setAppStep('routes');
+  const handleNavigateToDashboardsModule = () => setAppStep('dashboards');
+  const handleNavigateToSampleControlModule = () => setAppStep('sample_control');
+  const handleNavigateToTransfersModule = () => setAppStep('transfers');
+  const handleNavigateToPropuestaTransportadora = () => setAppStep('propuesta_transportadora');
+  const handleNavigateToDispatchManager = () => setAppStep('dispatch_manager');
 
 
   const handleStartPacking = async (order: WholesaleOrder) => {
@@ -446,24 +497,8 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   };
 
   const handleGoToConfiguration = () => { setAppStep('configure'); };
-  const handleGoToHistorical = async () => {
-    const proceed = async () => {
-        setIsLoading(true);
-        const result = await loadHistoricalReports();
-        if (result.data) {
-            setHistoricalData(result.data);
-            setAppStep('historical');
-        } else {
-            setError(result.error || "No se pudieron cargar los datos históricos.");
-        }
-        setIsLoading(false);
-    }
-    setCostWarning({
-        isOpen: true,
-        title: "Cargar Historial",
-        description: "Esta acción leerá todos los reportes guardados de la base de datos (Firestore), lo que podría incurrir en costos si se supera la cuota gratuita de Firebase (50,000 lecturas/día). ¿Desea continuar?",
-        onConfirm: proceed,
-    });
+  const handleGoToHistorical = () => {
+    setAppStep('historical');
   };
   
   const handleNavigateToPackedOrdersDashboard = async () => {
@@ -541,11 +576,11 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
     const renderContent = () => {
       switch(appStep) {
           case 'suite':
-            return <SuiteDashboard onNavigateToPackingModule={handleNavigateToPackingModule} onNavigateToWholesaleModule={handleNavigateToWholesaleModule} onNavigateToLogisticsModule={handleNavigateToLogisticsModule} onNavigateToGeneralSettings={handleNavigateToGeneralSettings} onNavigateToLabelControlModule={handleNavigateToLabelControlModule} onNavigateToMerchandiseLabelingModule={handleNavigateToMerchandiseLabelingModule} onNavigateToBagDistributionModule={handleNavigateToBagDistributionModule} onNavigateToMerchandiseReceptionModule={handleNavigateToMerchandiseReceptionModule} onNavigateToOtherFeaturesModule={handleNavigateToOtherFeaturesModule} />;
+            return <SuiteDashboard onNavigateToPackingModule={handleNavigateToPackingModule} onNavigateToWholesaleModule={handleNavigateToWholesaleModule} onNavigateToLogisticsModule={handleNavigateToLogisticsModule} onNavigateToGeneralSettings={handleNavigateToGeneralSettings} onNavigateToLabelControlModule={handleNavigateToLabelControlModule} onNavigateToMerchandiseLabelingModule={handleNavigateToMerchandiseLabelingModule} onNavigateToBagDistributionModule={handleNavigateToBagDistributionModule} onNavigateToMerchandiseReceptionModule={handleNavigateToMerchandiseReceptionModule} onNavigateToOtherFeaturesModule={handleNavigateToOtherFeaturesModule} onNavigateToRoutesModule={handleNavigateToRoutesModule} onNavigateToDashboardsModule={handleNavigateToDashboardsModule} onNavigateToSampleControlModule={handleNavigateToSampleControlModule} onNavigateToTransfersModule={handleNavigateToTransfersModule} onNavigateToDispatchManager={handleNavigateToDispatchManager}/>;
           case 'upload': return <FileUpload onProcessFile={handleFileProcess} isLoading={isLoading} onGoToHistorical={handleGoToHistorical} onReturnToSuite={handleReturnToSuite} />;
-          case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} onProcessedDataChange={setProcessedDataForReport} />;
+          case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} />;
           case 'dashboard': return reportData && <Dashboard data={reportData} fileName={fileName} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} onGoToConfiguration={handleGoToConfiguration} onGoToPlantView={handleGoToPlantView} onGoToSupervisorView={handleGoToSupervisorView} onRequestAIInsight={handleRequestAIInsight} theme={theme} annotations={annotations} onAnnotationChange={handleAnnotationChange} />;
-          case 'historical': return <HistoricalDashboard data={historicalData} onReturnToMain={() => setAppStep('upload')} onConsolidate={consolidateDailyReports} theme={theme} />;
+          case 'historical': return <HistoricalDashboard onReturnToMain={() => setAppStep('upload')} onConsolidate={consolidateDailyReports} theme={theme} />;
           case 'plant_view': return reportData && <PlantView data={reportData} onReturnToDashboard={handleReturnToDashboard} theme={theme} />;
           case 'supervisor_view': return reportData && <SupervisorView data={reportData} onReturnToDashboard={handleReturnToDashboard} />;
           case 'wholesale': return <WholesaleDashboard 
@@ -574,9 +609,16 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           case 'time_reports': return <TimeReports onReturn={() => setAppStep('time_reports_menu')} />;
           case 'idle_time_report': return <IdleTimeReportGenerator onReturn={() => setAppStep('time_reports_menu')} />;
           case 'other_features': return <OtherFeatures onReturnToSuite={handleReturnToSuite} />;
+          case 'fletes_vtex': return <FletesVtex onReturn={() => setAppStep('other_features')} />;
           case 'reception_reading': return receptionOperationId ? <ReceptionReadingScreen operationId={receptionOperationId} onReturnToOperations={() => setAppStep('merchandise_reception')} /> : null;
           case 'credit_simulator': return <CreditSimulator onReturn={() => setAppStep('other_features')} />;
           case 'returns_module': return <ReturnsModule onReturn={() => setAppStep('other_features')} />;
+          case 'routes': return <RoutesModule onReturnToSuite={handleReturnToSuite} />;
+          case 'dashboards': return <DashboardsModule onReturnToSuite={handleReturnToSuite} />;
+          case 'sample_control': return <SampleControl onReturnToSuite={handleReturnToSuite} />;
+          case 'transfers': return <TransfersModule onReturnToSuite={handleReturnToSuite} />;
+          case 'propuesta_transportadora': return <PropuestaTransportadora onReturn={() => setAppStep('other_features')} />;
+          case 'dispatch_manager': return <DispatchManager onReturnToSuite={handleReturnToSuite} />;
           case 'packing':
             if (packingOrder && currentSession) {
               return <PackingScreen 
@@ -595,7 +637,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
               </div>
             );
           default: 
-            return <SuiteDashboard onNavigateToPackingModule={handleNavigateToPackingModule} onNavigateToWholesaleModule={handleNavigateToWholesaleModule} onNavigateToLogisticsModule={handleNavigateToLogisticsModule} onNavigateToGeneralSettings={handleNavigateToGeneralSettings} onNavigateToLabelControlModule={handleNavigateToLabelControlModule} onNavigateToMerchandiseLabelingModule={handleNavigateToMerchandiseLabelingModule} onNavigateToBagDistributionModule={handleNavigateToBagDistributionModule} onNavigateToMerchandiseReceptionModule={handleNavigateToMerchandiseReceptionModule} onNavigateToOtherFeaturesModule={handleNavigateToOtherFeaturesModule} />;
+            return <SuiteDashboard onNavigateToPackingModule={handleNavigateToPackingModule} onNavigateToWholesaleModule={handleNavigateToWholesaleModule} onNavigateToLogisticsModule={handleNavigateToLogisticsModule} onNavigateToGeneralSettings={handleNavigateToGeneralSettings} onNavigateToLabelControlModule={handleNavigateToLabelControlModule} onNavigateToMerchandiseLabelingModule={handleNavigateToMerchandiseLabelingModule} onNavigateToBagDistributionModule={handleNavigateToBagDistributionModule} onNavigateToMerchandiseReceptionModule={handleNavigateToMerchandiseReceptionModule} onNavigateToOtherFeaturesModule={handleNavigateToOtherFeaturesModule} onNavigateToRoutesModule={handleNavigateToRoutesModule} onNavigateToDashboardsModule={handleNavigateToDashboardsModule} onNavigateToSampleControlModule={handleNavigateToSampleControlModule} onNavigateToTransfersModule={handleNavigateToTransfersModule} onNavigateToDispatchManager={handleNavigateToDispatchManager}/>;
       }
     }
 

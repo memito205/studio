@@ -339,7 +339,12 @@ const ItemDashboard: React.FC<ItemDashboardProps> = ({
 
         <div className="overflow-x-auto bg-slate-850 p-4 rounded-lg shadow-md">
           <h3 className="text-xl font-semibold mb-4 text-sky-400">Resumen de Pronósticos y Cantidad a Comprar</h3>
-           <p className="text-xs text-slate-400 mb-2">Las columnas "Pron." muestran: <code className="bg-slate-700 px-1 rounded">Valor Base</code> / <code className="bg-slate-700 px-1 rounded">Valor Ajustado con % AJS</code>. Debajo, 'Comprar:' indica la cantidad necesaria para cubrir la demanda ajustada de ese período, considerando el inventario proyectado de períodos anteriores. Pronósticos pueden incluir ajustes por outliers y estacionalidad.</p>
+           <div className="text-xs text-slate-400 mb-2 space-y-1">
+                <p>Las columnas "Pron." muestran: <code className="bg-slate-700 px-1 rounded">Valor Base</code> / <code className="bg-slate-700 px-1 rounded">Valor Ajustado con % AJS</code>. Debajo, 'Comprar:' indica la cantidad necesaria para cubrir la demanda ajustada de ese período, considerando el inventario proyectado de períodos anteriores.</p>
+                <p>* N/D: No Disponible. El pronóstico se basa en el método con el menor error histórico (MAE) de un conjunto de modelos (SMA, SES, WMA, Regresión Lineal).</p>
+                <p>* Compra Sugerida Final (+AJS) considera el porcentaje histórico de consumo 'AJS' para ajustar la recomendación base.</p>
+                <p>* Faltante Próx.Per. considera la demanda estimada desde la fecha actual hasta el fin del mes en curso.</p>
+           </div>
           <table className="w-full min-w-[1600px] text-left text-sm">
             <thead className="bg-slate-700 text-slate-300">
               <tr>
@@ -399,9 +404,6 @@ const ItemDashboard: React.FC<ItemDashboardProps> = ({
               })}
             </tbody>
           </table>
-          <p className="text-xs text-slate-500 mt-2">* N/D: No Disponible. El pronóstico se basa en el método con el menor error histórico (MAE) de un conjunto de modelos (SMA, SES, WMA, Regresión Lineal).</p>
-           <p className="text-xs text-slate-500 mt-1">* Compra Sugerida Final (+AJS) considera el porcentaje histórico de consumo 'AJS' para ajustar la recomendación base.</p>
-           <p className="text-xs text-slate-500 mt-1">* Faltante Próx.Per. considera la demanda estimada desde la fecha actual hasta el fin del próximo mes calendario completo.</p>
         </div>
         </>
       )}

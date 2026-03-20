@@ -1,7 +1,5 @@
 
-
-
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import type { 
     BodegaInventory, 
     DistributionResult, 
@@ -16,6 +14,9 @@ import { UploadIcon } from './icons/UploadIcon';
 import { InfoIcon } from './icons/InfoIcon';
 import { DistributionExplanationModal } from './DistributionExplanationModal';
 import * as XLSX from 'xlsx';
+import { DISTRIBUTION_COVERAGE_DAYS, SPECIAL_COVERAGE_BODEGAS, MIN_MONTHS_FOR_DIRECT_FORECAST, MAX_CV_FOR_DIRECT_FORECAST } from './constants';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 
 
 interface DistributionDashboardProps {
@@ -35,6 +36,44 @@ const DistributionDashboard: React.FC<DistributionDashboardProps> = ({
   const [fileName, setFileName] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [selectedResultForModal, setSelectedResultForModal] = useState<DistributionResult | null>(null);
+  const [bodegaCoverageConfig, setBodegaCoverageConfig] = useState<Record<string, number>>({});
+  
+  // State for new sensitivity parameters
+  const [minMonths, setMinMonths] = useState<number>(MIN_MONTHS_FOR_DIRECT_FORECAST);
+  const [maxCv, setMaxCv] = useState<number>(MAX_CV_FOR_DIRECT_FORECAST);
+
+
+  const uniqueBodegas = useMemo(() => {
+    const bodegasFromInventory = new Set(bodegaInventories.map(inv => inv.bodega));
+    const bodegasFromHistory = new Set(allProcessedRows.map(row => row.bodega).filter(Boolean) as string[]);
+    return Array.from(new Set([...bodegasFromInventory, ...bodegasFromHistory])).sort();
+  }, [bodegaInventories, allProcessedRows]);
+
+  useEffect(() => {
+    if (uniqueBodegas.length > 0) {
+      const initialConfig: Record<string, number> = {};
+      uniqueBodegas.forEach(bodega => {
+        initialConfig[bodega] = SPECIAL_COVERAGE_BODEGAS[bodega] || DISTRIBUTION_COVERAGE_DAYS;
+      });
+      setBodegaCoverageConfig(initialConfig);
+    }
+  }, [uniqueBodegas]);
+
+  const handleCoverageChange = (bodega: string, value: string) => {
+    const numericValue = parseInt(value, 10);
+    if (!isNaN(numericValue) && numericValue > 0) {
+      setBodegaCoverageConfig(prev => ({ ...prev, [bodega]: numericValue }));
+    }
+  };
+
+  const handleApplyToAll = () => {
+    const firstValue = Object.values(bodegaCoverageConfig)[0] || DISTRIBUTION_COVERAGE_DAYS;
+    const newConfig: Record<string, number> = {};
+    uniqueBodegas.forEach(bodega => {
+      newConfig[bodega] = firstValue;
+    });
+    setBodegaCoverageConfig(newConfig);
+  };
 
 
   const handleOpenExplanationModal = (result: DistributionResult) => {
@@ -106,7 +145,10 @@ const DistributionDashboard: React.FC<DistributionDashboardProps> = ({
       const { results, logs } = calculateDistribution(
         allProcessedRows,
         bodegaInventories,
-        itemForecasts
+        itemForecasts,
+        bodegaCoverageConfig,
+        minMonths,
+        maxCv
       );
       
       setDistributionResults(results);
@@ -122,23 +164,24 @@ const DistributionDashboard: React.FC<DistributionDashboardProps> = ({
     } finally {
       setIsLoading(false);
     }
-  }, [allProcessedRows, bodegaInventories, itemForecasts]);
+  }, [allProcessedRows, bodegaInventories, itemForecasts, bodegaCoverageConfig, minMonths, maxCv]);
 
   const handleExportCSV = useCallback(() => {
     if (distributionResults.length === 0) return;
 
     const headers = [
-      "Bodega", "Ítem", "Inv. Actual (Bodega)", 
+      "Bodega", "Ítem", "Inv. Actual (Bodega)", "Cobertura Inv. Actual (Días)",
       "Demanda Diaria (Ajustada)", "Inv. Objetivo", "Cantidad a Enviar"
     ];
 
     const rows = distributionResults.map(dr => [
       dr.bodega,
       dr.itemCode,
-      dr.calculationTrace.currentBodegaInventory.toLocaleString(),
-      dr.calculationTrace.effectiveBodegaDailyForecast_AjsAdjusted !== null ? dr.calculationTrace.effectiveBodegaDailyForecast_AjsAdjusted.toLocaleString() : 'N/D',
-      dr.calculationTrace.targetInventory !== null ? dr.calculationTrace.targetInventory.toLocaleString() : 'N/D',
-      dr.quantityToSend.toLocaleString(),
+      dr.currentBodegaInventory.toLocaleString('es-CO'),
+      dr.currentInventoryCoverageDays !== null && dr.currentInventoryCoverageDays < 999 ? dr.currentInventoryCoverageDays.toFixed(1) : (dr.currentInventoryCoverageDays === 0 ? '0.0' : '999+'),
+      dr.calculationTrace?.effectiveBodegaDailyForecast_AjsAdjusted !== null && dr.calculationTrace?.effectiveBodegaDailyForecast_AjsAdjusted !== undefined ? dr.calculationTrace?.effectiveBodegaDailyForecast_AjsAdjusted.toLocaleString('es-CO', {maximumFractionDigits: 2}) : 'N/D',
+      dr.targetInventoryForCoverage?.toLocaleString('es-CO') ?? 'N/D',
+      dr.quantityToSend.toLocaleString('es-CO'),
     ].map(String));
 
     let csvContent = "data:text/csv;charset=utf-8," 
@@ -305,8 +348,61 @@ const DistributionDashboard: React.FC<DistributionDashboardProps> = ({
       {bodegaInventories.length > 0 && (
         <div className="bg-slate-800 shadow-2xl rounded-xl p-6">
           <h2 className="text-3xl font-bold mb-6 text-sky-400 border-b-2 border-sky-500 pb-2">
-            2. Calcular Distribución
+            2. Configuración de Cobertura y Cálculo
           </h2>
+
+          <div className="mb-6 p-4 border border-slate-700 rounded-lg space-y-4">
+            <div>
+              <h4 className="text-lg font-semibold text-slate-200 mb-2">Parámetros de Sensibilidad del Pronóstico</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                      <label htmlFor="min-months" className="block text-sm font-medium text-slate-300 mb-1">Meses Mínimos para Pronóstico Directo</label>
+                      <Input
+                          id="min-months"
+                          type="number"
+                          value={minMonths}
+                          onChange={(e) => setMinMonths(parseInt(e.target.value, 10) || 0)}
+                          className="w-full bg-slate-700 border-slate-600 px-2 py-1"
+                      />
+                      <p className="text-xs text-slate-500 mt-1">Define el historial mínimo para confiar en los datos de una bodega.</p>
+                  </div>
+                  <div>
+                      <label htmlFor="max-cv" className="block text-sm font-medium text-slate-300 mb-1">Coef. Variación Máximo (CV)</label>
+                      <Input
+                          id="max-cv"
+                          type="number"
+                          step="0.1"
+                          value={maxCv}
+                          onChange={(e) => setMaxCv(parseFloat(e.target.value) || 0)}
+                          className="w-full bg-slate-700 border-slate-600 px-2 py-1"
+                      />
+                      <p className="text-xs text-slate-500 mt-1">Define la estabilidad máxima del consumo. Menor es más estricto.</p>
+                  </div>
+              </div>
+            </div>
+            
+            <div className="border-t border-slate-700 pt-4">
+              <h4 className="text-lg font-semibold text-slate-200 mb-2">Días de Cobertura por Bodega</h4>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 max-h-60 overflow-y-auto">
+                {uniqueBodegas.map(bodega => (
+                  <div key={bodega} className="flex items-center gap-2">
+                    <label htmlFor={`cov-${bodega}`} className="text-sm text-slate-300 whitespace-nowrap">{bodega}:</label>
+                    <Input
+                      id={`cov-${bodega}`}
+                      type="number"
+                      value={bodegaCoverageConfig[bodega] || ''}
+                      onChange={(e) => handleCoverageChange(bodega, e.target.value)}
+                      className="w-20 bg-slate-700 border-slate-600 px-2 py-1 h-8"
+                    />
+                  </div>
+                ))}
+              </div>
+              {uniqueBodegas.length > 0 && (
+                <Button onClick={handleApplyToAll} variant="link" className="text-sky-400 mt-2 px-0">Aplicar a todo</Button>
+              )}
+            </div>
+          </div>
+          
           <button
             onClick={handleCalculateDistribution}
             disabled={isLoading || bodegaInventories.length === 0}
@@ -337,7 +433,7 @@ const DistributionDashboard: React.FC<DistributionDashboardProps> = ({
                   <div key={itemCode} className="flex justify-between items-baseline">
                     <span className="font-medium text-slate-200">{itemCode}:</span>
                     <span className="font-semibold text-teal-300 ml-2">
-                      {totalQuantity.toLocaleString()}
+                      {totalQuantity.toLocaleString('es-CO')}
                     </span>
                   </div>
                 ))}
@@ -371,9 +467,9 @@ const DistributionDashboard: React.FC<DistributionDashboardProps> = ({
                   <tr>
                     <th className="px-4 py-3">Bodega</th>
                     <th className="px-4 py-3">Ítem</th>
-                    <th className="px-4 py-3 text-right">Inv. Actual (Bodega)</th>
-                    <th className="px-4 py-3 text-right">Demanda Pron. Cobertura</th>
-                    <th className="px-4 py-3 text-right">Inv. Objetivo Cobertura</th>
+                    <th className="px-4 py-3 text-right">Inv. Actual</th>
+                    <th className="px-4 py-3 text-right">Cobertura Inv. Actual (Días)</th>
+                    <th className="px-4 py-3 text-right">Inv. Objetivo</th>
                     <th className="px-4 py-3 text-right font-semibold text-teal-300">Cantidad a Enviar</th>
                     <th className="px-4 py-3">Notas</th>
                     <th className="px-4 py-3 text-center">Info</th>
@@ -388,11 +484,13 @@ const DistributionDashboard: React.FC<DistributionDashboardProps> = ({
                     >
                       <td className="px-4 py-3">{dr.bodega}</td>
                       <td className="px-4 py-3 font-medium">{dr.itemCode}</td>
-                      <td className="px-4 py-3 text-right">{dr.currentBodegaInventory.toLocaleString()}</td>
-                      <td className="px-4 py-3 text-right">{dr.forecastedDemandForCoverage?.toLocaleString() ?? 'N/D'}</td>
-                      <td className="px-4 py-3 text-right">{dr.targetInventoryForCoverage?.toLocaleString() ?? 'N/D'}</td>
+                      <td className="px-4 py-3 text-right">{dr.currentBodegaInventory.toLocaleString('es-CO')}</td>
+                       <td className={`px-4 py-3 text-right font-medium ${dr.currentInventoryCoverageDays !== null && dr.currentInventoryCoverageDays < (dr.calculationTrace?.coverageDays || DISTRIBUTION_COVERAGE_DAYS) ? 'text-amber-400' : 'text-slate-300'}`}>
+                          {dr.currentInventoryCoverageDays !== null && dr.currentInventoryCoverageDays < 999 ? dr.currentInventoryCoverageDays.toFixed(1) : (dr.currentInventoryCoverageDays === 0 ? '0.0' : '999+')}
+                       </td>
+                      <td className="px-4 py-3 text-right">{dr.targetInventoryForCoverage?.toLocaleString('es-CO') ?? 'N/D'}</td>
                       <td className={`px-4 py-3 text-right font-semibold ${dr.quantityToSend > 0 ? 'text-teal-400' : 'text-slate-300'}`}>
-                        {dr.quantityToSend.toLocaleString()}
+                        {dr.quantityToSend.toLocaleString('es-CO')}
                       </td>
                       <td className="px-4 py-3 text-sm text-slate-300">{dr.notes}</td>
                       <td className="px-4 py-3 text-center">

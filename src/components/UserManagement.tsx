@@ -119,6 +119,7 @@ export const UserManagement = () => {
                         <SelectContent>
                             <SelectItem value="operator">Operario</SelectItem>
                             <SelectItem value="supervisor">Supervisor</SelectItem>
+                            <SelectItem value="conductor">Conductor</SelectItem>
                             <SelectItem value="admin">Administrador</SelectItem>
                             <SelectItem value="office">Oficina</SelectItem>
                         </SelectContent>
@@ -172,6 +173,7 @@ export const UserManagement = () => {
                                         <SelectContent>
                                             <SelectItem value="operator">Operario</SelectItem>
                                             <SelectItem value="supervisor">Supervisor</SelectItem>
+                                            <SelectItem value="conductor">Conductor</SelectItem>
                                             <SelectItem value="admin">Administrador</SelectItem>
                                             <SelectItem value="office">Oficina</SelectItem>
                                         </SelectContent>

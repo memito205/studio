@@ -1,290 +1,501 @@
 
-
-
-
-
-import type { ProcessedRow, BodegaInventory, ItemForecast, DistributionResult, CalculationTrace, DirectForecastEligibility, ItemMonthlyData, MonthlyConsumption } from '@/types';
+import type { AllItemsMonthlyData, ItemMonthlyData, ItemForecast, MethodForecast, PeriodForecastValue, ItemParameters, MonthlyConsumption, ProcessedRow, CalculationTrace, DirectForecastEligibility, BodegaInventory, DistributionResult } from '@/types';
 import { 
-    BODEGAS_TO_EXCLUDE_FOR_DISTRIBUTION, 
-    DISTRIBUTION_COVERAGE_DAYS, 
-    SPECIAL_COVERAGE_BODEGAS,
+    SMA_PERIOD, SES_ALPHA, WMA_PERIOD, NUMBER_OF_FUTURE_PERIODS_FOR_RECOMMENDATION, 
+    MONTH_NAMES_ES, Z_SCORE_LOOKUP, DEFAULT_LEAD_TIME_DAYS, DEFAULT_SERVICE_LEVEL_PERCENTAGE,
+    BODEGAS_TO_EXCLUDE_FOR_DISTRIBUTION,
+    MAIN_CONSUMPTION_DOC_TYPES, ADJUSTMENT_DOC_TYPES,
+    DAMPING_FACTOR,
+    MINIMUM_SEASONAL_FACTORS,
     ITEM_SPECIFIC_ROUNDING_RULES,
-    DEFAULT_ROUNDING_MULTIPLE,
-    ADJUSTMENT_DOC_TYPES,
-    MAIN_CONSUMPTION_DOC_TYPES,
-    MIN_MONTHS_FOR_DIRECT_FORECAST,
-    MAX_CV_FOR_DIRECT_FORECAST
+    DEFAULT_ROUNDING_MULTIPLE
 } from '@/components/bag-distribution/constants';
-import { generateAllForecasts } from './forecastingEngine'; // Necesario para el pronóstico directo
 import { parseRobustNumber } from '@/lib/parsingUtils';
+import { addDays, startOfWeek, format, isSameDay, differenceInDays, startOfDay } from 'date-fns';
+import { es } from 'date-fns/locale';
 
-/**
- * Parses the raw text content of a bodega inventory file.
- * Expects a CSV format with or without headers: Bodega,ItemCode,Quantity
- * @param fileContent - The raw string content of the file.
- * @returns An array of BodegaInventory objects.
- */
-export function parseBodegaInventoryFile(fileContent: string): BodegaInventory[] {
-    const lines = fileContent.split(/\r?\n/).filter(line => line.trim() !== '');
+export const parseBodegaInventoryFile = (fileContent: string): BodegaInventory[] => {
+  const lines = fileContent.split(/\r?\n/).filter(line => line.trim() !== '');
+  
+  return lines.map((line, index) => {
+    const parts = line.split(',');
+    if (parts.length < 3) {
+      console.warn(`Línea ${index + 1} omitida: formato incorrecto. Se esperan 3 columnas.`);
+      return null;
+    }
+    
+    const bodega = parts[0].trim();
+    const itemCodeAsNumber = parseInt(parts[1].trim(), 10);
+    if(isNaN(itemCodeAsNumber)) {
+        console.warn(`Línea ${index + 1} omitida: código de ítem inválido.`);
+        return null;
+    }
+    const itemCode = itemCodeAsNumber.toString();
+    
+    const quantity = parseInt(parts[2].trim(), 10);
+    
+    if (!bodega || !itemCode || isNaN(quantity)) {
+      console.warn(`Línea ${index + 1} omitida: datos inválidos. Bodega: ${bodega}, Item: ${itemCode}, Cant: ${quantity}`);
+      return null;
+    }
+    
+    return { bodega, itemCode, quantity };
+  }).filter((item): item is BodegaInventory => item !== null);
+};
 
-    return lines.map((line, index) => {
-        const parts = line.split(',');
-        if (parts.length < 3) {
-            console.warn(`Skipping malformed line ${index + 1} in inventory file: ${line}`);
-            return null;
+
+// --- Forecasting Helper Functions (copied for independence) ---
+const getWMAWeights = (period: number): number[] => {
+  if (period <= 0) return [];
+  const denominator = (period * (period + 1)) / 2;
+  const weights: number[] = [];
+  for (let i = 0; i < period; i++) {
+    weights.push((i + 1) / denominator);
+  }
+  return weights; 
+};
+
+const calculateMAE = (actuals: number[], historicalFit: (number | null)[]): number | null => {
+    let sumAbsError = 0;
+    let count = 0;
+    for (let i = 0; i < actuals.length; i++) {
+        if (historicalFit[i] !== null && actuals[i] !== undefined) {
+            sumAbsError += Math.abs(actuals[i] - historicalFit[i]!);
+            count++;
         }
+    }
+    return count > 0 ? sumAbsError / count : null;
+};
 
-        const bodega = parts[0].trim().toUpperCase();
-        // Standardize item code by converting to number to remove leading zeros, then back to string.
-        const rawItemCode = parts[1].trim();
-        const itemCodeAsNumber = parseInt(rawItemCode, 10);
-        if (isNaN(itemCodeAsNumber)) {
-            console.warn(`Skipping line ${index + 1} due to invalid item code: ${line}`);
-            return null;
-        }
-        const itemCode = itemCodeAsNumber.toString();
-        
-        const parsedQuantity = parseRobustNumber(parts[2] || '0');
-        
-        if (isNaN(parsedQuantity)) {
-             console.warn(`Skipping line ${index + 1} due to invalid quantity (header?): ${line}`);
-            return null;
-        }
-        return {
-            bodega: bodega,
-            itemCode: itemCode,
-            quantity: parsedQuantity,
-        };
-    }).filter((item): item is BodegaInventory => item !== null);
-}
+// Fit functions
+const calculateSMA_HistoricalFit = (data: number[], period: number) => {
+    const fit: (number | null)[] = Array(data.length).fill(null);
+    if (data.length < period) return fit;
+    for (let i = period; i < data.length; i++) {
+        const sum = data.slice(i - period, i).reduce((acc, val) => acc + val, 0);
+        fit[i] = Math.round(sum / period);
+    }
+    return fit;
+};
 
-// Helper to check if a bodega has enough stable history for a direct forecast
+const calculateSES_HistoricalFit = (data: number[], alpha: number) => {
+    const fit: (number | null)[] = Array(data.length).fill(null);
+    if (data.length === 0) return fit;
+    fit[0] = data[0]; 
+    let smoothed = data[0];
+    for (let i = 1; i < data.length; i++) {
+        fit[i] = Math.round(smoothed); 
+        smoothed = alpha * data[i] + (1 - alpha) * smoothed;
+    }
+    return fit;
+};
+
+const calculateWMA_HistoricalFit = (data: number[], period: number) => {
+    const fit: (number | null)[] = Array(data.length).fill(null);
+    const weights = getWMAWeights(period);
+    if (data.length < period || weights.length !== period) return fit;
+    for (let i = period; i < data.length; i++) {
+        const relevantData = data.slice(i - period, i);
+        let forecast = 0;
+        for (let j = 0; j < period; j++) {
+            forecast += relevantData[j] * weights[j];
+        }
+        fit[i] = Math.round(forecast);
+    }
+    return fit;
+};
+
+const calculateLinearRegression_HistoricalFit = (data: number[]) => {
+    const n = data.length;
+    const fit: (number | null)[] = Array(n).fill(null);
+    if (n < 2) return fit;
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+    for (let i = 0; i < n; i++) { sumX += i; sumY += data[i]; sumXY += i * data[i]; sumX2 += i * i; }
+    const denominator = n * sumX2 - sumX * sumX;
+    if (denominator === 0) return fit;
+    const slope = (n * sumXY - sumX * sumY) / denominator;
+    const intercept = (sumY - slope * sumX) / n;
+    for (let i = 0; i < n; i++) fit[i] = Math.round(Math.max(0, slope * i + intercept));
+    return fit;
+};
+
+const calculateSimpleAverage_HistoricalFit = (data: number[]) => {
+    const fit: (number | null)[] = Array(data.length).fill(null);
+    if (data.length === 0) return fit;
+    for(let i=1; i<data.length; i++) { 
+        const historicalSlice = data.slice(0, i);
+        if(historicalSlice.length > 0) fit[i] = Math.round(historicalSlice.reduce((s,v)=>s+v,0) / historicalSlice.length);
+    }
+    return fit;
+};
+
+// Forecast functions
+const calculateSMA_MultiStep = (data: number[], period: number, numForecasts: number) => {
+  if (data.length < period) return Array(numForecasts).fill(null);
+  let forecast = data.slice(-period).reduce((s, v) => s + v, 0) / period;
+  return Array(numForecasts).fill(Math.round(Math.max(0, forecast)));
+};
+const calculateSES_MultiStep = (data: number[], alpha: number, numForecasts: number) => {
+  if (data.length === 0) return [];
+  let smoothed = data[0];
+  for (let i = 1; i < data.length; i++) smoothed = alpha * data[i] + (1 - alpha) * smoothed;
+  return Array(numForecasts).fill(Math.round(Math.max(0, smoothed)));
+};
+const calculateWMA_MultiStep = (data: number[], period: number, numForecasts: number) => {
+  const weights = getWMAWeights(period);
+  if (data.length < period) return Array(numForecasts).fill(null);
+  let forecast = 0;
+  const relevantData = data.slice(-period);
+  for (let j = 0; j < period; j++) forecast += relevantData[j] * weights[j];
+  return Array(numForecasts).fill(Math.round(Math.max(0, forecast)));
+};
+const calculateLinearRegression_MultiStep = (data: number[], numForecasts: number, dampingFactor: number) => {
+  const n = data.length;
+  if (n < 2) return calculateSimpleAverage_MultiStep(data, numForecasts);
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  for (let i = 0; i < n; i++) { sumX += i; sumY += data[i]; sumXY += i * data[i]; sumX2 += i * i; }
+  const denominator = n * sumX2 - sumX * sumX;
+  if (denominator === 0) return calculateSimpleAverage_MultiStep(data, numForecasts);
+  const slope = (n * sumXY - sumX * sumY) / denominator;
+  const intercept = (sumY - slope * sumX) / n;
+  let forecasts = [];
+  for (let i = 1; i <= numForecasts; i++) {
+    forecasts.push(Math.round(Math.max(0, slope * (n + i - 1) + intercept)));
+  }
+  return forecasts;
+};
+const calculateSimpleAverage_MultiStep = (data: number[], numForecasts: number) => {
+    if (data.length === 0) return Array(numForecasts).fill(0);
+    const avg = data.reduce((s,v)=>s+v,0) / data.length;
+    return Array(numForecasts).fill(Math.round(Math.max(0, avg)));
+};
+
 function checkDirectForecastEligibility(
-  itemBodegaHistoricalData: ItemMonthlyData,
-  requiredMonths: number,
-  maxCv: number
+    bodegaItemHistory: ProcessedRow[],
+    minMonths: number,
+    maxCvThreshold: number
 ): DirectForecastEligibility {
-    const monthsOfHistory = itemBodegaHistoricalData.length;
-    if (monthsOfHistory < requiredMonths) {
-        return { isEligible: false, reason: `Datos insuficientes (${monthsOfHistory}/${requiredMonths} meses)`, monthsOfHistory, requiredMonths, coefficientOfVariation: null, maxCoefficientOfVariation: maxCv };
+    const eligibility = {
+        isEligible: false,
+        reason: "",
+        monthsOfHistory: 0,
+        requiredMonths: minMonths,
+        coefficientOfVariation: null,
+        maxCoefficientOfVariation: maxCvThreshold,
+    };
+
+    const monthlyConsumption: { [key: string]: number } = {};
+    bodegaItemHistory.forEach(row => {
+        const monthKey = format(row.date, 'yyyy-MM');
+        monthlyConsumption[monthKey] = (monthlyConsumption[monthKey] || 0) + row.quantity;
+    });
+
+    const monthsWithConsumption = Object.values(monthlyConsumption).filter(qty => qty > 0);
+    eligibility.monthsOfHistory = monthsWithConsumption.length;
+
+    if (eligibility.monthsOfHistory < minMonths) {
+        eligibility.reason = `Datos insuficientes (${eligibility.monthsOfHistory} < ${minMonths} meses)`;
+        return eligibility;
     }
 
-    const quantities = itemBodegaHistoricalData.map(d => d.totalQuantity);
-    const mean = quantities.reduce((a, b) => a + b, 0) / monthsOfHistory;
-
+    const mean = monthsWithConsumption.reduce((sum, qty) => sum + qty, 0) / eligibility.monthsOfHistory;
     if (mean === 0) {
-        return { isEligible: false, reason: "Consumo histórico es cero", monthsOfHistory, requiredMonths, coefficientOfVariation: 0, maxCoefficientOfVariation: maxCv };
+        eligibility.reason = "El consumo promedio es cero.";
+        return eligibility;
     }
-
-    const stdDev = Math.sqrt(quantities.map(x => Math.pow(x - mean, 2)).reduce((a, b) => a + b) / monthsOfHistory);
+    const stdDev = Math.sqrt(monthsWithConsumption.reduce((sum, qty) => sum + Math.pow(qty - mean, 2), 0) / eligibility.monthsOfHistory);
     const cv = stdDev / mean;
+    eligibility.coefficientOfVariation = cv;
 
-    if (cv > maxCv) {
-        return { isEligible: false, reason: `Volatilidad muy alta (CV: ${cv.toFixed(2)} > ${maxCv})`, monthsOfHistory, requiredMonths, coefficientOfVariation: cv, maxCoefficientOfVariation: maxCv };
+    if (cv > maxCvThreshold) {
+        eligibility.reason = `Consumo muy variable (CV = ${cv.toFixed(2)} > ${maxCvThreshold})`;
+        return eligibility;
     }
 
-    return { isEligible: true, reason: "Elegible para pronóstico directo", monthsOfHistory, requiredMonths, coefficientOfVariation: cv, maxCoefficientOfVariation: maxCv };
+    eligibility.isEligible = true;
+    eligibility.reason = `Elegible para pronóstico directo (CV: ${cv.toFixed(2)})`;
+    return eligibility;
+}
+
+function getNormalizedLocalAverageMonthly(bodegaItemHistory: ProcessedRow[]): { average: number, series: number[] } {
+    if (bodegaItemHistory.length === 0) return { average: 0, series: [] };
+
+    const sortedHistory = [...bodegaItemHistory].sort((a,b) => a.date.getTime() - b.date.getTime());
+    const firstDate = sortedHistory[0].date;
+    const lastDate = sortedHistory[sortedHistory.length - 1].date;
+
+    const monthlyConsumptionMap = new Map<string, number>();
+    sortedHistory.forEach(row => {
+        const monthKey = format(row.date, 'yyyy-MM');
+        monthlyConsumptionMap.set(monthKey, (monthlyConsumptionMap.get(monthKey) || 0) + row.quantity);
+    });
+
+    let totalMonths = 0;
+    const series: number[] = [];
+    let currentDate = new Date(firstDate.getFullYear(), firstDate.getMonth(), 1);
+
+    while (currentDate <= lastDate) {
+        const monthKey = format(currentDate, 'yyyy-MM');
+        const consumption = monthlyConsumptionMap.get(monthKey) || 0;
+        series.push(consumption);
+        totalMonths++;
+        currentDate.setMonth(currentDate.getMonth() + 1);
+    }
+    
+    const totalConsumption = series.reduce((sum, val) => sum + val, 0);
+    return {
+        average: totalMonths > 0 ? totalConsumption / totalMonths : 0,
+        series: series
+    };
 }
 
 
-/**
- * Calculates the distribution plan based on historical data, current inventories, and forecasts.
- * Implements a hybrid model: uses direct forecasting for stable bodegas, and historical share for others.
- * @param allProcessedRows - All historical consumption data.
- * @param bodegaInventories - Current inventory levels for each item in each bodega.
- * @param itemForecasts - The general purchase forecasts for each item.
- * @returns An object containing the results and diagnostic logs.
- */
+function detectAndAdjustOutliers(historicalData: ItemMonthlyData): { adjustedData: ItemMonthlyData, outliersAdjusted: boolean } {
+  if (historicalData.length < 12) { 
+    return { adjustedData: historicalData.map(d => ({...d, originalTotalQuantity: d.totalQuantity})), outliersAdjusted: false };
+  }
+
+  const quantities = historicalData.map(d => d.totalQuantity).sort((a, b) => a - b);
+  const q1Index = Math.floor(quantities.length / 4);
+  const q3Index = Math.ceil(quantities.length * (3 / 4)) -1; 
+  const q1 = quantities[q1Index];
+  const q3 = quantities[q3Index];
+  const iqr = q3 - q1;
+
+  const lowerBound = q1 - 1.5 * iqr;
+  const upperBound = q3 + 1.5 * iqr;
+  let outliersFound = false;
+
+  const adjustedData = historicalData.map(d => {
+    const originalQty = d.totalQuantity;
+    let newTotalQuantity = d.totalQuantity;
+    if (d.totalQuantity < lowerBound) {
+      newTotalQuantity = Math.max(0, Math.round(lowerBound)); 
+      outliersFound = true;
+    } else if (d.totalQuantity > upperBound) {
+      newTotalQuantity = Math.round(upperBound); 
+      outliersFound = true;
+    }
+    return { 
+        ...d, 
+        totalQuantity: newTotalQuantity,
+        originalTotalQuantity: originalQty 
+    };
+  });
+  return { adjustedData, outliersAdjusted: outliersFound };
+}
+
+
+function calculateSeasonalIndices(historicalData: ItemMonthlyData, minYears: number = 2): { indices: number[] | null; trace: string[] } {
+    const logs: string[] = [];
+    const numMonths = historicalData.length;
+    if (numMonths < minYears * 12) {
+        logs.push(`No se calculan índices estacionales, se requieren ${minYears*12} meses y hay ${numMonths}.`);
+        return { indices: null, trace: logs };
+    }
+
+    const quantities = historicalData.map(d => d.totalQuantity);
+    logs.push(`Cálculo sobre ${quantities.length} puntos de datos.`);
+
+    const cma = [];
+    const ma12 = [];
+    for (let i = 0; i <= numMonths - 12; i++) {
+        const sum = quantities.slice(i, i + 12).reduce((s, v) => s + v, 0);
+        ma12.push(sum / 12);
+    }
+    logs.push(`Se calcularon ${ma12.length} promedios móviles de 12 meses.`);
+
+    for (let i = 0; i < ma12.length - 1; i++) {
+        cma.push((ma12[i] + ma12[i+1]) / 2);
+    }
+    logs.push(`Se calcularon ${cma.length} promedios móviles centrados.`);
+
+    const ratios: { month: number; ratio: number }[] = [];
+    for (let i = 0; i < cma.length; i++) {
+        const dataIndex = i + 6; 
+        if (dataIndex < numMonths && cma[i] > 0) { 
+            ratios.push({
+                month: historicalData[dataIndex].month, 
+                ratio: quantities[dataIndex] / cma[i]
+            });
+        }
+    }
+    logs.push(`Se calcularon ${ratios.length} ratios de estacionalidad.`);
+
+    if (ratios.length === 0) {
+        logs.push("No se pudieron calcular ratios, se devolverán índices planos.");
+        return { indices: null, trace: logs };
+    }
+
+    const monthlyRatios: number[][] = Array.from({ length: 12 }, () => []);
+    ratios.forEach(r => {
+        monthlyRatios[r.month - 1].push(r.ratio);
+    });
+
+    const rawSeasonalIndices = monthlyRatios.map(monthRatiosList => {
+        if (monthRatiosList.length === 0) return 1; 
+        return monthRatiosList.reduce((s, v) => s + v, 0) / monthRatiosList.length;
+    });
+    logs.push(`Índices crudos calculados: [${rawSeasonalIndices.map(r => r.toFixed(2)).join(', ')}]`);
+
+    const sumRawIndices = rawSeasonalIndices.reduce((s, v) => s + v, 0);
+    if (sumRawIndices === 0) {
+        logs.push("La suma de índices es cero, devolviendo índices planos.");
+        return { indices: Array(12).fill(1), trace: logs };
+    }
+  
+    const normalizationFactor = 12 / sumRawIndices;
+    logs.push(`Factor de normalización: ${normalizationFactor.toFixed(3)}.`);
+    
+    const finalSeasonalIndices = rawSeasonalIndices.map(idx => idx * normalizationFactor);
+    logs.push(`Índices finales normalizados: [${finalSeasonalIndices.map(i => i.toFixed(2)).join(', ')}]`);
+
+    return { indices: finalSeasonalIndices, trace: logs };
+}
+
+function getMonthOffset(targetDate: Date, baseDate: Date): number {
+  const targetYear = targetDate.getFullYear();
+  const targetMonth = targetDate.getMonth();
+  const baseYear = baseDate.getFullYear();
+  const baseMonth = baseDate.getMonth();
+  return (targetYear - baseYear) * 12 + (targetMonth - baseMonth);
+}
+
+
 export function calculateDistribution(
   allProcessedRows: ProcessedRow[],
   bodegaInventories: BodegaInventory[],
-  itemForecasts: ItemForecast[]
-): { results: DistributionResult[], logs: string[] } {
+  itemForecasts: ItemForecast[],
+  bodegaCoverageConfig: Record<string, number>,
+  minMonthsForDirectForecast: number,
+  maxCvForDirectForecast: number
+): { results: DistributionResult[]; logs: string[] } {
     const results: DistributionResult[] = [];
-    const logs: string[] = [`Iniciando cálculo de distribución para ${bodegaInventories.length} registros de inventario.`];
-    
-    // Pre-calculate total historical consumption per item (for share calculation)
-    const totalItemConsumptionMap = new Map<string, number>();
-    allProcessedRows.forEach(row => {
-        if (!BODEGAS_TO_EXCLUDE_FOR_DISTRIBUTION.includes(row.bodega?.toUpperCase() || '')) {
-            totalItemConsumptionMap.set(row.itemCode, (totalItemConsumptionMap.get(row.itemCode) || 0) + row.quantity);
-        }
-    });
-    logs.push(`Se pre-calcularon ${totalItemConsumptionMap.size} consumos totales por ítem.`);
+    const logs: string[] = [];
 
-    // Pre-calculate historical consumption per item-bodega pair
-    const itemBodegaConsumptionMap = new Map<string, number>();
-    allProcessedRows.forEach(row => {
-        if (row.bodega && !BODEGAS_TO_EXCLUDE_FOR_DISTRIBUTION.includes(row.bodega.toUpperCase())) {
-            const key = `${row.itemCode}|${row.bodega}`;
-            itemBodegaConsumptionMap.set(key, (itemBodegaConsumptionMap.get(key) || 0) + row.quantity);
-        }
-    });
-
-    // Pre-calculate AJS percentage per bodega
-    const bodegaAjsStats = new Map<string, { main: number, ajs: number }>();
-    allProcessedRows.forEach(row => {
-        if (row.bodega) {
-            const stats = bodegaAjsStats.get(row.bodega) || { main: 0, ajs: 0 };
-            if (ADJUSTMENT_DOC_TYPES.includes(row.docType)) {
-                stats.ajs += row.quantity;
-            } else {
-                stats.main += row.quantity;
-            }
-            bodegaAjsStats.set(row.bodega, stats);
-        }
-    });
-     logs.push(`Se pre-calcularon estadísticas de AJS para ${bodegaAjsStats.size} bodegas.`);
-
-
-    // --- Main Loop: Iterate through each inventory entry (each item in each bodega) ---
+    const inventoryMap = new Map<string, number>();
     bodegaInventories.forEach(inv => {
-        logs.push(`---`);
-        logs.push(`Procesando Ítem: ${inv.itemCode}, Bodega: ${inv.bodega}, Inventario: ${inv.quantity}`);
-
-        if (BODEGAS_TO_EXCLUDE_FOR_DISTRIBUTION.includes(inv.bodega.toUpperCase())) {
-            logs.push(`-> OMITIDO: La bodega ${inv.bodega} está en la lista de exclusión.`);
-            return;
-        }
-
-        const trace: Partial<CalculationTrace> = { notes: [] };
-
-        // 1. Determine which forecast method to use (Direct vs. Share-based)
-        const itemBodegaHistory = allProcessedRows.filter(r => r.itemCode === inv.itemCode && r.bodega === inv.bodega);
-        const itemBodegaMonthlyData = aggregateRowsForItem(itemBodegaHistory);
-        trace.directForecastEligibility = checkDirectForecastEligibility(itemBodegaMonthlyData, MIN_MONTHS_FOR_DIRECT_FORECAST, MAX_CV_FOR_DIRECT_FORECAST);
-        logs.push(`--> Elegibilidad para pronóstico directo: ${trace.directForecastEligibility.reason}`);
-
-        let monthlyForecastForBodega: number;
-        let finalNotes: string[] = [];
-
-        if (trace.directForecastEligibility.isEligible) {
-            // -- TIER 1: DIRECT FORECAST LOGIC --
-            trace.calculationMethod = 'Pronóstico Directo';
-            finalNotes.push('Pronóstico Directo');
-            const localForecastData = new Map<string, ItemMonthlyData>([[inv.itemCode, itemBodegaMonthlyData]]);
-            const localForecastResult = generateAllForecasts(localForecastData, itemBodegaHistory, new Map(), new Map());
-            
-            const firstPeriodForecast = localForecastResult[0]?.aggregatedFutureForecasts[0];
-            monthlyForecastForBodega = firstPeriodForecast?.value ?? 0;
-            trace.localWinningMethod = localForecastResult[0]?.winningMethod || 'N/A';
-            logs.push(`--> Usando ${trace.calculationMethod}. Modelo ganador local: ${trace.localWinningMethod}. Pronóstico mensual local: ${monthlyForecastForBodega}`);
-        } else if (itemBodegaMonthlyData.length > 0) {
-            // -- TIER 2: SHORT HISTORY AVERAGE LOGIC --
-            trace.calculationMethod = 'Promedio Histórico Corto';
-            finalNotes.push('Promedio Hist. Corto');
-            const totalConsumption = itemBodegaMonthlyData.reduce((sum, month) => sum + month.totalQuantity, 0);
-            const numberOfMonths = itemBodegaMonthlyData.length;
-            monthlyForecastForBodega = totalConsumption / numberOfMonths;
-            logs.push(`--> Usando ${trace.calculationMethod}. Promedio de ${numberOfMonths} meses: ${monthlyForecastForBodega.toFixed(2)}.`);
-        } else {
-            // -- TIER 3: SHARE-BASED FALLBACK LOGIC --
-            trace.calculationMethod = 'Participación Histórica';
-            finalNotes.push('Participación Histórica');
-            const globalItemForecast = itemForecasts.find(f => f.itemCode === inv.itemCode);
-            if (!globalItemForecast) {
-                 logs.push(`-> ERROR: No se encontró pronóstico general para el ítem ${inv.itemCode}. No se puede distribuir.`);
-                 return;
-            }
-            const firstPeriodGlobalForecast = globalItemForecast.aggregatedFutureForecasts[0];
-            const monthlyGeneralForecast = firstPeriodGlobalForecast?.value ?? 0;
-            logs.push(`--> Usando ${trace.calculationMethod}. Pronóstico general del ítem: ${monthlyGeneralForecast}`);
-            trace.baseItemMonthlyForecast = monthlyGeneralForecast;
-            
-            const totalItemConsumption = totalItemConsumptionMap.get(inv.itemCode) || 0;
-            const thisBodegaItemConsumption = itemBodegaConsumptionMap.get(`${inv.itemCode}|${inv.bodega}`) || 0;
-            trace.bodegaShare = totalItemConsumption > 0 ? thisBodegaItemConsumption / totalItemConsumption : 0;
-            logs.push(`--> Participación de la bodega: ${(trace.bodegaShare * 100).toFixed(2)}% (${thisBodegaItemConsumption} de ${totalItemConsumption}).`);
-
-            monthlyForecastForBodega = monthlyGeneralForecast * trace.bodegaShare;
-        }
-
-        trace.localMonthlyForecast = monthlyForecastForBodega;
-        const daysInMonth = 30.5; // Average days for consistency
-        trace.daysInForecastMonth = daysInMonth;
-        const dailyForecastForBodega = monthlyForecastForBodega / daysInMonth;
-        trace.baseItemDailyForecast = dailyForecastForBodega; // Represents the base daily demand for the bodega
-        logs.push(`--> Demanda diaria base para la bodega: ${dailyForecastForBodega.toFixed(2)}.`);
-        
-        // 2. Adjust for AJS consumption
-        const thisBodegaAjsStats = bodegaAjsStats.get(inv.bodega) || { main: 0, ajs: 0 };
-        const totalConsumptionForAjs = thisBodegaAjsStats.main + thisBodegaAjsStats.ajs;
-        trace.bodegaAjsPercentage = totalConsumptionForAjs > 0 ? (thisBodegaAjsStats.ajs / totalConsumptionForAjs) * 100 : 0;
-        trace.effectiveBodegaDailyForecast_AjsAdjusted = dailyForecastForBodega * (1 + (trace.bodegaAjsPercentage / 100));
-        logs.push(`--> Demanda diaria ajustada por AJS (${trace.bodegaAjsPercentage.toFixed(1)}%): ${trace.effectiveBodegaDailyForecast_AjsAdjusted.toFixed(2)}.`);
-        
-        // 3. Calculate target inventory and quantity to send
-        trace.coverageDays = SPECIAL_COVERAGE_BODEGAS[inv.bodega] || DISTRIBUTION_COVERAGE_DAYS;
-         if (trace.coverageDays !== DISTRIBUTION_COVERAGE_DAYS) {
-            finalNotes.push(`Cobertura especial de ${trace.coverageDays} días.`);
-            logs.push(`--> Aplicando cobertura especial: ${trace.coverageDays} días.`);
-        }
-        
-        trace.targetInventory = Math.ceil(trace.effectiveBodegaDailyForecast_AjsAdjusted * trace.coverageDays);
-        trace.currentBodegaInventory = inv.quantity;
-        logs.push(`--> Inventario objetivo: ${trace.targetInventory} (para cubrir ${trace.coverageDays} días).`);
-
-        trace.quantityToSend_PreRounding = Math.max(0, trace.targetInventory - trace.currentBodegaInventory);
-        logs.push(`--> Necesidad (antes de redondeo): ${trace.quantityToSend_PreRounding.toFixed(2)}.`);
-        
-        trace.roundingMultiple = ITEM_SPECIFIC_ROUNDING_RULES[inv.itemCode] || DEFAULT_ROUNDING_MULTIPLE;
-        trace.quantityToSend_Final = (trace.quantityToSend_PreRounding > 0) 
-            ? Math.ceil(trace.quantityToSend_PreRounding / trace.roundingMultiple) * trace.roundingMultiple
-            : 0;
-        logs.push(`--> Cantidad Final a Enviar (redondeado a múltiplo de ${trace.roundingMultiple}): ${trace.quantityToSend_Final}.`);
-        
-        const finalResult: DistributionResult = {
-            bodega: inv.bodega,
-            itemCode: inv.itemCode,
-            currentBodegaInventory: inv.quantity,
-            forecastedDemandForCoverage: trace.targetInventory, // Add this for display
-            targetInventoryForCoverage: trace.targetInventory, // Same as demand for now
-            quantityToSend: trace.quantityToSend_Final,
-            notes: finalNotes.join(' '),
-            calculationTrace: trace as CalculationTrace,
-        };
-
-        results.push(finalResult);
+        const key = `${inv.bodega}-${inv.itemCode}`;
+        inventoryMap.set(key, inv.quantity);
     });
 
-    logs.push("---");
-    logs.push("Cálculo de distribución finalizado.");
-    if (results.length === 0 && bodegaInventories.length > 0) {
-        logs.push("ADVERTENCIA: No se generó ninguna línea de distribución. Revise los registros anteriores para ver por qué la cantidad a enviar fue cero para todos los ítems.");
+    const allBodegasInInventory = new Set(bodegaInventories.map(inv => inv.bodega));
+    const allItemsInInventory = new Set(bodegaInventories.map(inv => inv.itemCode));
+
+    for (const item of itemForecasts) {
+        for (const bodega of allBodegasInInventory) {
+            const trace: Partial<CalculationTrace> = {};
+
+            const bodegaItemHistory = allProcessedRows.filter(row => 
+                row.itemCode === item.itemCode && 
+                row.bodega === bodega
+            );
+
+            const totalConsumptionInBodega = bodegaItemHistory.reduce((sum, row) => sum + row.quantity, 0);
+            const totalItemConsumption = allProcessedRows.filter(r => r.itemCode === item.itemCode).reduce((s, r) => s + r.quantity, 0);
+            const ajsConsumptionInBodega = bodegaItemHistory.filter(r => ADJUSTMENT_DOC_TYPES.includes(r.docType)).reduce((s, r) => s + r.quantity, 0);
+            trace.bodegaAjsPercentage = totalConsumptionInBodega > 0 ? (ajsConsumptionInBodega / totalConsumptionInBodega) * 100 : 0;
+            
+            let dailyRate = 0;
+            const eligibility = checkDirectForecastEligibility(bodegaItemHistory, minMonthsForDirectForecast, maxCvForDirectForecast);
+            trace.directForecastEligibility = eligibility;
+
+            if (eligibility.isEligible) {
+                trace.calculationMethod = 'Pronóstico Directo';
+                const { series: localSeries, average: localAverage } = getNormalizedLocalAverageMonthly(bodegaItemHistory);
+                
+                const maePerMethod: Array<{ methodName: string; mae: number | null }> = [];
+                 if (localSeries.length > 0) {
+                    const methods = {
+                        'Regresión Lineal': calculateLinearRegression_HistoricalFit(localSeries),
+                        'Media Simple': calculateSimpleAverage_HistoricalFit(localSeries),
+                        'SMA': calculateSMA_HistoricalFit(localSeries, SMA_PERIOD),
+                        'SES': calculateSES_HistoricalFit(localSeries, SES_ALPHA),
+                        'WMA': calculateWMA_HistoricalFit(localSeries, WMA_PERIOD),
+                    };
+                    for (const [name, fit] of Object.entries(methods)) {
+                        maePerMethod.push({ methodName: name, mae: calculateMAE(localSeries, fit) });
+                    }
+                }
+                
+                const localWinningMethod = maePerMethod.filter(m => m.mae !== null).sort((a,b) => a.mae! - b.mae!)[0]?.methodName || 'Media Simple';
+
+                const forecastFunctions: {[key: string]: (d: number[], n: number) => Array<number|null>} = {
+                    'Regresión Lineal': (d, n) => calculateLinearRegression_MultiStep(d, n, DAMPING_FACTOR),
+                    'Media Simple': (d, n) => calculateSimpleAverage_MultiStep(d, n),
+                    'SMA': (d, n) => calculateSMA_MultiStep(d, SMA_PERIOD, n),
+                    'SES': (d, n) => calculateSES_MultiStep(d, SES_ALPHA, n),
+                    'WMA': (d, n) => calculateWMA_MultiStep(d, WMA_PERIOD, n),
+                };
+                
+                const forecastFn = forecastFunctions[localWinningMethod];
+                const forecastValues = forecastFn ? forecastFn(localSeries, 1) : [localAverage];
+                const monthlyForecast = forecastValues.length > 0 ? forecastValues[0] : localAverage;
+
+                dailyRate = (monthlyForecast || 0) / 30.44;
+                trace.localWinningMethod = localWinningMethod;
+                trace.localMonthlyForecast = monthlyForecast || 0;
+
+            } else {
+                trace.calculationMethod = 'Participación Histórica';
+                const bodegaShare = totalItemConsumption > 0 ? totalConsumptionInBodega / totalItemConsumption : 0;
+                const baseItemDailyForecast = item.calculationTrace?.shortfall_dailyRate || ((item.calculationTrace?.shortfall_avgMonthlyDemand || 0) / 30.44);
+                dailyRate = baseItemDailyForecast * bodegaShare;
+                trace.bodegaShare = bodegaShare;
+                trace.baseItemDailyForecast = baseItemDailyForecast;
+            }
+            
+            trace.shortfall_dailyRate = dailyRate;
+            trace.effectiveBodegaDailyForecast_AjsAdjusted = dailyRate * (1 + (trace.bodegaAjsPercentage / 100));
+            trace.coverageDays = bodegaCoverageConfig[bodega] || DISTRIBUTION_COVERAGE_DAYS;
+            trace.targetInventory = Math.ceil(trace.effectiveBodegaDailyForecast_AjsAdjusted * trace.coverageDays);
+            
+            const currentBodegaInventory = inventoryMap.get(`${bodega}-${item.itemCode}`) || 0;
+            trace.currentBodegaInventory = currentBodegaInventory;
+            trace.currentInventoryCoverageDays = trace.effectiveBodegaDailyForecast_AjsAdjusted > 0 ? currentBodegaInventory / trace.effectiveBodegaDailyForecast_AjsAdjusted : null;
+            
+            const needed = trace.targetInventory - currentBodegaInventory;
+            const quantityToSend_PreRounding = Math.max(0, needed);
+            trace.quantityToSend_PreRounding = quantityToSend_PreRounding;
+            
+            const roundingMultiple = ITEM_SPECIFIC_ROUNDING_RULES[item.itemCode as keyof typeof ITEM_SPECIFIC_ROUNDING_RULES] || DEFAULT_ROUNDING_MULTIPLE;
+            trace.roundingMultiple = roundingMultiple;
+
+            let quantityToSend_Final = 0;
+            if (quantityToSend_PreRounding > 0) {
+                // Ceil to the nearest multiple
+                quantityToSend_Final = Math.ceil(quantityToSend_PreRounding / roundingMultiple) * roundingMultiple;
+            }
+            trace.quantityToSend_Final = quantityToSend_Final;
+
+            let notes = `${trace.calculationMethod || 'N/A'}`;
+            if (trace.calculationMethod === 'Pronóstico Directo' && eligibility.coefficientOfVariation !== null) {
+              notes += ` (CV: ${eligibility.coefficientOfVariation.toFixed(2)})`;
+            }
+
+            results.push({
+                bodega,
+                itemCode: item.itemCode,
+                currentBodegaInventory,
+                forecastedDemandForCoverage: trace.targetInventory,
+                targetInventoryForCoverage: trace.targetInventory,
+                currentInventoryCoverageDays: trace.currentInventoryCoverageDays,
+                quantityToSend: quantityToSend_Final,
+                notes: notes,
+                calculationTrace: trace
+            });
+        }
     }
+
+    results.sort((a, b) => {
+        // First sort by bodega
+        if (a.bodega < b.bodega) return -1;
+        if (a.bodega > b.bodega) return 1;
+        // Then sort by itemCode
+        if (a.itemCode < b.itemCode) return -1;
+        if (a.itemCode > b.itemCode) return 1;
+        return 0;
+    });
 
     return { results, logs };
-}
-
-// Helper to re-aggregate ProcessedRows for a single item into ItemMonthlyData
-function aggregateRowsForItem(rows: ProcessedRow[]): ItemMonthlyData {
-  const monthlyMap = new Map<string, MonthlyConsumption>();
-
-  rows.forEach(row => {
-    const year = row.date.getFullYear();
-    const month = row.date.getMonth() + 1; // 1-12
-    const monthKey = `${year}-${String(month).padStart(2, '0')}`;
-
-    let monthEntry = monthlyMap.get(monthKey);
-    if (!monthEntry) {
-      monthEntry = { 
-        year, 
-        month, 
-        mainQuantity: 0, 
-        ajsQuantity: 0, 
-        totalQuantity: 0, 
-        date: new Date(year, month - 1, 1) 
-      };
-      monthlyMap.set(monthKey, monthEntry);
-    }
-
-    if (MAIN_CONSUMPTION_DOC_TYPES.includes(row.docType)) {
-      monthEntry.mainQuantity += row.quantity;
-    } else if (ADJUSTMENT_DOC_TYPES.includes(row.docType)) {
-      monthEntry.ajsQuantity += row.quantity;
-    }
-    monthEntry.totalQuantity = monthEntry.mainQuantity + monthEntry.ajsQuantity;
-  });
-
-  return Array.from(monthlyMap.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
 }

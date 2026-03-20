@@ -20,12 +20,13 @@ import {
 import type { ScannedItem, PackingUnit, ProductDatabaseItem, PackedItem } from '@/types';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Edit, Trash2 } from 'lucide-react';
+import { Edit, Trash2, RotateCcw } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import EditScannedItemDialog from '@/components/EditScannedItemDialog';
-import { deleteScannedItem, bulkDeleteScannedItems, getScannedItemsByReception, getProductsByBarcodes } from '@/app/actions';
+import { bulkDeleteScannedItems, deletePackingUnitAndContents } from '@/app/reception/actions';
 import { Label } from './ui/label';
 import { Checkbox } from './ui/checkbox';
+import { useAuth } from '@/hooks/use-auth-context';
 
 
 interface PackingUnitDetailsDialogProps {
@@ -45,49 +46,21 @@ const PackingUnitDetailsDialog: React.FC<PackingUnitDetailsDialogProps> = ({
   onAction,
 }) => {
   const { toast } = useToast();
-  const [loading, setLoading] = useState(true);
+  const { role } = useAuth();
+  const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<PackedItem[]>([]);
   const [itemToEdit, setItemToEdit] = useState<PackedItem | null>(null);
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
 
-  const fetchItems = useCallback(async () => {
-    if (!unitData) return;
-    setLoading(true);
-    setSelectedItemIds(new Set()); // Reset selection on fetch
-    
-    const scannedResult = await getScannedItemsByReception(unitData.unit.reception_id);
-    if (!scannedResult.success || !scannedResult.data) {
-        toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los items de la unidad.'});
-        setItems([]);
-        setLoading(false);
-        return;
-    }
-    const allScannedForOp = scannedResult.data;
-    const scannedInUnit = allScannedForOp.filter(i => i.packing_unit_id === unitData.unit.firestoreId);
-    const barcodes = [...new Set(scannedInUnit.map(i => i.barcode))];
-    
-    const productsResult = await getProductsByBarcodes(barcodes);
-    const productMap = new Map(productsResult.data?.map(p => [p.codigoBarras, p]));
-    
-    const packedItems: PackedItem[] = scannedInUnit.map(si => {
-      const product = productMap.get(si.barcode);
-      return {
-        item: product || { codigoBarras: si.barcode, referencia: si.reference, talla: si.talla, item: si.item } as ProductDatabaseItem,
-        packedQuantity: si.quantity,
-        scannedItemId: si.id
-      };
-    });
-
-    setItems(packedItems);
-    setLoading(false);
-  }, [unitData, toast]);
-
+  // Data is now passed via props, no need to fetch.
   useEffect(() => {
-    if (open) {
-      fetchItems();
+    if (open && unitData) {
+      setItems(unitData.items || []);
+      setSelectedItemIds(new Set());
     }
-  }, [open, fetchItems]);
+  }, [open, unitData]);
+
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
@@ -110,6 +83,24 @@ const PackingUnitDetailsDialog: React.FC<PackingUnitDetailsDialogProps> = ({
     setItemToEdit(item); 
     setIsEditOpen(true);
   };
+  
+  const handleDeleteUnit = async () => {
+    if (!unitData?.unit.firestoreId) {
+      toast({ variant: 'destructive', title: 'Error', description: 'No se puede eliminar una unidad sin ID.' });
+      return;
+    }
+    setLoading(true);
+    const result = await deletePackingUnitAndContents(unitData.unit.firestoreId);
+    if (result.success) {
+      toast({ title: 'Éxito', description: `La unidad #${unitData.unit.id} y su contenido han sido eliminados.` });
+      onAction(); // Refresh parent
+      onOpenChange(false); // Close dialog
+    } else {
+      toast({ variant: 'destructive', title: 'Error al Eliminar', description: result.error });
+    }
+    setLoading(false);
+  };
+
 
   const handleDeleteSelectedItem = async () => {
     if (selectedItemIds.size === 0) {
@@ -119,7 +110,6 @@ const PackingUnitDetailsDialog: React.FC<PackingUnitDetailsDialogProps> = ({
     const result = await bulkDeleteScannedItems(Array.from(selectedItemIds));
     if (result.success) {
       toast({ title: "Éxito", description: `${selectedItemIds.size} ítem(s) eliminado(s).` });
-      fetchItems(); // Refresh just this dialog's content
       onAction(); // Signal parent to refresh its state as well
     } else {
       toast({ variant: 'destructive', title: 'Error', description: result.error });
@@ -133,6 +123,8 @@ const PackingUnitDetailsDialog: React.FC<PackingUnitDetailsDialogProps> = ({
     onAction(); // Ensure parent refreshes when this dialog is closed
     onOpenChange(false);
   }
+
+  const isEditable = unitData?.unit.status === 'open' || role === 'admin';
 
   return (
     <>
@@ -159,8 +151,9 @@ const PackingUnitDetailsDialog: React.FC<PackingUnitDetailsDialogProps> = ({
                       <TableHead className="w-12 text-center">
                         <Checkbox
                           checked={isAllSelected}
-                          onCheckedChange={handleSelectAll}
+                          onCheckedChange={(checked) => handleSelectAll(!!checked)}
                           aria-label="Seleccionar todos los ítems"
+                          disabled={!isEditable}
                         />
                       </TableHead>
                       <TableHead>Producto</TableHead>
@@ -181,6 +174,7 @@ const PackingUnitDetailsDialog: React.FC<PackingUnitDetailsDialogProps> = ({
                               checked={isSelected}
                               onCheckedChange={(checked) => handleSelectItem(packedItem.scannedItemId || '', !!checked)}
                               aria-label={`Seleccionar ítem ${packedItem.item.codigoBarras}`}
+                              disabled={!isEditable}
                             />
                           </TableCell>
                           <TableCell className="font-medium">{packedItem.item.item || 'N/A'}</TableCell>
@@ -189,7 +183,7 @@ const PackingUnitDetailsDialog: React.FC<PackingUnitDetailsDialogProps> = ({
                           <TableCell className="font-mono text-xs">{packedItem.item.codigoBarras}</TableCell>
                           <TableCell>{packedItem.packedQuantity}</TableCell>
                           <TableCell className="text-right flex items-center justify-end space-x-1">
-                            <Button variant="ghost" size="icon" title="Editar cantidad" onClick={() => handleEditClick(packedItem)}>
+                            <Button variant="ghost" size="icon" title="Editar cantidad" onClick={() => handleEditClick(packedItem)} disabled={!isEditable}>
                               <Edit className="h-4 w-4" />
                             </Button>
                           </TableCell>
@@ -204,9 +198,9 @@ const PackingUnitDetailsDialog: React.FC<PackingUnitDetailsDialogProps> = ({
             <div className="flex gap-2">
               <AlertDialog>
                  <AlertDialogTrigger asChild>
-                    <Button variant="destructive" disabled={selectedItemIds.size === 0}>
+                    <Button variant="destructive" disabled={selectedItemIds.size === 0 || !isEditable}>
                         <Trash2 className="h-4 w-4 mr-2"/>
-                        Eliminar Seleccionados ({selectedItemIds.size})
+                        Eliminar Ítems ({selectedItemIds.size})
                     </Button>
                  </AlertDialogTrigger>
                  <AlertDialogContent>
@@ -222,6 +216,31 @@ const PackingUnitDetailsDialog: React.FC<PackingUnitDetailsDialogProps> = ({
                     </AlertDialogFooter>
                  </AlertDialogContent>
               </AlertDialog>
+               <AlertDialog>
+                 <AlertDialogTrigger asChild>
+                    <Button variant="destructive" outline disabled={!isEditable}>
+                        <Trash2 className="h-4 w-4 mr-2"/>
+                        Eliminar Caja Completa
+                    </Button>
+                 </AlertDialogTrigger>
+                 <AlertDialogContent>
+                    <AlertDialogHeader>
+                       <AlertDialogTitle>¿Eliminar esta caja y todo su contenido?</AlertDialogTitle>
+                       <AlertDialogDescription>
+                          Esta acción es permanente y eliminará la caja #{unitData?.unit.id} y sus {totalQuantityInUnit} ítems. No se puede deshacer.
+                       </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                       <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                       <AlertDialogAction onClick={handleDeleteUnit}>Sí, Eliminar Caja</AlertDialogAction>
+                    </AlertDialogFooter>
+                 </AlertDialogContent>
+              </AlertDialog>
+              {role === 'admin' && unitData?.unit.status === 'closed' && (
+                <Button variant="outline" onClick={() => {}}>
+                    <RotateCcw className="mr-2 h-4 w-4" /> Reabrir Caja
+                </Button>
+              )}
             </div>
             <Button onClick={handleDialogClose}>Cerrar</Button>
           </DialogFooter>
@@ -234,7 +253,6 @@ const PackingUnitDetailsDialog: React.FC<PackingUnitDetailsDialogProps> = ({
             onOpenChange={setIsEditOpen}
             item={itemToEdit as ScannedItem} 
             onSave={() => {
-              fetchItems();
               onAction(); 
               setIsEditOpen(false);
             }}

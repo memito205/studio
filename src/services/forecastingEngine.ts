@@ -1,13 +1,19 @@
 
-import type { AllItemsMonthlyData, ItemMonthlyData, ItemForecast, MethodForecast, PeriodForecastValue, ItemParameters, MonthlyConsumption, ProcessedRow, CalculationTrace } from '@/types';
+
+import type { AllItemsMonthlyData, ItemMonthlyData, ItemForecast, MethodForecast, PeriodForecastValue, ItemParameters, MonthlyConsumption, ProcessedRow, CalculationTrace, DirectForecastEligibility, BodegaInventory, DistributionResult } from '@/types';
 import { 
     SMA_PERIOD, SES_ALPHA, WMA_PERIOD, NUMBER_OF_FUTURE_PERIODS_FOR_RECOMMENDATION, 
     MONTH_NAMES_ES, Z_SCORE_LOOKUP, DEFAULT_LEAD_TIME_DAYS, DEFAULT_SERVICE_LEVEL_PERCENTAGE,
-    BODEGAS_TO_EXCLUDE, MIN_MONTHS_FOR_FULL_FORECAST,
+    BODEGAS_TO_EXCLUDE_FOR_DISTRIBUTION, MIN_MONTHS_FOR_FULL_FORECAST,
     MAIN_CONSUMPTION_DOC_TYPES, ADJUSTMENT_DOC_TYPES,
-    HIGH_SEASON_MONTHS, MANUAL_SEASONAL_ADJUSTMENT_FACTOR,
-    DAMPING_FACTOR
+    DAMPING_FACTOR,
+    MINIMUM_SEASONAL_FACTORS,
+    ITEM_SPECIFIC_ROUNDING_RULES,
+    DEFAULT_ROUNDING_MULTIPLE
 } from '@/components/bag-distribution/constants';
+import { parseRobustNumber } from '@/lib/parsingUtils';
+import { addDays, startOfWeek, format, isSameDay, differenceInDays, startOfDay } from 'date-fns';
+import { es } from 'date-fns/locale';
 
 // --- Helper Functions ---
 
@@ -41,7 +47,7 @@ function normalizeHistoricalData(data: ItemMonthlyData): ItemMonthlyData {
 
     while(currentDate <= lastDate) {
         const year = currentDate.getFullYear();
-        const month = currentDate.getMonth() + 1;
+        const month = currentDate.getMonth() + 1; // 1-12
         
         const existingEntry = sortedData.find(d => d.year === year && d.month === month);
         
@@ -75,25 +81,15 @@ function getForecastPeriodDetails(
   futureRegularMonthPeriods: Array<{ periodLabel: string; startDate: Date; endDate: Date }>;
 } {
   const shortfallPeriodStartDate = new Date(generationDate);
-  let shortfallPeriodEndDate: Date;
-  let firstRegularForecastMonthStartDate: Date;
-
-  const currentDay = generationDate.getDate();
-  const currentMonth = generationDate.getMonth();
   const currentYear = generationDate.getFullYear();
+  const currentMonth = generationDate.getMonth();
 
-  if (currentDay <= 20) {
-    // End date is the end of the CURRENT month.
-    shortfallPeriodEndDate = new Date(currentYear, currentMonth + 1, 0);
-    // The first full forecast month is next month.
-    firstRegularForecastMonthStartDate = new Date(currentYear, currentMonth + 1, 1);
-  } else {
-    // End date is the end of the NEXT month.
-    shortfallPeriodEndDate = new Date(currentYear, currentMonth + 2, 0);
-    // The first full forecast month is the month after next.
-    firstRegularForecastMonthStartDate = new Date(currentYear, currentMonth + 2, 1);
-  }
+  // The shortfall period now ends at the end of the *current* full month.
+  const shortfallPeriodEndDate = new Date(currentYear, currentMonth + 1, 0);
 
+  // The first "regular" forecast period starts at the beginning of the next month.
+  const firstRegularForecastMonthStartDate = new Date(currentYear, currentMonth + 1, 1);
+  
   const shortfallPeriodLabel = `(${formatDate(shortfallPeriodStartDate)} - ${formatDate(shortfallPeriodEndDate)})`;
   
   const futureRegularMonthPeriods: Array<{ periodLabel: string; startDate: Date; endDate: Date }> = [];
@@ -110,12 +106,13 @@ function getForecastPeriodDetails(
   return { shortfallPeriodStartDate, shortfallPeriodEndDate, shortfallPeriodLabel, futureRegularMonthPeriods };
 }
 
+
 function getWMAWeights(period: number): number[] {
   if (period <= 0) return [];
   const denominator = (period * (period + 1)) / 2;
   const weights: number[] = [];
   for (let i = 0; i < period; i++) {
-    weights.push((period - i) / denominator);
+    weights.push((i + 1) / denominator);
   }
   return weights; 
 }
@@ -158,53 +155,71 @@ function detectAndAdjustOutliers(historicalData: ItemMonthlyData): { adjustedDat
 
 
 // --- Seasonality Calculation ---
-function calculateSeasonalIndices(historicalData: ItemMonthlyData, minYears: number = 2): number[] | null {
-  const numMonths = historicalData.length;
-  if (numMonths < minYears * 12) return null; 
-
-  const quantities = historicalData.map(d => d.totalQuantity);
-  
-  if (numMonths < 12) return null;
-  const cma = [];
-  const ma12 = [];
-  for (let i = 0; i <= numMonths - 12; i++) {
-    const sum = quantities.slice(i, i + 12).reduce((s, v) => s + v, 0);
-    ma12.push(sum / 12);
-  }
-  for (let i = 0; i < ma12.length - 1; i++) {
-    cma.push((ma12[i] + ma12[i+1]) / 2);
-  }
-
-  const ratios: { month: number; ratio: number }[] = [];
-  for (let i = 0; i < cma.length; i++) {
-    const dataIndex = i + 6; 
-    if (dataIndex < numMonths && cma[i] > 0) { 
-      ratios.push({
-        month: historicalData[dataIndex].month, 
-        ratio: quantities[dataIndex] / cma[i]
-      });
+function calculateSeasonalIndices(historicalData: ItemMonthlyData, minYears: number = 2): { indices: number[] | null; trace: string[] } {
+    const logs: string[] = [];
+    const numMonths = historicalData.length;
+    if (numMonths < minYears * 12) {
+        logs.push(`No se calculan índices estacionales, se requieren ${minYears*12} meses y hay ${numMonths}.`);
+        return { indices: null, trace: logs };
     }
-  }
 
-  if (ratios.length === 0) return null;
+    const quantities = historicalData.map(d => d.totalQuantity);
+    logs.push(`Cálculo sobre ${quantities.length} puntos de datos.`);
 
-  const monthlyRatios: number[][] = Array.from({ length: 12 }, () => []);
-  ratios.forEach(r => {
-    monthlyRatios[r.month - 1].push(r.ratio);
-  });
+    const cma = [];
+    const ma12 = [];
+    for (let i = 0; i <= numMonths - 12; i++) {
+        const sum = quantities.slice(i, i + 12).reduce((s, v) => s + v, 0);
+        ma12.push(sum / 12);
+    }
+    logs.push(`Se calcularon ${ma12.length} promedios móviles de 12 meses.`);
 
-  const rawSeasonalIndices = monthlyRatios.map(monthRatiosList => {
-    if (monthRatiosList.length === 0) return 1; 
-    return monthRatiosList.reduce((s, v) => s + v, 0) / monthRatiosList.length;
-  });
+    for (let i = 0; i < ma12.length - 1; i++) {
+        cma.push((ma12[i] + ma12[i+1]) / 2);
+    }
+    logs.push(`Se calcularon ${cma.length} promedios móviles centrados.`);
 
-  const sumRawIndices = rawSeasonalIndices.reduce((s, v) => s + v, 0);
-  if (sumRawIndices === 0) return Array(12).fill(1); 
+    const ratios: { month: number; ratio: number }[] = [];
+    for (let i = 0; i < cma.length; i++) {
+        const dataIndex = i + 6; 
+        if (dataIndex < numMonths && cma[i] > 0) { 
+            ratios.push({
+                month: historicalData[dataIndex].month, 
+                ratio: quantities[dataIndex] / cma[i]
+            });
+        }
+    }
+    logs.push(`Se calcularon ${ratios.length} ratios de estacionalidad.`);
+
+    if (ratios.length === 0) {
+        logs.push("No se pudieron calcular ratios, se devolverán índices planos.");
+        return { indices: null, trace: logs };
+    }
+
+    const monthlyRatios: number[][] = Array.from({ length: 12 }, () => []);
+    ratios.forEach(r => {
+        monthlyRatios[r.month - 1].push(r.ratio);
+    });
+
+    const rawSeasonalIndices = monthlyRatios.map(monthRatiosList => {
+        if (monthRatiosList.length === 0) return 1; 
+        return monthRatiosList.reduce((s, v) => s + v, 0) / monthRatiosList.length;
+    });
+    logs.push(`Índices crudos calculados: [${rawSeasonalIndices.map(r => r.toFixed(2)).join(', ')}]`);
+
+    const sumRawIndices = rawSeasonalIndices.reduce((s, v) => s + v, 0);
+    if (sumRawIndices === 0) {
+        logs.push("La suma de índices es cero, devolviendo índices planos.");
+        return { indices: Array(12).fill(1), trace: logs };
+    }
   
-  const normalizationFactor = 12 / sumRawIndices;
-  const finalSeasonalIndices = rawSeasonalIndices.map(idx => idx * normalizationFactor);
-  
-  return finalSeasonalIndices;
+    const normalizationFactor = 12 / sumRawIndices;
+    logs.push(`Factor de normalización: ${normalizationFactor.toFixed(3)}.`);
+    
+    const finalSeasonalIndices = rawSeasonalIndices.map(idx => idx * normalizationFactor);
+    logs.push(`Índices finales normalizados: [${finalSeasonalIndices.map(i => i.toFixed(2)).join(', ')}]`);
+
+    return { indices: finalSeasonalIndices, trace: logs };
 }
 
 // --- Forecasting Methods (Multi-Period Future Forecasts) ---
@@ -249,7 +264,7 @@ function calculateWMA_MultiStep(data: number[], period: number, numForecasts: nu
     const relevantData = currentData.slice(-period);
     let forecast = 0;
     for (let j = 0; j < period; j++) {
-      forecast += relevantData[j] * weights[period - 1 - j]; 
+      forecast += relevantData[j] * weights[j]; 
     }
     forecasts.push(Math.round(forecast));
     currentData.push(Math.round(forecast)); 
@@ -259,7 +274,7 @@ function calculateWMA_MultiStep(data: number[], period: number, numForecasts: nu
 
 function calculateLinearRegression_MultiStep(data: number[], numForecasts: number, dampingFactor: number): Array<number | null> {
   const n = data.length;
-  if (n < 2 || numForecasts <= 0) return [];
+  if (n < 2) return calculateSimpleAverage_MultiStep(data, numForecasts);
 
   let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
   for (let i = 0; i < n; i++) {
@@ -269,6 +284,7 @@ function calculateLinearRegression_MultiStep(data: number[], numForecasts: numbe
   const denominator = n * sumX2 - sumX * sumX;
   if (denominator === 0) { // if no trend, return avg
       const avg = data.reduce((s,v)=>s+v,0)/n;
+      if (isNaN(avg)) return Array(numForecasts).fill(null);
       return Array(numForecasts).fill(Math.round(Math.max(0, avg)));
   }
 
@@ -276,7 +292,6 @@ function calculateLinearRegression_MultiStep(data: number[], numForecasts: numbe
   const intercept = (sumY - slope * sumX) / n;
 
   const forecasts: Array<number | null> = [];
-  // Use the last known point on the trend line as the "level"
   const level = intercept + slope * (n - 1); 
   const trend = slope;
 
@@ -326,7 +341,7 @@ function calculateWMA_HistoricalFit(data: number[], period: number): (number | n
         const relevantData = data.slice(i - period, i);
         let forecast = 0;
         for (let j = 0; j < period; j++) {
-            forecast += relevantData[j] * weights[period - 1 - j];
+            forecast += relevantData[j] * weights[j];
         }
         fit[i] = Math.round(forecast);
     }
@@ -348,7 +363,6 @@ function calculateLinearRegression_HistoricalFit(data: number[]): (number | null
 
     const denominator = n * sumX2 - sumX * sumX;
     
-    // If denominator is 0, there's no trend. The best fit is the average.
     if (denominator === 0) {
         const avg = sumY / n;
         if (!isNaN(avg)) {
@@ -373,7 +387,7 @@ function calculateLinearRegression_HistoricalFit(data: number[]): (number | null
 function calculateSimpleAverage_HistoricalFit(data: number[]): (number | null)[] {
     const fit: (number | null)[] = Array(data.length).fill(null);
     if (data.length === 0) return fit;
-    for(let i=1; i<data.length; i++) { // Forecast for i is average of data up to i-1
+    for(let i=1; i<data.length; i++) { 
         const historicalSlice = data.slice(0, i);
         if(historicalSlice.length > 0) {
             fit[i] = Math.round(historicalSlice.reduce((s,v)=>s+v,0) / historicalSlice.length);
@@ -395,7 +409,6 @@ function calculateMAE(actuals: number[], historicalFit: (number | null)[]): numb
     return count > 0 ? sumAbsError / count : null;
 }
 
-// Helper: Re-aggregate ProcessedRows for a single item into ItemMonthlyData
 function aggregateRowsForItem(rows: ProcessedRow[]): ItemMonthlyData {
   const monthlyMap = new Map<string, MonthlyConsumption>();
 
@@ -431,10 +444,11 @@ function aggregateRowsForItem(rows: ProcessedRow[]): ItemMonthlyData {
 
 // --- Main Forecast Generation Function ---
 export function generateAllForecasts(
-  processedData: AllItemsMonthlyData, // Overall aggregated data (all bodegas)
-  allProcessedRows: ProcessedRow[], // All raw rows for filtering
+  processedData: AllItemsMonthlyData, 
+  allProcessedRows: ProcessedRow[], 
   inventories: Map<string, number>,
-  itemParametersMap: Map<string, ItemParameters>
+  itemParametersMap: Map<string, ItemParameters>,
+  passedSeasonalIndices?: number[] | null
 ): ItemForecast[] {
   const allItemForecasts: ItemForecast[] = [];
   const generationDate = new Date(); 
@@ -446,7 +460,7 @@ export function generateAllForecasts(
 
   allItemCodes.forEach((itemCode) => {
     try {
-        const trace: Partial<CalculationTrace> = { notes: [] };
+        const trace: Partial<CalculationTrace> = { notes: [], future_periods: [] };
         const itemParams = itemParametersMap.get(itemCode) || {
             leadTimeDays: DEFAULT_LEAD_TIME_DAYS,
             serviceLevelPercentage: DEFAULT_SERVICE_LEVEL_PERCENTAGE
@@ -456,7 +470,7 @@ export function generateAllForecasts(
 
         const rowsForItemForecast = allProcessedRows.filter(row => 
             row.itemCode === itemCode && 
-            (!row.bodega || !BODEGAS_TO_EXCLUDE.includes(row.bodega))
+            (!row.bodega || !BODEGAS_TO_EXCLUDE_FOR_DISTRIBUTION.includes(row.bodega))
         );
         
         const historicalDataForForecastingWithGaps = aggregateRowsForItem(rowsForItemForecast);
@@ -464,32 +478,24 @@ export function generateAllForecasts(
 
 
         const { adjustedData: outlierAdjustedHistoricalData, outliersAdjusted } = detectAndAdjustOutliers(historicalDataForForecasting);
-        const seasonalIndices = calculateSeasonalIndices(outlierAdjustedHistoricalData);
+        
+        const { indices: statisticalSeasonalIndices, trace: seasonalityTrace } = calculateSeasonalIndices(outlierAdjustedHistoricalData, 2);
+        trace.statisticalSeasonalIndices = statisticalSeasonalIndices;
+        trace.notes?.push(...seasonalityTrace);
+
         const quantitiesForForecasting = outlierAdjustedHistoricalData.map(d => d.totalQuantity);
         const currentInventory = inventories.get(itemCode) || 0;
         
         let forecastingMethodNoteParts: string[] = [];
         
         let deseasonalizedQuantities = [...quantitiesForForecasting];
-        let seasonalityType: 'statistical' | 'manual' | 'none' = 'none';
 
-        if (seasonalIndices) {
-            seasonalityType = 'statistical';
+        if (statisticalSeasonalIndices) {
             deseasonalizedQuantities = outlierAdjustedHistoricalData.map(d => {
                 const monthIndex = d.month - 1;
-                return seasonalIndices[monthIndex] > 0 ? d.totalQuantity / seasonalIndices[monthIndex] : d.totalQuantity;
+                return statisticalSeasonalIndices[monthIndex] > 0 ? d.totalQuantity / statisticalSeasonalIndices[monthIndex] : d.totalQuantity;
             });
             forecastingMethodNoteParts.push("Ajuste estacional (estadístico)");
-        } else if (quantitiesForForecasting.length > 0) { // Fallback to manual seasonality
-            seasonalityType = 'manual';
-            deseasonalizedQuantities = outlierAdjustedHistoricalData.map(d => {
-                const month = d.month;
-                if (HIGH_SEASON_MONTHS.includes(month)) {
-                    return d.totalQuantity / MANUAL_SEASONAL_ADJUSTMENT_FACTOR;
-                }
-                return d.totalQuantity;
-            });
-            forecastingMethodNoteParts.push(`Ajuste estacional (manual, +${((MANUAL_SEASONAL_ADJUSTMENT_FACTOR - 1) * 100).toFixed(0)}%)`);
         }
 
         const maePerMethod: Array<{ methodName: string; mae: number | null }> = [];
@@ -502,24 +508,27 @@ export function generateAllForecasts(
         }
         
         let winningMethod: string | null = 'Media Simple';
-        if (maePerMethod && maePerMethod.length > 0) {
-            const validMaes = maePerMethod.filter(m => m.mae !== null);
-            if (validMaes.length > 0) {
-                const bestMethod = validMaes.reduce((best, current) => (current.mae! < best.mae!) ? current : best);
-                winningMethod = bestMethod.methodName;
-            }
-        }
+        const validMaes = maePerMethod.filter(m => m.mae !== null);
         
         const useSimpleAverageOverride = deseasonalizedQuantities.length > 0 && deseasonalizedQuantities.length < MIN_MONTHS_FOR_FULL_FORECAST;
         if (useSimpleAverageOverride) {
             winningMethod = 'Media Simple';
-            forecastingMethodNoteParts.push(`Datos limitados (${quantitiesForForecasting.length} meses)`);
+            forecastingMethodNoteParts.push(`Datos limitados (${quantitiesForForecasting.length} meses), usando promedio simple.`);
+        } else if (validMaes.length > 0) {
+            const simpleAvgMae = validMaes.find(m => m.methodName === 'Media Simple')?.mae;
+            const regressionMae = validMaes.find(m => m.methodName === 'Regresión Lineal')?.mae;
+            
+            if (regressionMae !== null && regressionMae !== undefined && simpleAvgMae !== null && simpleAvgMae !== undefined && regressionMae < (simpleAvgMae * 1.15)) {
+                 winningMethod = 'Regresión Lineal';
+            } else {
+                 winningMethod = validMaes.reduce((best, current) => (current.mae! < best.mae!) ? current : best).methodName;
+            }
         }
         trace.winningMethod = winningMethod;
         
         if (winningMethod) {
             const winnerMae = maePerMethod?.find(m => m.methodName === winningMethod)?.mae;
-            forecastingMethodNoteParts.unshift(`Modelo Seleccionado: ${winningMethod} (MAE: ${winnerMae !== null ? winnerMae?.toFixed(2) : 'N/A'})`);
+            forecastingMethodNoteParts.unshift(`Modelo: ${winningMethod} (MAE: ${winnerMae !== null && winnerMae !== undefined ? winnerMae?.toFixed(2) : 'N/A'})`);
         }
          if (outliersAdjusted) {
             forecastingMethodNoteParts.push("Outliers ajustados");
@@ -527,21 +536,17 @@ export function generateAllForecasts(
         
         const forecastingMethodNote = forecastingMethodNoteParts.length > 0 ? forecastingMethodNoteParts.join('. ') + '.' : undefined;
 
-        const totalHistoricalMainConsumption = originalHistoricalMonthlyDataForItem.reduce((sum, d) => sum + d.mainQuantity, 0);
-        const totalHistoricalAjsConsumption = originalHistoricalMonthlyDataForItem.reduce((sum, d) => sum + d.ajsQuantity, 0);
-        const totalHistConsumptionForAjsCalc = totalHistoricalMainConsumption + totalHistoricalAjsConsumption;
-        let ajsConsumptionPercentage: number | null = (totalHistConsumptionForAjsCalc > 0) ? (totalHistoricalAjsConsumption / totalHistConsumptionForAjsCalc) * 100 : (totalHistoricalAjsConsumption > 0 ? 100 : 0);
+        const totalHistoricalMainConsumption = rowsForItemForecast.filter(r => MAIN_CONSUMPTION_DOC_TYPES.includes(r.docType)).reduce((sum, r) => sum + r.quantity, 0);
+        const totalHistoricalAjsConsumption = rowsForItemForecast.filter(r => ADJUSTMENT_DOC_TYPES.includes(r.docType)).reduce((sum, r) => sum + r.quantity, 0);
+        const totalConsumptionForAjsCalc = totalHistoricalMainConsumption + totalHistoricalAjsConsumption;
+        let ajsConsumptionPercentage: number | null = (totalConsumptionForAjsCalc > 0) ? (totalHistoricalAjsConsumption / totalConsumptionForAjsCalc) * 100 : (totalHistoricalAjsConsumption > 0 ? 100 : 0);
 
-        const periodDetails = getForecastPeriodDetails(generationDate, NUMBER_OF_FUTURE_PERIODS_FOR_RECOMMENDATION);
-        
         const firstMonthToForecastAfterHistory: Date | null = outlierAdjustedHistoricalData.length > 0 
             ? new Date(outlierAdjustedHistoricalData[outlierAdjustedHistoricalData.length - 1].date.getFullYear(), outlierAdjustedHistoricalData[outlierAdjustedHistoricalData.length - 1].date.getMonth() + 1, 1) 
             : new Date(generationDate.getFullYear(), generationDate.getMonth(), 1);
 
-        if (!periodDetails.futureRegularMonthPeriods || periodDetails.futureRegularMonthPeriods.length === 0) {
-            throw new Error("No se pudieron definir períodos de pronóstico futuros.");
-        }
-
+        const periodDetails = getForecastPeriodDetails(generationDate, NUMBER_OF_FUTURE_PERIODS_FOR_RECOMMENDATION);
+        
         const lastRegularFuturePeriod = periodDetails.futureRegularMonthPeriods[periodDetails.futureRegularMonthPeriods.length - 1];
         const lastMonthToForecastDate = new Date(lastRegularFuturePeriod.endDate.getFullYear(), lastRegularFuturePeriod.endDate.getMonth(), 1);
         
@@ -553,6 +558,14 @@ export function generateAllForecasts(
         
         const getRawForecastsForMethod = (method: string | null) => {
             if (!method || numTotalForecastMonthsNeeded <= 0) return [];
+            if (deseasonalizedQuantities.length === 0) {
+              if (method === 'Media Simple') { 
+                  const avg = quantitiesForForecasting.reduce((s,v)=>s+v,0) / (quantitiesForForecasting.length || 1);
+                  if (isNaN(avg) || avg === 0) return Array(numTotalForecastMonthsNeeded).fill(0);
+                  return Array(numTotalForecastMonthsNeeded).fill(Math.round(avg));
+              }
+              return Array(numTotalForecastMonthsNeeded).fill(0);
+            }
             switch (method) {
                 case 'SMA': return calculateSMA_MultiStep(deseasonalizedQuantities, SMA_PERIOD, numTotalForecastMonthsNeeded);
                 case 'SES': return calculateSES_MultiStep(deseasonalizedQuantities, SES_ALPHA, numTotalForecastMonthsNeeded);
@@ -564,78 +577,85 @@ export function generateAllForecasts(
 
         const winningTrendForecasts = getRawForecastsForMethod(winningMethod);
         
-        const getBaseForecastForDate = (targetDate: Date, offsetIndex: number): number | null => {
-            if (!firstMonthToForecastAfterHistory || winningTrendForecasts.length === 0) return null;
-            const offset = offsetIndex; // Use the direct index
+        const getBaseForecastForDate = (targetDate: Date): { value: number | null, trace: any } => {
+            if (!firstMonthToForecastAfterHistory || winningTrendForecasts.length === 0) return { value: null, trace: {} };
+            const offset = getMonthOffset(targetDate, firstMonthToForecastAfterHistory);
             
-            if (offset >= 0 && offset < winningTrendForecasts.length) {
-                const trendForecast = winningTrendForecasts[offset];
-                if (trendForecast === null) return null;
+            const forecastIndex = Math.max(0, offset);
 
-                const tracePeriod = trace.future_periods?.[offset] || {};
-                tracePeriod.trendForecast = trendForecast;
-                tracePeriod.trendForecast_inputData = deseasonalizedQuantities;
+            if (forecastIndex < winningTrendForecasts.length) {
+                const trendForecast = winningTrendForecasts[forecastIndex];
+                if (trendForecast === null) return { value: null, trace: {} };
 
-                let seasonalFactor = 1.0;
-                if (seasonalityType === 'statistical' && seasonalIndices) {
-                    const monthIndex = targetDate.getMonth();
-                    seasonalFactor = seasonalIndices[monthIndex];
-                } else if (seasonalityType === 'manual') {
-                    const month = targetDate.getMonth() + 1;
-                    if (HIGH_SEASON_MONTHS.includes(month)) {
-                        seasonalFactor = MANUAL_SEASONAL_ADJUSTMENT_FACTOR;
-                    }
-                }
-                tracePeriod.seasonalIndex = seasonalFactor;
-
-                if (!trace.future_periods) trace.future_periods = [];
-                trace.future_periods[offset] = tracePeriod;
+                const periodTrace: any = { trendForecast, trendForecast_inputData: deseasonalizedQuantities };
                 
-                return Math.round(trendForecast * seasonalFactor);
+                const monthIndex = targetDate.getMonth();
+                const monthNumber = monthIndex + 1;
+                
+                const statisticalFactor = statisticalSeasonalIndices ? statisticalSeasonalIndices[monthIndex] : 1.0;
+                
+                const prevYearDate = new Date(targetDate);
+                prevYearDate.setFullYear(targetDate.getFullYear() - 1);
+                
+                const consumptionThisMonthLastYear = originalHistoricalMonthlyDataForItem.find(d => d.year === prevYearDate.getFullYear() && d.month === (prevYearDate.getMonth() + 1))?.totalQuantity;
+                
+                const prevMonthOfPrevYear = new Date(prevYearDate);
+                prevMonthOfPrevYear.setMonth(prevYearDate.getMonth() - 1);
+                const consumptionPrevMonthLastYear = originalHistoricalMonthlyDataForItem.find(d => d.year === prevMonthOfPrevYear.getFullYear() && d.month === (prevMonthOfPrevYear.getMonth() + 1))?.totalQuantity;
+
+                let yoyGrowthFactor = 1.0;
+                if(consumptionThisMonthLastYear !== undefined && consumptionPrevMonthLastYear !== undefined && consumptionPrevMonthLastYear > 0) {
+                    yoyGrowthFactor = consumptionThisMonthLastYear / consumptionPrevMonthLastYear;
+                }
+                
+                const minimumFactor = MINIMUM_SEASONAL_FACTORS[monthNumber] || 1.0;
+                
+                const finalSeasonalFactor = Math.max(statisticalFactor, minimumFactor, yoyGrowthFactor);
+
+                periodTrace.seasonalIndex = finalSeasonalFactor;
+                
+                return { value: Math.round(trendForecast * finalSeasonalFactor), trace: periodTrace };
             }
-            return null;
+            return { value: null, trace: {} };
         };
-        
+
+        // --- CALCULATION FOR SHORTFALL PERIOD ---
         let baseDemandForShortfallPeriod = 0;
-        let baseDailyRate = 0;
-        // Unified logic for daily rate: use the forecast of the first future month
-        const firstFuturePeriod = periodDetails.futureRegularMonthPeriods[0];
-        if (firstFuturePeriod) {
-            const forecastForFirstFutureMonth = getBaseForecastForDate(firstFuturePeriod.startDate, 0);
-            if(forecastForFirstFutureMonth !== null && forecastForFirstFutureMonth > 0) {
-                 const daysInFirstMonth = getDaysInMonth(firstFuturePeriod.startDate.getFullYear(), firstFuturePeriod.startDate.getMonth());
-                 baseDailyRate = forecastForFirstFutureMonth / daysInFirstMonth;
-            }
-        }
+        const daysRemainingCurrentMonth = Math.max(0, (new Date(generationDate.getFullYear(), generationDate.getMonth() + 1, 0).getTime() - generationDate.getTime()) / (1000 * 3600 * 24));
         
-        // Fallback if the first method fails (e.g., no forecast data)
-        if(baseDailyRate === 0 && quantitiesForForecasting.length > 0) {
-            const last3Months = outlierAdjustedHistoricalData.slice(-3);
-            const avgMonthlyDemand = last3Months.length > 0 
-                ? last3Months.reduce((sum, d) => sum + d.totalQuantity, 0) / last3Months.length
-                : quantitiesForForecasting.reduce((s, v) => s + v, 0) / quantitiesForForecasting.length;
-            baseDailyRate = avgMonthlyDemand / 30.44;
-            trace.shortfall_avgMonthlyDemand = avgMonthlyDemand;
-            trace.shortfall_monthsUsedForAvg = last3Months.length > 0 ? last3Months.map(m => m.totalQuantity) : quantitiesForForecasting;
-        }
+        // ALWAYS use the forecasting model for the current month.
+        const { value: forecastCurrentMonth, trace: currentMonthTrace } = getBaseForecastForDate(new Date(generationDate.getFullYear(), generationDate.getMonth(), 1));
+        
+        const dailyRateCurrentMonth = forecastCurrentMonth !== null 
+            ? forecastCurrentMonth / getDaysInMonth(generationDate.getFullYear(), generationDate.getMonth()) 
+            : 0;
+        
+        trace.shortfall_dailyRate_source = 'Pronóstico'; // Now it's always from the forecast model
+        trace.shortfall_avgMonthlyDemand = currentMonthTrace?.trendForecast; // This is the trend value, label is a bit confusing but consistent
+        trace.shortfall_monthsUsedForAvg = currentMonthTrace?.trendForecast_inputData;
 
-        const daysRemainingInPeriod = Math.max(0, (periodDetails.shortfallPeriodEndDate.getTime() - periodDetails.shortfallPeriodStartDate.getTime()) / (1000 * 3600 * 24));
-        baseDemandForShortfallPeriod = baseDailyRate * daysRemainingInPeriod;
-
-        trace.shortfall_dailyRate = baseDailyRate;
-        trace.shortfall_daysInPeriod = daysRemainingInPeriod;
+        baseDemandForShortfallPeriod = dailyRateCurrentMonth * daysRemainingCurrentMonth;
+        
+        trace.shortfall_dailyRate = dailyRateCurrentMonth;
+        trace.shortfall_daysInPeriod = daysRemainingCurrentMonth;
         trace.shortfall_baseDemand = baseDemandForShortfallPeriod;
-       
-
+        
         const calculatedDemandForShortfallPeriod = ajsConsumptionPercentage !== null
             ? Math.round(baseDemandForShortfallPeriod * (1 + ajsConsumptionPercentage / 100))
             : Math.round(baseDemandForShortfallPeriod);
             
         const nextPeriodShortfall = Math.max(0, calculatedDemandForShortfallPeriod - currentInventory);
         
-        trace.future_periods = [];
         const aggregatedFutureForecasts: PeriodForecastValue[] = periodDetails.futureRegularMonthPeriods.map((p, idx) => {
-            const baseVal = getBaseForecastForDate(p.startDate, idx);
+            const { value: baseVal, trace: periodTrace } = getBaseForecastForDate(p.startDate);
+            if(trace.future_periods && trace.future_periods.length > idx) {
+              trace.future_periods[idx] = { ...trace.future_periods[idx], ...periodTrace };
+            } else if (!trace.future_periods) {
+              trace.future_periods = [periodTrace];
+            } else {
+              trace.future_periods.push(periodTrace);
+            }
+
             let adjustedVal = null;
             if (baseVal !== null && ajsConsumptionPercentage !== null) {
                 adjustedVal = Math.round(baseVal * (1 + ajsConsumptionPercentage/100));
@@ -674,7 +694,7 @@ export function generateAllForecasts(
                 const stdDevDemandDuringLeadTime = stdDevHistDemand * Math.sqrt(leadTimeInMonths);
                 safetyStock = Math.round(zScore * stdDevDemandDuringLeadTime);
 
-                const demandDuringLeadTime = baseDailyRate * itemParams.leadTimeDays;
+                const demandDuringLeadTime = (trace.shortfall_dailyRate > 0 ? trace.shortfall_dailyRate : (meanHistDemand / 30.44)) * itemParams.leadTimeDays;
                 if (safetyStock !== null && !isNaN(safetyStock)) {
                     reorderPoint = Math.round(demandDuringLeadTime + safetyStock);
                 }
@@ -685,20 +705,20 @@ export function generateAllForecasts(
           itemCode,
           historicalData: outlierAdjustedHistoricalData,
           currentInventory,
-          methodForecasts: [], // Simplified for this context, MAE is main output
+          methodForecasts: [], 
           aggregatedFutureForecasts,
           nextPeriodShortfall,
           nextPeriodShortfallDateRangeLabel: periodDetails.shortfallPeriodLabel,
-          recommendedPurchase: recommendedPurchase,
+          recommendedPurchase,
           coverageTargetPeriods: NUMBER_OF_FUTURE_PERIODS_FOR_RECOMMENDATION,
-          totalHistoricalMainConsumption,
-          totalHistoricalAjsConsumption,
+          totalHistoricalMainConsumption: totalHistoricalMainConsumption,
+          totalHistoricalAjsConsumption: totalHistoricalAjsConsumption,
           ajsConsumptionPercentage,
           finalRecommendedPurchase,
           calculatedDemandForShortfallPeriod,
           calculatedTotalDemandForNFullFutureMonths,
           outliersAdjusted,
-          seasonalIndices,
+          seasonalIndices: statisticalSeasonalIndices, 
           leadTimeDays: itemParams.leadTimeDays,
           serviceLevelPercentage: itemParams.serviceLevelPercentage,
           safetyStock,

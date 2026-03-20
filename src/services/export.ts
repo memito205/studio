@@ -5,14 +5,32 @@ import type { ReceptionOperation, DetailedReportItem, ScannedItem, ItemNovelty, 
 
 
 export const exportToXlsx = (data: any[], fileName: string): void => {
+    // Check if data is empty
+    if (!data || data.length === 0) {
+        console.error("No data provided to export.");
+        // Optionally, inform the user with a toast or alert
+        alert("No hay datos para exportar.");
+        return;
+    }
+    
     const worksheet = XLSX.utils.json_to_sheet(data);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Datos');
 
-    // Auto-ajustar el ancho de las columnas
-    const max_width = data.reduce((w, r) => Math.max(w, ...Object.values(r).map(v => String(v).length)), 10);
-    worksheet["!cols"] = Object.keys(data[0] || {}).map(() => ({ wch: max_width }));
-
+    // Auto-adjust column width
+    try {
+        const objectKeys = Object.keys(data[0] || {});
+        const colWidths = objectKeys.map(key => ({
+            wch: Math.max(
+                key.length,
+                ...data.map(row => String(row[key] || '').length)
+            ) + 2 // Add a little padding
+        }));
+        worksheet["!cols"] = colWidths;
+    } catch (e) {
+        console.error("Could not auto-size columns, using default.", e);
+    }
+    
     XLSX.writeFile(workbook, `${fileName}.xlsx`);
 };
 
@@ -139,3 +157,4 @@ export const exportReportsToExcel = (reports: OperationReport[]) => {
   XLSX.writeFile(workbook, fileName);
 };
 
+    
