@@ -896,7 +896,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoad
                 const pdf = new jsPDF({ orientation: 'landscape', unit: 'cm', format: [10, 5] });
                 pdf.addImage(imgData, 'PNG', 0, 0, 10, 5);
                 pdf.autoPrint();
-                window.open(doc.output('bloburl'), '_blank');
+                window.open(pdf.output('bloburl'), '_blank');
             } else {
                 throw new Error(result.error);
             }

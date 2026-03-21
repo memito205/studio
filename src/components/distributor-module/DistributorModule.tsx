@@ -1,0 +1,262 @@
+import React, { useState, useCallback } from 'react';
+import { Button } from '@/components/ui/button';
+import { ArrowLeft } from 'lucide-react';
+import FileUpload from './components/FileUpload';
+import ResultsDisplay from './components/ResultsDisplay';
+import Spinner from './components/Spinner';
+import CurveConfigurator from './components/CurveConfigurator';
+import MappingModal from './components/MappingModal';
+import { DownloadIcon } from './components/icons';
+import { distribute } from './services/distributor';
+import { getDistributionSummary } from './services/geminiService';
+import { exportDocumentsToExcel, exportSummaryToExcel, findUnmappedWarehouses } from './services/exportService';
+import type { StockItem, DistributionRule, Allocation, BoxCurveRule } from './types';
+
+interface DistributorModuleProps {
+  onReturnToSuite: () => void;
+}
+
+const DistributorModule: React.FC<DistributorModuleProps> = ({ onReturnToSuite }) => {
+  const [stockData, setStockData] = useState<StockItem[] | null>(null);
+  const [planData, setPlanData] = useState<DistributionRule[] | null>(null);
+  const [curveData, setCurveData] = useState<BoxCurveRule[] | null>(null);
+  const [uniqueReferences, setUniqueReferences] = useState<string[]>([]);
+  const [distributionResult, setDistributionResult] = useState<Allocation | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string>('');
+  const [aiSummary, setAiSummary] = useState<string | null>(null);
+  const [resetCounter, setResetCounter] = useState(0);
+
+  // State for warehouse mapping
+  const [coMap, setCoMap] = useState<{ [key: string]: string }>({
+    'B12': '212', 'B15': '315', 'B16': '216', 'B3': '203', 
+    'B6': '206', 'B8': '208', 'B9': '209', 'ML': '303', 
+    'PAG': '999', 'PN': '997'
+  });
+  const [unmappedWarehouses, setUnmappedWarehouses] = useState<string[]>([]);
+  const [pendingExportAction, setPendingExportAction] = useState<'documents' | 'summary' | null>(null);
+
+  const handleFileProcessed = useCallback((type: 'stock' | 'plan', data: StockItem[] | DistributionRule[]) => {
+    setError(''); // Clear previous errors on new file
+    if (type === 'stock') {
+      setStockData(data as StockItem[]);
+    } else if (type === 'plan') {
+      const plan = data as DistributionRule[];
+      setPlanData(plan);
+      const refs = [...new Set(plan.map(p => String(p.REFERENCIA).trim()))].sort();
+      setUniqueReferences(refs);
+      setCurveData([]); // Reset curves when a new plan is loaded
+    }
+  }, []);
+  
+  const handleCurvesChange = useCallback((curves: BoxCurveRule[]) => {
+    setCurveData(curves);
+  }, []);
+
+  const handleProcessingError = useCallback((errorMessage: string) => {
+    setError(errorMessage);
+  }, []);
+
+  const handleProcessDistribution = async () => {
+    if (!stockData || !planData) {
+      setError('Por favor, cargue los archivos de Existencias y Reparto antes de procesar.');
+      return;
+    }
+    setError('');
+    setIsLoading(true);
+    setDistributionResult(null);
+    setAiSummary(null);
+
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    try {
+      const result = distribute(stockData, planData, curveData);
+      setDistributionResult(result);
+      
+      getDistributionSummary(result).then(summary => {
+          setAiSummary(summary);
+      });
+
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : "Ocurrió un error inesperado durante la distribución.";
+      setError(errorMessage);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  const handleReset = () => {
+      setStockData(null);
+      setPlanData(null);
+      setCurveData(null);
+      setUniqueReferences([]);
+      setDistributionResult(null);
+      setAiSummary(null);
+      setError('');
+      setIsLoading(false);
+      setResetCounter(c => c + 1);
+  };
+  
+  const handleExportDocuments = () => {
+    if (!distributionResult) {
+      setError("No hay datos de resultados para exportar.");
+      return;
+    }
+    const unmapped = findUnmappedWarehouses(distributionResult, coMap);
+    if (unmapped.length > 0) {
+        setUnmappedWarehouses(unmapped);
+        setPendingExportAction('documents');
+    } else {
+        exportDocumentsToExcel(distributionResult, coMap);
+    }
+  };
+
+  const handleExportSummary = () => {
+    if (!distributionResult || !stockData || !planData) {
+      setError("No hay datos de resultados para exportar.");
+      return;
+    }
+    const unmapped = findUnmappedWarehouses(distributionResult, coMap);
+    if (unmapped.length > 0) {
+        setUnmappedWarehouses(unmapped);
+        setPendingExportAction('summary');
+    } else {
+        exportSummaryToExcel(distributionResult, stockData, planData, coMap);
+    }
+  };
+
+  const handleCloseMappingModal = () => {
+    setUnmappedWarehouses([]);
+    setPendingExportAction(null);
+  };
+
+  const handleSaveMappings = (newMappings: { [key: string]: string }) => {
+    const updatedCoMap = { ...coMap, ...newMappings };
+    setCoMap(updatedCoMap);
+    
+    if (pendingExportAction === 'documents' && distributionResult) {
+        exportDocumentsToExcel(distributionResult, updatedCoMap);
+    } else if (pendingExportAction === 'summary' && distributionResult && stockData && planData) {
+        exportSummaryToExcel(distributionResult, stockData, planData, updatedCoMap);
+    }
+
+    handleCloseMappingModal();
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex flex-col items-center p-4 sm:p-6 lg:p-8">
+      <div className="w-full max-w-6xl mx-auto flex flex-col pt-4">
+        <div className="flex justify-start mb-6">
+          <Button variant="outline" onClick={onReturnToSuite} className="group hover:bg-muted transition-colors">
+            <ArrowLeft className="w-5 h-5 mr-2 group-hover:-translate-x-1 transition-transform" />
+            Volver a Suite
+          </Button>
+        </div>
+        <header className="text-center mb-10">
+          <h1 className="text-4xl sm:text-5xl font-extrabold text-gray-800">
+            Distribuidor de Mercancía
+            <span className="text-primary"> IA</span>
+          </h1>
+          <p className="mt-3 text-lg text-gray-600 max-w-2xl mx-auto">
+            Cargue sus archivos de existencias y reparto para generar una distribución equitativa de productos.
+          </p>
+        </header>
+
+        <main className="bg-white p-6 sm:p-8 rounded-2xl shadow-xl border border-gray-200">
+          {!distributionResult ? (
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+                <FileUpload
+                  id="stock"
+                  title="1. Archivo de Existencias"
+                  onFileProcessed={handleFileProcessed}
+                  onProcessingError={handleProcessingError}
+                  reset={resetCounter > 0}
+                />
+                <FileUpload
+                  id="plan"
+                  title="2. Archivo de Reparto"
+                  onFileProcessed={handleFileProcessed}
+                  onProcessingError={handleProcessingError}
+                  reset={resetCounter > 0}
+                />
+              </div>
+
+              {uniqueReferences.length > 0 && stockData && (
+                <CurveConfigurator 
+                    references={uniqueReferences}
+                    onCurvesChange={handleCurvesChange}
+                    reset={resetCounter > 0}
+                />
+              )}
+
+              {error && <div className="text-center text-red-600 bg-red-50 p-3 rounded-lg my-6">{error}</div>}
+
+              <div className="text-center mt-8">
+                <button
+                  onClick={handleProcessDistribution}
+                  disabled={!stockData || !planData || isLoading}
+                  className="inline-flex items-center justify-center px-8 py-3 bg-primary text-primary-foreground font-bold rounded-lg shadow-md hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 transform hover:scale-105 disabled:scale-100"
+                >
+                  {isLoading ? (
+                    <>
+                      <Spinner />
+                      <span className="ml-3">Procesando...</span>
+                    </>
+                  ) : (
+                    'Generar Distribución'
+                  )}
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="text-center flex flex-wrap justify-center gap-4">
+                 <button
+                  onClick={handleReset}
+                  className="px-6 py-3 bg-secondary text-secondary-foreground font-bold rounded-lg shadow-md hover:bg-secondary/80 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-secondary transition-colors"
+                >
+                  Comenzar de Nuevo
+                </button>
+                <button
+                  onClick={handleExportDocuments}
+                  className="inline-flex items-center justify-center px-6 py-3 bg-emerald-600 text-white font-bold rounded-lg shadow-md hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 transition-colors"
+                >
+                  <DownloadIcon className="w-5 h-5 mr-2" />
+                  Exportar Documentos
+                </button>
+                <button
+                  onClick={handleExportSummary}
+                  className="inline-flex items-center justify-center px-6 py-3 bg-sky-600 text-white font-bold rounded-lg shadow-md hover:bg-sky-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 transition-colors"
+                >
+                  <DownloadIcon className="w-5 h-5 mr-2" />
+                  Exportar Resumen
+                </button>
+            </div>
+          )}
+        </main>
+        
+        {isLoading && !distributionResult && (
+            <div className="text-center mt-8">
+                <p className="text-gray-600">Calculando el reparto óptimo. Esto puede tomar un momento...</p>
+            </div>
+        )}
+
+        <ResultsDisplay data={distributionResult} aiSummary={aiSummary} stockData={stockData} planData={planData} />
+        
+        {pendingExportAction && unmappedWarehouses.length > 0 && (
+            <MappingModal
+                unmappedWarehouses={unmappedWarehouses}
+                onSave={handleSaveMappings}
+                onClose={handleCloseMappingModal}
+            />
+        )}
+
+        <footer className="text-center mt-12 text-sm text-gray-500">
+            <p>Powered by React, Tailwind CSS, and Gemini API.</p>
+        </footer>
+      </div>
+    </div>
+  );
+};
+
+export default DistributorModule;

@@ -3,7 +3,7 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp } from 'lucide-react';
+import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth-context';
 
 interface ModuleCardProps {
@@ -52,6 +52,7 @@ interface SuiteDashboardProps {
     onNavigateToSampleControlModule: () => void;
     onNavigateToTransfersModule: () => void;
     onNavigateToDispatchManager: () => void;
+    onNavigateToDistributorModule: () => void;
 }
 
 export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({ 
@@ -68,7 +69,8 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToDashboardsModule,
     onNavigateToSampleControlModule,
     onNavigateToTransfersModule,
-    onNavigateToDispatchManager
+    onNavigateToDispatchManager,
+    onNavigateToDistributorModule
 }) => {
     const { role } = useAuth();
 
@@ -198,6 +200,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Acceder",
             onAction: onNavigateToGeneralSettings,
             roles: ['admin']
+        },
+        {
+            key: 'distributor_module',
+            icon: Bot,
+            title: "Distribuidor IA",
+            description: "Reparto equitativo inteligente de mercancías apoyado con inteligencia artificial.",
+            actionText: "Acceder",
+            onAction: onNavigateToDistributorModule,
+            roles: ['admin', 'office']
         }
     ];
 

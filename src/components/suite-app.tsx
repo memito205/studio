@@ -66,6 +66,7 @@ const DashboardsEcommerceMenu = dynamic(() => import('@/components/DashboardsEco
 const SampleControl = dynamic(() => import('./sample-control/SampleControl').then(mod => mod.SampleControl), { loading: () => <LoadingSpinner /> });
 const TransfersModule = dynamic(() => import('./TransfersModule').then(mod => mod.TransfersModule), { loading: () => <LoadingSpinner /> });
 const PropuestaTransportadora = dynamic(() => import('./PropuestaTransportadora').then(mod => mod.PropuestaTransportadora), { loading: () => <LoadingSpinner /> });
+const DistributorModule = dynamic(() => import('@/components/distributor-module/DistributorModule').then(mod => mod.default), { loading: () => <LoadingSpinner /> });
 
 
 type Theme = 'light' | 'dark';
@@ -467,7 +468,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const handleNavigateToTransfersModule = () => setAppStep('transfers');
   const handleNavigateToPropuestaTransportadora = () => setAppStep('propuesta_transportadora');
   const handleNavigateToDispatchManager = () => setAppStep('dispatch_manager');
-
+  const handleNavigateToDistributorModule = () => setAppStep('distributor_module');
 
   const handleStartPacking = async (order: WholesaleOrder) => {
       if (!user) {
@@ -596,6 +597,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToSampleControlModule={handleNavigateToSampleControlModule}
                 onNavigateToTransfersModule={handleNavigateToTransfersModule}
                 onNavigateToDispatchManager={handleNavigateToDispatchManager}
+                onNavigateToDistributorModule={handleNavigateToDistributorModule}
             />;
           case 'upload': return <FileUpload onProcessFile={handleFileProcess} isLoading={isLoading} onGoToHistorical={handleGoToHistorical} onReturnToSuite={handleReturnToSuite} />;
           case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} />;
@@ -641,6 +643,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           case 'transfers': return <TransfersModule onReturnToSuite={handleReturnToSuite} />;
           case 'propuesta_transportadora': return <PropuestaTransportadora onReturn={() => setAppStep('other_features')} />;
           case 'dispatch_manager': return <DispatchManager onReturnToSuite={handleReturnToSuite} />;
+          case 'distributor_module': return <DistributorModule onReturnToSuite={handleReturnToSuite} />;
           case 'packing':
             if (packingOrder && currentSession) {
               return <PackingScreen 
@@ -674,6 +677,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToSampleControlModule={handleNavigateToSampleControlModule} 
                 onNavigateToTransfersModule={handleNavigateToTransfersModule} 
                 onNavigateToDispatchManager={handleNavigateToDispatchManager}
+                onNavigateToDistributorModule={handleNavigateToDistributorModule}
             />;
       }
     }
