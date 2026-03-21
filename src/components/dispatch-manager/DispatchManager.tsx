@@ -400,20 +400,20 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
   };
   
   return (
-    <div className="min-h-screen bg-[#E4E3E0] text-[#141414] font-sans selection:bg-[#141414] selection:text-[#E4E3E0]">
+    <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary selection:text-primary-foreground">
        <SaveVerificationDialog 
           isOpen={isSaveDialogOpen}
           onOpenChange={setIsSaveDialogOpen}
           onSave={handleSaveVerification}
           isLoading={isSaving}
         />
-      <header className="border-b border-gray-700 p-6 bg-[#141414] text-[#E4E3E0] sticky top-0 z-10">
+      <header className="border-b border-gray-700 p-6 bg-primary text-primary-foreground sticky top-0 z-10">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-serif italic font-bold tracking-tight text-white">
+            <h1 className="text-3xl font-bold tracking-tight font-bold tracking-tight text-white">
               Gestor de Despachos
             </h1>
-            <p className="text-xs uppercase tracking-widest opacity-50 mt-1 font-mono">
+            <p className="text-xs  opacity-50 mt-1 ">
               Logística Avanzada • {format(new Date(), 'dd.MM.yyyy')}
             </p>
           </div>
@@ -424,9 +424,9 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                 {isAdmin && <button
                   onClick={() => setActiveModule('cruce')}
                   className={cn(
-                    "flex items-center gap-2 px-4 py-2 font-mono text-[10px] uppercase tracking-widest transition-all",
+                    "flex items-center gap-2 px-4 py-2  text-[10px]  transition-all",
                     activeModule === 'cruce' 
-                      ? "bg-white text-[#141414] shadow-md" 
+                      ? "bg-white text-foreground shadow-md" 
                       : "hover:bg-white/10 opacity-60"
                   )}
                 >
@@ -436,9 +436,9 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                 <button
                   onClick={() => setActiveModule('verificacion')}
                   className={cn(
-                    "flex items-center gap-2 px-4 py-2 font-mono text-[10px] uppercase tracking-widest transition-all",
+                    "flex items-center gap-2 px-4 py-2  text-[10px]  transition-all",
                     activeModule === 'verificacion' 
-                      ? "bg-white text-[#141414] shadow-md" 
+                      ? "bg-white text-foreground shadow-md" 
                       : "hover:bg-white/10 opacity-60"
                   )}
                 >
@@ -448,9 +448,9 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                 <button
                     onClick={() => setActiveModule('historial')}
                     className={cn(
-                    "flex items-center gap-2 px-4 py-2 font-mono text-[10px] uppercase tracking-widest transition-all",
+                    "flex items-center gap-2 px-4 py-2  text-[10px]  transition-all",
                     activeModule === 'historial'
-                        ? "bg-white text-[#141414] shadow-md" 
+                        ? "bg-white text-foreground shadow-md" 
                         : "hover:bg-white/10 opacity-60"
                     )}
                 >
@@ -474,7 +474,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
               {activeModule === 'cruce' && isAdmin && (
                 <div className="flex flex-col sm:flex-row gap-2">
                   <label className={cn(
-                    "flex items-center gap-2 px-4 py-2 border border-white/30 cursor-pointer hover:bg-white/10 transition-all font-mono text-xs",
+                    "flex items-center gap-2 px-4 py-2 border border-white/30 cursor-pointer hover:bg-white/10 transition-all  text-xs",
                     merchandiseFile && "bg-green-300/20 border-green-300 text-green-200"
                   )}>
                     {merchandiseFile ? <CheckCircle2 size={16} /> : <Upload size={16} />}
@@ -484,14 +484,14 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
 
                   {(filteredMatchedData.length > 0 || filteredUnmatchedData.length > 0) && (
                     <div className="flex gap-2">
-                        <Button onClick={() => setIsSaveDialogOpen(true)} variant="outline" size="sm" className="h-full border-dashed border-white/50 hover:bg-white/20">
+                        <Button onClick={() => setIsSaveDialogOpen(true)} variant="secondary" size="sm" className="h-full">
                             <Save className="mr-2 h-4 w-4" /> Guardar para Verificar
                         </Button>
                       <button
                         onClick={handleExportPDF}
                         disabled={isExporting}
                         className={cn(
-                          "flex items-center gap-2 px-4 py-2 bg-white text-[#141414] hover:bg-opacity-90 transition-all font-mono text-xs",
+                          "flex items-center gap-2 px-4 py-2 bg-white text-foreground hover:bg-opacity-90 transition-all  text-xs",
                           isExporting && "opacity-50 cursor-not-allowed"
                         )}
                       >
@@ -502,7 +502,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                         onClick={handleExportExcel}
                         disabled={isExporting}
                         className={cn(
-                          "flex items-center gap-2 px-4 py-2 border border-white/30 hover:bg-white/10 transition-all font-mono text-xs",
+                          "flex items-center gap-2 px-4 py-2 border border-white/30 hover:bg-white/10 transition-all  text-xs",
                           isExporting && "opacity-50 cursor-not-allowed"
                         )}
                       >
@@ -513,7 +513,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                   )}
                 </div>
               )}
-                <Button onClick={onReturnToSuite} variant="outline" className="justify-start text-[#E4E3E0] border-[#E4E3E0]/30 hover:bg-[#141414]/50">
+                <Button onClick={onReturnToSuite} variant="ghost" className="justify-start text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground">
                     <ArrowLeft className="mr-2 h-4 w-4"/> Volver a la Suite
                 </Button>
             </div>
@@ -527,43 +527,43 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
             {activeModule === 'cruce' && isAdmin && (
               !merchandiseFile ? (
                 <div 
-                  className="flex flex-col items-center justify-center py-32 border-2 border-dashed border-[#141414]/20"
+                  className="flex flex-col items-center justify-center py-32 border-2 border-dashed border-border"
                 >
                   <FileSpreadsheet size={64} strokeWidth={1} />
-                  <p className="mt-4 font-serif italic text-xl">Inicia cargando el archivo de Mercancía</p>
-                  <p className="text-sm font-mono mt-2">El sistema se encargará de obtener las transferencias automáticamente.</p>
+                  <p className="mt-4 font-bold tracking-tight text-xl">Inicia cargando el archivo de Mercancía</p>
+                  <p className="text-sm  mt-2">El sistema se encargará de obtener las transferencias automáticamente.</p>
                 </div>
               ) : (
                 <div className="space-y-12">
                   <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
                     <div className="lg:col-span-1 space-y-4">
-                      <div className="bg-white p-4 border border-[#141414]">
-                        <h3 className="text-xs font-mono font-bold uppercase tracking-widest mb-4 flex items-center gap-2">
+                      <div className="bg-white p-4 border border-border">
+                        <h3 className="text-xs  font-bold  mb-4 flex items-center gap-2">
                           <MapPin size={14} /> Seleccionar Destinos
                         </h3>
                         <div className="max-h-[400px] overflow-y-auto space-y-2 pr-2 custom-scrollbar">
                           {uniqueDestinos.map(dest => (
-                            <div key={dest} className="flex flex-col gap-1 p-2 border border-transparent hover:border-[#141414]/10 transition-all">
+                            <div key={dest} className="flex flex-col gap-1 p-2 border border-transparent hover:border-border transition-all">
                               <label className="flex items-center gap-2 cursor-pointer group">
                                 <input
                                   type="checkbox"
-                                  className="w-4 h-4 accent-[#141414]"
+                                  className="w-4 h-4 accent-primary"
                                   checked={selectedDestinos.includes(dest)}
                                   onChange={() => toggleDestino(dest)}
                                 />
                                 <span className={cn(
-                                  "text-xs font-mono truncate",
+                                  "text-xs  truncate",
                                   selectedDestinos.includes(dest) ? "font-bold" : "opacity-60"
                                 )}>{dest}</span>
                               </label>
                               {selectedDestinos.includes(dest) && (
                                 <div className="flex items-center gap-2 mt-1 pl-6">
-                                  <span className="text-[9px] font-mono opacity-40 uppercase">Límite (TFs &gt;= 5 und):</span>
+                                  <span className="text-[9px]  opacity-40 uppercase">Límite (TFs &gt;= 5 und):</span>
                                   <input
                                     type="number"
                                     min="1"
                                     placeholder="Todos"
-                                    className="w-full border-b border-[#141414] py-0.5 text-[10px] font-mono focus:outline-none bg-transparent"
+                                    className="w-full border-b border-border py-0.5 text-[10px]  focus:outline-none bg-transparent"
                                     value={destLimits[dest] || ''}
                                     onChange={(e) => setLimitForDest(dest, e.target.value === '' ? '' : parseInt(e.target.value))}
                                   />
@@ -576,19 +576,19 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                     </div>
 
                     <div className="lg:col-span-3 space-y-6">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-white p-4 border border-[#141414]">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-white p-4 border border-border">
                         <div className="relative">
                           <Search className="absolute left-3 top-1/2 -translate-y-1/2 opacity-40" size={18} />
                           <input
                             type="text"
                             placeholder="Buscar por código o TFT..."
-                            className="w-full pl-10 pr-4 py-2 border-b border-[#141414] focus:outline-none focus:border-opacity-100 bg-transparent font-mono text-sm"
+                            className="w-full pl-10 pr-4 py-2 border-b border-border focus:outline-none focus:border-opacity-100 bg-transparent  text-sm"
                             value={searchTerm}
                             onChange={(e) => setSearchTerm(e.target.value)}
                           />
                         </div>
 
-                        <div className="flex items-center gap-2 px-4 py-2 bg-[#141414]/5 font-mono text-xs uppercase tracking-wider">
+                        <div className="flex items-center gap-2 px-4 py-2 bg-muted  text-xs ">
                           <ArrowUpDown size={14} />
                           <span>Orden: Fecha TFT (Vieja a Nueva)</span>
                         </div>
@@ -596,23 +596,23 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                       
                       <div className="grid grid-cols-2 gap-4">
                         <div className="bg-green-50 border border-green-600 p-4">
-                            <h4 className="font-mono text-xs uppercase opacity-60">Coincidencias</h4>
+                            <h4 className=" text-xs uppercase opacity-60">Coincidencias</h4>
                             <p className="text-3xl font-bold">{filteredMatchedData.length}</p>
                         </div>
                         <div className="bg-red-50 border border-red-600 p-4">
-                            <h4 className="font-mono text-xs uppercase opacity-60">Sin Cruce</h4>
+                            <h4 className=" text-xs uppercase opacity-60">Sin Cruce</h4>
                             <p className="text-3xl font-bold">{filteredUnmatchedData.length}</p>
                         </div>
                       </div>
 
                       <div>
-                          <h3 className="font-serif italic text-lg mb-2">Resultados del Cruce ({filteredMatchedData.length} coincidencias)</h3>
-                          <div className="border border-[#141414] max-h-[60vh] overflow-y-auto custom-scrollbar">
+                          <h3 className="font-bold tracking-tight text-lg mb-2">Resultados del Cruce ({filteredMatchedData.length} coincidencias)</h3>
+                          <div className="border border-border max-h-[60vh] overflow-y-auto custom-scrollbar">
                               {Object.keys(filteredMatchedData.reduce((acc, item) => ({...acc, [item.destino]: true }), {})).sort().map(destino => {
                                   const itemsInDest = filteredMatchedData.filter(item => item.destino === destino);
                                   return (
-                                  <Collapsible key={destino} className="border-b border-[#141414]/20" defaultOpen>
-                                      <CollapsibleTrigger className="w-full bg-[#141414]/5 p-3 text-left font-mono text-sm flex justify-between items-center hover:bg-[#141414]/10 transition-all">
+                                  <Collapsible key={destino} className="border-b border-border" defaultOpen>
+                                      <CollapsibleTrigger className="w-full bg-muted p-3 text-left  text-sm flex justify-between items-center hover:bg-accent transition-all">
                                       <span>{destino} ({itemsInDest.length} ítems)</span>
                                       <ChevronsUpDown size={16} className="opacity-50" />
                                       </CollapsibleTrigger>
@@ -630,7 +630,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                                           <TableBody>
                                           {itemsInDest.map(item => (
                                               <TableRow key={item.codigo}>
-                                              <TableCell className="font-mono text-xs font-bold">{item.codigo}</TableCell>
+                                              <TableCell className=" text-xs font-bold">{item.codigo}</TableCell>
                                               <TableCell>{item.tftMatch}</TableCell>
                                               <TableCell>{item.tftFecha ? format(item.tftFecha, 'dd/MM/yyyy') : '-'}</TableCell>
                                               <TableCell>{item.tftCantidad}</TableCell>
@@ -647,8 +647,8 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                       </div>
 
                       <div>
-                          <h3 className="font-serif italic text-lg mb-2 text-red-700">Mercancía Sin Cruce ({filteredUnmatchedData.length})</h3>
-                          <div className="border border-[#141414] max-h-[40vh] overflow-y-auto custom-scrollbar">
+                          <h3 className="font-bold tracking-tight text-lg mb-2 text-red-700">Mercancía Sin Cruce ({filteredUnmatchedData.length})</h3>
+                          <div className="border border-border max-h-[40vh] overflow-y-auto custom-scrollbar">
                           <Table>
                               <TableHeader>
                               <TableRow>
@@ -661,7 +661,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                               <TableBody>
                               {filteredUnmatchedData.map(item => (
                                   <TableRow key={item.codigo}>
-                                  <TableCell className="font-mono text-xs font-bold">{item.codigo}</TableCell>
+                                  <TableCell className=" text-xs font-bold">{item.codigo}</TableCell>
                                   <TableCell>{item.destino}</TableCell>
                                   <TableCell>{format(item.fechaCreacion, 'dd/MM/yyyy')}</TableCell>
                                   <TableCell>{item.empacador}</TableCell>
@@ -685,7 +685,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
         )}
       </main>
 
-      <footer className="max-w-7xl mx-auto p-6 mt-12 border-t border-[#141414] opacity-50 flex justify-between items-center font-mono text-[10px] uppercase tracking-widest">
+      <footer className="max-w-7xl mx-auto p-6 mt-12 border-t border-border opacity-50 flex justify-between items-center  text-[10px] ">
         <span>Sistema de Cruce Logístico v2.1</span>
         <span>&copy; {new Date().getFullYear()} • Eficiencia Operativa</span>
       </footer>

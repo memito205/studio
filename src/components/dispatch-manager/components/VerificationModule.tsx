@@ -210,7 +210,7 @@ const ScanningInterface: React.FC<{
   const renderSaveStatus = () => {
     switch (saveStatus) {
         case 'saving':
-            return <span className="flex items-center gap-1 text-blue-500"><Loader2 className="h-3 w-3 animate-spin"/> Guardando...</span>;
+            return <span className="flex items-center gap-1 text-primary"><Loader2 className="h-3 w-3 animate-spin"/> Guardando...</span>;
         case 'saved':
             return <span className="flex items-center gap-1 text-green-600"><CheckCircle2 className="h-3 w-3"/> Progreso guardado</span>;
         case 'error':
@@ -234,14 +234,14 @@ const ScanningInterface: React.FC<{
             </CardHeader>
             <CardContent>
                 <form onSubmit={handleScan}>
-                <Input ref={inputRef} type="text" value={scanInput} onChange={(e) => setScanInput(e.target.value)} placeholder="Pistolear código..." className="w-full font-mono text-xl focus:outline-none" autoComplete="off" />
+                <Input ref={inputRef} type="text" value={scanInput} onChange={(e) => setScanInput(e.target.value)} placeholder="Pistolear código..." className="w-full  text-xl focus:outline-none" autoComplete="off" />
                 </form>
             </CardContent>
           </Card>
           <Card>
             <CardHeader>
                 <CardTitle>Progreso: {session.name}</CardTitle>
-                 <div className="text-xs text-muted-foreground font-mono mt-2 h-4">{renderSaveStatus()}</div>
+                 <div className="text-xs text-muted-foreground  mt-2 h-4">{renderSaveStatus()}</div>
             </CardHeader>
             <CardContent>
                 <div className="grid grid-cols-2 gap-4">
@@ -260,7 +260,7 @@ const ScanningInterface: React.FC<{
            {lastScanStatus && (
                 <div className={cn("p-4 border-l-4 rounded-md", lastScanStatus.type === 'success' && "bg-green-50 border-green-600 text-green-800 dark:bg-green-900/20 dark:border-green-700 dark:text-green-300", lastScanStatus.type === 'error' && "bg-red-50 border-red-600 text-red-800 dark:bg-red-900/20 dark:border-red-700 dark:text-red-300", lastScanStatus.type === 'duplicate' && "bg-orange-50 border-orange-600 text-orange-800 dark:bg-orange-900/20 dark:border-orange-700 dark:text-orange-300")}>
                     <p className="font-bold text-sm uppercase">{lastScanStatus.message}</p>
-                    <p className="font-mono text-xs mt-1 opacity-70">Código: {lastScanStatus.code}</p>
+                    <p className=" text-xs mt-1 opacity-70">Código: {lastScanStatus.code}</p>
                 </div>
             )}
             <Card>
@@ -325,9 +325,9 @@ const ScanningInterface: React.FC<{
                     {filteredData.map((item, idx) => (
                     <TableRow key={item.codigo + idx} className={cn(item.scanned && "bg-green-100/50 dark:bg-green-900/20")}>
                         <TableCell>{item.scanned ? <Badge variant="success">LISTO</Badge> : <Badge variant="outline">PENDIENTE</Badge>}</TableCell>
-                        <TableCell className="font-mono text-xs font-bold">{item.codigo}</TableCell>
+                        <TableCell className=" text-xs font-bold">{item.codigo}</TableCell>
                         <TableCell className="text-xs">{item.destino}</TableCell>
-                        <TableCell className="font-mono text-xs opacity-60">{item.tftCruce}</TableCell>
+                        <TableCell className=" text-xs opacity-60">{item.tftCruce}</TableCell>
                         <TableCell className="text-center font-medium">{item.cantTft}</TableCell>
                     </TableRow>
                     ))}

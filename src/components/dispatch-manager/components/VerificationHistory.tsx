@@ -49,7 +49,7 @@ const VerificationDetailDialog: React.FC<{
                 <TableBody>
                     {items.map((item, idx) => (
                         <TableRow key={item.codigo + idx} className={cn(item.scanned && "bg-green-50 dark:bg-green-900/20", title === "No Cruzados" && "bg-red-50 dark:bg-red-900/20")}>
-                            <TableCell className="font-mono">{item.codigo}</TableCell>
+                            <TableCell className="">{item.codigo}</TableCell>
                             <TableCell>{item.destino}</TableCell>
                             <TableCell>{item.tftCruce || '-'}</TableCell>
                             <TableCell>{item.cantTft}</TableCell>
@@ -144,7 +144,7 @@ const VerificationHistory: React.FC = () => {
                     <Input
                         type="text"
                         placeholder="Buscar por nombre de sesión, código o TFT..."
-                        className="w-full pl-10 pr-4 py-2 font-mono text-sm"
+                        className="w-full pl-10 pr-4 py-2  text-sm"
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                     />
