@@ -246,14 +246,16 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
 
     let finalList: MerchandiseItem[] = [...bdbolItems];
     const largeTfCounts: Record<string, number> = {};
+    const processedCodes = new Set<string>(bdbolItems.map(i => i.codigo));
 
     standardItems.forEach(item => {
         const dest = item.destino;
         const limit = destLimits[dest];
         
         if (limit === '' || limit === undefined || limit < 0) {
-            if (!finalList.some(finalItem => finalItem.codigo === item.codigo)) {
+            if (!processedCodes.has(item.codigo)) {
                 finalList.push(item);
+                processedCodes.add(item.codigo);
             }
             return;
         }
