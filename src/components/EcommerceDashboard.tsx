@@ -607,17 +607,34 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
             return newOrder;
         });
 
-        const result = await saveEcommerceOrders(ordersToSave);
-
-        if (result.success) {
-            toast({
-                title: 'Sincronización Exitosa',
-                description: `${result.data?.processedCount} pedidos fueron procesados. Generando análisis...`
-            });
-            setNewFileLoaded(true);
-        } else {
-            throw new Error(result.error);
+        let totalProcessed = 0;
+        const CHUNK_SIZE = 500; // Client-side chunking to bypass Next.js 1MB Server Action limit
+        
+        for (let i = 0; i < ordersToSave.length; i += CHUNK_SIZE) {
+            const chunk = ordersToSave.slice(i, i + CHUNK_SIZE);
+            const result = await saveEcommerceOrders(chunk);
+            
+            if (!result.success) {
+                throw new Error(result.error || "Error en el guardado por lotes.");
+            }
+            
+            totalProcessed += result.data?.processedCount || chunk.length;
+            
+            // Opcional: mostrar progreso si es muy grande
+            if (ordersToSave.length > CHUNK_SIZE) {
+                toast({
+                    title: 'Sincronizando...',
+                    description: `Procesados ${totalProcessed} de ${ordersToSave.length} pedidos.`,
+                    duration: 1500,
+                });
+            }
         }
+
+        toast({
+            title: 'Sincronización Exitosa',
+            description: `${totalProcessed} pedidos fueron procesados correctamente. Generando análisis...`
+        });
+        setNewFileLoaded(true);
 
     } catch (e: any) {
         toast({ variant: 'destructive', title: 'Error al Cargar Archivo', description: e.message });
