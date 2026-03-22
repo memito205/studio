@@ -1334,7 +1334,11 @@ export async function saveEcommerceOrders(orders: EcommerceOrder[]): Promise<{ s
 
 export async function loadEcommerceOrders(): Promise<{ success: boolean; data?: EcommerceOrder[]; error?: string }> {
     try {
-        const querySnapshot = await getDocs(collection(firestore, "ecommerceOrders"));
+        // Operational Limit: Fetch only the last 60 days to prevent UI lockup and memory exhaustion.
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - 60);
+        const q = query(collection(firestore, "ecommerceOrders"), where("fechaPedido", ">=", cutoffDate));
+        const querySnapshot = await getDocs(q);
         const orders = querySnapshot.docs.map(doc => {
             return convertTimestampsToDates({ id: doc.id, ...doc.data() }) as EcommerceOrder;
         });
@@ -1680,7 +1684,10 @@ export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'statu
 
 export async function loadAllTransfers(): Promise<{ data?: TransferEntry[]; error?: string }> {
     try {
-        const q = query(collection(firestore, "transfers"), orderBy("fecha", "desc"));
+        // Operational Limit: Fetch only the last 60 days to prevent UI lockup and memory exhaustion.
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - 60);
+        const q = query(collection(firestore, "transfers"), where("fecha", ">=", cutoffDate), orderBy("fecha", "desc"));
         const querySnapshot = await getDocs(q);
         const transfers = querySnapshot.docs.map(doc => ({
             id: doc.id,
