@@ -86,7 +86,18 @@ const DailyDispatchDashboard: React.FC<DailyDispatchDashboardProps> = ({ onRetur
     return today;
   }, [dateFilter]);
   
+  const slaCache = useRef(new Map<string, { isLate: boolean; limitHours: number; timeDiffHours: number | null; dueDate: Date | null; }>());
+  const wasLateCache = useRef(new Map<string, boolean>());
+  
+  useEffect(() => {
+      slaCache.current.clear();
+      wasLateCache.current.clear();
+  }, [holidays]);
+
   const getSlaDetails = useCallback((order: EcommerceOrder): { isLate: boolean; limitHours: number; timeDiffHours: number | null; dueDate: Date | null; } => {
+    if (!order.id) return { isLate: false, limitHours: 0, timeDiffHours: null, dueDate: null };
+    if (slaCache.current.has(order.id)) return slaCache.current.get(order.id)!;
+
     const orderDate = order.fechaPedido ? new Date(order.fechaPedido) : null;
     const dispatchDate = order.dispatchDate ? new Date(order.dispatchDate) : null;
 
@@ -124,10 +135,15 @@ const DailyDispatchDashboard: React.FC<DailyDispatchDashboardProps> = ({ onRetur
 
     const timeDiffHours = calculateSlaHours(orderDate, dispatchDate, holidays);
     
-    return { isLate, limitHours, timeDiffHours, dueDate };
+    const result = { isLate, limitHours, timeDiffHours, dueDate };
+    slaCache.current.set(order.id, result);
+    return result;
   }, [holidays]);
   
   const wasDispatchedLate = useCallback((order: EcommerceOrder): boolean => {
+    if (!order.id) return false;
+    if (wasLateCache.current.has(order.id)) return wasLateCache.current.get(order.id)!;
+
     if (!order.dispatchDate || !order.fechaPedido) return false;
     
     const orderDate = new Date(order.fechaPedido);
@@ -141,8 +157,9 @@ const DailyDispatchDashboard: React.FC<DailyDispatchDashboardProps> = ({ onRetur
     
     const timeDiffHours = calculateSlaHours(orderDate, dispatchDate, holidays);
     
-    return timeDiffHours > limitHours;
-
+    const isLate = timeDiffHours > limitHours;
+    wasLateCache.current.set(order.id, isLate);
+    return isLate;
   }, [holidays]);
 
 
