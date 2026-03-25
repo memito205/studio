@@ -4,7 +4,7 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import type { ProcessedReportData, ReportSummary } from '@/types';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Calendar as CalendarIcon, Download, Loader2, Info, Eye, BarChart2, Clock, Search, Filter } from 'lucide-react';
+import { ArrowLeft, Calendar as CalendarIcon, Download, Loader2, Info, Eye, BarChart2, Clock, Search, Filter, Package } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
