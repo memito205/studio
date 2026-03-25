@@ -101,8 +101,14 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
   const handleLoadTrends = async () => {
     if (dailyGroups.length === 0) return;
     setIsLoadingTrends(true);
-    // Applying "Last Snapshot Wins" Rule: take only the first snapshot id from each day
-    const snapshotIds = dailyGroups.map(g => g.consolidated?.id || g.snapshots[0]?.id).filter(Boolean) as string[];
+    // Applying "Last Snapshot Wins" Rule: ensure we grab the absolute latest snapshot by time
+    const snapshotIds = dailyGroups.map(g => {
+        if (g.consolidated) return g.consolidated.id;
+        if (g.snapshots.length === 0) return null;
+        const sortedDesc = [...g.snapshots].sort((a, b) => new Date(b.snapshotCreatedAt).getTime() - new Date(a.snapshotCreatedAt).getTime());
+        return sortedDesc[0].id;
+    }).filter(Boolean) as string[];
+
     const result = await loadFullReportSnapshots(snapshotIds);
     if (result.data) {
         setTrendsData(result.data.sort((a,b) => new Date(a.reportDate).getTime() - new Date(b.reportDate).getTime()));
@@ -210,6 +216,12 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
           }))
           .sort((a, b) => b.unidadesTotales - a.unidadesTotales);
   }, [trendsData]);
+
+  const snapshotsForSelectedDay = useMemo(() => {
+    if (!selectedDate) return [];
+    const group = dailyGroups.find(g => isSameDay(new Date(g.date + "T00:00:00"), selectedDate));
+    return group ? [...group.snapshots].sort((a,b) => new Date(b.snapshotCreatedAt).getTime() - new Date(a.snapshotCreatedAt).getTime()) : [];
+  }, [selectedDate, dailyGroups]);
 
   const handlePreview = () => {
       setIsPreviewModalOpen(true);
@@ -358,9 +370,9 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                         <YAxis yAxisId="right" orientation="right" domain={[0, 'dataMax + 20']} tickFormatter={(v) => `${v}%`} tick={{fill: '#888'}} axisLine={false} tickLine={false} />
                                         <RechartsTooltip contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} cursor={{fill: 'hsl(var(--muted))', opacity: 0.3}} />
                                         <Legend wrapperStyle={{paddingTop: '20px'}} />
-                                        <Area yAxisId="left" type="monotone" dataKey="unidades" name="Unidades Físicas" stroke="#3b82f6" strokeWidth={3} fill="url(#colorUnidades)">
+                                        <Bar yAxisId="left" dataKey="unidades" name="Unidades Físicas" fill="url(#colorUnidades)" radius={[4, 4, 0, 0]}>
                                             <LabelList dataKey="unidades" position="top" fill="#3b82f6" fontSize={11} formatter={(v: number) => v > 0 ? (v/1000).toFixed(1)+'k' : ''} />
-                                        </Area>
+                                        </Bar>
                                         <Line yAxisId="right" type="monotone" dataKey="cumplimiento" name="Tasa Cumplimiento (%)" stroke="#f59e0b" strokeWidth={4} dot={{r: 4, strokeWidth: 2}} activeDot={{r: 6}}>
                                             <LabelList dataKey="cumplimiento" position="bottom" fill="#f59e0b" fontSize={12} formatter={(v: number) => v + '%'} />
                                         </Line>
