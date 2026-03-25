@@ -211,6 +211,9 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
           .sort((a, b) => b.unidadesTotales - a.unidadesTotales);
   }, [trendsData]);
 
+  const handlePreview = () => {
+      setIsPreviewModalOpen(true);
+  };
   
   const renderMainView = () => (
     <Card className="border-none shadow-none bg-transparent">
