@@ -140,7 +140,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
          } else {
              const p = latestDateData.packerProductivity?.find(x => x.packerName === selectedOperator);
              hoyVolumen = p?.totalQuantity || 0;
-             hoyCumplimiento = p?.compliancePercentage || 0;
+             hoyCumplimiento = p?.compliance || 0;
          }
          
          trendsData.forEach(d => {
@@ -152,7 +152,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                  const p = d.packerProductivity?.find(x => x.packerName === selectedOperator);
                  if (p) {
                      acumVolumen += p.totalQuantity;
-                     acumCumplimiento += p.compliancePercentage || 0;
+                     acumCumplimiento += p.compliance || 0;
                      acumDias++;
                  }
              }
@@ -181,7 +181,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
               const pData = d.packerProductivity?.find(p => p.packerName === selectedOperator);
               if (pData) {
                   totalUnits = pData.totalQuantity;
-                  complianceVal = pData.compliancePercentage || 0;
+                  complianceVal = pData.compliance || 0;
               }
           }
 
@@ -242,7 +242,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
               packerStats[p.packerName].totalUnits += p.totalQuantity;
               packerStats[p.packerName].days += 1;
               packerStats[p.packerName].totalHours += p.hoursWorked;
-              packerStats[p.packerName].totalCompliance += (p.compliancePercentage || 0);
+              packerStats[p.packerName].totalCompliance += (p.compliance || 0);
           });
       });
       return Object.entries(packerStats)
