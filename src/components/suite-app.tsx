@@ -14,6 +14,7 @@ import { Loader2, AlertTriangle } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import DispatchManager from './dispatch-manager/DispatchManager';
+import { BodegaDashboardsMenu } from './BodegaDashboardsMenu';
 
 // --- Dynamic Imports for Code Splitting ---
 
@@ -217,6 +218,22 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
         }
         const reportDateStr = fileReportDate.toISOString().split('T')[0];
         setReportDate(reportDateStr);
+        
+        // --- SILENT CACHE REHYDRATION ---
+        try {
+            const previousReports = await loadHistoricalReports({ startDate: reportDateStr, endDate: reportDateStr });
+            if (previousReports.data && previousReports.data.length > 0) {
+                const latest = previousReports.data[0];
+                if (latest.manualJustifications) setManualJustifications(latest.manualJustifications);
+                if (latest.incidentLog) setIncidentLog(latest.incidentLog as IncidentLogEntry[]);
+            } else {
+                setManualJustifications({});
+                setIncidentLog([]);
+            }
+        } catch (e) {
+            console.warn("No se pudo cargar la memoria previa para hoy.", e);
+        }
+        // ---------------------------------
         
         const barcodeKey = Object.keys(data[0]).find(k => k.toLowerCase().includes('codigo barras'));
         if (!barcodeKey) {
@@ -463,6 +480,8 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const handleNavigateToDashboardsModule = () => setAppStep('dashboards_main_menu');
   const handleNavigateToDashboardsMainMenu = () => setAppStep('dashboards_main_menu');
   const handleNavigateToDashboardsEcommerceMenu = () => setAppStep('dashboards_ecommerce_menu');
+  const handleNavigateToDashboardsBodegaMenu = () => setAppStep('dashboards_bodega');
+  const handleNavigateToDashboardsRemision = () => setAppStep('dashboards_remision');
   const handleNavigateToDashboardsOperacion = () => setAppStep('dashboards');
   const handleNavigateToSampleControlModule = () => setAppStep('sample_control');
   const handleNavigateToTransfersModule = () => setAppStep('transfers');
@@ -602,6 +621,8 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           case 'upload': return <FileUpload onProcessFile={handleFileProcess} isLoading={isLoading} onGoToHistorical={handleGoToHistorical} onReturnToSuite={handleReturnToSuite} />;
           case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} />;
           case 'dashboard': return reportData && <Dashboard data={reportData} fileName={fileName} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} onGoToConfiguration={handleGoToConfiguration} onGoToPlantView={handleGoToPlantView} onGoToSupervisorView={handleGoToSupervisorView} onRequestAIInsight={handleRequestAIInsight} theme={theme} annotations={annotations} onAnnotationChange={handleAnnotationChange} />;
+          case 'dashboards_bodega': return <BodegaDashboardsMenu onNavigateRemision={handleNavigateToDashboardsRemision} onReturnToMain={handleNavigateToDashboardsMainMenu} />;
+          case 'dashboards_remision': return <HistoricalDashboard onReturnToMain={() => setAppStep('dashboards_bodega')} onConsolidate={consolidateDailyReports} theme={theme} />;
           case 'historical': return <HistoricalDashboard onReturnToMain={() => setAppStep('upload')} onConsolidate={consolidateDailyReports} theme={theme} />;
           case 'plant_view': return reportData && <PlantView data={reportData} onReturnToDashboard={handleReturnToDashboard} theme={theme} />;
           case 'supervisor_view': return reportData && <SupervisorView data={reportData} onReturnToDashboard={handleReturnToDashboard} />;
@@ -637,7 +658,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           case 'returns_module': return <ReturnsModule onReturn={() => setAppStep('other_features')} />;
           case 'routes': return <RoutesModule onReturnToSuite={handleReturnToSuite} />;
           case 'dashboards': return <DashboardsModule onReturnToSuite={handleNavigateToDashboardsEcommerceMenu} />;
-          case 'dashboards_main_menu': return <DashboardsMainMenu onNavigateEcommerce={handleNavigateToDashboardsEcommerceMenu} onReturnToSuite={handleReturnToSuite} />;
+          case 'dashboards_main_menu': return <DashboardsMainMenu onNavigateEcommerce={handleNavigateToDashboardsEcommerceMenu} onNavigateBodega={handleNavigateToDashboardsBodegaMenu} onReturnToSuite={handleReturnToSuite} />;
           case 'dashboards_ecommerce_menu': return <DashboardsEcommerceMenu onNavigateOperacion={handleNavigateToDashboardsOperacion} onReturnToMainMenu={handleNavigateToDashboardsMainMenu} />;
           case 'sample_control': return <SampleControl onReturnToSuite={handleReturnToSuite} />;
           case 'transfers': return <TransfersModule onReturnToSuite={handleReturnToSuite} />;

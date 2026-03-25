@@ -288,9 +288,7 @@ function detectAllPauses(
 
     for (const packerName in entriesByPacker) {
         const sortedEntries = entriesByPacker[packerName].map(e => ({
-            ...e,
-            // Ensure fechaDeLectura is a valid Date object before sorting
-            fechaDeLectura: parseFlexibleDate(e.fechaDeLectura)
+            ...e
         }))
         .filter(e => e.fechaDeLectura && !isNaN(e.fechaDeLectura.getTime()))
         .sort((a, b) => a.fechaDeLectura!.getTime() - b.fechaDeLectura!.getTime());

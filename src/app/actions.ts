@@ -132,22 +132,11 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
         const reportsSummaryCollectionRef = collection(firestore, "reports_summary");
         
         // 1. Create a lightweight configuration object.
-        const reportConfigToSave: ReportConfiguration = {
-            reportDate: reportData.reportDate,
-            reportStartTime: reportData.reportStartTime || '06:00',
-            reportEndTime: reportData.reportEndTime || '18:00',
-            snapshotCreatedAt: reportTimestamp,
-            isConsolidated: reportData.isConsolidated || false,
-            sourceSnapshotIds: reportData.sourceSnapshotIds || [],
-            brandProductTypeGoals: reportData.brandProductTypeGoals,
-            manualJustifications: reportData.manualJustifications,
-            incidentLog: reportData.incidentLog,
-            configSelectedPacker: reportData.configSelectedPacker || ['all'],
-            processedData: (reportData.processedData || []), // Use the new processedData field
-        };
-
+        const reportDataToSave = { ...reportData };
+        delete (reportDataToSave as any).processedData;
+        
         const reportDocRef = doc(reportsCollectionRef, snapshotId);
-        const dataToSave = convertDatesToTimestamps(reportConfigToSave);
+        const dataToSave = convertDatesToTimestamps(reportDataToSave);
         await setDoc(reportDocRef, dataToSave);
 
 
@@ -165,7 +154,7 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
             totalQuantity: totalQuantity,
             totalHours: totalHours,
             avgProductivity: avgProductivity,
-            brandCompliance: reportData.brandCompliance.map(b => ({ brandName: b.brandName, compliance: b.compliance })),
+            brandCompliance: reportData.brandProductivity.map(b => ({ brandName: b.brandName, compliance: b.compliance })),
             operatorNames: reportData.packerProductivity.map(p => p.packerName),
             isConsolidated: reportData.isConsolidated || false,
             sourceSnapshotIds: reportData.sourceSnapshotIds || [],
@@ -213,6 +202,30 @@ export async function loadHistoricalReports(options?: { startDate?: string, endD
              return { error: `Error de consulta: Firestore requiere un índice compuesto para esta consulta. Por favor, crea uno en la consola de Firebase.` };
         }
         return { error: `Failed to load historical reports: ${error.message}` };
+    }
+}
+
+export async function loadFullReportSnapshots(snapshotIds: string[]): Promise<{ data?: ProcessedReportData[], error?: string }> {
+    if (!snapshotIds || snapshotIds.length === 0) return { data: [] };
+    try {
+        const reportsCollectionRef = collection(firestore, "reports");
+        const chunkedIds = [];
+        for (let i = 0; i < snapshotIds.length; i += 10) {
+            chunkedIds.push(snapshotIds.slice(i, i + 10));
+        }
+        
+        const allReports: ProcessedReportData[] = [];
+        for (const chunk of chunkedIds) {
+            const q = query(reportsCollectionRef, where(documentId(), "in", chunk));
+            const querySnapshot = await getDocs(q);
+            querySnapshot.docs.forEach(doc => {
+                allReports.push({ id: doc.id, ...convertTimestampsToDates(doc.data()) } as ProcessedReportData);
+            });
+        }
+        return { data: allReports };
+    } catch (error: any) {
+        console.error("Error loading full report snapshots:", error);
+        return { error: `Failed to load full reports: ${error.message}` };
     }
 }
 
@@ -283,10 +296,10 @@ export async function consolidateDailyReports(snapshotIds: string[]): Promise<{ 
         processedData: allProcessedData,
         reportStartTime: lastReportConfig.reportStartTime,
         reportEndTime: lastReportConfig.reportEndTime,
-        brandProductTypeGoals: lastReportConfig.brandProductTypeGoals,
-        manualJustifications: lastReportConfig.manualJustifications,
-        configSelectedPacker: lastReportConfig.configSelectedPacker,
-        incidentLog: lastReportConfig.incidentLog,
+        brandProductTypeGoals: lastReportConfig.brandProductTypeGoals || {},
+        manualJustifications: lastReportConfig.manualJustifications || {},
+        configSelectedPacker: lastReportConfig.configSelectedPacker || [],
+        incidentLog: lastReportConfig.incidentLog || [],
         isConsolidated: true, // Mark this report as a consolidated one
         sourceSnapshotIds: snapshotIds,
         // The following fields will be recalculated by the summary generation
@@ -336,12 +349,12 @@ export async function previewConsolidatedReport(snapshotIds: string[]): Promise<
 
         const consolidatedProcessedData = processReport(
             allProcessedData,
-            lastReportConfig.brandProductTypeGoals,
+            lastReportConfig.brandProductTypeGoals || {},
             reportDateStr,
-            lastReportConfig.reportStartTime,
-            lastReportConfig.reportEndTime,
-            lastReportConfig.manualJustifications,
-            lastReportConfig.configSelectedPacker,
+            lastReportConfig.reportStartTime || '06:00',
+            lastReportConfig.reportEndTime || '18:00',
+            lastReportConfig.manualJustifications || {},
+            lastReportConfig.configSelectedPacker || [],
             lastReportConfig.incidentLog || []
         );
         
@@ -1089,7 +1102,7 @@ export async function createPackingUnit(orderId: string, userId: string): Promis
       // For now, the optimistic update in the caller is what matters.
       // The `newUnit` returned here will be merged into the local state.
       
-      return { success: true, newUnit: newUnitData as PackingUnit };
+      return { success: true, newUnit: newUnitData as unknown as PackingUnit };
 
   } catch (error: any) {
       console.error("Error creating packing unit:", error);

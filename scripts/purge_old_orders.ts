@@ -5,7 +5,7 @@ import { firestore } from '../src/services/firebase';
 import { collection, query, where, getDocs, writeBatch } from 'firebase/firestore';
 
 async function purge() {
-  const cutoffDate = new Date('2026-02-02T00:00:00Z');
+  const cutoffDate = new Date('2026-02-02T05:00:00Z');
   
   const ordersRef = collection(firestore, 'ecommerceOrders');
   const q = query(ordersRef, where('fechaPedido', '<', cutoffDate));

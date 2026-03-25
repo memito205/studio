@@ -96,18 +96,7 @@ export const parseFlexibleDate = (dateStr: string | number | Date | null | undef
   
   if (dateStr instanceof Date) {
     if (isNaN(dateStr.getTime())) return null;
-    // When a library like xlsx creates a Date object, it might be midnight UTC.
-    // In timezones behind UTC, this can result in the previous day.
-    // To correct this, we create a new Date from the UTC components of the input date.
-    // This effectively treats the input date as "local" regardless of how it was created.
-    return new Date(
-      dateStr.getUTCFullYear(),
-      dateStr.getUTCMonth(),
-      dateStr.getUTCDate(),
-      dateStr.getUTCHours(),
-      dateStr.getUTCMinutes(),
-      dateStr.getUTCSeconds()
-    );
+    return dateStr;
   }
 
   // Handle Excel serial numbers
