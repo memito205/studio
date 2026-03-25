@@ -20,7 +20,7 @@ import { Checkbox } from './ui/checkbox';
 import { Label } from './ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, LineChart, Line, AreaChart, Area, ComposedChart, PieChart, Pie, Cell } from 'recharts';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, LineChart, Line, AreaChart, Area, ComposedChart, PieChart, Pie, Cell, LabelList } from 'recharts';
 
 interface HistoricalDashboardProps {
   onReturnToMain: () => void;
@@ -335,10 +335,10 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                            <Card className="xl:col-span-2 overflow-hidden shadow-sm border-muted/60">
                                <CardHeader className="bg-gradient-to-r from-blue-500/10 to-transparent">
                                  <CardTitle className="flex items-center justify-between text-xl">
-                                     Curva de Crecimiento Multidimensional
+                                     Evolución Diaria: Volumen vs Cumplimiento
                                      {selectedOperator !== 'all' && <Badge variant="outline" className="text-primary border-primary">Filtro: {selectedOperator}</Badge>}
                                  </CardTitle>
-                                 <CardDescription>Cruce directo entre volumen empacado y meta requerida (% Cumplimiento)</CardDescription>
+                                 <CardDescription>Muestra tus Unidades Físicas totales (Sombra Azul) vs la Tasa de Cumplimiento Lograda (Línea Naranja).</CardDescription>
                                </CardHeader>
                                <CardContent className="h-[400px] pt-4">
                                 <ResponsiveContainer width="100%" height="100%">
@@ -355,8 +355,12 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                         <YAxis yAxisId="right" orientation="right" domain={[0, 'dataMax + 20']} tickFormatter={(v) => `${v}%`} tick={{fill: '#888'}} axisLine={false} tickLine={false} />
                                         <RechartsTooltip contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} cursor={{fill: 'hsl(var(--muted))', opacity: 0.3}} />
                                         <Legend wrapperStyle={{paddingTop: '20px'}} />
-                                        <Area yAxisId="left" type="monotone" dataKey="unidades" name="Unidades Físicas" stroke="#3b82f6" strokeWidth={3} fill="url(#colorUnidades)" />
-                                        <Line yAxisId="right" type="monotone" dataKey="cumplimiento" name="Tasa Cumplimiento (%)" stroke="#f59e0b" strokeWidth={4} dot={{r: 4, strokeWidth: 2}} activeDot={{r: 6}} />
+                                        <Area yAxisId="left" type="monotone" dataKey="unidades" name="Unidades Físicas" stroke="#3b82f6" strokeWidth={3} fill="url(#colorUnidades)">
+                                            <LabelList dataKey="unidades" position="top" fill="#3b82f6" fontSize={11} formatter={(v: number) => v > 0 ? (v/1000).toFixed(1)+'k' : ''} />
+                                        </Area>
+                                        <Line yAxisId="right" type="monotone" dataKey="cumplimiento" name="Tasa Cumplimiento (%)" stroke="#f59e0b" strokeWidth={4} dot={{r: 4, strokeWidth: 2}} activeDot={{r: 6}}>
+                                            <LabelList dataKey="cumplimiento" position="bottom" fill="#f59e0b" fontSize={12} formatter={(v: number) => v + '%'} />
+                                        </Line>
                                     </ComposedChart>
                                 </ResponsiveContainer>
                                </CardContent>
@@ -376,6 +380,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                                     {brandPieData.map((entry, index) => (
                                                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                                                     ))}
+                                                    <LabelList dataKey="name" position="outside" fontSize={11} fill="#888" stroke="none" />
                                                 </Pie>
                                                 <RechartsTooltip contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))' }} formatter={(value: number) => value.toLocaleString()} />
                                                 <Legend layout="horizontal" verticalAlign="bottom" align="center" wrapperStyle={{paddingTop: '30px'}}/>
@@ -400,7 +405,9 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                             <XAxis type="number" tickFormatter={(v) => `${v}h`} tick={{fill: '#888'}} axisLine={false} tickLine={false} />
                                             <YAxis dataKey="reason" type="category" width={110} tick={{ fontSize: 12, fill: '#555', fontWeight: 500 }} axisLine={false} tickLine={false} />
                                             <RechartsTooltip cursor={{fill: 'hsl(var(--muted))', opacity: 0.3}} contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))' }} formatter={(v: number) => [`${v} Horas`, 'Tiempo']} />
-                                            <Bar dataKey="horas" fill="#f43f5e" radius={[0, 4, 4, 0]} barSize={24} name="Horas Muertas" />
+                                            <Bar dataKey="horas" fill="#f43f5e" radius={[0, 4, 4, 0]} barSize={24} name="Horas Muertas">
+                                                <LabelList dataKey="horas" position="right" fill="#f43f5e" fontSize={11} formatter={(v: number) => v + 'h'} />
+                                            </Bar>
                                         </BarChart>
                                     </ResponsiveContainer>
                                </CardContent>
