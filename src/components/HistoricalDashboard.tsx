@@ -11,9 +11,11 @@ import { Calendar } from "@/components/ui/calendar";
 import { format, isSameDay, subDays } from "date-fns";
 import { DateRange } from "react-day-picker";
 import { es } from 'date-fns/locale';
+import { exportToXlsx } from '@/services/export';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { Badge } from './ui/badge';
+import { StatCard } from '@/components/StatCard';
 import { loadHistoricalReports, consolidateDailyReports, previewConsolidatedReport, loadFullReportSnapshots } from '@/app/actions';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Checkbox } from './ui/checkbox';
@@ -126,6 +128,45 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
      return Array.from(opSet).sort();
   }, [trendsData]);
 
+  const quickStats = useMemo(() => {
+     let hoyVolumen = 0; let hoyCumplimiento = 0;
+     let acumVolumen = 0; let acumCumplimiento = 0; let acumDias = 0;
+
+     if (trendsData.length > 0) {
+         const latestDateData = trendsData[trendsData.length - 1]; // Already sorted by asc
+         if (selectedOperator === 'all') {
+             hoyVolumen = latestDateData.packerProductivity?.reduce((s,p)=>s+p.totalQuantity,0) || 0;
+             hoyCumplimiento = latestDateData.overallCompliance || 0;
+         } else {
+             const p = latestDateData.packerProductivity?.find(x => x.packerName === selectedOperator);
+             hoyVolumen = p?.totalQuantity || 0;
+             hoyCumplimiento = p?.compliancePercentage || 0;
+         }
+         
+         trendsData.forEach(d => {
+             if (selectedOperator === 'all') {
+                 acumVolumen += d.packerProductivity?.reduce((s,p)=>s+p.totalQuantity,0) || 0;
+                 acumCumplimiento += d.overallCompliance || 0;
+                 acumDias++;
+             } else {
+                 const p = d.packerProductivity?.find(x => x.packerName === selectedOperator);
+                 if (p) {
+                     acumVolumen += p.totalQuantity;
+                     acumCumplimiento += p.compliancePercentage || 0;
+                     acumDias++;
+                 }
+             }
+         });
+     }
+     
+     return {
+         hoyVolumen: hoyVolumen.toLocaleString('es-CO'),
+         hoyCumplimiento: hoyCumplimiento.toFixed(1) + '%',
+         acumVolumen: acumVolumen.toLocaleString('es-CO'),
+         acumCumplimiento: acumDias > 0 ? (acumCumplimiento / acumDias).toFixed(1) + '%' : '0%'
+     };
+  }, [trendsData, selectedOperator]);
+
   // ---- Advanced Analytical Math Models ----
 
   const volumeTrendData = useMemo(() => {
@@ -157,13 +198,13 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
     trendsData.forEach(d => {
         if (selectedOperator === 'all') {
             d.brandProductivity?.forEach(b => {
-                const label = b.brand?.trim() || 'Sin Marca';
+                const label = (b as any).brandName?.trim() || 'Sin Marca';
                 if (!brands[label]) brands[label] = 0;
                 brands[label] += b.totalQuantity;
             });
         } else {
             d.packerBrandProductivityDetail?.filter(p => p.packerName === selectedOperator).forEach(b => {
-                const label = b.brand?.trim() || 'Sin Marca';
+                const label = (b as any).brandName?.trim() || 'Sin Marca';
                 if (!brands[label]) brands[label] = 0;
                 brands[label] += b.totalQuantity;
             });
@@ -175,9 +216,10 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
   const deadTimeTrendData = useMemo(() => {
       const reasons: Record<string, number> = {};
       trendsData.forEach(d => {
+          const allPauses = [...(d.deadTimeReport || []), ...(d.microPausesReport || [])]
           const reportToUse = selectedOperator === 'all' 
-               ? (d.deadTimeReport || []) 
-               : (d.deadTimeReport || []).filter(dt => dt.packerName === selectedOperator);
+               ? allPauses 
+               : allPauses.filter(dt => dt.packerName === selectedOperator);
                
           reportToUse.forEach(dt => {
               // Extracting exactly what caused the problem (fixing the undefined bug)
@@ -241,6 +283,13 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
         </div>
       </CardHeader>
       <CardContent className="px-0">
+             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                 <StatCard title="Volumen (Último Día)" value={quickStats.hoyVolumen} icon={<Package className="h-4 w-4 text-blue-500" />} />
+                 <StatCard title="Volumen Acumulado" value={quickStats.acumVolumen} icon={<BarChart2 className="h-4 w-4 text-emerald-500" />} />
+                 <StatCard title="Efectividad (Último Día)" value={quickStats.hoyCumplimiento} icon={<Clock className="h-4 w-4 text-amber-500" />} />
+                 <StatCard title="Efectividad Acumulada" value={quickStats.acumCumplimiento} icon={<Search className="h-4 w-4 text-purple-500" />} />
+             </div>
+             
           <div className="flex flex-wrap items-end gap-3 mb-6 p-5 border rounded-xl bg-card shadow-sm">
              <div className="flex-grow max-w-sm space-y-1.5">
                 <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Rango de Visión</Label>
@@ -366,12 +415,12 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                         </defs>
                                         <CartesianGrid strokeDasharray="3 3" opacity={0.15} vertical={false} />
                                         <XAxis dataKey="date" tick={{fontSize: 12, fill: '#888'}} axisLine={false} tickLine={false} dy={10} />
-                                        <YAxis yAxisId="left" tickFormatter={(v) => `${v / 1000}k`} tick={{fill: '#888'}} axisLine={false} tickLine={false} />
+                                        <YAxis yAxisId="left" tickFormatter={(v) => v.toLocaleString('es-CO')} tick={{fill: '#888'}} axisLine={false} tickLine={false} />
                                         <YAxis yAxisId="right" orientation="right" domain={[0, 'dataMax + 20']} tickFormatter={(v) => `${v}%`} tick={{fill: '#888'}} axisLine={false} tickLine={false} />
                                         <RechartsTooltip contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} cursor={{fill: 'hsl(var(--muted))', opacity: 0.3}} />
                                         <Legend wrapperStyle={{paddingTop: '20px'}} />
                                         <Bar yAxisId="left" dataKey="unidades" name="Unidades Físicas" fill="url(#colorUnidades)" radius={[4, 4, 0, 0]}>
-                                            <LabelList dataKey="unidades" position="top" fill="#3b82f6" fontSize={11} formatter={(v: number) => v > 0 ? (v/1000).toFixed(1)+'k' : ''} />
+                                            <LabelList dataKey="unidades" position="top" fill="#3b82f6" fontSize={11} formatter={(v: number) => v > 0 ? v.toLocaleString('es-CO') : ''} />
                                         </Bar>
                                         <Line yAxisId="right" type="monotone" dataKey="cumplimiento" name="Tasa Cumplimiento (%)" stroke="#f59e0b" strokeWidth={4} dot={{r: 4, strokeWidth: 2}} activeDot={{r: 6}}>
                                             <LabelList dataKey="cumplimiento" position="bottom" fill="#f59e0b" fontSize={12} formatter={(v: number) => v + '%'} />
