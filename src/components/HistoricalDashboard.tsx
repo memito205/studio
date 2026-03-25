@@ -213,6 +213,27 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
     return Object.entries(brands).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value);
   }, [trendsData, selectedOperator]);
 
+  const productPieData = useMemo(() => {
+    const products: Record<string, number> = {};
+    trendsData.forEach(d => {
+        if (selectedOperator === 'all') {
+            d.productTypeProductivity?.forEach(p => {
+                const label = p.productType?.trim() || 'Desconocido';
+                if (!products[label]) products[label] = 0;
+                products[label] += p.totalQuantity;
+            });
+        } else {
+            // Need to filter product type by operator. PackerBrandProductivityDetail has productType!
+            d.packerBrandProductivityDetail?.filter(p => p.packerName === selectedOperator).forEach(b => {
+                const label = b.productType?.trim() || 'Desconocido';
+                if (!products[label]) products[label] = 0;
+                products[label] += b.totalQuantity;
+            });
+        }
+    });
+    return Object.entries(products).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value);
+  }, [trendsData, selectedOperator]);
+
   const deadTimeTrendData = useMemo(() => {
       const reasons: Record<string, number> = {};
       trendsData.forEach(d => {
