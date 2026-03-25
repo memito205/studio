@@ -223,7 +223,13 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                
           reportToUse.forEach(dt => {
               // Extracting exactly what caused the problem (fixing the undefined bug)
-              const reasonLabel = dt.justification?.trim() || dt.status?.trim() || 'Desconocido/Sin justificar';
+              let reasonLabel = dt.justification?.trim() || dt.status?.trim() || 'Desconocido/Sin justificar';
+              
+              // Tiempos excedentes se consideran 'No Justificado' por reglas de negocio logísticas
+              if (reasonLabel.toLowerCase().includes('excedente')) {
+                 reasonLabel = 'No Justificado';
+              }
+              
               if (!reasons[reasonLabel]) reasons[reasonLabel] = 0;
               reasons[reasonLabel] += (dt.duration / 60) || 0;
           });
