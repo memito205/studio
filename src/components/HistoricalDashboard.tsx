@@ -37,6 +37,7 @@ type DailyGroup = {
 };
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#a855f7', '#ec4899', '#f43f5e', '#14b8a6'];
+const PIE_COLORS = ['#3b82f6', '#f43f5e', '#f59e0b', '#10b981'];
 
 export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onReturnToMain, onConsolidate, theme }) => {
   const { toast } = useToast();
