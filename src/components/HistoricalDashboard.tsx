@@ -167,47 +167,6 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
      };
   }, [trendsData, selectedOperator]);
 
-  const hourlyTrendData = useMemo(() => {
-      const hoursMap: Record<number, { units: number, productiveMinutes: number, validCount: number }> = {};
-      
-      trendsData.forEach(d => {
-          if (selectedOperator === 'all') {
-             d.packerHourlyPerformance?.forEach(packerGroup => {
-                 Object.entries(packerGroup.hourlyDetails).forEach(([hourStr, details]) => {
-                     const hour = parseInt(hourStr);
-                     if (details.units > 0 || details.productiveMinutes > 0) {
-                         if (!hoursMap[hour]) hoursMap[hour] = { units: 0, productiveMinutes: 0, validCount: 0 };
-                         hoursMap[hour].units += details.units;
-                         hoursMap[hour].productiveMinutes += details.productiveMinutes;
-                         hoursMap[hour].validCount++;
-                     }
-                 });
-             });
-          } else {
-             const operatorData = d.packerHourlyPerformance?.find(p => p.packerName === selectedOperator);
-             if (operatorData) {
-                 Object.entries(operatorData.hourlyDetails).forEach(([hourStr, details]) => {
-                     const hour = parseInt(hourStr);
-                     if (details.units > 0 || details.productiveMinutes > 0) {
-                         if (!hoursMap[hour]) hoursMap[hour] = { units: 0, productiveMinutes: 0, validCount: 0 };
-                         hoursMap[hour].units += details.units;
-                         hoursMap[hour].productiveMinutes += details.productiveMinutes;
-                         hoursMap[hour].validCount++;
-                     }
-                 });
-             }
-          }
-      });
-      
-      return Object.entries(hoursMap).map(([hourStr, data]) => {
-          const u = data.units / (data.validCount || 1);
-          return {
-              hour: `${hourStr}:00`,
-              unitsAvg: Number(u.toFixed(0)),
-          };
-      }).sort((a,b) => parseInt(a.hour) - parseInt(b.hour));
-  }, [trendsData, selectedOperator]);
-
   // ---- Advanced Analytical Math Models ----
 
   const volumeTrendData = useMemo(() => {
