@@ -211,7 +211,12 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
             });
         }
     });
-    return Object.entries(brands).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value);
+    const total = Object.values(brands).reduce((sum, v) => sum + v, 0);
+    return Object.entries(brands).map(([name, value]) => ({ 
+        name, 
+        value,
+        percent: total > 0 ? ((value / total) * 100).toFixed(1) + '%' : '0%'
+    })).sort((a,b) => b.value - a.value);
   }, [trendsData, selectedOperator]);
 
   const productPieData = useMemo(() => {
@@ -219,20 +224,26 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
     trendsData.forEach(d => {
         if (selectedOperator === 'all') {
             d.productTypeProductivity?.forEach(p => {
-                const label = p.productType?.trim() || 'Desconocido';
+                let label = ((p as any).productType || (p as any).category)?.trim() || 'Desconocido';
+                if (label === 'NO CLASIFICADO') label = 'Otros / No Def.';
                 if (!products[label]) products[label] = 0;
                 products[label] += p.totalQuantity;
             });
         } else {
-            // Need to filter product type by operator. PackerBrandProductivityDetail has productType!
             d.packerBrandProductivityDetail?.filter(p => p.packerName === selectedOperator).forEach(b => {
-                const label = b.productType?.trim() || 'Desconocido';
+                let label = b.productType?.trim() || 'Desconocido';
+                if (label === 'NO CLASIFICADO') label = 'Otros / No Def.';
                 if (!products[label]) products[label] = 0;
                 products[label] += b.totalQuantity;
             });
         }
     });
-    return Object.entries(products).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value);
+    const total = Object.values(products).reduce((sum, v) => sum + v, 0);
+    return Object.entries(products).map(([name, value]) => ({ 
+        name, 
+        value,
+        percent: total > 0 ? ((value / total) * 100).toFixed(1) + '%' : '0%'
+    })).sort((a,b) => b.value - a.value);
   }, [trendsData, selectedOperator]);
 
   const hourlyTrendData = useMemo(() => {
@@ -496,7 +507,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                 </CardContent>
                             </Card>
                             
-                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 {/* BRAND PIE CHART */}
                                 <Card className="shadow-sm border-muted/60 flex flex-col">
                                     <CardHeader>
@@ -548,7 +559,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                 </Card>
                                 
                                 {/* PRODUCTIVITY HEATMAP / HOURLY CHART */}
-                                <Card className="shadow-sm border-muted/60 flex flex-col">
+                                <Card className="md:col-span-2 shadow-sm border-muted/60 flex flex-col">
                                     <CardHeader>
                                         <CardTitle className="text-lg text-indigo-500">Carga por Hora</CardTitle>
                                         <CardDescription>Unidades Promedio Empacadas.</CardDescription>
@@ -569,7 +580,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                 </Card>
 
                                 {/* DEAD TIMES / FUGAS DE TIEMPO CHART */}
-                                <Card className="shadow-sm border-muted/60 flex flex-col">
+                                <Card className="md:col-span-2 shadow-sm border-muted/60 flex flex-col">
                                     <CardHeader>
                                         <CardTitle className="text-lg flex items-center text-rose-500">Radar de Fugas Acum.</CardTitle>
                                         <CardDescription>Suma de paralizaciones.</CardDescription>

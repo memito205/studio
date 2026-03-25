@@ -131,13 +131,11 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
         const reportsCollectionRef = collection(firestore, "reports");
         const reportsSummaryCollectionRef = collection(firestore, "reports_summary");
         
-        // 1. Create a lightweight configuration object.
-        const reportDataToSave = { ...reportData };
-        delete (reportDataToSave as any).processedData;
+        // 1. Create a deep copy for the full report document.
+        const fullReportToSave = { ...reportData };
         
         const reportDocRef = doc(reportsCollectionRef, snapshotId);
-        const dataToSave = convertDatesToTimestamps(reportDataToSave);
-        await setDoc(reportDocRef, dataToSave);
+        await setDoc(reportDocRef, convertDatesToTimestamps(fullReportToSave));
 
 
         // 2. Create the summary object for quick listing with KPIs.
@@ -264,10 +262,23 @@ async function getAndCombineSnapshots(snapshotIds: string[]): Promise<{
              return { success: false, error: 'No snapshot with a complete configuration (date, start/end times) was found to use as a base.' };
         }
         
-        // Combine the processedData from each snapshot instead of rawData
+        // Combine the processedData and manualJustifications from each snapshot
         const allProcessedData = validSnapshots.flatMap(snapshot => snapshot.processedData || []);
         
-        return { success: true, combinedData: { allProcessedData, lastReportConfig } };
+        // Combine justifications: later snapshots overwrite earlier ones for the same ID
+        const combinedJustifications: ManualJustifications = {};
+        validSnapshots
+            .sort((a, b) => new Date(a.snapshotCreatedAt).getTime() - new Date(b.snapshotCreatedAt).getTime())
+            .forEach(snapshot => {
+                if (snapshot.manualJustifications) {
+                    Object.assign(combinedJustifications, snapshot.manualJustifications);
+                }
+            });
+        
+        return { success: true, combinedData: { 
+            allProcessedData, 
+            lastReportConfig: { ...lastReportConfig, manualJustifications: combinedJustifications } 
+        } };
 
     } catch (error: any) {
         console.error("Error fetching and combining snapshots:", error);
@@ -288,38 +299,23 @@ export async function consolidateDailyReports(snapshotIds: string[]): Promise<{ 
     const reportDateStr = new Date(lastReportConfig.reportDate).toISOString().split('T')[0];
     const consolidatedReportId = `${reportDateStr}-consolidated-${Date.now()}`;
     
-    // Enrich with processed data and configuration before saving
-    // The reportProcessor will re-calculate everything based on the combined processed data
-    const consolidatedReportToSave: ProcessedReportData = {
-        id: consolidatedReportId,
-        reportDate: lastReportConfig.reportDate as any, // Will be converted
-        processedData: allProcessedData,
-        reportStartTime: lastReportConfig.reportStartTime,
-        reportEndTime: lastReportConfig.reportEndTime,
-        brandProductTypeGoals: lastReportConfig.brandProductTypeGoals || {},
-        manualJustifications: lastReportConfig.manualJustifications || {},
-        configSelectedPacker: lastReportConfig.configSelectedPacker || [],
-        incidentLog: lastReportConfig.incidentLog || [],
-        isConsolidated: true, // Mark this report as a consolidated one
-        sourceSnapshotIds: snapshotIds,
-        // The following fields will be recalculated by the summary generation
-        packerProductivity: [],
-        hourlyProductivity: [],
-        brandProductivity: [],
-        productTypeProductivity: [],
-        overallCompliance: 0,
-        deadTimeReport: [],
-        microPausesReport: [],
-        deadTimeSummary: [],
-        microPausesSummary: [],
-        totalInactivitySummary: [],
-        packerBrandProductivityDetail: [],
-        packerReferenceProductivityDetail: [],
-        breakDetailReport: [],
-        packerHourlyPerformance: [],
-    };
+    // Call the processor to get a fully calculated report object
+    const consolidatedProcessedData = processReport(
+        allProcessedData,
+        lastReportConfig.brandProductTypeGoals || {},
+        reportDateStr,
+        lastReportConfig.reportStartTime,
+        lastReportConfig.reportEndTime,
+        lastReportConfig.manualJustifications || {},
+        ['all'],
+        lastReportConfig.incidentLog || []
+    );
     
-    const result = await saveReportToHistory(consolidatedReportToSave);
+    // Set consolidated flag
+    consolidatedProcessedData.isConsolidated = true;
+    consolidatedProcessedData.sourceSnapshotIds = snapshotIds;
+    
+    const result = await saveReportToHistory(consolidatedProcessedData);
     if(result.error){
         throw new Error(result.error);
     }
