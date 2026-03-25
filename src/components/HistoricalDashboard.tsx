@@ -223,12 +223,9 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                
           reportToUse.forEach(dt => {
               // Extracting exactly what caused the problem (fixing the undefined bug)
-              const rawReason = dt.justification?.trim() || dt.reason?.trim() || 'Desconocido/Sin justificar';
-              // Standardize text if it mentions "15m" to just its core reason if applicable, otherwise keep it
-              const cleanReason = rawReason.replace('Tiempo Muerto > 15m:', '').trim() || 'Tiempo Inactivo';
-              
-              if (!reasons[cleanReason]) reasons[cleanReason] = 0;
-              reasons[cleanReason] += dt.durationHours;
+              const reasonLabel = dt.justification?.trim() || dt.status?.trim() || 'Desconocido/Sin justificar';
+              if (!reasons[reasonLabel]) reasons[reasonLabel] = 0;
+              reasons[reasonLabel] += (dt.duration / 60) || 0;
           });
       });
       return Object.entries(reasons)
