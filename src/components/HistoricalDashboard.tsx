@@ -504,7 +504,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                                     <TableCell className="text-right font-medium text-muted-foreground">{op.horasTotales}h</TableCell>
                                                     <TableCell className="text-right font-semibold">{op.uphPromedio}</TableCell>
                                                     <TableCell className="text-right pr-6">
-                                                        <span className={cn("px-2.5 py-1 rounded-md text-sm font-bold", op.promedioCumplimiento >= 95 ? "bg-emerald-100 text-emerald-700" : op.promedioCumplimiento < 75 ? "bg-rose-100 text-rose-700" : "bg-blue-100 text-blue-700")}>
+                                                        <span className={cn("px-2.5 py-1 rounded-md text-sm font-bold", op.promedioCumplimiento >= 100 ? "bg-emerald-100 text-emerald-700" : op.promedioCumplimiento >= 90 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700")}>
                                                             {op.promedioCumplimiento}%
                                                         </span>
                                                     </TableCell>
