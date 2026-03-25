@@ -151,13 +151,13 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
     trendsData.forEach(d => {
         if (selectedOperator === 'all') {
             d.brandProductivity?.forEach(b => {
-                const label = b.brand.trim() || 'Sin Marca';
+                const label = b.brand?.trim() || 'Sin Marca';
                 if (!brands[label]) brands[label] = 0;
                 brands[label] += b.totalQuantity;
             });
         } else {
             d.packerBrandProductivityDetail?.filter(p => p.packerName === selectedOperator).forEach(b => {
-                const label = b.brand.trim() || 'Sin Marca';
+                const label = b.brand?.trim() || 'Sin Marca';
                 if (!brands[label]) brands[label] = 0;
                 brands[label] += b.totalQuantity;
             });
