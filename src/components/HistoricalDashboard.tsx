@@ -253,7 +253,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
               promedioCumplimiento: Number((stats.totalCompliance / stats.days).toFixed(1)),
               uphPromedio: stats.totalHours > 0 ? Number((stats.totalUnits / stats.totalHours).toFixed(1)) : 0
           }))
-          .sort((a, b) => b.unidadesTotales - a.unidadesTotales);
+          .sort((a, b) => b.promedioCumplimiento - a.promedioCumplimiento);
   }, [trendsData]);
 
   const snapshotsForSelectedDay = useMemo(() => {
