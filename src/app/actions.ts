@@ -498,10 +498,13 @@ export async function deleteHistoricalReportsForDay(dateStr: string): Promise<{ 
         const start = startOfDay(new Date(dateStr + 'T00:00:00'));
         const end = endOfDay(new Date(dateStr + 'T00:00:00'));
 
+        // Try multiple formats to find the documents (String, Date objects)
+        const dateObj = new Date(dateStr + "T00:00:00");
+        const dateUtc = new Date(dateStr + "T00:00:00Z");
+        
         const summaryQ = query(
             collection(firestore, "reports_summary"),
-            where("reportDate", ">=", start),
-            where("reportDate", "<=", end)
+            where("reportDate", "in", [dateStr, dateObj, dateUtc])
         );
 
         const summarySnap = await getDocs(summaryQ);

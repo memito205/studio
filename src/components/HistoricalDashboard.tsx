@@ -104,8 +104,9 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
   const availableDays = useMemo(() => {
      const days = new Set<string>();
      reports.forEach(r => {
-        const d = new Date(r.reportDate);
-        if (!isNaN(d.getTime())) days.add(format(d, 'yyyy-MM-dd'));
+        // Avoid new Date() on YYYY-MM-DD string to prevent UTC shift
+        const dateStr = typeof r.reportDate === 'string' ? r.reportDate.split('T')[0] : format(new Date(r.reportDate), 'yyyy-MM-dd');
+        if (dateStr) days.add(dateStr);
      });
      return Array.from(days).sort((a, b) => b.localeCompare(a));
   }, [reports]);
@@ -113,8 +114,8 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
   const filteredReports = useMemo(() => {
      if (selectedSpecificDay === 'all') return reports;
      return reports.filter(r => {
-         const d = new Date(r.reportDate);
-         return !isNaN(d.getTime()) && format(d, 'yyyy-MM-dd') === selectedSpecificDay;
+         const dateStr = typeof r.reportDate === 'string' ? r.reportDate.split('T')[0] : format(new Date(r.reportDate), 'yyyy-MM-dd');
+         return dateStr === selectedSpecificDay;
      });
   }, [reports, selectedSpecificDay]);
 
@@ -122,10 +123,9 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
     const groups: Record<string, DailyGroup> = {};
     
     filteredReports.forEach(report => {
-      // Use local date string instead of ISO to avoid UTC day-shift errors
-      const dateObj = new Date(report.reportDate);
-      const dateKey = isNaN(dateObj.getTime()) ? 'Invalid' : format(dateObj, 'yyyy-MM-dd');
-      if (dateKey === 'Invalid') return;
+      // Direct string split is safer than new Date() for YYYY-MM-DD
+      const dateKey = typeof report.reportDate === 'string' ? report.reportDate.split('T')[0] : format(new Date(report.reportDate), 'yyyy-MM-dd');
+      if (!dateKey || dateKey === 'Invalid') return;
       
       if (!groups[dateKey]) {
         groups[dateKey] = { date: dateKey, snapshots: [] };
@@ -889,7 +889,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                         <ArrowLeft className="mr-4 h-6 w-6 cursor-pointer text-muted-foreground hover:text-foreground transition-colors" onClick={() => setView('main')} />
                         Auditoría Diaria
                     </CardTitle>
-                    <CardDescription className="text-base mt-2">Detalle de guardados del día {selectedDate ? format(selectedDate, "PPP", { locale: es }) : ''}.</CardDescription>
+                    <CardDescription className="text-base mt-2">Detalle de guardados del día {selectedDate ? format(new Date(selectedDate.toISOString().split('T')[0] + 'T12:00:00'), "PPP", { locale: es }) : ''}.</CardDescription>
                 </div>
                 {isAdmin && (
                     <div className="flex items-center gap-2">
