@@ -152,6 +152,12 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
             manualJustifications: reportData.manualJustifications || {},
             incidentLog: reportData.incidentLog || [],
             annotations: reportData.annotations || {},
+            packerProductivity: reportData.packerProductivity,
+            brandProductivity: reportData.brandProductivity,
+            productTypeProductivity: reportData.productTypeProductivity,
+            deadTimeSummary: reportData.deadTimeSummary,
+            microPausesSummary: reportData.microPausesSummary,
+            packerBrandProductivityDetail: reportData.packerBrandProductivityDetail,
         };
 
         // 2. Try to save the full snapshot with aggressive pruning on failure
@@ -160,6 +166,8 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
         
         const trySave = async (data: any, label: string) => {
             try {
+                // Ensure ID is set in the data
+                data.id = snapshotId;
                 const reportDocRef = doc(reportsCollectionRef, snapshotId);
                 await setDoc(reportDocRef, convertDatesToTimestamps(data));
                 snapshotSaved = true;
@@ -173,7 +181,7 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
         };
 
         // Attempt 1: Full Report
-        if (!await trySave(reportData, "Full")) {
+        if (!await trySave({ ...reportData }, "Full")) {
             // Attempt 2: Without individual scans (processedData)
             const opt2 = { ...reportData };
             delete opt2.processedData;
@@ -184,7 +192,7 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
                 if (!await trySave(opt3, "Optimized - No Reference Detail")) {
                     // Attempt 4: Minimum viable snapshot (KPIs only)
                     const opt4 = {
-                        id: reportData.id,
+                        id: snapshotId, // Fixed: use snapshotId instead of reportData.id
                         reportDate: reportData.reportDate,
                         overallCompliance: reportData.overallCompliance,
                         packerProductivity: reportData.packerProductivity,
@@ -193,7 +201,9 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
                         incidentLog: reportData.incidentLog,
                         manualJustifications: reportData.manualJustifications,
                         annotations: reportData.annotations,
-                        snapshotCreatedAt: reportData.snapshotCreatedAt
+                        snapshotCreatedAt: reportData.snapshotCreatedAt,
+                        deadTimeSummary: reportData.deadTimeSummary,
+                        microPausesSummary: reportData.microPausesSummary,
                     };
                     await trySave(opt4, "Minimum Viable Snapshot");
                 }

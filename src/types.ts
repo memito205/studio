@@ -675,6 +675,12 @@ export interface ReportSummary {
     manualJustifications?: ManualJustifications;
     incidentLog?: IncidentLogEntry[];
     annotations?: Annotations;
+    packerProductivity?: PackerProductivity[];
+    brandProductivity?: BrandProductivity[];
+    productTypeProductivity?: ProductTypeProductivity[];
+    deadTimeSummary?: DeadTimeSummaryEntry[];
+    microPausesSummary?: DeadTimeSummaryEntry[];
+    packerBrandProductivityDetail?: PackerBrandProductivityDetail[];
 }
 
 export interface ReportConfiguration {

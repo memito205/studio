@@ -144,7 +144,24 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
   const handleLoadTrends = async () => {
     if (dailyGroups.length === 0) return;
     setIsLoadingTrends(true);
-    // Applying "Last Snapshot Wins" Rule: ensure we grab the absolute latest snapshot by time
+    
+    // Optimization: Check if we can build trends from the summaries we already have
+    const summariesWithData = reports.filter(r => r.packerProductivity && r.packerProductivity.length > 0);
+    
+    if (summariesWithData.length > 0 && summariesWithData.length >= Math.min(reports.length, 5)) {
+        // We have enough enriched summaries to show trends instantly
+        console.log("Loading trends from enriched summaries...");
+        setTrendsData(summariesWithData.map(s => ({
+            ...s,
+            // Cast or map to ProcessedReportData as enrichment makes them compatible
+            reportDate: s.reportDate instanceof Date ? s.reportDate.toISOString() : s.reportDate,
+        } as any)).sort((a,b) => new Date(a.reportDate).getTime() - new Date(b.reportDate).getTime()));
+        setSelectedSpecificDay('all');
+        setIsLoadingTrends(false);
+        return;
+    }
+
+    // Fallback: load full snapshots if summaries are old/light
     const snapshotIds = dailyGroups.map(g => {
         if (g.consolidated) return g.consolidated.id;
         if (g.snapshots.length === 0) return null;
@@ -158,7 +175,6 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
     } else {
         toast({ variant: 'destructive', title: 'Error cargando tendencias', description: result.error });
     }
-    // After loading, we might want to default the specific day to 'all' or the latest 
     setSelectedSpecificDay('all');
     setIsLoadingTrends(false);
   };
