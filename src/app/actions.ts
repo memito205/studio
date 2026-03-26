@@ -136,6 +136,17 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
         const totalHours = reportData.packerProductivity.reduce((sum, p) => sum + p.hoursWorked, 0);
         const avgProductivity = totalHours > 0 ? totalQuantity / totalHours : 0;
 
+        // Strip 'entries' from productivity data to avoid bloating the summary
+        const cleanBrandProductivity = reportData.brandProductivity?.map(b => {
+            const { entries, ...rest } = b;
+            return rest;
+        }) || [];
+        
+        const cleanProductTypeProductivity = reportData.productTypeProductivity?.map(p => {
+            const { entries, ...rest } = p;
+            return rest;
+        }) || [];
+
         const reportSummary: ReportSummary = {
             id: snapshotId,
             reportDate: reportDateObj,
@@ -153,8 +164,8 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
             incidentLog: reportData.incidentLog || [],
             annotations: reportData.annotations || {},
             packerProductivity: reportData.packerProductivity,
-            brandProductivity: reportData.brandProductivity,
-            productTypeProductivity: reportData.productTypeProductivity,
+            brandProductivity: cleanBrandProductivity as any,
+            productTypeProductivity: cleanProductTypeProductivity as any,
             deadTimeSummary: reportData.deadTimeSummary,
             microPausesSummary: reportData.microPausesSummary,
             packerBrandProductivityDetail: reportData.packerBrandProductivityDetail,
