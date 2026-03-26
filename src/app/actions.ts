@@ -177,8 +177,10 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
         
         const trySave = async (data: any, label: string) => {
             try {
-                // Ensure ID is set in the data
+                // FORCE guaranteed local variables to avoid 'undefined' errors in Firestore
                 data.id = snapshotId;
+                data.snapshotCreatedAt = reportTimestamp;
+                
                 const reportDocRef = doc(reportsCollectionRef, snapshotId);
                 await setDoc(reportDocRef, convertDatesToTimestamps(data));
                 snapshotSaved = true;
@@ -203,18 +205,18 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
                 if (!await trySave(opt3, "Optimized - No Reference Detail")) {
                     // Attempt 4: Minimum viable snapshot (KPIs only)
                     const opt4 = {
-                        id: snapshotId, // Fixed: use snapshotId instead of reportData.id
+                        id: snapshotId,
                         reportDate: reportData.reportDate,
                         overallCompliance: reportData.overallCompliance,
-                        packerProductivity: reportData.packerProductivity,
-                        brandProductivity: reportData.brandProductivity,
-                        productTypeProductivity: reportData.productTypeProductivity,
-                        incidentLog: reportData.incidentLog,
-                        manualJustifications: reportData.manualJustifications,
-                        annotations: reportData.annotations,
-                        snapshotCreatedAt: reportData.snapshotCreatedAt,
-                        deadTimeSummary: reportData.deadTimeSummary,
-                        microPausesSummary: reportData.microPausesSummary,
+                        packerProductivity: reportData.packerProductivity || [],
+                        brandProductivity: cleanBrandProductivity || [],
+                        productTypeProductivity: cleanProductTypeProductivity || [],
+                        incidentLog: reportData.incidentLog || [],
+                        manualJustifications: reportData.manualJustifications || {},
+                        annotations: reportData.annotations || {},
+                        snapshotCreatedAt: reportTimestamp,
+                        deadTimeSummary: reportData.deadTimeSummary || [],
+                        microPausesSummary: reportData.microPausesSummary || [],
                     };
                     await trySave(opt4, "Minimum Viable Snapshot");
                 }
