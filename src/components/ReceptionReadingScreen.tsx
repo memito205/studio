@@ -330,14 +330,17 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
 
     let unitToUse = activePackingUnit;
     // --- START: SINGLE REFERENCE VALIDATION ---
+    const productRef = (product.referencia || product.reference || '').trim();
+    const productSize = (product.talla || product.size || '').trim();
+    const productName = (product.item || product.name || '').trim();
+
     if (unitToUse) {
         const itemsInActiveUnit = allScannedItemsForOperation.filter(item => item.packing_unit_id === unitToUse?.firestoreId);
         if (itemsInActiveUnit.length > 0) {
             const expectedReference = itemsInActiveUnit[0].reference.trim();
-            const newReference = (product.referencia || '').trim();
 
-            if (newReference !== expectedReference) {
-                setMixedReferenceError({ show: true, expected: expectedReference, scanned: newReference });
+            if (productRef !== expectedReference) {
+                setMixedReferenceError({ show: true, expected: expectedReference, scanned: productRef });
                 return; // Stop processing
             }
         }
@@ -360,23 +363,31 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
             toast({ title: 'Operación iniciada', description: 'El estado ha cambiado a "En Curso".' });
         }
         
-        const expectedItemData = expectedItems.find(item => item.barcode === product.codigoBarras);
+        let expectedItemData = expectedItems.find(item => item.barcode === product.codigoBarras);
+        
+        // FALLBACK: If barcode not in expected (alternate code), find by Reference + Size
+        if (!expectedItemData && productRef && productSize) {
+            expectedItemData = expectedItems.find(item => 
+                (item.reference || '').trim() === productRef && 
+                (item.size || '').trim() === productSize
+            );
+        }
 
         const itemToAdd = {
             reception_id: operation.id,
             packing_unit_id: unitToUse.firestoreId,
             barcode: product.codigoBarras,
             user_id: user.uid,
-            reference: product.referencia || 'N/A',
-            talla: product.talla || product.size || 'N/A',
-            item: product.item || product.name || 'N/A',
+            reference: productRef || 'N/A',
+            talla: productSize || 'N/A',
+            item: productName || 'N/A',
             location_id: expectedItemData?.location || undefined
         };
                 
         const result = await addScannedItem(itemToAdd);
         
         if (result.success) {
-            toast({ title: 'Éxito', description: `Item ${product.referencia} añadido a la unidad ${unitToUse.id}.` });
+            toast({ title: 'Éxito', description: `Item ${productRef} añadido a la unidad ${unitToUse.id}.` });
         } else {
             toast({ variant: 'destructive', title: 'Error al Guardar', description: result.error });
         }
