@@ -300,7 +300,7 @@ function detectAllPauses(
             const timeDiff = (sortedEntries[i + 1].fechaDeLectura!.getTime() - sortedEntries[i].fechaDeLectura!.getTime()) / 60000;
             if (timeDiff >= 1) {
                 deadTimes.push({
-                    id: `${packerName}-${sortedEntries[i].fechaDeLectura!.toISOString()}`,
+                    id: `${packerName}-${sortedEntries[i].fechaDeLectura!.getTime()}`,
                     packerName,
                     startTime: sortedEntries[i].fechaDeLectura!,
                     endTime: sortedEntries[i + 1].fechaDeLectura!,
@@ -316,7 +316,7 @@ function detectAllPauses(
             const finalDiff = (reportEndTime.getTime() - lastScanTime.getTime()) / 60000;
             if (finalDiff >= 1) {
                 deadTimes.push({
-                    id: `${packerName}-final-${lastScanTime.toISOString()}`,
+                    id: `${packerName}-final-${lastScanTime.getTime()}`,
                     packerName,
                     startTime: lastScanTime,
                     endTime: reportEndTime,
@@ -371,6 +371,15 @@ export function applyJustifications(
         processedIds.add(incident.id);
         
         let justification = justifications[incident.id];
+        
+        // Fallback for old ISO-based IDs
+        if (!justification) {
+            const isoId = incident.id.replace(/-?\d+$/, (match) => {
+                const ts = parseInt(match.replace('-', ''));
+                return isNaN(ts) ? match : new Date(ts).toISOString();
+            });
+            justification = justifications[isoId];
+        }
         
         // --- Pulse Sync Logic ---
         // If no manual justification, check if user had a pulse registered
@@ -1218,17 +1227,35 @@ function calculateHourlyProductivity(
 
 function createSummary(
     incidents: DeadTimeEntry[],
-    packerProductivity: PackerProductivity[]
+    packerProductivity: PackerProductivity[],
+    summaryType: 'DEAD_TIME' | 'MICRO_PAUSE' | 'HEURISTIC'
 ): DeadTimeSummaryEntry[] {
-    const packerSummaries = new Map<string, { incidentCount: number, totalMinutes: number, hourly: { [h: number]: number } }>();
+    // Group by packerName AND reason/status
+    const groups = new Map<string, { 
+        packerName: string, 
+        reason: string, 
+        incidentCount: number, 
+        totalMinutes: number, 
+        hourly: { [h: number]: number } 
+    }>();
 
     incidents.forEach(incident => {
-        if (!packerSummaries.has(incident.packerName)) {
-            packerSummaries.set(incident.packerName, { incidentCount: 0, totalMinutes: 0, hourly: {} });
+        const reason = incident.justification?.trim() || incident.status?.trim() || (summaryType === 'MICRO_PAUSE' ? 'Micro-pausas' : 'Sin justificar');
+        const key = `${incident.packerName}|${reason}`;
+        
+        if (!groups.has(key)) {
+            groups.set(key, { 
+                packerName: incident.packerName, 
+                reason: reason, 
+                incidentCount: 0, 
+                totalMinutes: 0, 
+                hourly: {} 
+            });
         }
-        const summary = packerSummaries.get(incident.packerName)!;
-        summary.incidentCount++;
-        summary.totalMinutes += incident.duration;
+        
+        const group = groups.get(key)!;
+        group.incidentCount++;
+        group.totalMinutes += incident.duration;
 
         let cursorTime = new Date(incident.startTime);
         let remainingMinutes = incident.duration;
@@ -1237,27 +1264,29 @@ function createSummary(
             const minutesToNextHour = 60 - cursorTime.getMinutes();
             const minutesThisHour = Math.min(remainingMinutes, minutesToNextHour);
 
-            if(!summary.hourly[hour]) summary.hourly[hour] = 0;
-            summary.hourly[hour] += minutesThisHour;
+            if(!group.hourly[hour]) group.hourly[hour] = 0;
+            group.hourly[hour] += minutesThisHour;
 
             remainingMinutes -= minutesThisHour;
             cursorTime.setHours(hour + 1, 0, 0, 0);
         }
     });
 
-    const grandTotalMinutes = Array.from(packerSummaries.values()).reduce((sum, s) => sum + s.totalMinutes, 0);
+    const grandTotalMinutes = Array.from(groups.values()).reduce((sum, g) => sum + g.totalMinutes, 0);
 
-    return Array.from(packerSummaries.entries()).map(([packerName, summary]) => {
-        const packerProd = packerProductivity.find(p => p.packerName === packerName);
+    return Array.from(groups.values()).map(group => {
+        const packerProd = packerProductivity.find(p => p.packerName === group.packerName);
         const jornadaMinutes = packerProd ? (packerProd.workPeriodEnd.getTime() - packerProd.firstScan.getTime()) / 60000 : 0;
         
         return {
-            packerName,
-            incidentCount: summary.incidentCount,
-            totalMinutes: summary.totalMinutes,
-            percentageOfWorkday: jornadaMinutes > 0 ? (summary.totalMinutes / jornadaMinutes) * 100 : 0,
-            percentageOfTotalDeadTime: grandTotalMinutes > 0 ? (summary.totalMinutes / grandTotalMinutes) * 100 : 0,
-            hourlyDistribution: summary.hourly
+            packerName: group.packerName,
+            reason: group.reason,
+            type: summaryType,
+            incidentCount: group.incidentCount,
+            totalMinutes: group.totalMinutes,
+            percentageOfWorkday: jornadaMinutes > 0 ? (group.totalMinutes / jornadaMinutes) * 100 : 0,
+            percentageOfTotalDeadTime: grandTotalMinutes > 0 ? (group.totalMinutes / grandTotalMinutes) * 100 : 0,
+            hourlyDistribution: group.hourly
         };
     }).sort((a,b) => b.totalMinutes - a.totalMinutes);
 }
@@ -1398,9 +1427,9 @@ export function processReport(
     
     const deadTimeUnjustified = deadTimeReport.filter(p => p.status !== 'Justificado' && (selectedPackers.includes('all') || selectedPackers.includes(p.packerName)));
     const microPausesUnjustified = microPausesReport.filter(p => selectedPackers.includes('all') || selectedPackers.includes(p.packerName));
-    const deadTimeSummary = createSummary(deadTimeUnjustified, packerProductivity);
-    const microPausesSummary = createSummary(microPausesUnjustified, packerProductivity);
-    const totalInactivitySummary = createSummary([...deadTimeUnjustified, ...microPausesUnjustified], packerProductivity);
+    const deadTimeSummary = createSummary(deadTimeUnjustified, packerProductivity, 'DEAD_TIME');
+    const microPausesSummary = createSummary(microPausesUnjustified, packerProductivity, 'MICRO_PAUSE');
+    const totalInactivitySummary = createSummary([...deadTimeUnjustified, ...microPausesUnjustified], packerProductivity, 'DEAD_TIME');
     
     const breakDetailReport = generateBreakDetailReport(allDeadTimesAndPauses, processedDeadTimes, packerProductivity);
 

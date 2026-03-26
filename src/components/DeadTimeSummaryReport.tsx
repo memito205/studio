@@ -61,6 +61,7 @@ const SummaryTable: React.FC<{ data: DeadTimeSummaryEntry[] }> = ({ data }) => {
             <TableHeader>
                 <TableRow>
                     <TableHead>Operario</TableHead>
+                    <TableHead className="text-center">Motivo</TableHead>
                     <TableHead className="text-center"># Incidentes</TableHead>
                     <TableHead className="text-right">Total (min)</TableHead>
                     <TableHead className="text-right">% Jornada</TableHead>
@@ -70,8 +71,9 @@ const SummaryTable: React.FC<{ data: DeadTimeSummaryEntry[] }> = ({ data }) => {
             </TableHeader>
             <TableBody>
                 {data.map((entry) => (
-                    <TableRow key={entry.packerName}>
+                    <TableRow key={`${entry.packerName}-${entry.reason}-${entry.type}`}>
                         <TableCell className="font-medium">{entry.packerName}</TableCell>
+                        <TableCell className="text-center italic text-muted-foreground">{entry.reason}</TableCell>
                         <TableCell className="text-center font-semibold">{entry.incidentCount}</TableCell>
                         <TableCell className="text-right font-bold">{Math.round(entry.totalMinutes)}</TableCell>
                         <TableCell className="text-right text-muted-foreground">{entry.percentageOfWorkday.toFixed(1)}%</TableCell>
