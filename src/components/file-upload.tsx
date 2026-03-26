@@ -13,9 +13,11 @@ interface FileUploadProps {
   isLoading: boolean;
   onGoToHistorical: () => void;
   onReturnToSuite: () => void;
+  reportDate: string;
+  onDateChange: (date: string) => void;
 }
 
-export const FileUpload: React.FC<FileUploadProps> = ({ onProcessFile, isLoading, onGoToHistorical, onReturnToSuite }) => {
+export const FileUpload: React.FC<FileUploadProps> = ({ onProcessFile, isLoading, onGoToHistorical, onReturnToSuite, reportDate, onDateChange }) => {
   const [dragActive, setDragActive] = React.useState(false);
 
   const handleFile = React.useCallback((file: File | null) => {
@@ -69,7 +71,10 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onProcessFile, isLoading
                     <div className="text-left">
                         <CardTitle className="text-3xl font-bold">Inteligencia Operativa para Empaque</CardTitle>
                         <CardDescription className="text-muted-foreground mt-2 max-w-2xl">
-                            Transforme sus datos de remisión en inteligencia accionable. Cargue un archivo de Excel para comenzar el análisis y descubrir oportunidades de optimización en su operación.
+                            Transforme sus datos de remisión en inteligencia accionable. 
+                            <span className="block mt-1 font-semibold text-amber-600 uppercase tracking-tight">
+                                Paso 1: Confirme la fecha del reporte antes de cargar el archivo.
+                            </span>
                         </CardDescription>
                     </div>
                     <div className="flex gap-2">
@@ -83,6 +88,19 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onProcessFile, isLoading
                 </div>
             </CardHeader>
             <CardContent>
+                <div className="mb-6 max-w-sm mx-auto p-4 border rounded-lg bg-background shadow-inner">
+                    <label htmlFor="main-report-date" className="block text-sm font-bold text-foreground mb-2 text-center uppercase">
+                        Fecha de la Operación (Reporte):
+                    </label>
+                    <input 
+                        type="date" 
+                        id="main-report-date"
+                        value={reportDate}
+                        onChange={(e) => onDateChange(e.target.value)}
+                        className="w-full p-2 border rounded-md text-lg text-center font-semibold focus:ring-2 focus:ring-primary outline-none"
+                    />
+                </div>
+
                 <form id="form-file-upload" className="mt-2" onSubmit={(e) => e.preventDefault()}>
                 <input type="file" id="input-file-upload" className="hidden" onChange={handleChange} accept=".xlsx, .xls, .csv" />
                 <label
