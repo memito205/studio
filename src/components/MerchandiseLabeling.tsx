@@ -14,8 +14,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { LabelingOperation, LabelingOperationStatus, LabelingActivityLog, AppUser, ReceptionExpectedItem } from '@/types';
+import type { LabelingOperation, LabelingOperationStatus, LabelingActivityLog, AppUser, ReceptionExpectedItem, OperationPulse } from '@/types';
 import { loadLabelingOperations, updateLabelingOperation, getExpectedItemsForLabeling, getAllUserProfiles, getLabelingActivityLog } from '@/app/reception/actions';
+import { getUserGoals, getProductivitySettings, getPulsesByDate } from '@/app/actions';
+import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { AssignOperatorsDialog } from './AssignOperatorsDialog';
 import { SetLabelingStandardDialog } from './SetLabelingStandardDialog';
 import * as XLSX from 'xlsx';
@@ -135,6 +137,7 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [productivityData, setProductivityData] = useState<Map<string, ProductivityMetrics>>(new Map());
+  const [externalPulses, setExternalPulses] = useState<OperationPulse[]>([]);
   
   const [isAssignDialogOpen, setIsAssignDialogOpen] = useState(false);
   const [isStandardDialogOpen, setIsStandardDialogOpen] = useState(false);
@@ -145,9 +148,10 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
 
   const { toast } = useToast();
   const { user, role } = useAuth();
+  const { allPulses } = useSuitePulse();
 
 
-  const calculateProductivity = (logs: LabelingActivityLog[], operation: LabelingOperation): ProductivityMetrics | null => {
+  const calculateProductivity = (logs: LabelingActivityLog[], operation: LabelingOperation, allExternalPulses: OperationPulse[]): ProductivityMetrics | null => {
       const startLog = logs.find(l => l.type === 'START');
       const finishLog = logs.find(l => l.type === 'FINISH');
       
@@ -155,14 +159,51 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
 
       const startTime = new Date(startLog.timestamp).getTime();
       const finishTime = new Date(finishLog.timestamp).getTime();
-      let totalPauseMillis = 0;
+      
+      // 1. Collect all pause intervals
+      const relevantPulses = allExternalPulses.filter(p => p.isGlobal || p.userId === operation.assignedOperatorId);
+      const activePulseFromContext = allExternalPulses.find(p => !p.endTime && (p.isGlobal || p.userId === operation.assignedOperatorId));
+      const rawIntervals = [
+          ...logs.filter(l => l.type === 'PAUSE').map(p => {
+              const res = logs.find(l => l.type === 'RESUME' && new Date(l.timestamp).getTime() > new Date(p.timestamp).getTime());
+              return { start: new Date(p.timestamp).getTime(), end: res ? new Date(res.timestamp).getTime() : finishTime };
+          }),
+          ...relevantPulses.map((p: OperationPulse) => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : finishTime }))
+      ];
 
-      const pauses = logs.filter(l => l.type === 'PAUSE');
-      pauses.forEach(pauseLog => {
-          const resumeLog = logs.find(l => l.type === 'RESUME' && new Date(l.timestamp).getTime() > new Date(pauseLog.timestamp).getTime());
-          const pauseStartTime = new Date(pauseLog.timestamp).getTime();
-          const pauseEndTime = resumeLog ? new Date(resumeLog.timestamp).getTime() : finishTime;
-          totalPauseMillis += (pauseEndTime - pauseStartTime);
+      // Explicitly add the active pulse if it's not already in relevantPulses or if it's missing end time
+      if (activePulseFromContext && !rawIntervals.some(r => r.start === activePulseFromContext.startTime.getTime())) {
+          rawIntervals.push({
+              start: activePulseFromContext.startTime.getTime(),
+              end: finishTime
+          });
+      }
+
+      // 2. Sort and Merge Overlapping Intervals
+      rawIntervals.sort((a, b) => a.start - b.start);
+      const mergedIntervals: {start: number, end: number}[] = [];
+      
+      if (rawIntervals.length > 0) {
+          let current = { ...rawIntervals[0] };
+          for (let i = 1; i < rawIntervals.length; i++) {
+              if (rawIntervals[i].start <= current.end) {
+                  current.end = Math.max(current.end, rawIntervals[i].end);
+              } else {
+                  mergedIntervals.push(current);
+                  current = { ...rawIntervals[i] };
+              }
+          }
+          mergedIntervals.push(current);
+      }
+
+      // 3. Sum non-overlapping pause durations within the operational window
+      let totalPauseMillis = 0;
+      mergedIntervals.forEach(p => {
+          const effStart = Math.max(p.start, startTime);
+          const effEnd = Math.min(p.end, finishTime);
+          if (effEnd > effStart) {
+              totalPauseMillis += (effEnd - effStart);
+          }
       });
       
       const totalMillis = finishTime - startTime;
@@ -201,13 +242,15 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
       const fetchedOps = opsResult.data;
       setOperations(fetchedOps);
 
+      // Real-time pulses are now provided by useSuitePulse
+
       const completedOps = fetchedOps.filter(op => op.status === 'Completada');
       const newProductivityData = new Map<string, ProductivityMetrics>();
 
       for (const op of completedOps) {
           const logResult = await getLabelingActivityLog(op.id);
           if (logResult.success && logResult.data) {
-              const metrics = calculateProductivity(logResult.data, op);
+              const metrics = calculateProductivity(logResult.data, op, allPulses);
               if (metrics) {
                   newProductivityData.set(op.id, metrics);
               }
@@ -223,7 +266,7 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
 
   useEffect(() => {
     fetchOperationsAndProductivity();
-  }, [fetchOperationsAndProductivity]);
+  }, [fetchOperationsAndProductivity, allPulses]);
   
   const handleOpenDialog = async (operation: LabelingOperation, dialog: 'assign' | 'standard' | 'log') => {
     setSelectedOperation(operation);

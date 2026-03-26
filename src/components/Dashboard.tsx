@@ -156,7 +156,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 <ExecutiveSummary summary={executiveSummary} isLoading={false} />
             </div>
             
-            <div className="pdf-section-stats grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="pdf-section-stats grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 gap-6">
                 <StatCard title="Total Unidades Empacadas" value={totalPairs.toLocaleString()} icon={<Package />} color="text-amber-500" />
                 <StatCard title="Horas Totales Registradas" value={totalHours.toFixed(2)} icon={<Clock />} color="text-blue-500" subtitle={`${numberOfPackers} ${numberOfPackers === 1 ? 'Operario' : 'Operarios'}`} />
                 <StatCard title="Productividad Promedio" value={`${avgProductivity.toFixed(2)} unid./hr`} icon={<CheckCircle />} color="text-green-500" />

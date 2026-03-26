@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import type { ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus } from "@/types";
+import type { ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -74,7 +74,7 @@ async function createActivityLog(logEntry: Omit<ActivityLog, 'id' | 'created_at'
 }
 
 
-export async function handleExecutiveSummary(reportData: ProcessedReportData) {
+export async function handleExecutiveSummary(reportData: ProcessedReportData): Promise<{ data?: { summary: string[] }; error?: string }> {
   try {
     // const result = await getExecutiveSummary(reportData);
     // return { data: result };
@@ -84,7 +84,7 @@ export async function handleExecutiveSummary(reportData: ProcessedReportData) {
   }
 }
 
-export async function handleRootCauseAnalysis(context: PackerProductivity | PackerReferenceProductivityDetail, type: 'operator' | 'reference') {
+export async function handleRootCauseAnalysis(context: PackerProductivity | PackerReferenceProductivityDetail, type: 'operator' | 'reference'): Promise<{ data?: { analysis: string }; error?: string }> {
     try {
         // const result = await getRootCauseAnalysis({ context, type });
         // return { data: result };
@@ -95,7 +95,7 @@ export async function handleRootCauseAnalysis(context: PackerProductivity | Pack
     }
 }
 
-export async function handleGetJustificationSuggestions(incidents: DeadTimeEntry[]) {
+export async function handleGetJustificationSuggestions(incidents: DeadTimeEntry[]): Promise<{ data?: { suggestions: Record<string, string> }; error?: string }> {
     try {
         // const result = await getJustificationSuggestions({ incidents });
         // return { data: result };
@@ -106,7 +106,7 @@ export async function handleGetJustificationSuggestions(incidents: DeadTimeEntry
     }
 }
 
-export async function handleGenerateSmartAlerts(reportData: ProcessedReportData) {
+export async function handleGenerateSmartAlerts(reportData: ProcessedReportData): Promise<{ data?: { alerts: SmartAlert[] }; error?: string }> {
     try {
         // const result = await generateSmartAlerts(reportData);
         // return { data: result };
@@ -120,7 +120,7 @@ export async function handleGenerateSmartAlerts(reportData: ProcessedReportData)
 export async function saveReportToHistory(reportData: ProcessedReportData) {
     try {
         const reportTimestamp = new Date();
-        const reportDateObj = new Date(reportData.reportDate + 'T00:00:00'); // Use T00:00:00 to avoid timezone issues
+        const reportDateObj = new Date(reportData.reportDate + 'T00:00:00');
         
         if (isNaN(reportDateObj.getTime())) {
             throw new Error(`Invalid reportDate: ${reportData.reportDate}`);
@@ -131,14 +131,7 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
         const reportsCollectionRef = collection(firestore, "reports");
         const reportsSummaryCollectionRef = collection(firestore, "reports_summary");
         
-        // 1. Create a deep copy for the full report document.
-        const fullReportToSave = { ...reportData };
-        
-        const reportDocRef = doc(reportsCollectionRef, snapshotId);
-        await setDoc(reportDocRef, convertDatesToTimestamps(fullReportToSave));
-
-
-        // 2. Create the summary object for quick listing with KPIs.
+        // 1. Prepare Summary first (always small, high priority)
         const totalQuantity = reportData.packerProductivity.reduce((sum, p) => sum + p.totalQuantity, 0);
         const totalHours = reportData.packerProductivity.reduce((sum, p) => sum + p.hoursWorked, 0);
         const avgProductivity = totalHours > 0 ? totalQuantity / totalHours : 0;
@@ -157,17 +150,205 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
             isConsolidated: reportData.isConsolidated || false,
             sourceSnapshotIds: reportData.sourceSnapshotIds || [],
         };
-        
+
+        // 2. Try to save the full snapshot
+        let snapshotSaved = false;
+        let snapshotError = "";
+        try {
+            const fullReportToSave = { ...reportData };
+            const reportDocRef = doc(reportsCollectionRef, snapshotId);
+            await setDoc(reportDocRef, convertDatesToTimestamps(fullReportToSave));
+            snapshotSaved = true;
+        } catch (e: any) {
+            console.error("Full snapshot save failed (possibly size limit):", e);
+            snapshotError = e.message;
+            
+            // Try saving without the heavy 'processedData' array to at least keep the rest
+            try {
+                const optimizedReport = { ...reportData };
+                delete optimizedReport.processedData;
+                const reportDocRef = doc(reportsCollectionRef, snapshotId);
+                await setDoc(reportDocRef, convertDatesToTimestamps(optimizedReport));
+                snapshotSaved = true;
+                console.log("Saved optimized snapshot without processedData.");
+            } catch (e2: any) {
+                console.error("Optimized snapshot save also failed:", e2);
+            }
+        }
+
+        // 3. Save the summary (critical for the list)
         const summaryDocRef = doc(reportsSummaryCollectionRef, snapshotId);
         await setDoc(summaryDocRef, convertDatesToTimestamps(reportSummary));
+
+        if (!snapshotSaved) {
+            return { error: `El resumen se guardó pero el detalle falló: ${snapshotError}. Es posible que los datos sean demasiado grandes.` };
+        }
 
         return { data: { id: snapshotId } };
     } catch (error: any) {
         console.error("Error saving report to history:", error);
-        return { error: `Failed to save report: ${error.message}` };
+        return { error: `Error crítico al guardar: ${error.message}` };
     }
 }
 
+// --- Operation Pulses & Status Actions ---
+
+export async function getCurrentPulse(userId: string): Promise<{ data?: OperationPulse | null; error?: string }> {
+    try {
+        const q = query(
+            collection(firestore, 'operation_pulses'),
+            where('userId', '==', userId),
+            where('endTime', '==', null),
+            limit(1)
+        );
+        const querySnapshot = await getDocs(q);
+        if (querySnapshot.empty) return { data: null };
+        
+        const docSnap = querySnapshot.docs[0];
+        return { data: { id: docSnap.id, ...convertTimestampsToDates(docSnap.data()) } as OperationPulse };
+    } catch (error: any) {
+        return { error: `Error fetching current pulse: ${error.message}` };
+    }
+}
+
+export async function createPulse(pulseData: Omit<OperationPulse, 'id'>): Promise<{ data?: string; error?: string }> {
+    try {
+        // 1. End any existing active pulse for this user
+        const current = await getCurrentPulse(pulseData.userId);
+        if (current.data?.id) {
+            await endPulse(current.data.id, new Date());
+        }
+
+        // 2. Create the new pulse
+        const docRef = await addDoc(collection(firestore, 'operation_pulses'), convertDatesToTimestamps(pulseData));
+        
+        // 3. Update the user's current status for the floor monitor
+        await setDoc(doc(firestore, 'users', pulseData.userId), {
+            currentStatus: pulseData.status,
+            currentPulseId: docRef.id,
+            lastStatusChange: Timestamp.now(),
+            userName: pulseData.userName
+        }, { merge: true });
+
+        return { data: docRef.id };
+    } catch (error: any) {
+        return { error: `Error creating pulse: ${error.message}` };
+    }
+}
+
+export async function endPulse(pulseId: string, endTime: Date): Promise<{ success: boolean; error?: string }> {
+    try {
+        const pulseRef = doc(firestore, 'operation_pulses', pulseId);
+        await updateDoc(pulseRef, { endTime: Timestamp.fromDate(endTime) });
+        return { success: true };
+    } catch (error: any) {
+        return { success: false, error: `Error ending pulse: ${error.message}` };
+    }
+}
+
+export async function getGlobalPulse(): Promise<{ data?: OperationPulse | null; error?: string }> {
+    try {
+        const q = query(
+            collection(firestore, 'operation_pulses'),
+            where('isGlobal', '==', true),
+            where('endTime', '==', null),
+            limit(1)
+        );
+        const querySnapshot = await getDocs(q);
+        if (querySnapshot.empty) return { data: null };
+        
+        const docSnap = querySnapshot.docs[0];
+        return { data: { id: docSnap.id, ...convertTimestampsToDates(docSnap.data()) } as OperationPulse };
+    } catch (error: any) {
+        return { error: `Error fetching global pulse: ${error.message}` };
+    }
+}
+
+export async function setGlobalPulse(active: boolean, reason?: PulseReason, adminId?: string, adminName?: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        const current = await getGlobalPulse();
+        
+        if (active) {
+            if (current.data) return { success: true }; // Already active
+            
+            await addDoc(collection(firestore, 'operation_pulses'), {
+                userId: adminId || 'system',
+                userName: adminName || 'Administrador',
+                type: 'pause',
+                status: 'Pausado',
+                reason: reason || 'Pausa Global',
+                startTime: Timestamp.now(),
+                endTime: null,
+                isGlobal: true
+            });
+        } else {
+            if (!current.data?.id) return { success: true }; // Not active
+            await endPulse(current.data.id, new Date());
+        }
+        
+        return { success: true };
+    } catch (error: any) {
+        return { success: false, error: `Error setting global pulse: ${error.message}` };
+    }
+}
+
+export async function getAllUserStatuses(): Promise<{ data?: any[]; error?: string }> {
+    try {
+        const querySnapshot = await getDocs(collection(firestore, 'users'));
+        const users = querySnapshot.docs.map(doc => ({
+            uid: doc.id,
+            ...convertTimestampsToDates(doc.data())
+        }));
+        return { data: users };
+    } catch (error: any) {
+        return { error: `Error loading user statuses: ${error.message}` };
+    }
+}
+
+export async function getPulsesByDate(dateStr: string): Promise<{ data?: OperationPulse[]; error?: string }> {
+    try {
+        const start = Timestamp.fromDate(new Date(dateStr + 'T00:00:00'));
+        const end = Timestamp.fromDate(new Date(dateStr + 'T23:59:59'));
+        
+        const q = query(
+            collection(firestore, 'operation_pulses'),
+            where('startTime', '>=', start),
+            where('startTime', '<=', end)
+        );
+        
+        const querySnapshot = await getDocs(q);
+        const pulses = querySnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...convertTimestampsToDates(doc.data())
+        } as OperationPulse));
+        
+        return { data: pulses };
+    } catch (error: any) {
+        return { error: `Error fetching pulses by date: ${error.message}` };
+    }
+}
+
+export async function getUserPulsesForDay(userId: string, dateStr: string): Promise<{ data?: OperationPulse[]; error?: string }> {
+    try {
+        const start = Timestamp.fromDate(new Date(dateStr + 'T00:00:00'));
+        const end = Timestamp.fromDate(new Date(dateStr + 'T23:59:59'));
+        
+        const q = query(
+            collection(firestore, 'operation_pulses'),
+            where('startTime', '>=', start),
+            where('startTime', '<=', end)
+        );
+        
+        const querySnapshot = await getDocs(q);
+        const pulses = querySnapshot.docs
+            .map(doc => ({ id: doc.id, ...convertTimestampsToDates(doc.data()) } as OperationPulse))
+            .filter(p => p.isGlobal || p.userId === userId);
+            
+        return { data: pulses };
+    } catch (error: any) {
+        return { error: `Error loading user pulses: ${error.message}` };
+    }
+}
 
 export async function loadHistoricalReports(options?: { startDate?: string, endDate?: string }): Promise<{ data?: ReportSummary[], error?: string }> {
     try {
@@ -178,14 +359,18 @@ export async function loadHistoricalReports(options?: { startDate?: string, endD
             return { data: [] };
         }
 
-        const start = startOfDay(parseISO(options.startDate));
-        const end = endOfDay(parseISO(options.endDate));
+        // Use explicit time strings to ensure consistency with saveReportToHistory
+        // This avoids any parseISO local/UTC ambiguity
+        const start = startOfDay(new Date(options.startDate + 'T00:00:00'));
+        const end = endOfDay(new Date(options.endDate + 'T00:00:00'));
+        
+        console.log(`[HistoricalQuery] Range: ${start.toISOString()} - ${end.toISOString()}`);
 
         const q = query(
             reportsCollectionRef, 
             where("reportDate", ">=", start),
-            where("reportDate", "<=", end),
-            orderBy("reportDate", "desc")
+            where("reportDate", "<=", end)
+            // Removed orderBy here to avoid requiring a composite index in Firestore.
         );
 
         const querySnapshot = await getDocs(q);
@@ -193,6 +378,19 @@ export async function loadHistoricalReports(options?: { startDate?: string, endD
             id: doc.id,
             ...doc.data()
         })) as ReportSummary[];
+
+        // Sort by reportDate descending, then by snapshotCreatedAt descending for items on the same day
+        reports.sort((a, b) => {
+            const dateA = a.reportDate instanceof Date ? a.reportDate.getTime() : new Date(a.reportDate as any).getTime();
+            const dateB = b.reportDate instanceof Date ? b.reportDate.getTime() : new Date(b.reportDate as any).getTime();
+            
+            if (dateB !== dateA) return dateB - dateA;
+            
+            const timeA = a.snapshotCreatedAt instanceof Date ? a.snapshotCreatedAt.getTime() : new Date(a.snapshotCreatedAt as any).getTime();
+            const timeB = b.snapshotCreatedAt instanceof Date ? b.snapshotCreatedAt.getTime() : new Date(b.snapshotCreatedAt as any).getTime();
+            return timeB - timeA;
+        });
+
         return { data: convertTimestampsToDates(reports) as ReportSummary[] };
     } catch (error: any) {
         console.error("Error loading historical reports:", error);
@@ -224,6 +422,44 @@ export async function loadFullReportSnapshots(snapshotIds: string[]): Promise<{ 
     } catch (error: any) {
         console.error("Error loading full report snapshots:", error);
         return { error: `Failed to load full reports: ${error.message}` };
+    }
+}
+
+export async function deleteHistoricalReportsForDay(dateStr: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        const start = startOfDay(new Date(dateStr + 'T00:00:00'));
+        const end = endOfDay(new Date(dateStr + 'T00:00:00'));
+
+        const summaryQ = query(
+            collection(firestore, "reports_summary"),
+            where("reportDate", ">=", start),
+            where("reportDate", "<=", end)
+        );
+
+        const summarySnap = await getDocs(summaryQ);
+        if (summarySnap.empty) {
+            return { success: true }; // Nothing to delete
+        }
+
+        const snapshotIds = summarySnap.docs.map(doc => doc.id);
+        const batch = writeBatch(firestore);
+
+        // Delete from reports_summary
+        summarySnap.docs.forEach(doc => {
+            batch.delete(doc.ref);
+        });
+
+        // Delete from reports (Full snapshots)
+        for (const id of snapshotIds) {
+            batch.delete(doc(firestore, "reports", id));
+        }
+
+        await batch.commit();
+        console.log(`[DeleteHistory] Successfully deleted ${snapshotIds.length} reports for ${dateStr}`);
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error deleting historical reports:", error);
+        return { success: false, error: error.message };
     }
 }
 
@@ -364,7 +600,7 @@ export async function previewConsolidatedReport(snapshotIds: string[]): Promise<
             configSelectedPacker: lastReportConfig.configSelectedPacker,
             brandProductTypeGoals: lastReportConfig.brandProductTypeGoals,
             manualJustifications: lastReportConfig.manualJustifications,
-            incidentLog: lastReportConfig.incidentLog,
+            incidentLog: lastReportConfig.incidentLog || [],
         };
 
         return { data: previewReport };

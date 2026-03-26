@@ -181,7 +181,7 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
                     <TableCell className="text-center">
                       <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="icon" disabled={incident.status === 'Justificado'}>
+                              <Button variant="ghost" size="icon">
                                   <MoreHorizontal className="h-4 w-4" />
                                   <span className="sr-only">Toggle menu</span>
                               </Button>

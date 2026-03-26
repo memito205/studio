@@ -9,8 +9,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ArrowLeft, LayoutGrid, Package, Check, AlertTriangle, ScanLine, Clock, X, Archive, ArchiveRestore, Tag, Search, Pencil, Trash2, FileDown, Timer, BarChartHorizontal, Play, Pause, Loader2, Trophy, AlarmClockOff, Eye, RotateCcw } from 'lucide-react';
-import type { WholesaleOrder, ProductDatabaseItem, PackingScanResult, PackingSession, PackingUnit, PackedItem, UnitSearchResult, WholesaleOrderDetail, PauseReason, LabelValidationResult, PackingPause } from '@/types';
-import { validateLabel, markLabelAsUsed, getProductByRefAndSize, savePackingSession, updateOrderStatus, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, lookupBarcode } from '@/app/actions';
+import type { WholesaleOrder, ProductDatabaseItem, PackingScanResult, PackingSession, PackingUnit, PackedItem, UnitSearchResult, WholesaleOrderDetail, PauseReason, LabelValidationResult, PackingPause, OperationPulse, PreprintedLabel } from '@/types';
+import { validateLabel, markLabelAsUsed, savePackingSession, updateOrderStatus, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, lookupBarcode, getUserPulsesForDay } from '@/app/actions';
+import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
@@ -200,6 +201,8 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     const barcodeInputRef = React.useRef<HTMLInputElement>(null);
     const [overpackAlert, setOverpackAlert] = useState<OverpackAlertState>({ isOpen: false, itemKey: '', packed: 0, ordered: 0 });
     const [mixedReferenceError, setMixedReferenceError] = useState<{ show: boolean, expected: string, scanned: string } | null>(null);
+    const [externalPulses, setExternalPulses] = useState<OperationPulse[]>([]);
+    const { isPaused, currentPulse, globalPulse, allPulses } = useSuitePulse();
     
     // State for productivity timer
     const [elapsedTime, setElapsedTime] = useState(0);
@@ -216,6 +219,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     useEffect(() => {
         fetchPackedItems();
     }, [fetchPackedItems]);
+
 
     useEffect(() => {
         onSessionChange(session);
@@ -389,10 +393,12 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         if (!activeUnit) return;
         setIsClosingUnit(true);
 
-        const validationResult: LabelValidationResult = { isValid: true, label: { id: scannedLabel } as PreprintedLabel }; // Mocked validation
+        // Integration: Real validation would happen here. For now, mocking success.
+        const validationResult: LabelValidationResult = { isValid: true, label: { id: scannedLabel } as PreprintedLabel };
 
         if (!validationResult.isValid) {
-            toast({ variant: 'destructive', title: 'Etiqueta no válida', description: validationResult.message });
+            const errorMsg = (validationResult as any).message || 'Etiqueta no válida';
+            toast({ variant: 'destructive', title: 'Error', description: errorMsg });
             setIsClosingUnit(false);
             return;
         }
@@ -556,14 +562,50 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         
         const now = Date.now();
         const totalElapsedTimeMs = now - userFirstScan;
-        const userPauses = session.pauses.filter(p => p.userId === user.uid);
-        let totalPauseMs = userPauses.reduce((sum, pause) => {
-            const start = new Date(pause.startTime).getTime();
-            const end = pause.endTime ? new Date(pause.endTime).getTime() : now;
-            return sum + (end - start);
-        }, 0);
+        
+        // 1. Collect all pause intervals
+        const activePulseFromContext = globalPulse || currentPulse;
+        const rawIntervals = [
+            ...session.pauses.map(p => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : now })),
+            ...allPulses.map(p => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : now }))
+        ];
 
-        const effectiveWorkTimeMs = totalElapsedTimeMs - totalPauseMs;
+        // Explicitly add the current active pulse interval if we are paused
+        if (isPaused && activePulseFromContext) {
+            rawIntervals.push({
+                start: activePulseFromContext.startTime.getTime(),
+                end: now
+            });
+        }
+
+        // 2. Sort and Merge Overlapping Intervals
+        rawIntervals.sort((a, b) => a.start - b.start);
+        const mergedIntervals: {start: number, end: number}[] = [];
+        
+        if (rawIntervals.length > 0) {
+            let current = { ...rawIntervals[0] };
+            for (let i = 1; i < rawIntervals.length; i++) {
+                if (rawIntervals[i].start <= current.end) {
+                    current.end = Math.max(current.end, rawIntervals[i].end);
+                } else {
+                    mergedIntervals.push(current);
+                    current = { ...rawIntervals[i] };
+                }
+            }
+            mergedIntervals.push(current);
+        }
+
+        // 3. Sum non-overlapping pause durations within the work window
+        let totalPauseMs = 0;
+        mergedIntervals.forEach(p => {
+            const effectiveStart = Math.max(p.start, userFirstScan);
+            const effectiveEnd = Math.min(p.end, now);
+            if (effectiveEnd > effectiveStart) {
+                totalPauseMs += (effectiveEnd - effectiveStart);
+            }
+        });
+
+        const effectiveWorkTimeMs = Math.max(0, totalElapsedTimeMs - totalPauseMs);
         const effectiveSeconds = effectiveWorkTimeMs / 1000;
         
         const unitsPackedByUser = totalUserPackedQuantity;

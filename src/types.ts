@@ -605,6 +605,25 @@ export interface IncidentLogEntry {
     text: string;
 }
 
+export type PulseType = 'activity' | 'pause' | 'status_change';
+export type PulseReason = 'Desayuno' | 'Almuerzo' | 'Refrigerio' | 'Baño' | 'Café' | 'Soporte Técnico' | 'Sin Carga de Trabajo' | 'Otro' | 'Pausa Global' | 'Remisión';
+export type UserStatus = 'Disponible' | 'En Remisión' | 'Pausado' | 'Inactivo' | 'Desconectado';
+
+export interface OperationPulse {
+    id?: string;
+    userId: string;
+    userName: string;
+    email?: string;
+    type: PulseType;
+    status: UserStatus;
+    reason?: PulseReason;
+    details?: string;
+    startTime: Date;
+    endTime?: Date;
+    isGlobal?: boolean;
+    metadata?: Record<string, any>;
+}
+
 export interface ChatMessage {
     role: 'user' | 'model';
     text: string;
@@ -653,6 +672,8 @@ export interface ReportSummary {
     operatorNames?: string[];
     isConsolidated?: boolean;
     sourceSnapshotIds?: string[];
+    manualJustifications?: ManualJustifications;
+    incidentLog?: IncidentLogEntry[];
 }
 
 export interface ReportConfiguration {
@@ -879,7 +900,7 @@ export interface GeneralLabel {
     usedBy?: string;
 }
 
-export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision';
+export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'control_piso';
 
 // Types for Merchandise Reception
 export interface ReceptionOperation {

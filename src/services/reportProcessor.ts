@@ -1,4 +1,4 @@
-import { RemisionEntry, PackerProductivity, ProcessedReportData, HourlyProductivity, BrandProductivity, ProductCategory, ProductTypeProductivity, ProductivityGoals, BrandProductTypeGoals, BrandPackerBreakdown, DeadTimeEntry, PackerBrandProductivityDetail, DetectedBreakDetail, DeadTimeSummaryEntry, PackerHourlyPerformance, ManualProductClassifications, ManualJustifications, JustificationType, UniqueReference, ReferenceCorrections, ManualOperatorMappings, IncidentLogEntry, ProductDatabaseItem, DiscardedRecord, ProductTypePackerBreakdown, HourlyOperatorDetail } from '@/types';
+import { RemisionEntry, PackerProductivity, ProcessedReportData, HourlyProductivity, BrandProductivity, ProductCategory, ProductTypeProductivity, ProductivityGoals, BrandProductTypeGoals, BrandPackerBreakdown, DeadTimeEntry, PackerBrandProductivityDetail, DetectedBreakDetail, DeadTimeSummaryEntry, PackerHourlyPerformance, ManualProductClassifications, ManualJustifications, JustificationType, UniqueReference, ReferenceCorrections, ManualOperatorMappings, IncidentLogEntry, ProductDatabaseItem, DiscardedRecord, ProductTypePackerBreakdown, HourlyOperatorDetail, OperationPulse, PackerReferenceProductivityDetail } from '@/types';
 import { parseFlexibleDate, excelSerialDateToJSDate } from '@/lib/parsingUtils';
 
 // Mapeo de columnas para reconocer diferentes variaciones de los encabezados del archivo.
@@ -181,7 +181,7 @@ export function classifyProduct(
     const referenceToUse = correction?.newReferencia || originalReference;
 
     // Prioridad 3: Clasificación automática (incluyendo BRAND_CODE_MAP y palabras clave)
-    let { brand, productType } = inferClassificationFromDescription(descriptionToUse, originalMarca, grupo);
+    let { brand, productType } = inferClassificationFromDescription(descriptionToUse, originalMarca, grupo || '');
     
     // Prioridad 4: Anulación por Clasificación Manual Final
     const termToAnalyze = descriptionToUse.toUpperCase().substring(3).trim().split(' ')[0];
@@ -332,7 +332,8 @@ function detectAllPauses(
 
 export function applyJustifications(
   incidents: DeadTimeEntry[],
-  justifications: ManualJustifications
+  justifications: ManualJustifications,
+  operationPulses: OperationPulse[] = []
 ): DeadTimeEntry[] {
     const finalIncidents: DeadTimeEntry[] = [];
     const processQueue = [...incidents];
@@ -354,7 +355,7 @@ export function applyJustifications(
                 packerBreakUsage.set(incident.packerName, new Set());
             }
             // Temporarily add, will be confirmed during processing
-            packerBreakUsage.get(incident.packerName)!.add(justification.type);
+            packerBreakUsage.get(incident.packerName)!.add(justification.type as JustificationType);
         }
     });
     
@@ -369,8 +370,42 @@ export function applyJustifications(
         }
         processedIds.add(incident.id);
         
-        const justification = justifications[incident.id];
+        let justification = justifications[incident.id];
         
+        // --- Pulse Sync Logic ---
+        // If no manual justification, check if user had a pulse registered
+        if (!justification) {
+            const pulse = operationPulses.find(p => {
+                if (!p.isGlobal && p.userName?.toUpperCase() !== incident.packerName.toUpperCase()) return false;
+                
+                const pulseStart = p.startTime.getTime();
+                const pulseEnd = p.endTime?.getTime() || Date.now();
+                const incidentStart = incident.startTime.getTime();
+                const incidentEnd = incident.endTime.getTime();
+                
+                // Check for significant overlap (at least 1 minute)
+                const overlapStart = Math.max(pulseStart, incidentStart);
+                const overlapEnd = Math.min(pulseEnd, incidentEnd);
+                return (overlapEnd - overlapStart) >= 60000;
+            });
+            
+            if (pulse) {
+                // Map status/reason to JustificationType
+                let type: JustificationType = 'REASON';
+                let reasonText = pulse.reason || 'Sincronizado';
+                
+                if (pulse.reason === 'Desayuno') type = 'BREAKFAST';
+                else if (pulse.reason === 'Almuerzo') type = 'LUNCH';
+                else if (pulse.reason === 'Refrigerio') type = 'SNACK';
+                
+                justification = {
+                    type,
+                    reasonText: pulse.isGlobal ? `[Global] ${reasonText}` : `[Pulso] ${reasonText}`,
+                };
+            }
+        }
+        // --- End Pulse Sync Logic ---
+
         if (!justification) {
             incident.status = 'No Justificado';
             finalIncidents.push(incident);
@@ -457,7 +492,8 @@ export function preProcessDeadTimes(
     reportDate: string,
     reportStartTime: string,
     reportEndTime: string,
-    manualJustifications: ManualJustifications
+    manualJustifications: ManualJustifications,
+    operationPulses: OperationPulse[] = []
 ): DeadTimeEntry[] {
     if (!reportDate || !reportStartTime || !reportEndTime || !data) return [];
     
@@ -482,7 +518,7 @@ export function preProcessDeadTimes(
     const allPauses = detectAllPauses(dataInTimeRange, reportStartDate, reportEndDate);
     
     // Apply justifications and handle splits
-    const processedPauses = applyJustifications(allPauses, manualJustifications);
+    const processedPauses = applyJustifications(allPauses, manualJustifications, operationPulses);
     
     return processedPauses.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
 }
@@ -1281,7 +1317,8 @@ export function processReport(
     reportEndTimeStr: string,
     manualJustifications: ManualJustifications,
     selectedPackers: string[],
-    incidentLog: IncidentLogEntry[]
+    incidentLog: IncidentLogEntry[],
+    operationPulses: OperationPulse[] = []
 ): ProcessedReportData {
     // Create UTC-based dates for start and end to avoid timezone issues during filtering
     const reportDateObj = parseFlexibleDate(reportDate);
@@ -1297,7 +1334,7 @@ export function processReport(
     );
     
     const allDeadTimesAndPauses = detectAllPauses(fullDataInTimeRange, reportStartTime, reportEndTime);
-    const processedDeadTimes = applyJustifications(allDeadTimesAndPauses, manualJustifications);
+    const processedDeadTimes = applyJustifications(allDeadTimesAndPauses, manualJustifications, operationPulses);
     
     const deadTimeReport = processedDeadTimes.filter(p => p.duration >= 5);
     const microPausesReport = processedDeadTimes.filter(p => p.duration < 5 && p.duration >= 1);
@@ -1384,6 +1421,7 @@ export function processReport(
         packerHourlyPerformance,
         reportDate,
         incidentLog,
+        manualJustifications,
     };
 }
 
@@ -1410,7 +1448,7 @@ export function extractUnmappedPackers(
         const empacadorKey = Object.keys(row).find(k => k.toLowerCase().trim() === 'empacador' || k.toLowerCase().trim() === 'empacado');
         if (empacadorKey) {
             const empacadorId = String(row[empacadorKey]).trim();
-             if (empacadorId && !OPERATOR_MAP[empacadorId] && !manualOperatorMappings[empacadorId]) {
+             if (empacadorId && !OPERATOR_MAP[empacadorId]) {
                 const unidadDeEmpaque = String(row['unidad de empaque'] || row['unidad empaque'] || '').trim().toUpperCase();
                 if (!unidadDeEmpaque.startsWith('EVI') && !unidadDeEmpaque.startsWith('INT') && !unidadDeEmpaque.startsWith('VXM')) {
                     unmappedIds.add(empacadorId);

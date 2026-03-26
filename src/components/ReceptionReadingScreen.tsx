@@ -7,8 +7,9 @@ import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, PlusCircle, AlertTriangle } from 'lucide-react';
 import { getReceptionOperationById, getExpectedItemsByReception, getProductsByBarcodes, getLocations, createPackingUnit, startOperationPause, endOperationPause, updateReceptionOperation, addScannedItem, deleteScannedItem, getActivePauseForUser, updatePackingUnit, registerNovelty, getScannedItemsByReception } from '@/app/reception/actions';
-import { getUserGoals, getProductivitySettings } from '@/app/actions';
-import type { ReceptionOperation, ScannedItem, ProductDatabaseItem, PackingUnit, Location, OperationPause, ReceptionExpectedItem, UserGoal, PackedItem, ProductivitySettings } from '@/types';
+import { getUserGoals, getProductivitySettings, getUserPulsesForDay } from '@/app/actions';
+import { useSuitePulse } from '@/hooks/useSuitePulse';
+import type { ReceptionOperation, ScannedItem, ProductDatabaseItem, PackingUnit, Location, OperationPause, ReceptionExpectedItem, UserGoal, PackedItem, ProductivitySettings, OperationPulse } from '@/types';
 import { ReceptionScanInput } from './ReceptionScanInput';
 import ReceptionScannedItemsList from './ReceptionScannedItemsList';
 import ReceptionSummary from './ReceptionSummary';
@@ -65,6 +66,8 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
 
 
   
+  const { isPaused, currentPulse, globalPulse, allPulses } = useSuitePulse();
+
   const fetchInitialData = useCallback(async () => {
     if (!user) return;
     setIsLoading(true);
@@ -109,6 +112,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
           setAllLocations(locationsResult.data);
         }
         
+
     } catch(e: any) {
         setError(e.message);
         toast({ variant: 'destructive', title: 'Error al cargar datos', description: e.message });
@@ -120,6 +124,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
   useEffect(() => {
     fetchInitialData();
   }, [fetchInitialData]);
+
   
   // Real-time listener for SCANS
   useEffect(() => {
@@ -224,12 +229,11 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
           
           const firstScanTime = Math.min(...activityTimes);
 
-          let endTime;
-          if (operation.status === 'in_progress' || operation.status === 'paused') {
-              endTime = new Date().getTime();
-          } else if (operation.end_time) {
+          const now = new Date().getTime();
+          let endTime = now;
+          if (operation.status !== 'in_progress' && operation.status !== 'paused' && operation.end_time) {
               endTime = new Date(operation.end_time).getTime();
-          } else {
+          } else if (operation.status !== 'in_progress' && operation.status !== 'paused') {
               const lastActivityTimes = [
                 ...userItems.map(i => new Date(i.scanned_at).getTime()),
                 ...userPauses.filter(p => p.end_time).map(p => new Date(p.end_time!).getTime()),
@@ -239,24 +243,60 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
 
           const grossDurationMs = Math.max(0, endTime - firstScanTime);
 
-          let totalPauseDurationMs = userPauses.reduce((sum, pause) => {
-              const start = new Date(pause.start_time).getTime();
-              const end = pause.end_time ? new Date(pause.end_time).getTime() : new Date().getTime(); // If pause is active, count up to now
-              return sum + (end - start);
-          }, 0);
+          // 1. Collect all pause intervals
+          const activePulseFromContext = globalPulse || currentPulse;
+          const rawIntervals = [
+            ...userPauses.map(p => ({ start: new Date(p.start_time).getTime(), end: p.end_time ? new Date(p.end_time).getTime() : now })),
+            ...allPulses.map(p => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : now }))
+          ];
+
+          // Explicitly add the current active pulse interval if we are paused
+          if (isPaused && activePulseFromContext) {
+              rawIntervals.push({
+                  start: activePulseFromContext.startTime.getTime(),
+                  end: now
+              });
+          }
+
+          // 2. Sort and Merge Overlapping Intervals
+          rawIntervals.sort((a, b) => a.start - b.start);
+          const mergedIntervals: {start: number, end: number}[] = [];
+          
+          if (rawIntervals.length > 0) {
+              let current = { ...rawIntervals[0] };
+              for (let i = 1; i < rawIntervals.length; i++) {
+                  if (rawIntervals[i].start <= current.end) {
+                      current.end = Math.max(current.end, rawIntervals[i].end);
+                  } else {
+                      mergedIntervals.push(current);
+                      current = { ...rawIntervals[i] };
+                  }
+              }
+              mergedIntervals.push(current);
+          }
+
+          // 3. Sum non-overlapping pause durations within the scan window
+          let totalPauseDurationMs = 0;
+          mergedIntervals.forEach(p => {
+              const effectiveStart = Math.max(p.start, firstScanTime);
+              const effectiveEnd = Math.min(p.end, endTime);
+              if (effectiveEnd > effectiveStart) {
+                totalPauseDurationMs += (effectiveEnd - effectiveStart);
+              }
+          });
 
           const effectiveTimeMinutes = Math.max(0, (grossDurationMs - totalPauseDurationMs) / 60000);
           const totalScanned = userItems.reduce((sum, i) => sum + i.quantity, 0);
           const actualProductivity = effectiveTimeMinutes > 0 ? (totalScanned / effectiveTimeMinutes) * 60 : 0;
           
-          setUserProductivity({ timeSpentInMinutes: effectiveTimeMinutes, actualProductivity });
+      setUserProductivity({ timeSpentInMinutes: effectiveTimeMinutes, actualProductivity });
       };
 
       const interval = setInterval(calculateUserMetrics, 2000); // Recalculate every 2 seconds for a live feel
       
       return () => clearInterval(interval);
 
-  }, [user, operation, userScannedItems, allPauses]);
+  }, [user, operation, userScannedItems, allPauses, allPulses]);
 
 
   const activePackingUnit: PackingUnit | null = useMemo(() => {
@@ -294,7 +334,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
         const itemsInActiveUnit = allScannedItemsForOperation.filter(item => item.packing_unit_id === unitToUse?.firestoreId);
         if (itemsInActiveUnit.length > 0) {
             const expectedReference = itemsInActiveUnit[0].reference.trim();
-            const newReference = (product.referencia || product.reference || '').trim();
+            const newReference = (product.referencia || '').trim();
 
             if (newReference !== expectedReference) {
                 setMixedReferenceError({ show: true, expected: expectedReference, scanned: newReference });
@@ -327,10 +367,10 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
             packing_unit_id: unitToUse.firestoreId,
             barcode: product.codigoBarras,
             user_id: user.uid,
-            reference: product.referencia || product.reference || 'N/A',
+            reference: product.referencia || 'N/A',
             talla: product.talla || product.size || 'N/A',
             item: product.item || product.name || 'N/A',
-            location_id: expectedItemData?.location || null
+            location_id: expectedItemData?.location || undefined
         };
                 
         const result = await addScannedItem(itemToAdd);
@@ -476,7 +516,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
     }
     
     // NEW PRIORITY 2: Find in the current operation's expected items by reference and size.
-    const ref = currentScannedProductDetails.referencia || currentScannedProductDetails.reference;
+    const ref = currentScannedProductDetails.referencia || '';
     const size = currentScannedProductDetails.talla || currentScannedProductDetails.size;
     if(ref && size) {
         const expectedItemByRef = expectedItems.find(
@@ -495,8 +535,8 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
       const map = new Map<string, string>();
       if (!productDB || productDB.length === 0) return map;
       productDB.forEach(product => {
-          if (product.reference && product.location) {
-              map.set(product.reference.trim(), product.location);
+          if (product.referencia && product.location) {
+              map.set(product.referencia.trim(), product.location);
           }
       });
       return map;

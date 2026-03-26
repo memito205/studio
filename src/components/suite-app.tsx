@@ -6,7 +6,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
-import type { ProcessedReportData, ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ReferenceCorrections, UniqueReference, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, ChatMessage, SmartAlert, ActionPlan, Annotations, TaggedReport, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, PackingUnit, PackingSession, AppStep, ReceptionOperation, JustificationType, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReportSummary, CreditCalculationResult, DispatchSessionInfo, RouteEntry, TransferEntry, EcommerceOrder, DelayedOrderLog } from '@/types';
+import type { ProcessedReportData, ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ReferenceCorrections, UniqueReference, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, ChatMessage, SmartAlert, ActionPlan, Annotations, TaggedReport, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, PackingUnit, PackingSession, AppStep, ReceptionOperation, JustificationType, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReportSummary, CreditCalculationResult, DispatchSessionInfo, RouteEntry, TransferEntry, EcommerceOrder, DelayedOrderLog, OperationPulse } from '@/types';
 import { processReport, getSanitizedData, extractUniqueReferences, extractPackersFromReport, preProcessDeadTimes, classifyProduct } from '@/services/reportProcessor';
 import { handleExecutiveSummary, handleRootCauseAnalysis, handleGenerateSmartAlerts, handleGetJustificationSuggestions, saveReportToHistory, loadHistoricalReports, updateOrderStatus, savePackingSession, loadWholesaleOrders, getPackingSession, loadAllPackingSessions, consolidateDailyReports, previewConsolidatedReport, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, loadFullReportSnapshots } from '@/app/actions';
 import { getProductsByBarcodes } from '@/app/reception/actions';
@@ -68,6 +68,7 @@ const SampleControl = dynamic(() => import('./sample-control/SampleControl').the
 const TransfersModule = dynamic(() => import('./TransfersModule').then(mod => mod.TransfersModule), { loading: () => <LoadingSpinner /> });
 const PropuestaTransportadora = dynamic(() => import('./PropuestaTransportadora').then(mod => mod.PropuestaTransportadora), { loading: () => <LoadingSpinner /> });
 const DistributorModule = dynamic(() => import('@/components/distributor-module/DistributorModule').then(mod => mod.default), { loading: () => <LoadingSpinner /> });
+const ControlPiso = dynamic(() => import('@/components/ControlPiso').then(mod => mod.ControlPiso), { loading: () => <LoadingSpinner /> });
 
 
 type Theme = 'light' | 'dark';
@@ -137,7 +138,12 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
 
   // Configuration State
   const [productDB, setProductDB] = useState<ProductDatabaseItem[]>([]);
-  const [productivityGoals, setProductivityGoals] = useState<ProductivityGoals>({ 'CALZADO': 65, 'ROPA': 100, 'ACCESORIOS': 90, 'NO CLASIFICADO': 60 });
+  const [productivityGoals, setProductivityGoals] = useState<ProductivityGoals>({
+          ROPA: 45,
+          CALZADO: 30,
+          ACCESORIOS: 60,
+          "NO CLASIFICADO": 40
+      });
   const [brandProductTypeGoals, setBrandProductTypeGoals] = useState<BrandProductTypeGoals>({});
   const [initialPackers, setInitialPackers] = useState<string[]>([]);
   const [manualClassifications, setManualClassifications] = useState<ManualProductClassifications>({});
@@ -165,6 +171,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
 
   // Reception State
   const [receptionOperationId, setReceptionOperationId] = useState<string | null>(null);
+  const [pulsesForDay, setPulsesForDay] = useState<OperationPulse[]>([]);
   
   const fetchOrders = useCallback(async () => {
     setIsLoadingOrders(true);
@@ -197,6 +204,16 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
         console.error("Error loading data from localStorage", e);
     }
   }, []);
+
+  useEffect(() => {
+    if (reportDate) {
+      import('@/app/actions').then(actions => {
+        actions.getPulsesByDate(reportDate).then(res => {
+          if (res.data) setPulsesForDay(res.data);
+        });
+      });
+    }
+  }, [reportDate]);
 
   const handleFileProcess = useCallback(async (data: any[], name: string) => {
     setIsLoading(true);
@@ -280,10 +297,10 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   
     useEffect(() => {
         if (rawData && reportDate && reportStartTime && reportEndTime) {
-            const initialDeadTimes = preProcessDeadTimes(rawData, reportDate, reportStartTime, reportEndTime, manualJustifications);
+            const initialDeadTimes = preProcessDeadTimes(rawData, reportDate, reportStartTime, reportEndTime, manualJustifications, pulsesForDay);
             setDeadTimes(initialDeadTimes);
         }
-    }, [rawData, reportDate, reportStartTime, reportEndTime, manualJustifications]);
+    }, [rawData, reportDate, reportStartTime, reportEndTime, manualJustifications, pulsesForDay]);
 
 
   const handleCalculate = useCallback(async () => {
@@ -329,7 +346,8 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           reportEndTime,
           manualJustifications,
           configSelectedPacker,
-          incidentLog
+          incidentLog,
+          pulsesForDay
         );
 
         if (finalProcessedData.packerProductivity.length === 0) {
@@ -344,7 +362,21 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
         } else {
           finalProcessedData.annotations = annotations;
           finalProcessedData.processedData = processedDataForReport;
-          await saveReportToHistory(finalProcessedData);
+          const saveResult = await saveReportToHistory(finalProcessedData);
+          if (saveResult.error) {
+              toast({
+                  variant: "destructive",
+                  title: "Aviso de Persistencia",
+                  description: saveResult.error,
+                  duration: 8000,
+              });
+          } else {
+              toast({
+                  title: "Reporte Guardado",
+                  description: "El reporte se persistió correctamente en el historial.",
+                  duration: 3000,
+              });
+          }
           setReportData(finalProcessedData);
 
           const newLearned = { ...learnedCorrections, ...referenceCorrections };
@@ -450,7 +482,12 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
 
   const handleSuggestGoals = async () => {
     if (!rawData) return;
-    const suggested = { 'CALZADO': 70 }; // Mock
+    const suggested: ProductivityGoals = { 
+        'CALZADO': 70, 
+        'ROPA': 50, 
+        'ACCESORIOS': 60, 
+        'NO CLASIFICADO': 45 
+    }; 
     if (suggested) { setProductivityGoals(suggested); alert("Metas sugeridas por la IA han sido aplicadas."); }
     else { alert("No se pudo obtener una sugerencia de la IA."); }
   };
@@ -488,6 +525,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const handleNavigateToPropuestaTransportadora = () => setAppStep('propuesta_transportadora');
   const handleNavigateToDispatchManager = () => setAppStep('dispatch_manager');
   const handleNavigateToDistributorModule = () => setAppStep('distributor_module');
+  const handleNavigateToControlPiso = () => setAppStep('control_piso');
 
   const handleStartPacking = async (order: WholesaleOrder) => {
       if (!user) {
@@ -617,6 +655,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToTransfersModule={handleNavigateToTransfersModule}
                 onNavigateToDispatchManager={handleNavigateToDispatchManager}
                 onNavigateToDistributorModule={handleNavigateToDistributorModule}
+                onNavigateToControlPiso={handleNavigateToControlPiso}
             />;
           case 'upload': return <FileUpload onProcessFile={handleFileProcess} isLoading={isLoading} onGoToHistorical={handleGoToHistorical} onReturnToSuite={handleReturnToSuite} />;
           case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} />;
@@ -665,6 +704,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           case 'propuesta_transportadora': return <PropuestaTransportadora onReturn={() => setAppStep('other_features')} />;
           case 'dispatch_manager': return <DispatchManager onReturnToSuite={handleReturnToSuite} />;
           case 'distributor_module': return <DistributorModule onReturnToSuite={handleReturnToSuite} />;
+          case 'control_piso': return <ControlPiso onReturn={handleReturnToSuite} />;
           case 'packing':
             if (packingOrder && currentSession) {
               return <PackingScreen 
@@ -699,6 +739,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToTransfersModule={handleNavigateToTransfersModule} 
                 onNavigateToDispatchManager={handleNavigateToDispatchManager}
                 onNavigateToDistributorModule={handleNavigateToDistributorModule}
+                onNavigateToControlPiso={handleNavigateToControlPiso}
             />;
       }
     }

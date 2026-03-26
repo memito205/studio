@@ -3,7 +3,10 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot } from 'lucide-react';
+import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square } from 'lucide-react';
+import { useSuitePulse } from '@/hooks/useSuitePulse';
+import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth-context';
 
 interface ModuleCardProps {
@@ -53,6 +56,7 @@ interface SuiteDashboardProps {
     onNavigateToTransfersModule: () => void;
     onNavigateToDispatchManager: () => void;
     onNavigateToDistributorModule: () => void;
+    onNavigateToControlPiso: () => void;
 }
 
 export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({ 
@@ -70,9 +74,11 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToSampleControlModule,
     onNavigateToTransfersModule,
     onNavigateToDispatchManager,
-    onNavigateToDistributorModule
+    onNavigateToDistributorModule,
+    onNavigateToControlPiso
 }) => {
     const { role } = useAuth();
+    const { isInRemision, punchInRemision, punchOut, loading: pulseLoading } = useSuitePulse();
 
     const modules = [
         {
@@ -92,6 +98,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Acceder",
             onAction: onNavigateToDashboardsModule,
             roles: ['admin', 'office']
+        },
+        {
+            key: 'control_piso',
+            icon: Users,
+            title: "Control de Piso",
+            description: "Monitor de sesiones activas, estados de operarios y gestión de pausas globales sincronizadas.",
+            actionText: "Monitorear",
+            onAction: onNavigateToControlPiso,
+            roles: ['admin', 'supervisor']
         },
         {
             key: 'wholesale',
@@ -238,6 +253,31 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
                      />
                  ))}
             </div>
+
+            {(role === 'operator' || role === 'supervisor' || role === 'admin') && (
+                <div className="fixed bottom-8 right-8 z-50 flex flex-col items-end">
+                    {isInRemision && (
+                        <Badge className="bg-blue-500 text-white animate-pulse mb-3 px-4 py-1 text-sm shadow-md border-none">
+                            Trabajando en Remisión
+                        </Badge>
+                    )}
+                    <Button 
+                        size="lg" 
+                        variant={isInRemision ? "destructive" : "default"}
+                        className={cn(
+                            "h-16 rounded-full shadow-2xl transition-all duration-300 hover:scale-105 px-8",
+                            !isInRemision && "bg-blue-600 hover:bg-blue-700"
+                        )}
+                        onClick={isInRemision ? punchOut : punchInRemision}
+                        disabled={pulseLoading}
+                    >
+                        {isInRemision ? <Square className="mr-2 h-5 w-5 fill-current" /> : <Play className="mr-2 h-5 w-5 fill-current" />}
+                        <span className="text-lg font-bold">
+                            {isInRemision ? "Detener Remisión" : "Iniciar Remisión"}
+                        </span>
+                    </Button>
+                </div>
+            )}
         </div>
     );
 }

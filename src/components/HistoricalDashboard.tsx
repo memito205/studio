@@ -4,7 +4,7 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import type { ProcessedReportData, ReportSummary } from '@/types';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Calendar as CalendarIcon, Download, Loader2, Info, Eye, BarChart2, Clock, Search, Filter, Package } from 'lucide-react';
+import { ArrowLeft, Calendar as CalendarIcon, Download, Loader2, Info, Eye, BarChart2, Clock, Search, Filter, Package, Trash2 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
@@ -13,10 +13,11 @@ import { DateRange } from "react-day-picker";
 import { es } from 'date-fns/locale';
 import { exportToXlsx } from '@/services/export';
 import { useToast } from '@/hooks/use-toast';
+import { useAuth } from '@/hooks/use-auth-context';
 import { cn } from '@/lib/utils';
 import { Badge } from './ui/badge';
 import { StatCard } from '@/components/StatCard';
-import { loadHistoricalReports, consolidateDailyReports, previewConsolidatedReport, loadFullReportSnapshots } from '@/app/actions';
+import { loadHistoricalReports, consolidateDailyReports, previewConsolidatedReport, loadFullReportSnapshots, deleteHistoricalReportsForDay } from '@/app/actions';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Checkbox } from './ui/checkbox';
 import { Label } from './ui/label';
@@ -41,6 +42,8 @@ const PIE_COLORS = ['#3b82f6', '#f43f5e', '#f59e0b', '#10b981'];
 
 export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onReturnToMain, onConsolidate, theme }) => {
   const { toast } = useToast();
+  const { role } = useAuth();
+  const isAdmin = role === 'admin';
   
   const [reports, setReports] = useState<ReportSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -59,6 +62,9 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
   const [trendsData, setTrendsData] = useState<ProcessedReportData[]>([]);
   const [isLoadingTrends, setIsLoadingTrends] = useState(false);
   const [selectedOperator, setSelectedOperator] = useState<string>('all');
+  const [selectedBrand, setSelectedBrand] = useState<string>('all');
+  const [selectedProductType, setSelectedProductType] = useState<string>('all');
+  const [selectedSpecificDay, setSelectedSpecificDay] = useState<string>('all');
 
   const handleQuery = useCallback(async () => {
     if (!dateRange?.from) {
@@ -69,10 +75,13 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
 
     setIsLoading(true);
     setHasSearched(true);
+    
+    // Use yyyy-MM-dd format to avoid timezone shifts during transmission
     const result = await loadHistoricalReports({ 
-        startDate: dateRange.from.toISOString(), 
-        endDate: endDate.toISOString() 
+        startDate: format(dateRange.from, 'yyyy-MM-dd'), 
+        endDate: format(endDate, 'yyyy-MM-dd') 
     });
+    
     if (result.data) {
         setReports(result.data);
     } else {
@@ -82,24 +91,55 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
     setIsLoading(false);
   }, [dateRange, toast]);
 
-  const dailyGroups = useMemo((): DailyGroup[] => {
-    const groups = new Map<string, { consolidated?: ReportSummary; snapshots: ReportSummary[] }>();
-    reports.forEach(report => {
-      const dateKey = new Date(report.reportDate).toISOString().split('T')[0];
-      if (!groups.has(dateKey)) {
-        groups.set(dateKey, { snapshots: [] });
+  // Auto-load on mount and when dateRange changes (automatic filtering)
+  useEffect(() => {
+    // Only trigger if we have at least a 'from' date. 
+    // If it's a range, we might want to wait for 'to' but react-day-picker 
+    // updates 'from' first. For better UX, we can debounce or just fire if 'from' is set.
+    if (dateRange?.from) {
+        handleQuery();
+    }
+  }, [dateRange, handleQuery]);
+
+  const availableDays = useMemo(() => {
+     const days = new Set<string>();
+     reports.forEach(r => {
+        const d = new Date(r.reportDate);
+        if (!isNaN(d.getTime())) days.add(format(d, 'yyyy-MM-dd'));
+     });
+     return Array.from(days).sort((a, b) => b.localeCompare(a));
+  }, [reports]);
+
+  const filteredReports = useMemo(() => {
+     if (selectedSpecificDay === 'all') return reports;
+     return reports.filter(r => {
+         const d = new Date(r.reportDate);
+         return !isNaN(d.getTime()) && format(d, 'yyyy-MM-dd') === selectedSpecificDay;
+     });
+  }, [reports, selectedSpecificDay]);
+
+  const dailyGroups = useMemo(() => {
+    const groups: Record<string, DailyGroup> = {};
+    
+    filteredReports.forEach(report => {
+      // Use local date string instead of ISO to avoid UTC day-shift errors
+      const dateObj = new Date(report.reportDate);
+      const dateKey = isNaN(dateObj.getTime()) ? 'Invalid' : format(dateObj, 'yyyy-MM-dd');
+      if (dateKey === 'Invalid') return;
+      
+      if (!groups[dateKey]) {
+        groups[dateKey] = { date: dateKey, snapshots: [] };
       }
-      const group = groups.get(dateKey)!;
+      const group = groups[dateKey]!;
       if (report.isConsolidated) {
         group.consolidated = report;
       } else {
         group.snapshots.push(report);
       }
     });
-    return Array.from(groups.entries())
-      .map(([date, groupData]) => ({ date, ...groupData }))
+    return Object.values(groups)
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [reports]);
+  }, [filteredReports]);
 
   const handleLoadTrends = async () => {
     if (dailyGroups.length === 0) return;
@@ -118,7 +158,40 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
     } else {
         toast({ variant: 'destructive', title: 'Error cargando tendencias', description: result.error });
     }
+    // After loading, we might want to default the specific day to 'all' or the latest 
+    setSelectedSpecificDay('all');
     setIsLoadingTrends(false);
+  };
+
+  const handleSnapshotSelection = (id: string) => {
+    setSelectedSnapshots(prev => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+    });
+  };
+
+  const handleDeleteDay = async (dateStr: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (!window.confirm(`¿Estás seguro de que deseas eliminar permanentemente todos los registros del día ${dateStr}? Esta acción no se puede deshacer.`)) {
+          return;
+      }
+
+      setIsLoading(true);
+      try {
+          const result = await deleteHistoricalReportsForDay(dateStr);
+          if (result.success) {
+              toast({ title: 'Registros eliminados', description: `Se han borrado los datos del día ${dateStr}.` });
+              handleQuery(); // Refresh list
+          } else {
+              toast({ variant: 'destructive', title: 'Error al eliminar', description: result.error });
+          }
+      } catch (error) {
+          toast({ variant: 'destructive', title: 'Error', description: 'Ocurrió un error inesperado al intentar borrar.' });
+      } finally {
+          setIsLoading(false);
+      }
   };
 
   const availableOperators = useMemo(() => {
@@ -129,32 +202,58 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
      return Array.from(opSet).sort();
   }, [trendsData]);
 
+  const availableBrands = useMemo(() => {
+     const brandSet = new Set<string>();
+     trendsData.forEach(d => {
+         d.brandProductivity?.forEach(b => brandSet.add((b as any).brandName || 'Sin Marca'));
+     });
+     return Array.from(brandSet).sort();
+  }, [trendsData]);
+
+  const availableProductTypes = useMemo(() => {
+     const typeSet = new Set<string>();
+     trendsData.forEach(d => {
+         d.productTypeProductivity?.forEach(p => typeSet.add((p as any).productType || (p as any).category || 'Desconocido'));
+     });
+     return Array.from(typeSet).sort();
+  }, [trendsData]);
+
+
   const quickStats = useMemo(() => {
      let hoyVolumen = 0; let hoyCumplimiento = 0;
      let acumVolumen = 0; let acumCumplimiento = 0; let acumDias = 0;
 
      if (trendsData.length > 0) {
          const latestDateData = trendsData[trendsData.length - 1]; // Already sorted by asc
-         if (selectedOperator === 'all') {
+         
+         const filterDetail = (detail: any) => {
+             const opMatch = selectedOperator === 'all' || detail.packerName === selectedOperator;
+             const brandMatch = selectedBrand === 'all' || (detail.brandName || detail.marca) === selectedBrand;
+             const typeMatch = selectedProductType === 'all' || (detail.productType || detail.category) === selectedProductType;
+             return opMatch && brandMatch && typeMatch;
+         };
+
+         if (selectedOperator === 'all' && selectedBrand === 'all' && selectedProductType === 'all') {
              hoyVolumen = latestDateData.packerProductivity?.reduce((s,p)=>s+p.totalQuantity,0) || 0;
              hoyCumplimiento = latestDateData.overallCompliance || 0;
          } else {
-             const p = latestDateData.packerProductivity?.find(x => x.packerName === selectedOperator);
-             hoyVolumen = p?.totalQuantity || 0;
-             hoyCumplimiento = p?.compliance || 0;
+             const matches = latestDateData.packerBrandProductivityDetail?.filter(filterDetail) || [];
+             hoyVolumen = matches.reduce((s, m) => s + m.totalQuantity, 0);
+             const avgComp = matches.length > 0 ? matches.reduce((s, m) => s + (m.compliance || 0), 0) / matches.length : 0;
+             hoyCumplimiento = avgComp;
          }
          
          trendsData.forEach(d => {
-             if (selectedOperator === 'all') {
+             if (selectedOperator === 'all' && selectedBrand === 'all' && selectedProductType === 'all') {
                  acumVolumen += d.packerProductivity?.reduce((s,p)=>s+p.totalQuantity,0) || 0;
                  acumCumplimiento += d.overallCompliance || 0;
                  acumDias++;
              } else {
-                 const p = d.packerProductivity?.find(x => x.packerName === selectedOperator);
-                 if (p) {
-                     acumVolumen += p.totalQuantity;
-                     acumCumplimiento += p.compliance || 0;
-                     acumDias++;
+                 const matches = d.packerBrandProductivityDetail?.filter(filterDetail) || [];
+                 if (matches.length > 0) {
+                    acumVolumen += matches.reduce((s, m) => s + m.totalQuantity, 0);
+                    acumCumplimiento += matches.reduce((s, m) => s + (m.compliance || 0), 0) / matches.length;
+                    acumDias++;
                  }
              }
          });
@@ -166,85 +265,92 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
          acumVolumen: acumVolumen.toLocaleString('es-CO'),
          acumCumplimiento: acumDias > 0 ? (acumCumplimiento / acumDias).toFixed(1) + '%' : '0%'
      };
-  }, [trendsData, selectedOperator]);
+  }, [trendsData, selectedOperator, selectedBrand, selectedProductType]);
 
   // ---- Advanced Analytical Math Models ----
 
-  const volumeTrendData = useMemo(() => {
-      return trendsData.map(d => {
-          let totalUnits = 0;
-          let complianceVal = 0;
+   const volumeTrendData = useMemo(() => {
+       const filterDetail = (detail: any) => {
+           const opMatch = selectedOperator === 'all' || detail.packerName === selectedOperator;
+           const brandMatch = selectedBrand === 'all' || (detail.brandName || detail.marca) === selectedBrand;
+           const typeMatch = selectedProductType === 'all' || (detail.productType || detail.category) === selectedProductType;
+           return opMatch && brandMatch && typeMatch;
+       };
 
-          if (selectedOperator === 'all') {
-              totalUnits = d.packerProductivity?.reduce((sum, p) => sum + p.totalQuantity, 0) || 0;
-              complianceVal = d.overallCompliance || 0;
-          } else {
-              const pData = d.packerProductivity?.find(p => p.packerName === selectedOperator);
-              if (pData) {
-                  totalUnits = pData.totalQuantity;
-                  complianceVal = pData.compliance || 0;
-              }
-          }
+       return trendsData.map(d => {
+           let totalUnits = 0;
+           let complianceVal = 0;
 
-          return {
-              date: format(new Date(d.reportDate), 'dd MMM', { locale: es }),
-              unidades: totalUnits,
-              cumplimiento: Number(complianceVal.toFixed(1))
-          };
-      });
-  }, [trendsData, selectedOperator]);
+           if (selectedOperator === 'all' && selectedBrand === 'all' && selectedProductType === 'all') {
+               totalUnits = d.packerProductivity?.reduce((sum, p) => sum + p.totalQuantity, 0) || 0;
+               complianceVal = d.overallCompliance || 0;
+           } else {
+               const matches = d.packerBrandProductivityDetail?.filter(filterDetail) || [];
+               totalUnits = matches.reduce((sum, m) => sum + m.totalQuantity, 0);
+               complianceVal = matches.length > 0 ? matches.reduce((s, m) => s + (m.compliance || 0), 0) / matches.length : 0;
+           }
+
+           const dateStr = d.reportDate instanceof Date ? format(d.reportDate, 'yyyy-MM-dd') : (d.reportDate as any).split('T')[0];
+           return {
+               date: format(new Date(dateStr + 'T00:00:00'), 'dd MMM', { locale: es }),
+               unidades: totalUnits,
+               cumplimiento: Number(complianceVal.toFixed(1))
+           };
+       });
+   }, [trendsData, selectedOperator, selectedBrand, selectedProductType]);
 
   const brandPieData = useMemo(() => {
-    const brands: Record<string, number> = {};
-    trendsData.forEach(d => {
-        if (selectedOperator === 'all') {
-            d.brandProductivity?.forEach(b => {
-                const label = (b as any).brandName?.trim() || 'Sin Marca';
-                if (!brands[label]) brands[label] = 0;
-                brands[label] += b.totalQuantity;
-            });
-        } else {
-            d.packerBrandProductivityDetail?.filter(p => p.packerName === selectedOperator).forEach(b => {
-                const label = (b as any).brandName?.trim() || 'Sin Marca';
-                if (!brands[label]) brands[label] = 0;
-                brands[label] += b.totalQuantity;
-            });
-        }
-    });
-    const total = Object.values(brands).reduce((sum, v) => sum + v, 0);
-    return Object.entries(brands).map(([name, value]) => ({ 
-        name, 
-        value,
-        percent: total > 0 ? ((value / total) * 100).toFixed(1) + '%' : '0%'
-    })).sort((a,b) => b.value - a.value);
-  }, [trendsData, selectedOperator]);
+     const brands: Record<string, number> = {};
+     
+     const filterDetail = (detail: any) => {
+         const opMatch = selectedOperator === 'all' || detail.packerName === selectedOperator;
+         const typeMatch = selectedProductType === 'all' || (detail.productType || detail.category) === selectedProductType;
+         return opMatch && typeMatch;
+     };
+
+     trendsData.forEach(d => {
+         d.packerBrandProductivityDetail?.filter(filterDetail).forEach(b => {
+            const label = b.brandName?.trim() || 'Sin Marca';
+            if (selectedBrand !== 'all' && label !== selectedBrand) return;
+            if (!brands[label]) brands[label] = 0;
+            brands[label] += b.totalQuantity;
+         });
+     });
+     const total = Object.values(brands).reduce((sum, v) => sum + v, 0);
+     return Object.entries(brands).map(([name, value]) => ({ 
+         name, 
+         value,
+         percent: total > 0 ? ((value / total) * 100).toFixed(1) + '%' : '0%'
+     })).sort((a,b) => b.value - a.value);
+   }, [trendsData, selectedOperator, selectedBrand, selectedProductType]);
 
   const productPieData = useMemo(() => {
-    const products: Record<string, number> = {};
-    trendsData.forEach(d => {
-        if (selectedOperator === 'all') {
-            d.productTypeProductivity?.forEach(p => {
-                let label = ((p as any).productType || (p as any).category)?.trim() || 'Desconocido';
-                if (label === 'NO CLASIFICADO') label = 'Otros / No Def.';
-                if (!products[label]) products[label] = 0;
-                products[label] += p.totalQuantity;
-            });
-        } else {
-            d.packerBrandProductivityDetail?.filter(p => p.packerName === selectedOperator).forEach(b => {
-                let label = b.productType?.trim() || 'Desconocido';
-                if (label === 'NO CLASIFICADO') label = 'Otros / No Def.';
-                if (!products[label]) products[label] = 0;
-                products[label] += b.totalQuantity;
-            });
-        }
-    });
-    const total = Object.values(products).reduce((sum, v) => sum + v, 0);
-    return Object.entries(products).map(([name, value]) => ({ 
-        name, 
-        value,
-        percent: total > 0 ? ((value / total) * 100).toFixed(1) + '%' : '0%'
-    })).sort((a,b) => b.value - a.value);
-  }, [trendsData, selectedOperator]);
+     const products: Record<string, number> = {};
+
+     const filterDetail = (detail: any) => {
+         const opMatch = selectedOperator === 'all' || detail.packerName === selectedOperator;
+         const brandMatch = selectedBrand === 'all' || (detail.brandName || detail.marca) === selectedBrand;
+         return opMatch && brandMatch;
+     };
+
+     trendsData.forEach(d => {
+         d.packerBrandProductivityDetail?.filter(filterDetail).forEach(b => {
+            let label = b.productType?.trim() || 'Desconocido';
+            if (label === 'NO CLASIFICADO') label = 'Otros / No Def.';
+            
+            if (selectedProductType !== 'all' && label !== selectedProductType) return;
+            
+            if (!products[label]) products[label] = 0;
+            products[label] += b.totalQuantity;
+         });
+     });
+     const total = Object.values(products).reduce((sum, v) => sum + v, 0);
+     return Object.entries(products).map(([name, value]) => ({ 
+         name, 
+         value,
+         percent: total > 0 ? ((value / total) * 100).toFixed(1) + '%' : '0%'
+     })).sort((a,b) => b.value - a.value);
+   }, [trendsData, selectedOperator, selectedBrand, selectedProductType]);
 
   const hourlyTrendData = useMemo(() => {
       const hoursMap: Record<number, { units: number, productiveMinutes: number, validCount: number }> = {};
@@ -366,26 +472,47 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                  <StatCard title="Efectividad (Último Día)" value={quickStats.hoyCumplimiento} icon={<Clock className="h-4 w-4 text-amber-500" />} />
                  <StatCard title="Efectividad Acumulada" value={quickStats.acumCumplimiento} icon={<Search className="h-4 w-4 text-purple-500" />} />
              </div>
-             
-          <div className="flex flex-wrap items-end gap-3 mb-6 p-5 border rounded-xl bg-card shadow-sm">
-             <div className="flex-grow max-w-sm space-y-1.5">
-                <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Rango de Visión</Label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button id="date" variant={"outline"} className={cn("w-full justify-start text-left font-normal bg-background h-10 transition-colors", !dateRange && "text-muted-foreground")}>
-                      <CalendarIcon className="mr-2 h-4 w-4 opacity-70" />
-                      {dateRange?.from ? (dateRange.to ? (<span className="truncate">{format(dateRange.from, "LLL dd, y", { locale: es })} - {format(dateRange.to, "LLL dd, y", { locale: es })}</span>) : (format(dateRange.from, "LLL dd, y", { locale: es }))) : (<span>Seleccione un rango</span>)}
+             <div className="flex flex-wrap items-end gap-6 mb-8 p-6 border rounded-2xl bg-card shadow-sm animate-in fade-in slide-in-from-top-4 duration-500">
+             <div className="flex flex-col gap-2 min-w-[280px]">
+                <Label className="text-xs font-bold text-muted-foreground uppercase tracking-wider ml-1">Rango de Carga (Servidor)</Label>
+                <div className="flex items-center gap-2">
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button id="date" variant={"outline"} className={cn("w-full justify-start text-left font-medium bg-background h-10 border-muted-foreground/20 hover:border-primary/50 transition-all", !dateRange && "text-muted-foreground")}>
+                          <CalendarIcon className="mr-2 h-4 w-4 text-primary opacity-70" />
+                          {dateRange?.from ? (dateRange.to ? (<span>{format(dateRange.from, "LLL dd, y", { locale: es })} - {format(dateRange.to, "LLL dd, y", { locale: es })}</span>) : (format(dateRange.from, "LLL dd, y", { locale: es }))) : (<span>Seleccione un rango</span>)}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0 border-muted shadow-2xl rounded-2xl overflow-hidden" align="start">
+                        <Calendar initialFocus mode="range" defaultMonth={dateRange?.from} selected={dateRange} onSelect={setDateRange} numberOfMonths={2} locale={es} className="p-3"/>
+                      </PopoverContent>
+                    </Popover>
+                    <Button onClick={handleQuery} disabled={isLoading} className="h-10 px-6 font-bold shadow-md hover:shadow-lg transition-all active:scale-95" size="icon">
+                        {isLoading ? <Loader2 className="h-4 w-4 animate-spin"/> : <Search className="h-4 w-4"/>}
                     </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0 border-muted shadow-xl rounded-xl" align="start">
-                    <Calendar initialFocus mode="range" defaultMonth={dateRange?.from} selected={dateRange} onSelect={setDateRange} numberOfMonths={2} locale={es} className="rounded-xl"/>
-                  </PopoverContent>
-                </Popover>
+                </div>
              </div>
-             <Button onClick={handleQuery} disabled={isLoading} className="h-10 px-6 font-semibold shadow-sm transition-all hover:-translate-y-0.5" size="lg">
-                {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Search className="mr-2 h-4 w-4"/>}
-                Auditar Historial
-             </Button>
+
+             <div className="flex flex-col gap-2 min-w-[280px]">
+                 <Label className="text-xs font-bold text-muted-foreground uppercase tracking-wider ml-1">Filtro de Día (Visualización)</Label>
+                 <Select value={selectedSpecificDay} onValueChange={setSelectedSpecificDay}>
+                     <SelectTrigger className="h-10 bg-background border-muted-foreground/20 font-medium hover:border-primary/50 transition-all">
+                         <div className="flex items-center gap-2">
+                             <Clock className="w-4 h-4 text-blue-500" />
+                             <SelectValue placeholder="Elegir día específico..." />
+                         </div>
+                     </SelectTrigger>
+                     <SelectContent className="max-h-[300px] rounded-xl shadow-2xl border-muted">
+                         <SelectItem value="all" className="font-bold">🏢 Todos los días cargados</SelectItem>
+                         <div className="h-px bg-muted my-1" />
+                         {availableDays.map(day => (
+                             <SelectItem key={day} value={day} className="py-2.5">
+                                 {format(new Date(day + 'T00:00:00'), "EEEE d 'de' MMMM", { locale: es })}
+                             </SelectItem>
+                         ))}
+                     </SelectContent>
+                 </Select>
+             </div>
           </div>
           
           {isLoading ? (
@@ -401,20 +528,42 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                      <TabsTrigger value="list" className="rounded-md px-6 data-[state=active]:shadow-sm"><Clock className="mr-2 h-4 w-4"/> Archivo Diario</TabsTrigger>
                      <TabsTrigger value="trends" className="rounded-md px-6 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all"><BarChart2 className="mr-2 h-4 w-4"/> Inteligencia y Tendencias</TabsTrigger>
                    </TabsList>
-                   
-                   {/* GLOBAL FILTER FOR TRENDS */}
-                   <div className="flex items-center gap-2 bg-background border rounded-lg p-1.5 shadow-sm">
-                        <Filter className="h-4 w-4 text-muted-foreground ml-2" />
-                        <Select value={selectedOperator} onValueChange={setSelectedOperator}>
-                            <SelectTrigger className="w-[200px] border-none shadow-none focus:ring-0 h-8 font-medium">
-                                <SelectValue placeholder="Filtro Operario" />
-                            </SelectTrigger>
-                            <SelectContent className="rounded-lg shadow-xl">
-                                <SelectItem value="all" className="font-bold">🏭 Toda la Planta</SelectItem>
-                                {availableOperators.map(op => <SelectItem key={op} value={op}>{op}</SelectItem>)}
-                            </SelectContent>
-                        </Select>
-                   </div>
+                                 <div className="flex flex-wrap items-center gap-2 bg-background border rounded-lg p-1.5 shadow-sm">
+                         <Filter className="h-4 w-4 text-muted-foreground ml-2" />
+                         <Select value={selectedOperator} onValueChange={setSelectedOperator}>
+                             <SelectTrigger className="w-[180px] border-none shadow-none focus:ring-0 h-8 font-medium">
+                                 <SelectValue placeholder="Operario" />
+                             </SelectTrigger>
+                             <SelectContent className="rounded-lg shadow-xl">
+                                 <SelectItem value="all" className="font-bold">🏭 Todos los Operarios</SelectItem>
+                                 {availableOperators.map(op => <SelectItem key={op} value={op}>{op}</SelectItem>)}
+                             </SelectContent>
+                         </Select>
+                         
+                         <div className="w-px h-4 bg-border mx-1" />
+                         
+                         <Select value={selectedBrand} onValueChange={setSelectedBrand}>
+                             <SelectTrigger className="w-[150px] border-none shadow-none focus:ring-0 h-8 font-medium">
+                                 <SelectValue placeholder="Marca" />
+                             </SelectTrigger>
+                             <SelectContent className="rounded-lg shadow-xl">
+                                 <SelectItem value="all" className="font-bold">🏷️ Todas las Marcas</SelectItem>
+                                 {availableBrands.map(b => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+                             </SelectContent>
+                         </Select>
+                         
+                         <div className="w-px h-4 bg-border mx-1" />
+                         
+                         <Select value={selectedProductType} onValueChange={setSelectedProductType}>
+                             <SelectTrigger className="w-[180px] border-none shadow-none focus:ring-0 h-8 font-medium">
+                                 <SelectValue placeholder="Tipo Producto" />
+                             </SelectTrigger>
+                             <SelectContent className="rounded-lg shadow-xl">
+                                 <SelectItem value="all" className="font-bold">📦 Todos los Tipos</SelectItem>
+                                 {availableProductTypes.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                             </SelectContent>
+                         </Select>
+                    </div>
                </div>
                
                <TabsContent value="list" className="animate-in slide-in-from-bottom-2 duration-300">
@@ -428,6 +577,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                             <TableHead className="font-semibold text-right">Operarios</TableHead>
                             <TableHead className="font-semibold text-right">Unidades Procesadas</TableHead>
                             <TableHead className="font-semibold text-right">Horas Netas</TableHead>
+                            {isAdmin && <TableHead className="font-semibold text-center w-12">Acción</TableHead>}
                         </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -457,6 +607,18 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                 <TableCell className="text-right font-medium">{reportToShow.operatorCount}</TableCell>
                                 <TableCell className="text-right font-bold text-foreground/80">{reportToShow.totalQuantity.toLocaleString()}</TableCell>
                                 <TableCell className="text-right">{reportToShow.totalHours?.toFixed(1) || 'N/A'}h</TableCell>
+                                {isAdmin && (
+                                    <TableCell className="text-center">
+                                        <Button 
+                                            variant="ghost" 
+                                            size="icon" 
+                                            className="h-8 w-8 text-muted-foreground hover:text-red-500 hover:bg-red-50 transition-colors"
+                                            onClick={(e) => handleDeleteDay(group.date, e)}
+                                        >
+                                            <Trash2 className="h-4 w-4" />
+                                        </Button>
+                                    </TableCell>
+                                )}
                             </TableRow>
                         )})}
                     </TableBody>
@@ -492,15 +654,15 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                          </defs>
                                          <CartesianGrid strokeDasharray="3 3" opacity={0.15} vertical={false} />
                                          <XAxis dataKey="date" tick={{fontSize: 12, fill: '#888'}} axisLine={false} tickLine={false} dy={10} />
-                                         <YAxis yAxisId="left" tickFormatter={(v) => v.toLocaleString('es-CO')} tick={{fill: '#888'}} axisLine={false} tickLine={false} />
-                                         <YAxis yAxisId="right" orientation="right" domain={[0, 'dataMax + 20']} tickFormatter={(v) => `${v}%`} tick={{fill: '#888'}} axisLine={false} tickLine={false} />
+                                         <YAxis yAxisId="left" tickFormatter={(v: any) => v.toLocaleString('es-CO')} tick={{fill: '#888'}} axisLine={false} tickLine={false} />
+                                         <YAxis yAxisId="right" orientation="right" domain={[0, 'dataMax + 20']} tickFormatter={(v: any) => `${v}%`} tick={{fill: '#888'}} axisLine={false} tickLine={false} />
                                          <RechartsTooltip contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} cursor={{fill: 'hsl(var(--muted))', opacity: 0.3}} />
                                          <Legend wrapperStyle={{paddingTop: '20px'}} />
                                          <Bar yAxisId="left" dataKey="unidades" name="Unidades Físicas" fill="url(#colorUnidades)" radius={[4, 4, 0, 0]}>
-                                             <LabelList dataKey="unidades" position="top" fill="#3b82f6" fontSize={11} formatter={(v) => v > 0 ? v.toLocaleString('es-CO') : ''} />
+                                             <LabelList dataKey="unidades" position="top" fill="#3b82f6" fontSize={11} formatter={(v: any) => v > 0 ? v.toLocaleString('es-CO') : ''} />
                                          </Bar>
                                          <Line yAxisId="right" type="monotone" dataKey="cumplimiento" name="Tasa Cumplimiento (%)" stroke="#f59e0b" strokeWidth={4} dot={{r: 4, strokeWidth: 2}} activeDot={{r: 6}}>
-                                             <LabelList dataKey="cumplimiento" position="bottom" fill="#f59e0b" fontSize={12} formatter={(v) => v + '%'} />
+                                             <LabelList dataKey="cumplimiento" position="bottom" fill="#f59e0b" fontSize={12} formatter={(v: any) => v + '%'} />
                                          </Line>
                                      </ComposedChart>
                                  </ResponsiveContainer>
@@ -524,7 +686,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                                          ))}
                                                          <LabelList dataKey="name" position="outside" fontSize={11} fill="#888" stroke="none" />
                                                      </Pie>
-                                                     <RechartsTooltip contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))' }} formatter={(value) => value.toLocaleString('es-CO')} />
+                                                     <RechartsTooltip contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))' }} formatter={(value: any) => value.toLocaleString('es-CO')} />
                                                  </PieChart>
                                              </ResponsiveContainer>
                                         ) : (
@@ -549,7 +711,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                                          ))}
                                                          <LabelList dataKey="name" position="outside" fontSize={11} fill="#888" stroke="none" />
                                                      </Pie>
-                                                     <RechartsTooltip contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))' }} formatter={(value) => value.toLocaleString('es-CO')} />
+                                                     <RechartsTooltip contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))' }} formatter={(value: any) => value.toLocaleString('es-CO')} />
                                                  </PieChart>
                                              </ResponsiveContainer>
                                         ) : (
@@ -570,9 +732,9 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                                  <CartesianGrid strokeDasharray="3 3" opacity={0.1} vertical={false} />
                                                  <XAxis dataKey="hour" tick={{fill: '#888', fontSize: 11}} axisLine={false} tickLine={false} dy={5} />
                                                  <YAxis hide={true} />
-                                                 <RechartsTooltip cursor={{fill: 'hsl(var(--muted))', opacity: 0.3}} contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))' }} formatter={(v) => [`${v} UPH Promedio`, 'Carga']} />
+                                                 <RechartsTooltip cursor={{fill: 'hsl(var(--muted))', opacity: 0.3}} contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))' }} formatter={(v: any) => [`${v} UPH Promedio`, 'Carga']} />
                                                  <Bar dataKey="unitsAvg" fill="#6366f1" radius={[4, 4, 0, 0]} name="Promedio">
-                                                     <LabelList dataKey="unitsAvg" position="top" fill="#6366f1" fontSize={11} formatter={(v) => v > 0 ? v : ''} />
+                                                     <LabelList dataKey="unitsAvg" position="top" fill="#6366f1" fontSize={11} formatter={(v: any) => v > 0 ? v : ''} />
                                                  </Bar>
                                              </BarChart>
                                          </ResponsiveContainer>
@@ -674,12 +836,14 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                     </CardTitle>
                     <CardDescription className="text-base mt-2">Detalle de guardados del día {selectedDate ? format(selectedDate, "PPP", { locale: es }) : ''}.</CardDescription>
                 </div>
-                <div className="flex items-center gap-2">
-                    <Button onClick={handlePreview} disabled={isPreviewing || selectedSnapshots.size < 1} className="shadow-sm">
-                        {isPreviewing ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Eye className="mr-2 h-4 w-4" />}
-                        Ver Espejo Técnico
-                    </Button>
-                </div>
+                {isAdmin && (
+                    <div className="flex items-center gap-2">
+                        <Button onClick={handlePreview} disabled={isPreviewing || selectedSnapshots.size < 1} className="shadow-sm">
+                            {isPreviewing ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Eye className="mr-2 h-4 w-4" />}
+                            Ver Espejo Técnico
+                        </Button>
+                    </div>
+                )}
             </div>
         </CardHeader>
         <CardContent className="px-0 pt-6">
@@ -688,7 +852,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
             <Table>
                 <TableHeader className="bg-muted/40">
                     <TableRow>
-                        <TableHead className="w-12 text-center">Sel.</TableHead>
+                        {isAdmin && <TableHead className="w-12 text-center">Sel.</TableHead>}
                         <TableHead className="font-semibold">Sello de Tiempo</TableHead>
                         <TableHead className="font-semibold text-right">Efectividad General</TableHead>
                         <TableHead className="font-semibold text-right">Fuerza Laboral</TableHead>
@@ -698,13 +862,15 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                 <TableBody>
                     {snapshotsForSelectedDay.map((report) => (
                         <TableRow key={report.id} data-state={selectedSnapshots.has(report.id) ? "selected" : undefined} className="group hover:bg-muted/20">
-                            <TableCell className="text-center">
-                                <Checkbox
-                                    checked={selectedSnapshots.has(report.id)}
-                                    onCheckedChange={() => handleSnapshotSelection(report.id)}
-                                    className="data-[state=checked]:bg-primary"
-                                />
-                            </TableCell>
+                            {isAdmin && (
+                                <TableCell className="text-center">
+                                    <Checkbox
+                                        checked={selectedSnapshots.has(report.id)}
+                                        onCheckedChange={() => handleSnapshotSelection(report.id)}
+                                        className="data-[state=checked]:bg-primary"
+                                    />
+                                </TableCell>
+                            )}
                             <TableCell className="font-bold text-foreground">
                                 {new Date(report.snapshotCreatedAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true })}
                             </TableCell>
