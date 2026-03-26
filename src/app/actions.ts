@@ -154,28 +154,49 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
             annotations: reportData.annotations || {},
         };
 
-        // 2. Try to save the full snapshot
+        // 2. Try to save the full snapshot with aggressive pruning on failure
         let snapshotSaved = false;
         let snapshotError = "";
-        try {
-            const fullReportToSave = { ...reportData };
-            const reportDocRef = doc(reportsCollectionRef, snapshotId);
-            await setDoc(reportDocRef, convertDatesToTimestamps(fullReportToSave));
-            snapshotSaved = true;
-        } catch (e: any) {
-            console.error("Full snapshot save failed (possibly size limit):", e);
-            snapshotError = e.message;
-            
-            // Try saving without the heavy 'processedData' array to at least keep the rest
+        
+        const trySave = async (data: any, label: string) => {
             try {
-                const optimizedReport = { ...reportData };
-                delete optimizedReport.processedData;
                 const reportDocRef = doc(reportsCollectionRef, snapshotId);
-                await setDoc(reportDocRef, convertDatesToTimestamps(optimizedReport));
+                await setDoc(reportDocRef, convertDatesToTimestamps(data));
                 snapshotSaved = true;
-                console.log("Saved optimized snapshot without processedData.");
-            } catch (e2: any) {
-                console.error("Optimized snapshot save also failed:", e2);
+                console.log(`Snapshot saved successfully (${label})`);
+                return true;
+            } catch (e: any) {
+                console.error(`Snapshot save failed (${label}):`, e.message);
+                snapshotError = e.message;
+                return false;
+            }
+        };
+
+        // Attempt 1: Full Report
+        if (!await trySave(reportData, "Full")) {
+            // Attempt 2: Without individual scans (processedData)
+            const opt2 = { ...reportData };
+            delete opt2.processedData;
+            if (!await trySave(opt2, "Optimized - No Scans")) {
+                // Attempt 3: Without reference-level breakdown (very heavy)
+                const opt3 = { ...opt2 };
+                delete (opt3 as any).packerReferenceProductivityDetail;
+                if (!await trySave(opt3, "Optimized - No Reference Detail")) {
+                    // Attempt 4: Minimum viable snapshot (KPIs only)
+                    const opt4 = {
+                        id: reportData.id,
+                        reportDate: reportData.reportDate,
+                        overallCompliance: reportData.overallCompliance,
+                        packerProductivity: reportData.packerProductivity,
+                        brandProductivity: reportData.brandProductivity,
+                        productTypeProductivity: reportData.productTypeProductivity,
+                        incidentLog: reportData.incidentLog,
+                        manualJustifications: reportData.manualJustifications,
+                        annotations: reportData.annotations,
+                        snapshotCreatedAt: reportData.snapshotCreatedAt
+                    };
+                    await trySave(opt4, "Minimum Viable Snapshot");
+                }
             }
         }
 
@@ -184,7 +205,7 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
         await setDoc(summaryDocRef, convertDatesToTimestamps(reportSummary));
 
         if (!snapshotSaved) {
-            return { error: `El resumen se guardó pero el detalle falló: ${snapshotError}. Es posible que los datos sean demasiado grandes.` };
+            return { error: `No se pudo guardar el detalle del reporte ni en modo optimizado: ${snapshotError}. Los datos exceden los límites críticos de Firestore.` };
         }
 
         return { data: { id: snapshotId } };
