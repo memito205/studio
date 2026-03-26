@@ -170,6 +170,7 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
             microPausesSummary: reportData.microPausesSummary,
             packerBrandProductivityDetail: reportData.packerBrandProductivityDetail,
             hourlyProductivity: reportData.hourlyProductivity,
+            reasonsSummary: reportData.reasonsSummary,
         };
 
         // 2. Try to save the full snapshot with aggressive pruning on failure
@@ -218,6 +219,7 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
                         snapshotCreatedAt: reportTimestamp,
                         deadTimeSummary: reportData.deadTimeSummary || [],
                         microPausesSummary: reportData.microPausesSummary || [],
+                        reasonsSummary: reportData.reasonsSummary || [],
                     };
                     await trySave(opt4, "Minimum Viable Snapshot");
                 }
@@ -508,20 +510,25 @@ export async function deleteHistoricalReportsForDay(dateStr: string): Promise<{ 
         }
 
         const snapshotIds = summarySnap.docs.map(doc => doc.id);
-        const batch = writeBatch(firestore);
-
-        // Delete from reports_summary
-        summarySnap.docs.forEach(doc => {
-            batch.delete(doc.ref);
-        });
-
-        // Delete from reports (Full snapshots)
-        for (const id of snapshotIds) {
-            batch.delete(doc(firestore, "reports", id));
+        
+        // Chunk deletions into batches of 400 (Firestore limit is 500)
+        const CHUNK_SIZE = 250; 
+        const summaryDocs = summarySnap.docs;
+        
+        for (let i = 0; i < summaryDocs.length; i += CHUNK_SIZE) {
+            const batch = writeBatch(firestore);
+            const chunk = summaryDocs.slice(i, i + CHUNK_SIZE);
+            
+            chunk.forEach(sDoc => {
+                batch.delete(sDoc.ref);
+                // Also delete the full report snapshot if it exists
+                batch.delete(doc(firestore, "reports", sDoc.id));
+            });
+            
+            await batch.commit();
         }
 
-        await batch.commit();
-        console.log(`[DeleteHistory] Successfully deleted ${snapshotIds.length} reports for ${dateStr}`);
+        console.log(`[DeleteHistory] Successfully deleted ${summaryDocs.length} reports and snapshots for ${dateStr}`);
         return { success: true };
     } catch (error: any) {
         console.error("Error deleting historical reports:", error);

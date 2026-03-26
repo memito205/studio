@@ -531,6 +531,8 @@ export interface DeadTimeSummaryEntry {
   percentageOfWorkday: number;
   percentageOfTotalDeadTime: number;
   hourlyDistribution: { [hour: number]: number };
+  reason?: string;
+  type?: 'DEAD_TIME' | 'MICRO_PAUSE' | 'HEURISTIC';
 }
 
 export interface PackerBrandProductivityDetail {
@@ -682,6 +684,7 @@ export interface ReportSummary {
     microPausesSummary?: DeadTimeSummaryEntry[];
     packerBrandProductivityDetail?: PackerBrandProductivityDetail[];
     hourlyProductivity?: HourlyProductivity[];
+    reasonsSummary?: { reason: string; durationMinutes: number; type: string }[];
 }
 
 export interface ReportConfiguration {
@@ -727,6 +730,7 @@ export interface ProcessedReportData {
     incidentLog: IncidentLogEntry[];
     smartAlerts?: SmartAlert[] | null;
     annotations?: Annotations;
+    reasonsSummary?: { reason: string; durationMinutes: number; type: string }[];
     id?: string;
     // Add processedData for full traceability, especially for snapshots
     processedData?: RemisionEntry[];

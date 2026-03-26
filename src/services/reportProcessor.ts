@@ -1404,6 +1404,21 @@ export function processReport(
     
     const breakDetailReport = generateBreakDetailReport(allDeadTimesAndPauses, processedDeadTimes, packerProductivity);
 
+    // Grouping all pauses by Reason for the global Radar Chart
+    const reasonsMap = new Map<string, { minutes: number, type: string }>();
+    processedDeadTimes.forEach(p => {
+        const label = p.justification?.trim() || p.status?.trim() || 'Desconocido/Sin justificar';
+        const type = p.duration >= 5 ? 'DEAD_TIME' : 'MICRO_PAUSE';
+        const key = label;
+        if (!reasonsMap.has(key)) reasonsMap.set(key, { minutes: 0, type });
+        reasonsMap.get(key)!.minutes += p.duration;
+    });
+    const reasonsSummary = Array.from(reasonsMap.entries()).map(([reason, data]) => ({
+        reason,
+        durationMinutes: data.minutes,
+        type: data.type
+    }));
+
     return {
         packerProductivity,
         hourlyProductivity,
@@ -1422,6 +1437,7 @@ export function processReport(
         reportDate,
         incidentLog,
         manualJustifications,
+        reasonsSummary,
     };
 }
 

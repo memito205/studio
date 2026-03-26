@@ -386,11 +386,11 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
           // New architecture: use hourlyProductivity from summary
           if (d.hourlyProductivity) {
               d.hourlyProductivity.forEach(h => {
-                  const hour = parseInt(h.hour);
+                  const hour = Number(h.hour);
                   if (!hoursMap[hour]) hoursMap[hour] = { units: 0, productiveMinutes: 0, validCount: 0 };
                   hoursMap[hour].units += h.totalQuantity;
-                  // Heuristic for productiveMinutes in summary data
-                  hoursMap[hour].productiveMinutes += (h.totalQuantity / 1.5); 
+                  // Use real productiveMinutes if available, else fallback to heuristic
+                  hoursMap[hour].productiveMinutes += (h.productiveMinutes || (h.totalQuantity / 1.5)); 
                   hoursMap[hour].validCount++;
               });
           } else {
@@ -436,11 +436,19 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
   const deadTimeTrendData = useMemo(() => {
       const reasons: Record<string, number> = {};
       trendsData.forEach(d => {
-          // New architecture: use summary fallback
-          if (d.deadTimeSummary || d.microPausesSummary) {
+          // PRIORITY 1: New architecture with pre-aggregated global reasons
+          if (d.reasonsSummary) {
+              d.reasonsSummary.forEach(s => {
+                  const label = s.reason || (s.type === 'MICRO_PAUSE' ? 'Micro-pausas' : 'Sin justificar');
+                  if (!reasons[label]) reasons[label] = 0;
+                  reasons[label] += (s.durationMinutes / 60) || 0;
+              });
+          } 
+          // PRIORITY 2: New architecture: use summary fallback (operator based)
+          else if (d.deadTimeSummary || d.microPausesSummary) {
               const allSummaries = [...(d.deadTimeSummary || []), ...(d.microPausesSummary || [])];
               allSummaries.forEach(s => {
-                  const reasonLabel = s.type || 'Sin justificar';
+                  const reasonLabel = s.reason || (s.type === 'MICRO_PAUSE' ? 'Micro-pausas' : 'Sin justificar');
                   if (!reasons[reasonLabel]) reasons[reasonLabel] = 0;
                   reasons[reasonLabel] += (s.totalMinutes / 60) || 0;
               });
