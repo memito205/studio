@@ -137,7 +137,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
         <Card>
             <CardHeader className="flex flex-wrap justify-between items-center gap-4">
                 <div>
-                    <CardTitle>Mostrando Reporte</CardTitle>
+                    <CardTitle className="text-2xl font-bold flex items-center gap-2">
+                        Mostrando Reporte: <span className="text-primary">{data.reportDate}</span>
+                    </CardTitle>
                     <CardDescription>Archivo: <span className="font-semibold text-primary">{fileName}</span></CardDescription>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">

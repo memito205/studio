@@ -120,7 +120,7 @@ export async function handleGenerateSmartAlerts(reportData: ProcessedReportData)
 export async function saveReportToHistory(reportData: ProcessedReportData) {
     try {
         const reportTimestamp = new Date();
-        const reportDateObj = new Date(reportData.reportDate + 'T00:00:00');
+        const reportDateObj = new Date(reportData.reportDate + 'T12:00:00');
         
         if (isNaN(reportDateObj.getTime())) {
             throw new Error(`Invalid reportDate: ${reportData.reportDate}`);
