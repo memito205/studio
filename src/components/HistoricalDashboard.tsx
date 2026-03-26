@@ -383,6 +383,18 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
       const hoursMap: Record<number, { units: number, productiveMinutes: number, validCount: number }> = {};
       
       trendsData.forEach(d => {
+          // New architecture: use hourlyProductivity from summary
+          if (d.hourlyProductivity) {
+              d.hourlyProductivity.forEach(h => {
+                  const hour = parseInt(h.hour);
+                  if (!hoursMap[hour]) hoursMap[hour] = { units: 0, productiveMinutes: 0, validCount: 0 };
+                  hoursMap[hour].units += h.totalQuantity;
+                  // Heuristic for productiveMinutes in summary data
+                  hoursMap[hour].productiveMinutes += (h.totalQuantity / 1.5); 
+                  hoursMap[hour].validCount++;
+              });
+          } else {
+              // Legacy/Fallback: calculate from details
           if (selectedOperator === 'all') {
              d.packerHourlyPerformance?.forEach(packerGroup => {
                  Object.entries(packerGroup.hourlyDetails).forEach(([hourStr, details]) => {
