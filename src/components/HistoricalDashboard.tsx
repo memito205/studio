@@ -23,6 +23,7 @@ import { Checkbox } from './ui/checkbox';
 import { Label } from './ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { extractLocalDateString } from '@/lib/parsingUtils';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, LineChart, Line, AreaChart, Area, ComposedChart, PieChart, Pie, Cell, LabelList } from 'recharts';
 
 interface HistoricalDashboardProps {
@@ -105,7 +106,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
      const days = new Set<string>();
      reports.forEach(r => {
         // Avoid new Date() on YYYY-MM-DD string to prevent UTC shift
-        const dateStr = typeof r.reportDate === 'string' ? r.reportDate.split('T')[0] : format(new Date(r.reportDate), 'yyyy-MM-dd');
+        const dateStr = extractLocalDateString(r.reportDate);
         if (dateStr) days.add(dateStr);
      });
      return Array.from(days).sort((a, b) => b.localeCompare(a));
@@ -114,7 +115,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
   const filteredReports = useMemo(() => {
      if (selectedSpecificDay === 'all') return reports;
      return reports.filter(r => {
-         const dateStr = typeof r.reportDate === 'string' ? r.reportDate.split('T')[0] : format(new Date(r.reportDate), 'yyyy-MM-dd');
+         const dateStr = extractLocalDateString(r.reportDate);
          return dateStr === selectedSpecificDay;
      });
   }, [reports, selectedSpecificDay]);
@@ -123,8 +124,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
     const groups: Record<string, DailyGroup> = {};
     
     filteredReports.forEach(report => {
-      // Direct string split is safer than new Date() for YYYY-MM-DD
-      const dateKey = typeof report.reportDate === 'string' ? report.reportDate.split('T')[0] : format(new Date(report.reportDate), 'yyyy-MM-dd');
+      const dateKey = extractLocalDateString(report.reportDate);
       if (!dateKey || dateKey === 'Invalid') return;
       
       if (!groups[dateKey]) {

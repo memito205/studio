@@ -152,6 +152,26 @@ export const parseFlexibleDate = (dateStr: string | number | Date | null | undef
   return null;
 }
 
+/**
+ * Extracts a YYYY-MM-DD string from a Date object using local time components.
+ * This is safer than toISOString() in negative timezones.
+ * @param date The date object.
+ * @returns A string in YYYY-MM-DD format.
+ */
+export const extractLocalDateString = (date: Date | string): string => {
+    const d = date instanceof Date ? date : new Date(date);
+    if (isNaN(d.getTime())) return String(date).split('T')[0];
+    
+    // Check if the time implies this was a "midnight UTC" date saved incorrectly
+    // If it's exactly midnight UTC and we are in Colombia, it shows as 7 PM yesterday.
+    // However, for reports, we usually want the CALENDAR day.
+    
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+};
+
 
 /**
  * Finds a key in an object case-insensitively, also removing extra spaces and diacritics (accents).

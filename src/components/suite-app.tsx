@@ -12,7 +12,7 @@ import { handleExecutiveSummary, handleRootCauseAnalysis, handleGenerateSmartAle
 import { getProductsByBarcodes } from '@/app/reception/actions';
 import { Loader2, AlertTriangle } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { parseFlexibleDate } from '@/lib/parsingUtils';
+import { parseFlexibleDate, extractLocalDateString } from '@/lib/parsingUtils';
 import DispatchManager from './dispatch-manager/DispatchManager';
 import { BodegaDashboardsMenu } from './BodegaDashboardsMenu';
 
@@ -233,10 +233,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
         if (!fileReportDate) {
             throw new Error("No se encontraron fechas válidas en la columna de fecha.");
         }
-        const year = fileReportDate.getFullYear();
-        const month = String(fileReportDate.getMonth() + 1).padStart(2, '0');
-        const day = String(fileReportDate.getDate()).padStart(2, '0');
-        const reportDateStr = `${year}-${month}-${day}`;
+        const reportDateStr = extractLocalDateString(fileReportDate);
         setReportDate(reportDateStr);
         
         // --- SILENT CACHE REHYDRATION ---
