@@ -509,12 +509,18 @@ export async function deleteHistoricalReportsForDay(dateStr: string): Promise<{ 
             return { success: true }; // Nothing to delete
         }
 
-        const snapshotIds = summarySnap.docs.map(doc => doc.id);
+        const summaryIds = summarySnap.docs.map(doc => doc.id);
         
-        // Chunk deletions into batches of 400 (Firestore limit is 500)
-        const CHUNK_SIZE = 250; 
+        // Chunk deletions into batches of 200 (Firestore limit is 500 ops)
+        // Each loop iteration does 2 ops (summary + full report) -> 400 ops per batch
+        const CHUNK_SIZE = 200; 
         const summaryDocs = summarySnap.docs;
         
+        if (summaryDocs.length === 0) {
+            console.log(`[DeleteHistory] No reports found to delete for ${dateStr}`);
+            return { success: true };
+        }
+
         for (let i = 0; i < summaryDocs.length; i += CHUNK_SIZE) {
             const batch = writeBatch(firestore);
             const chunk = summaryDocs.slice(i, i + CHUNK_SIZE);
@@ -650,8 +656,16 @@ export async function previewConsolidatedReport(snapshotIds: string[]): Promise<
             throw new Error("Invalid or missing report date in the configuration for preview.");
         }
         
-        const reportDateStr = new Date(lastReportConfig.reportDate).toISOString().split('T')[0];
-
+        // Extract local date string YYYY-MM-DD safely
+        const reportDateObj = new Date(lastReportConfig.reportDate);
+        if (isNaN(reportDateObj.getTime())) {
+            throw new Error("Invalid report date format in the configuration for preview.");
+        }
+        const year = reportDateObj.getFullYear();
+        const month = String(reportDateObj.getMonth() + 1).padStart(2, '0');
+        const day = String(reportDateObj.getDate()).padStart(2, '0');
+        const reportDateStr = `${year}-${month}-${day}`;
+        
         const consolidatedProcessedData = processReport(
             allProcessedData,
             lastReportConfig.brandProductTypeGoals || {},

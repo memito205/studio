@@ -233,7 +233,10 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
         if (!fileReportDate) {
             throw new Error("No se encontraron fechas válidas en la columna de fecha.");
         }
-        const reportDateStr = fileReportDate.toISOString().split('T')[0];
+        const year = fileReportDate.getFullYear();
+        const month = String(fileReportDate.getMonth() + 1).padStart(2, '0');
+        const day = String(fileReportDate.getDate()).padStart(2, '0');
+        const reportDateStr = `${year}-${month}-${day}`;
         setReportDate(reportDateStr);
         
         // --- SILENT CACHE REHYDRATION ---
