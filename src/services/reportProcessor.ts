@@ -234,18 +234,8 @@ export function getSanitizedData(
             return;
         }
         
-        // Compare only the date part, ignoring time, to avoid timezone issues.
-        const isSameDay = 
-            rowDate.getFullYear() === reportDateToCompare.getFullYear() &&
-            rowDate.getMonth() === reportDateToCompare.getMonth() &&
-            rowDate.getDate() === reportDateToCompare.getDate();
-        
-        if (!isSameDay) {
-            discardedRecords.push({ reason: `Fuera de la fecha del reporte (${reportDateToCompare.toISOString().split('T')[0]})`, rowData: row });
-            return;
-        }
-        
-        // Pass the valid Date object through.
+        // Allow any valid date to pass through. 
+        // We will filter by the user-selected reportDate later in processReport.
         keptRecords.push({ ...row, fechaDeLectura: rowDate });
     });
 
@@ -1358,7 +1348,17 @@ export function processReport(
     const reportStartTime = parseTime(reportStartTimeStr, reportDateObj);
     const reportEndTime = parseTime(reportEndTimeStr, reportDateObj);
 
-    const fullDataInTimeRange = data.filter(entry => 
+    // Proyectamos todos los registros sobre la fecha seleccionada por el usuario...
+    const normalizedData = data.map(entry => {
+        const d = new Date(entry.fechaDeLectura);
+        if (!isNaN(d.getTime())) {
+            d.setFullYear(reportDateObj.getFullYear(), reportDateObj.getMonth(), reportDateObj.getDate());
+        }
+        return { ...entry, fechaDeLectura: d };
+    });
+
+    const fullDataInTimeRange = normalizedData.filter(entry => 
+      !isNaN(entry.fechaDeLectura.getTime()) && 
       entry.fechaDeLectura >= reportStartTime && entry.fechaDeLectura <= reportEndTime
     );
     
