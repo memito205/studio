@@ -158,9 +158,19 @@ export const parseFlexibleDate = (dateStr: string | number | Date | null | undef
  * @param date The date object.
  * @returns A string in YYYY-MM-DD format.
  */
-export const extractLocalDateString = (date: Date | string): string => {
-    const d = date instanceof Date ? date : new Date(date);
-    if (isNaN(d.getTime())) return String(date).split('T')[0];
+export const extractLocalDateString = (date: any): string => {
+    let d: Date;
+    if (date instanceof Date) {
+        d = date;
+    } else if (date && typeof date === 'object' && typeof (date as any).toDate === 'function') {
+        d = (date as any).toDate();
+    } else if (typeof date === 'string' || typeof date === 'number') {
+        d = new Date(date);
+    } else {
+        return "Invalid";
+    }
+    
+    if (isNaN(d.getTime())) return "Invalid";
     
     // If it's a date with 00:00:00 time, it's almost certainly intended as a "Calendar Date"
     // and might have come from a UTC source (Excel/Server).

@@ -12,7 +12,7 @@ import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch
 import { parseISO } from 'date-fns';
 import { startOfDay, endOfDay, isWithinInterval } from 'date-fns';
 import * as XLSX from 'xlsx';
-import { normalizeHeader, parseFlexibleDate, excelSerialDateToJSDate, findCaseInsensitiveKey } from '@/lib/parsingUtils';
+import { normalizeHeader, parseFlexibleDate, excelSerialDateToJSDate, findCaseInsensitiveKey, extractLocalDateString } from '@/lib/parsingUtils';
 import { processReport } from '@/services/reportProcessor';
 
 
@@ -511,15 +511,20 @@ export async function deleteHistoricalReportsForDay(dateStr: string): Promise<{ 
             ));
         }
 
-        // 3. Last resort: scan all and filter by exact or partial string matching
-        // (to catch things with random times or hidden spaces)
+        // 3. Last resort: scan last 300 and filter manually using the smart extract tool
+        // (to catch things with random times, hidden spaces, or Timestamp types)
         if (summarySnap.empty) {
-            const allQ = await getDocs(query(collection(firestore, "reports_summary"), limit(200)));
-            const matches = allQ.docs.filter(doc => {
-                const rd = (doc.data().reportDate || "").toString();
-                return rd.includes(dateStr) || dateStr.includes(rd);
+            const allRecent = await getDocs(query(collection(firestore, "reports_summary"), limit(300)));
+            const matches = allRecent.docs.filter(doc => {
+                const data = doc.data();
+                const extracted = extractLocalDateString(data.reportDate);
+                const idMatch = doc.id.startsWith(dateStr);
+                const rawMatch = (data.reportDate || "").toString().includes(dateStr);
+                return extracted === dateStr || idMatch || rawMatch;
             });
+            
             if (matches.length > 0) {
+                console.log(`[DeleteHistory] Found ${matches.length} matches via manual brute-force filter for ${dateStr}`);
                 summarySnap = { docs: matches, empty: false } as any;
             }
         }
