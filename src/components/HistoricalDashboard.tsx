@@ -395,31 +395,32 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
               });
           } else {
               // Legacy/Fallback: calculate from details
-          if (selectedOperator === 'all') {
-             d.packerHourlyPerformance?.forEach(packerGroup => {
-                 Object.entries(packerGroup.hourlyDetails).forEach(([hourStr, details]) => {
-                     const hour = parseInt(hourStr);
-                     if (details.units > 0 || details.productiveMinutes > 0) {
-                         if (!hoursMap[hour]) hoursMap[hour] = { units: 0, productiveMinutes: 0, validCount: 0 };
-                         hoursMap[hour].units += details.units;
-                         hoursMap[hour].productiveMinutes += details.productiveMinutes;
-                         hoursMap[hour].validCount++;
-                     }
-                 });
-             });
-          } else {
-             const operatorData = d.packerHourlyPerformance?.find(p => p.packerName === selectedOperator);
-             if (operatorData) {
-                 Object.entries(operatorData.hourlyDetails).forEach(([hourStr, details]) => {
-                     const hour = parseInt(hourStr);
-                     if (details.units > 0 || details.productiveMinutes > 0) {
-                         if (!hoursMap[hour]) hoursMap[hour] = { units: 0, productiveMinutes: 0, validCount: 0 };
-                         hoursMap[hour].units += details.units;
-                         hoursMap[hour].productiveMinutes += details.productiveMinutes;
-                         hoursMap[hour].validCount++;
-                     }
-                 });
-             }
+              if (selectedOperator === 'all') {
+                  d.packerHourlyPerformance?.forEach(packerGroup => {
+                      Object.entries(packerGroup.hourlyDetails).forEach(([hourStr, details]) => {
+                          const hour = parseInt(hourStr);
+                          if (details.units > 0 || details.productiveMinutes > 0) {
+                              if (!hoursMap[hour]) hoursMap[hour] = { units: 0, productiveMinutes: 0, validCount: 0 };
+                              hoursMap[hour].units += details.units;
+                              hoursMap[hour].productiveMinutes += details.productiveMinutes;
+                              hoursMap[hour].validCount++;
+                          }
+                      });
+                  });
+              } else {
+                  const operatorData = d.packerHourlyPerformance?.find(p => p.packerName === selectedOperator);
+                  if (operatorData) {
+                      Object.entries(operatorData.hourlyDetails).forEach(([hourStr, details]) => {
+                          const hour = parseInt(hourStr);
+                          if (details.units > 0 || details.productiveMinutes > 0) {
+                              if (!hoursMap[hour]) hoursMap[hour] = { units: 0, productiveMinutes: 0, validCount: 0 };
+                              hoursMap[hour].units += details.units;
+                              hoursMap[hour].productiveMinutes += details.productiveMinutes;
+                              hoursMap[hour].validCount++;
+                          }
+                      });
+                  }
+              }
           }
       });
       
