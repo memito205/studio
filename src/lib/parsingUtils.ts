@@ -96,7 +96,8 @@ export const parseFlexibleDate = (dateStr: string | number | Date | null | undef
   
   if (dateStr instanceof Date) {
     if (isNaN(dateStr.getTime())) return null;
-    return dateStr;
+    // Normalize to noon local to avoid timezone shifts when extracting date parts
+    return new Date(dateStr.getFullYear(), dateStr.getMonth(), dateStr.getDate(), 12, 0, 0);
   }
 
   // Handle Excel serial numbers
@@ -129,8 +130,8 @@ export const parseFlexibleDate = (dateStr: string | number | Date | null | undef
     const minute = parseInt(dmyParts[5], 10) || 0;
     
     if (day > 0 && day <= 31 && month > 0 && month <= 12 && year > 1000 && year < 3000) {
-      // Create date using local time parts to avoid timezone shifts
-      const date = new Date(year, month - 1, day, hour, minute);
+      // Create date using local time parts at noon to avoid timezone shifts
+      const date = new Date(year, month - 1, day, 12, 0, 0);
       if(!isNaN(date.getTime())) return date;
     }
   }
@@ -142,8 +143,8 @@ export const parseFlexibleDate = (dateStr: string | number | Date | null | undef
       const month = parseInt(ymdParts[2], 10);
       const day = parseInt(ymdParts[3], 10);
       if (day > 0 && day <= 31 && month > 0 && month <= 12 && year > 1000 && year < 3000) {
-        // Create date as local
-        const date = new Date(year, month - 1, day);
+        // Create date as local at noon
+        const date = new Date(year, month - 1, day, 12, 0, 0);
         if (!isNaN(date.getTime())) return date;
       }
   }

@@ -495,34 +495,36 @@ export async function loadFullReportSnapshots(snapshotIds: string[]): Promise<{ 
 
 export async function deleteHistoricalReportsForDay(dateStr: string): Promise<{ success: boolean; error?: string }> {
     try {
-        const start = startOfDay(new Date(dateStr + 'T00:00:00'));
-        const end = endOfDay(new Date(dateStr + 'T00:00:00'));
-
-        // Try multiple formats to find the documents (String, Date objects)
-        const dateObj = new Date(dateStr + "T00:00:00");
-        const dateUtc = new Date(dateStr + "T00:00:00Z");
+        const dateObjNoon = new Date(dateStr + "T12:00:00");
+        const rangeStart = new Date(dateStr + "T00:00:00");
+        const rangeEnd = new Date(dateStr + "T23:59:59");
         
-        const summaryQ = query(
+        // First try exact matches (String or specific Timestamp)
+        let summarySnap = await getDocs(query(
             collection(firestore, "reports_summary"),
-            where("reportDate", "in", [dateStr, dateObj, dateUtc])
-        );
+            where("reportDate", "in", [dateStr, dateObjNoon])
+        ));
 
-        const summarySnap = await getDocs(summaryQ);
+        // If nothing found, try a range query (covers any Timestamps within that day)
         if (summarySnap.empty) {
-            return { success: true }; // Nothing to delete
+            summarySnap = await getDocs(query(
+                collection(firestore, "reports_summary"),
+                where("reportDate", ">=", rangeStart),
+                where("reportDate", "<=", rangeEnd)
+            ));
+        }
+        
+        const summaryDocs = summarySnap.docs;
+        if (summaryDocs.length === 0) {
+            console.log(`[DeleteHistory] No reports found to delete for ${dateStr} (Checked string, noon-date, and range)`);
+            return { success: true }; 
         }
 
-        const summaryIds = summarySnap.docs.map(doc => doc.id);
+        const summaryIds = summaryDocs.map(doc => doc.id);
         
         // Chunk deletions into batches of 200 (Firestore limit is 500 ops)
         // Each loop iteration does 2 ops (summary + full report) -> 400 ops per batch
         const CHUNK_SIZE = 200; 
-        const summaryDocs = summarySnap.docs;
-        
-        if (summaryDocs.length === 0) {
-            console.log(`[DeleteHistory] No reports found to delete for ${dateStr}`);
-            return { success: true };
-        }
 
         for (let i = 0; i < summaryDocs.length; i += CHUNK_SIZE) {
             const batch = writeBatch(firestore);
