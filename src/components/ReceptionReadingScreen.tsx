@@ -367,10 +367,11 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
         
         // FALLBACK: If barcode not in expected (alternate code), find by Reference + Size
         if (!expectedItemData && productRef && productSize) {
-            expectedItemData = expectedItems.find(item => 
-                (item.reference || '').trim() === productRef && 
-                (item.size || '').trim() === productSize
-            );
+            expectedItemData = expectedItems.find(item => {
+                const itemRef = (item.reference || (item as any).referencia || '').trim().toUpperCase();
+                const itemSize = (item.size || (item as any).talla || '').trim().toUpperCase();
+                return itemRef === productRef.toUpperCase() && itemSize === productSize.toUpperCase();
+            });
         }
 
         const itemToAdd = {
@@ -527,12 +528,16 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
     }
     
     // NEW PRIORITY 2: Find in the current operation's expected items by reference and size.
-    const ref = currentScannedProductDetails.referencia || '';
-    const size = currentScannedProductDetails.talla || currentScannedProductDetails.size;
+    const ref = (currentScannedProductDetails.referencia || currentScannedProductDetails.reference || '').trim().toUpperCase();
+    const size = (currentScannedProductDetails.talla || currentScannedProductDetails.size || '').trim().toUpperCase();
+    
     if(ref && size) {
-        const expectedItemByRef = expectedItems.find(
-          (item) => (item.reference || '').trim() === ref.trim() && (item.size || '').trim() === size.trim()
-        );
+        const expectedItemByRef = expectedItems.find(item => {
+            const itemRef = (item.reference || (item as any).referencia || '').trim().toUpperCase();
+            const itemSize = (item.size || (item as any).talla || '').trim().toUpperCase();
+            return itemRef === ref && itemSize === size;
+        });
+        
         if (expectedItemByRef && expectedItemByRef.location) {
             return expectedItemByRef.location;
         }
