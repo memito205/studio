@@ -234,7 +234,9 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
             throw new Error("No se encontraron fechas válidas en la columna de fecha.");
         }
         const reportDateStr = extractLocalDateString(fileReportDate);
-        setReportDate(reportDateStr);
+        if (!reportDate) {
+            setReportDate(reportDateStr);
+        }
         
         // --- SILENT CACHE REHYDRATION ---
         try {

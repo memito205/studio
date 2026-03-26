@@ -88,37 +88,53 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onProcessFile, isLoading
                 </div>
             </CardHeader>
             <CardContent>
-                <div className="mb-6 max-w-sm mx-auto p-4 border rounded-lg bg-background shadow-inner">
-                    <label htmlFor="main-report-date" className="block text-sm font-bold text-foreground mb-2 text-center uppercase">
-                        Fecha de la Operación (Reporte):
+                <div className={`mb-6 max-w-sm mx-auto p-4 border-2 rounded-lg bg-background shadow-xl transition-all ${!reportDate ? 'border-amber-500 animate-pulse' : 'border-primary shadow-primary/20 scale-105'}`}>
+                    <label htmlFor="main-report-date" className="block text-sm font-black text-foreground mb-2 text-center uppercase tracking-widest">
+                        📅 Confirme Fecha de Operación:
                     </label>
                     <input 
                         type="date" 
                         id="main-report-date"
                         value={reportDate}
                         onChange={(e) => onDateChange(e.target.value)}
-                        className="w-full p-2 border rounded-md text-lg text-center font-semibold focus:ring-2 focus:ring-primary outline-none"
+                        className="w-full p-3 border-2 border-primary/30 rounded-md text-2xl text-center font-black focus:ring-4 focus:ring-primary/50 outline-none bg-primary/5 text-primary"
                     />
+                    {!reportDate && <p className="text-xs text-amber-600 font-bold mt-2 animate-bounce">⚠️ REQUERIDO ANTES DE CARGAR</p>}
                 </div>
 
                 <form id="form-file-upload" className="mt-2" onSubmit={(e) => e.preventDefault()}>
                 <input type="file" id="input-file-upload" className="hidden" onChange={handleChange} accept=".xlsx, .xls, .csv" />
                 <label
-                    htmlFor="input-file-upload"
-                    onDragEnter={handleDrag}
-                    onDragLeave={handleDrag}
-                    onDragOver={handleDrag}
-                    onDrop={handleDrop}
-                    className={`relative flex flex-col items-center justify-center w-full h-64 border-2 border-dashed rounded-xl cursor-pointer transition-colors duration-300 ${
-                    dragActive ? 'border-primary bg-primary/10' : 'border-border bg-background/50 hover:border-primary/50'
+                    htmlFor={reportDate ? "input-file-upload" : "no-date-overlay"}
+                    onDragEnter={reportDate ? handleDrag : undefined}
+                    onDragLeave={reportDate ? handleDrag : undefined}
+                    onDragOver={reportDate ? handleDrag : undefined}
+                    onDrop={reportDate ? handleDrop : undefined}
+                    onClick={(e) => {
+                        if (!reportDate) {
+                            e.preventDefault();
+                            alert("Por favor, seleccione primero la fecha de la operación arriba.");
+                        }
+                    }}
+                    className={`relative flex flex-col items-center justify-center w-full h-64 border-2 border-dashed rounded-xl transition-all duration-300 ${
+                    !reportDate ? 'border-muted bg-muted/20 cursor-not-allowed opacity-50' :
+                    dragActive ? 'border-primary bg-primary/10' : 'border-border bg-background/50 hover:border-primary/50 cursor-pointer'
                     }`}
                 >
                     <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                    <UploadCloud className="w-16 h-16 mb-4 text-muted-foreground" />
-                    <p className="mb-2 text-sm text-muted-foreground">
-                        <span className="font-semibold text-primary">Haga clic para cargar</span> o arrastre y suelte el archivo
+                    <UploadCloud className={`w-16 h-16 mb-4 ${!reportDate ? 'text-muted' : 'text-muted-foreground'}`} />
+                    <p className="mb-2 text-sm text-muted-foreground text-center">
+                        {!reportDate ? (
+                            <span className="font-bold text-amber-600 block px-4 py-2 bg-amber-100 rounded">DEBE SELECCIONAR LA FECHA ARRIBA PRIMERO</span>
+                        ) : (
+                            <>
+                                <span className="font-semibold text-primary">Haga clic para cargar</span> o arrastre y suelte el archivo
+                            </>
+                        )}
                     </p>
-                    <p className="text-xs text-muted-foreground">XLSX, XLS, o CSV</p>
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider">
+                        {reportDate ? "XLSX, XLS, o CSV" : "Bloqueado hasta elegir fecha"}
+                    </p>
                     </div>
                 </label>
                 </form>
