@@ -149,6 +149,9 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
             operatorNames: reportData.packerProductivity.map(p => p.packerName),
             isConsolidated: reportData.isConsolidated || false,
             sourceSnapshotIds: reportData.sourceSnapshotIds || [],
+            manualJustifications: reportData.manualJustifications || {},
+            incidentLog: reportData.incidentLog || [],
+            annotations: reportData.annotations || {},
         };
 
         // 2. Try to save the full snapshot

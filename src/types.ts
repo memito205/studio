@@ -674,6 +674,7 @@ export interface ReportSummary {
     sourceSnapshotIds?: string[];
     manualJustifications?: ManualJustifications;
     incidentLog?: IncidentLogEntry[];
+    annotations?: Annotations;
 }
 
 export interface ReportConfiguration {
