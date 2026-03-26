@@ -162,10 +162,18 @@ export const extractLocalDateString = (date: Date | string): string => {
     const d = date instanceof Date ? date : new Date(date);
     if (isNaN(d.getTime())) return String(date).split('T')[0];
     
-    // Check if the time implies this was a "midnight UTC" date saved incorrectly
-    // If it's exactly midnight UTC and we are in Colombia, it shows as 7 PM yesterday.
-    // However, for reports, we usually want the CALENDAR day.
+    // If it's a date with 00:00:00 time, it's almost certainly intended as a "Calendar Date"
+    // and might have come from a UTC source (Excel/Server).
+    // In UTC- environments (like CO), d.getDate() would return the previous day.
+    // So we use UTC components if it's pure midnight.
+    if (d.getHours() === 0 && d.getMinutes() === 0 && d.getSeconds() === 0) {
+        const year = d.getUTCFullYear();
+        const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
     
+    // Otherwise it's a timestamped date, use local components
     const year = d.getFullYear();
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');

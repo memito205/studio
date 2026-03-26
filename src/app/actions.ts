@@ -495,23 +495,33 @@ export async function loadFullReportSnapshots(snapshotIds: string[]): Promise<{ 
 
 export async function deleteHistoricalReportsForDay(dateStr: string): Promise<{ success: boolean; error?: string }> {
     try {
-        const dateObjNoon = new Date(dateStr + "T12:00:00");
-        const rangeStart = new Date(dateStr + "T00:00:00");
-        const rangeEnd = new Date(dateStr + "T23:59:59");
-        
-        // First try exact matches (String or specific Timestamp)
+        // Aggressive deletion logic 
+        // 1. Point query by date string
         let summarySnap = await getDocs(query(
             collection(firestore, "reports_summary"),
-            where("reportDate", "in", [dateStr, dateObjNoon])
+            where("reportDate", "==", dateStr)
         ));
 
-        // If nothing found, try a range query (covers any Timestamps within that day)
+        // 2. Query by Noon Date object
         if (summarySnap.empty) {
+            const noon = new Date(dateStr + "T12:00:00");
             summarySnap = await getDocs(query(
                 collection(firestore, "reports_summary"),
-                where("reportDate", ">=", rangeStart),
-                where("reportDate", "<=", rangeEnd)
+                where("reportDate", "==", noon)
             ));
+        }
+
+        // 3. Last resort: scan all and filter by exact or partial string matching
+        // (to catch things with random times or hidden spaces)
+        if (summarySnap.empty) {
+            const allQ = await getDocs(query(collection(firestore, "reports_summary"), limit(200)));
+            const matches = allQ.docs.filter(doc => {
+                const rd = (doc.data().reportDate || "").toString();
+                return rd.includes(dateStr) || dateStr.includes(rd);
+            });
+            if (matches.length > 0) {
+                summarySnap = { docs: matches, empty: false } as any;
+            }
         }
         
         const summaryDocs = summarySnap.docs;
