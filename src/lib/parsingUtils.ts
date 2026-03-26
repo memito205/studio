@@ -172,15 +172,22 @@ export const extractLocalDateString = (date: any): string => {
     
     if (isNaN(d.getTime())) return "Invalid";
     
-    // If it's a date with 00:00:00 time, it's almost certainly intended as a "Calendar Date"
-    // and might have come from a UTC source (Excel/Server).
-    // In UTC- environments (like CO), d.getDate() would return the previous day.
-    // So we use UTC components if it's pure midnight.
-    if (d.getHours() === 0 && d.getMinutes() === 0 && d.getSeconds() === 0) {
-        const year = d.getUTCFullYear();
-        const month = String(d.getUTCMonth() + 1).padStart(2, '0');
-        const day = String(d.getUTCDate()).padStart(2, '0');
-        return `${year}-${month}-${day}`;
+    // If it's a date near midnight UTC (Excel often has small floating point errors), 
+    // it's almost certainly intended as a "Calendar Date".
+    // We treat any time before 1 AM as the intended calendar day (to handle UTC midnight shift in CO)
+    const hour = d.getHours();
+    if (hour === 0 || (hour === 23 && d.getMinutes() > 50)) {
+        // If it's pure midnight or late night (due to shift), use UTC components for the date part
+        // (Wait! Actually, if it's 23:55 on the 25th in UTC, it's the 25th.
+        // If it's 00:00 on the 26th in UTC, in CO it's 19:00 on the 25th.)
+        
+        // Let's use simpler logic: if the input was likely date-only (0 hours), use UTC.
+        if (d.getUTCHours() === 0 && d.getUTCMinutes() === 0) {
+            const year = d.getUTCFullYear();
+            const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+            const day = String(d.getUTCDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
     }
     
     // Otherwise it's a timestamped date, use local components

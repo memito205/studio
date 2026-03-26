@@ -207,7 +207,13 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
 
       setIsLoading(true);
       try {
-          const result = await deleteHistoricalReportsForDay(dateStr);
+          const group = dailyGroups.find(g => g.date === dateStr);
+          const ids = group ? [
+              group.consolidated?.id,
+              ...group.snapshots.map(s => s.id)
+          ].filter(Boolean) as string[] : [];
+          
+          const result = await deleteHistoricalReportsForDay(dateStr, ids);
           if (result.success) {
               toast({ title: 'Registros eliminados', description: `Se han borrado los datos del día ${dateStr}.` });
               handleQuery(); // Refresh list

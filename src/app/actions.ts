@@ -493,69 +493,45 @@ export async function loadFullReportSnapshots(snapshotIds: string[]): Promise<{ 
     }
 }
 
-export async function deleteHistoricalReportsForDay(dateStr: string): Promise<{ success: boolean; error?: string }> {
+export async function deleteHistoricalReportsForDay(dateStr: string, explicitIds?: string[]): Promise<{ success: boolean; error?: string }> {
     try {
-        // Aggressive deletion logic 
-        // 1. Point query by date string
-        let summarySnap = await getDocs(query(
-            collection(firestore, "reports_summary"),
-            where("reportDate", "==", dateStr)
-        ));
-
-        // 2. Query by Noon Date object
-        if (summarySnap.empty) {
-            const noon = new Date(dateStr + "T12:00:00");
-            summarySnap = await getDocs(query(
+        let summaryIds: string[] = [];
+        if (explicitIds && explicitIds.length > 0) {
+            summaryIds = explicitIds;
+        } else {
+            let summarySnap = await getDocs(query(
                 collection(firestore, "reports_summary"),
-                where("reportDate", "==", noon)
+                where("reportDate", "==", dateStr)
             ));
-        }
-
-        // 3. Last resort: scan last 300 and filter manually using the smart extract tool
-        // (to catch things with random times, hidden spaces, or Timestamp types)
-        if (summarySnap.empty) {
-            const allRecent = await getDocs(query(collection(firestore, "reports_summary"), limit(300)));
-            const matches = allRecent.docs.filter(doc => {
-                const data = doc.data();
-                const extracted = extractLocalDateString(data.reportDate);
-                const idMatch = doc.id.startsWith(dateStr);
-                const rawMatch = (data.reportDate || "").toString().includes(dateStr);
-                return extracted === dateStr || idMatch || rawMatch;
-            });
-            
-            if (matches.length > 0) {
-                console.log(`[DeleteHistory] Found ${matches.length} matches via manual brute-force filter for ${dateStr}`);
-                summarySnap = { docs: matches, empty: false } as any;
+            if (summarySnap.empty) {
+                const allRecent = await getDocs(query(collection(firestore, "reports_summary"), limit(300)));
+                summaryIds = allRecent.docs
+                    .filter(doc => extractLocalDateString(doc.data().reportDate) === dateStr || doc.id.startsWith(dateStr))
+                    .map(m => m.id);
+            } else {
+                summaryIds = summarySnap.docs.map(doc => doc.id);
             }
         }
-        
-        const summaryDocs = summarySnap.docs;
-        if (summaryDocs.length === 0) {
-            console.log(`[DeleteHistory] No reports found to delete for ${dateStr} (Checked string, noon-date, and range)`);
-            return { success: true }; 
+
+        if (summaryIds.length === 0) {
+            console.log(`[DeleteHistory] No reports found to delete for ${dateStr}`);
+            return { success: true };
         }
 
-        const summaryIds = summaryDocs.map(doc => doc.id);
-        
-        // Chunk deletions into batches of 200 (Firestore limit is 500 ops)
-        // Each loop iteration does 2 ops (summary + full report) -> 400 ops per batch
-        const CHUNK_SIZE = 200; 
-
-        for (let i = 0; i < summaryDocs.length; i += CHUNK_SIZE) {
+        const CHUNK_SIZE = 200;
+        for (let i = 0; i < summaryIds.length; i += CHUNK_SIZE) {
             const batch = writeBatch(firestore);
-            const chunk = summaryDocs.slice(i, i + CHUNK_SIZE);
+            const chunk = summaryIds.slice(i, i + CHUNK_SIZE);
             
-            chunk.forEach(sDoc => {
-                batch.delete(sDoc.ref);
-                // Also delete the full report snapshot if it exists
-                batch.delete(doc(firestore, "reports", sDoc.id));
+            chunk.forEach(id => {
+                batch.delete(doc(firestore, "reports_summary", id));
+                batch.delete(doc(firestore, "reports", id));
             });
             
             await batch.commit();
         }
-
-        console.log(`[DeleteHistory] Successfully deleted ${summaryDocs.length} reports and snapshots for ${dateStr}`);
         return { success: true };
+
     } catch (error: any) {
         console.error("Error deleting historical reports:", error);
         return { success: false, error: error.message };
