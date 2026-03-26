@@ -222,50 +222,46 @@ export async function lookupBarcode(barcode: string, operationId?: string): Prom
 
 export async function getProductByRefAndSize(reference: string, size: string): Promise<PackingScanResult> {
     try {
-        const sizeAsNumber = parseFloat(size);
-        const queries = [];
+        const sizeTrimmed = String(size).trim();
+        const sizeAsNumber = parseFloat(sizeTrimmed);
 
-        // Query for string match (always useful for non-numeric sizes)
-        const q_string = query(
+        // Query only by referencia (simple index)
+        const q = query(
             collection(firestore, "productDatabase"), 
-            where("referencia", "==", reference), 
-            where("talla", "==", size), 
-            limit(1)
+            where("referencia", "==", reference.trim())
         );
-        queries.push(getDocs(q_string));
         
-        // If size is a valid number, also query for a number match
-        if (!isNaN(sizeAsNumber)) {
-            const q_number = query(
-                collection(firestore, "productDatabase"), 
-                where("referencia", "==", reference), 
-                where("talla", "==", sizeAsNumber), 
-                limit(1)
-            );
-            queries.push(getDocs(q_number));
+        const querySnapshot = await getDocs(q);
+        
+        if (querySnapshot.empty) {
+            return { status: 'error', message: `No se encontró producto para la referencia ${reference}.`, scannedBarcode: '' };
         }
 
-        const snapshots = await Promise.all(queries);
+        // Filter by size in the server side logic to avoid composite index requirement
+        const matchingDoc = querySnapshot.docs.find(docSnap => {
+            const data = docSnap.data();
+            // Try both string and number comparison as sizes can be stored either way
+            const dbSize = data.talla;
+            
+            if (String(dbSize).trim() === sizeTrimmed) return true;
+            if (!isNaN(sizeAsNumber) && typeof dbSize === 'number' && dbSize === sizeAsNumber) return true;
+            
+            return false;
+        });
 
-        for (const snapshot of snapshots) {
-            if (!snapshot.empty) {
-                const docSnap = snapshot.docs[0];
-                const item: ProductDatabaseItem = {
-                    ...(convertTimestampsToDates(docSnap.data()) as Omit<ProductDatabaseItem, 'id'>),
-                    id: docSnap.id,
-                    codigoBarras: docSnap.id,
-                };
-                return { status: 'success', message: `Producto encontrado: ${item.referencia}`, scannedBarcode: item.codigoBarras, item };
-            }
+        if (matchingDoc) {
+            const item: ProductDatabaseItem = {
+                ...(convertTimestampsToDates(matchingDoc.data()) as Omit<ProductDatabaseItem, 'id'>),
+                id: matchingDoc.id,
+                codigoBarras: matchingDoc.id,
+            };
+            return { status: 'success', message: `Producto encontrado: ${item.referencia} - ${item.talla}`, scannedBarcode: item.codigoBarras, item };
         }
 
-        // If no results from any query
-        return { status: 'error', message: `No se encontró producto para la referencia ${reference} y talla ${size}.`, scannedBarcode: '' };
+        return { status: 'error', message: `No se encontró la talla ${size} para la referencia ${reference}.`, scannedBarcode: '' };
         
     } catch (error: any) {
-        if ((error as any).code === 'failed-precondition') {
-            return { status: 'error', message: `Error de Firebase: ${(error as any).message}. Este error indica que la consulta requiere un índice que no existe. Por favor, revise la consola de Firebase para crear el índice sugerido.`, scannedBarcode: '' };
-        }
+        console.error("Error in getProductByRefAndSize:", error);
         return { status: 'error', message: `Error de servidor: ${(error as any).message}`, scannedBarcode: '' };
     }
 }
