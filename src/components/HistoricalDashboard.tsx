@@ -148,12 +148,23 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
     // Optimization: Check if we can build trends from the summaries we already have
     const summariesWithData = reports.filter(r => r.packerProductivity && r.packerProductivity.length > 0);
     
-    if (summariesWithData.length > 0 && summariesWithData.length >= Math.min(reports.length, 5)) {
+    // DEDUPLICATION: Group by reportDate and pick the latest snapshotCreatedAt
+    const groupedSummaries: Record<string, any> = {};
+    summariesWithData.forEach(s => {
+        const dateStr = s.reportDate instanceof Date ? s.reportDate.toISOString().split('T')[0] : String(s.reportDate).split('T')[0];
+        const currentLatest = groupedSummaries[dateStr];
+        if (!currentLatest || new Date(s.snapshotCreatedAt).getTime() > new Date(currentLatest.snapshotCreatedAt).getTime()) {
+            groupedSummaries[dateStr] = s;
+        }
+    });
+    
+    const finalSummaries = Object.values(groupedSummaries);
+
+    if (finalSummaries.length > 0 && finalSummaries.length >= Math.min(dailyGroups.length, 5)) {
         // We have enough enriched summaries to show trends instantly
         console.log("Loading trends from enriched summaries...");
-        setTrendsData(summariesWithData.map(s => ({
+        setTrendsData(finalSummaries.map(s => ({
             ...s,
-            // Cast or map to ProcessedReportData as enrichment makes them compatible
             reportDate: s.reportDate instanceof Date ? s.reportDate.toISOString() : s.reportDate,
         } as any)).sort((a,b) => new Date(a.reportDate).getTime() - new Date(b.reportDate).getTime()));
         setSelectedSpecificDay('all');
