@@ -225,6 +225,7 @@ export async function createPulse(pulseData: Omit<OperationPulse, 'id'>): Promis
         // 3. Update the user's current status for the floor monitor
         await setDoc(doc(firestore, 'users', pulseData.userId), {
             currentStatus: pulseData.status,
+            currentReason: pulseData.reason || null,
             currentPulseId: docRef.id,
             lastStatusChange: Timestamp.now(),
             userName: pulseData.userName
@@ -239,9 +240,26 @@ export async function createPulse(pulseData: Omit<OperationPulse, 'id'>): Promis
 export async function endPulse(pulseId: string, endTime: Date): Promise<{ success: boolean; error?: string }> {
     try {
         const pulseRef = doc(firestore, 'operation_pulses', pulseId);
-        await updateDoc(pulseRef, { endTime: Timestamp.fromDate(endTime) });
+        const pulseSnap = await getDoc(pulseRef);
+        
+        if (pulseSnap.exists()) {
+            const pulseData = pulseSnap.data();
+            const userId = pulseData.userId;
+            
+            await updateDoc(pulseRef, { endTime: Timestamp.fromDate(endTime) });
+            
+            // Update user status back to 'Disponible' or 'Inactivo'
+            await updateDoc(doc(firestore, 'users', userId), {
+                currentStatus: 'Disponible',
+                currentReason: null,
+                currentPulseId: null,
+                lastStatusChange: Timestamp.now()
+            });
+        }
+        
         return { success: true };
     } catch (error: any) {
+        console.error("Error ending pulse:", error);
         return { success: false, error: `Error ending pulse: ${error.message}` };
     }
 }
