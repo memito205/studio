@@ -776,6 +776,7 @@ export interface ProductDatabaseItem {
   fecha?: string;
   grupo?: string;
   name?: string;
+  reference?: string; // Added for English-key compatibility
   description?: string | null;
   size?: string | null;
   merchandise_type?: string | null;

@@ -222,26 +222,31 @@ export async function lookupBarcode(barcode: string, operationId?: string): Prom
 
 export async function getProductByRefAndSize(reference: string, size: string): Promise<PackingScanResult> {
     try {
+        const refTrimmed = reference.trim();
         const sizeTrimmed = String(size).trim();
         const sizeAsNumber = parseFloat(sizeTrimmed);
 
-        // Query only by referencia (simple index)
-        const q = query(
-            collection(firestore, "productDatabase"), 
-            where("referencia", "==", reference.trim())
-        );
+        const productCollection = collection(firestore, "productDatabase");
         
-        const querySnapshot = await getDocs(q);
+        // Execute two queries to handle both Spanish and English field names
+        const q_es = query(productCollection, where("referencia", "==", refTrimmed));
+        const q_en = query(productCollection, where("reference", "==", refTrimmed));
         
-        if (querySnapshot.empty) {
+        const [snap_es, snap_en] = await Promise.all([getDocs(q_es), getDocs(q_en)]);
+        
+        // Combine all unique matching documents
+        const allDocs = [...snap_es.docs, ...snap_en.docs];
+        
+        if (allDocs.length === 0) {
             return { status: 'error', message: `No se encontró producto para la referencia ${reference}.`, scannedBarcode: '' };
         }
 
-        // Filter by size in the server side logic to avoid composite index requirement
-        const matchingDoc = querySnapshot.docs.find(docSnap => {
+        // Filter by size in the server side logic (resilient to field naming)
+        const matchingDoc = allDocs.find(docSnap => {
             const data = docSnap.data();
-            // Try both string and number comparison as sizes can be stored either way
-            const dbSize = data.talla;
+            const dbSize = data.talla !== undefined ? data.talla : data.size;
+            
+            if (dbSize === undefined || dbSize === null) return false;
             
             if (String(dbSize).trim() === sizeTrimmed) return true;
             if (!isNaN(sizeAsNumber) && typeof dbSize === 'number' && dbSize === sizeAsNumber) return true;
@@ -250,10 +255,14 @@ export async function getProductByRefAndSize(reference: string, size: string): P
         });
 
         if (matchingDoc) {
+            const data = convertTimestampsToDates(matchingDoc.data());
             const item: ProductDatabaseItem = {
-                ...(convertTimestampsToDates(matchingDoc.data()) as Omit<ProductDatabaseItem, 'id'>),
+                ...data,
                 id: matchingDoc.id,
                 codigoBarras: matchingDoc.id,
+                // Ensure both fields are present in the returned item for UI consistency
+                referencia: data.referencia || data.reference || '',
+                talla: data.talla || data.size || '',
             };
             return { status: 'success', message: `Producto encontrado: ${item.referencia} - ${item.talla}`, scannedBarcode: item.codigoBarras, item };
         }
@@ -740,10 +749,14 @@ export async function bulkUploadReceptionDataFromExcel(fileContent: string, user
             
             const productData = {
                 name: String(row[findCaseInsensitiveKey(row, 'descripción del producto') || ''] || ''),
+                item: String(row[findCaseInsensitiveKey(row, 'descripción del producto') || ''] || ''), // Duplicated for compatibility
                 barcode: barcode,
                 reference: String(row[findCaseInsensitiveKey(row, 'Referencia') || ''] || ''),
+                referencia: String(row[findCaseInsensitiveKey(row, 'Referencia') || ''] || ''), // Duplicated for compatibility
                 size: String(row[findCaseInsensitiveKey(row, 'Talla') || ''] || ''),
+                talla: String(row[findCaseInsensitiveKey(row, 'Talla') || ''] || ''), // Duplicated for compatibility
                 merchandise_type: String(row[findCaseInsensitiveKey(row, 'tipo_mercancia') || ''] || null),
+                marca: String(row[findCaseInsensitiveKey(row, 'tipo_mercancia') || ''] || null), // Duplicated for compatibility
                 updated_at: Timestamp.now(),
             };
 
