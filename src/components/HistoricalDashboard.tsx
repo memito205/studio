@@ -423,23 +423,30 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
   const deadTimeTrendData = useMemo(() => {
       const reasons: Record<string, number> = {};
       trendsData.forEach(d => {
-          const allPauses = [...(d.deadTimeReport || []), ...(d.microPausesReport || [])]
-          const reportToUse = selectedOperator === 'all' 
-               ? allPauses 
-               : allPauses.filter(dt => dt.packerName === selectedOperator);
-               
-          reportToUse.forEach(dt => {
-              // Extracting exactly what caused the problem (fixing the undefined bug)
-              let reasonLabel = dt.justification?.trim() || dt.status?.trim() || 'Desconocido/Sin justificar';
-              
-              // Tiempos excedentes se consideran 'No Justificado' por reglas de negocio logísticas
-              if (reasonLabel.toLowerCase().includes('excedente')) {
-                 reasonLabel = 'No Justificado';
-              }
-              
-              if (!reasons[reasonLabel]) reasons[reasonLabel] = 0;
-              reasons[reasonLabel] += (dt.duration / 60) || 0;
-          });
+          // New architecture: use summary fallback
+          if (d.deadTimeSummary || d.microPausesSummary) {
+              const allSummaries = [...(d.deadTimeSummary || []), ...(d.microPausesSummary || [])];
+              allSummaries.forEach(s => {
+                  const reasonLabel = s.type || 'Sin justificar';
+                  if (!reasons[reasonLabel]) reasons[reasonLabel] = 0;
+                  reasons[reasonLabel] += (s.totalMinutes / 60) || 0;
+              });
+          } else {
+              // Legacy/Detailed fallback
+              const allPauses = [...(d.deadTimeReport || []), ...(d.microPausesReport || [])]
+              const reportToUse = selectedOperator === 'all' 
+                   ? allPauses 
+                   : allPauses.filter(dt => dt.packerName === selectedOperator);
+                   
+              reportToUse.forEach(dt => {
+                  let reasonLabel = dt.justification?.trim() || dt.status?.trim() || 'Desconocido/Sin justificar';
+                  if (reasonLabel.toLowerCase().includes('excedente')) {
+                     reasonLabel = 'No Justificado';
+                  }
+                  if (!reasons[reasonLabel]) reasons[reasonLabel] = 0;
+                  reasons[reasonLabel] += (dt.duration / 60) || 0;
+              });
+          }
       });
       return Object.entries(reasons)
           .map(([reason, horas]) => ({ reason, horas: Number(horas.toFixed(2)) }))

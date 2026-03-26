@@ -169,6 +169,7 @@ export async function saveReportToHistory(reportData: ProcessedReportData) {
             deadTimeSummary: reportData.deadTimeSummary,
             microPausesSummary: reportData.microPausesSummary,
             packerBrandProductivityDetail: reportData.packerBrandProductivityDetail,
+            hourlyProductivity: reportData.hourlyProductivity,
         };
 
         // 2. Try to save the full snapshot with aggressive pruning on failure

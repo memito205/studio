@@ -681,6 +681,7 @@ export interface ReportSummary {
     deadTimeSummary?: DeadTimeSummaryEntry[];
     microPausesSummary?: DeadTimeSummaryEntry[];
     packerBrandProductivityDetail?: PackerBrandProductivityDetail[];
+    hourlyProductivity?: HourlyProductivity[];
 }
 
 export interface ReportConfiguration {
