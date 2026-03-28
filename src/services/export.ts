@@ -31,7 +31,23 @@ export const exportToXlsx = (data: any[], fileName: string): void => {
         console.error("Could not auto-size columns, using default.", e);
     }
     
-    XLSX.writeFile(workbook, `${fileName}.xlsx`);
+    // Generate XLSX binary
+    const wbout = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    
+    // Trigger download manually
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${fileName}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    
+    // Cleanup
+    setTimeout(() => {
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+    }, 100);
 };
 
 // Interface for combined detailed item data for export
@@ -127,7 +143,20 @@ export const exportOperationReportsToExcel = ({
   XLSX.utils.book_append_sheet(workbook, scannedItemsSheet, 'Items Escaneados');
 
   const fileName = `Reporte_Operacion_${operation.rk_identifier}_${new Date().toISOString().slice(0, 10)}.xlsx`;
-  XLSX.writeFile(workbook, fileName);
+  
+  // Generate XLSX binary and trigger download manually
+  const wbout = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+  const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  }, 100);
 };
 
 // Function for ReportsPage.tsx to export general operation reports
@@ -141,8 +170,8 @@ export const exportReportsToExcel = (reports: OperationReport[]) => {
     'Cantidad Esperada': report.expected_quantity,
     'Cantidad Leída': report.totalScannedQuantity,
     'Estado Cantidad': report.quantityStatus.text,
-    'Tiempo (min)': report.timeSpentInMinutes.toFixed(2),
-    'Prod. Real (u/h)': report.actualProductivity.toFixed(2),
+    'Tiempo (min)': (report.timeSpentInMinutes || 0).toFixed(2),
+    'Prod. Real (u/h)': (report.actualProductivity || 0).toFixed(2),
     'Prod. Esperada (u/h)': report.expectedProductivity?.toFixed(2) || 'N/A',
     'Estado Operación': report.status,
     'Unidades Empaque': report.uniquePackingUnitNames?.join(', ') || 'N/A',
@@ -154,7 +183,20 @@ export const exportReportsToExcel = (reports: OperationReport[]) => {
   XLSX.utils.book_append_sheet(workbook, ws, 'Reporte General Operaciones');
 
   const fileName = `Reporte_General_Operaciones_${new Date().toISOString().slice(0, 10)}.xlsx`;
-  XLSX.writeFile(workbook, fileName);
+  
+  // Generate XLSX binary and trigger download manually
+  const wbout = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+  const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  }, 100);
 };
 
     

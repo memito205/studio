@@ -5,16 +5,16 @@ import React, { useEffect, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { UploadCloud, Loader2, PackageCheck, ArrowLeft, Database, Boxes, BarChart2, Printer, Send, Lock, Compass } from 'lucide-react';
+import { UploadCloud, Loader2, PackageCheck, ArrowLeft, Database, Boxes, BarChart2, Printer, Send, Lock, Compass, Download } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import type { WholesaleOrder, WholesaleOrderDetail, OrderStatus, ProductDatabaseItem, PackingSession, PreprintedLabel, PackedItem } from '@/types';
 import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrder } from '@/app/actions';
-import { firebaseError } from '@/services/firebase';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
+import { exportToXlsx } from '@/services/export';
 import { LabelPrintDialog } from './LabelPrintDialog';
 import { excelSerialDateToJSDate } from '@/lib/parsingUtils';
 import { Checkbox } from './ui/checkbox';
@@ -201,6 +201,21 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
     });
   };
 
+  const handleDownloadTemplate = () => {
+    // Create a link to the static template in the public folder
+    const link = document.createElement('a');
+    link.href = '/templates/plantilla_pedidos_mayorista.xlsx';
+    link.setAttribute('download', 'plantilla_pedidos_mayorista.xlsx');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    toast({
+      title: "Plantilla descargada",
+      description: "Se ha descargado la plantilla de Excel."
+    });
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     e.preventDefault();
     const file = e.target.files?.[0];
@@ -238,7 +253,7 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
                 ordersMap.set(orderId, {
                     id: orderId,
                     vendedor: String(row['Nombre vendedor'] || ''),
-                    fecha: orderDate,
+                    fecha: orderDate.toISOString(),
                     bodega: String(row['Bodega'] || ''),
                     cliente: String(row['Razón social cliente despacho'] || ''),
                     sucursal: String(row['Sucursal factura'] || ''),
@@ -334,6 +349,10 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
                 <UploadCloud className="mr-2 h-4 w-4" />
               )}
               Cargar Pedidos
+            </Button>
+            <Button onClick={handleDownloadTemplate} variant="outline" className="border-primary/50 text-primary hover:bg-primary/5">
+                <Download className="mr-2 h-4 w-4" />
+                Descargar Plantilla
             </Button>
             <Button onClick={onNavigateToDispatchDashboard} variant="default">
                 <Compass className="mr-2 h-4 w-4" />

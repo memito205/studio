@@ -10,7 +10,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ArrowLeft, LayoutGrid, Package, Check, AlertTriangle, ScanLine, Clock, X, Archive, ArchiveRestore, Tag, Search, Pencil, Trash2, FileDown, Timer, BarChartHorizontal, Play, Pause, Loader2, Trophy, AlarmClockOff, Eye, RotateCcw } from 'lucide-react';
 import type { WholesaleOrder, ProductDatabaseItem, PackingScanResult, PackingSession, PackingUnit, PackedItem, UnitSearchResult, WholesaleOrderDetail, PauseReason, LabelValidationResult, PackingPause, OperationPulse, PreprintedLabel } from '@/types';
-import { validateLabel, markLabelAsUsed, savePackingSession, updateOrderStatus, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, lookupBarcode, getUserPulsesForDay } from '@/app/actions';
+import { validateLabel, markLabelAsUsed, savePackingSession, updateOrderStatus, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, lookupBarcode, getUserPulsesForDay, bulkDeletePackedItems, revertLabelStatus } from '@/app/actions';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
@@ -67,7 +67,11 @@ const pauseReasonLabels: Record<PauseReason, string> = {
 };
 
 
-const createItemKey = (ref: string, talla: string) => `${ref.trim()}-${talla.trim()}`;
+const createItemKey = (ref: any, talla: any) => {
+    const r = (ref || '').toString().trim();
+    const t = (talla || '').toString().trim();
+    return `${r}-${t}`;
+};
 
 const PauseDialog: React.FC<{
     isOpen: boolean;
@@ -217,6 +221,15 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     }, [packingOrder.order.id, toast]);
 
     useEffect(() => {
+        if (!session.startTime) {
+            const now = new Date();
+            const updatedSession = { ...session, startTime: now };
+            setSession(updatedSession);
+            onSessionChange(updatedSession);
+        }
+    }, [session.startTime, onSessionChange]);
+
+    useEffect(() => {
         fetchPackedItems();
     }, [fetchPackedItems]);
 
@@ -303,7 +316,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             const result = await lookupBarcode(barcode, packingOrder.order.id);
             setLastScan(result);
 
-            if (result.status === 'success' && result.item) {
+            if (result.status === 'success' && result.item && (result.item.referencia || result.item.reference)) {
                 const itemKey = createItemKey(result.item.referencia, result.item.talla);
                 const detail = packingOrder.order.details.find(d => createItemKey(d.referencia, d.talla) === itemKey);
                 const orderedQty = detail?.cantidad || 0;
@@ -332,8 +345,8 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 if (itemsInActiveUnit.length > 0) {
                     const firstItemKey = itemsInActiveUnit[0].itemKey;
                     const expectedReference = firstItemKey.split('-')[0];
-                    const newReference = result.item.referencia.trim();
-                    if (newReference !== expectedReference) {
+                    const newReference = (result.item.referencia || '').toString().trim();
+                    if (newReference && expectedReference && newReference !== expectedReference) {
                         setMixedReferenceError({ show: true, expected: expectedReference, scanned: newReference });
                         return;
                     }
@@ -442,7 +455,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     
         // Perform DB operations
         if (unitToDelete?.labelBarcode) {
-            // Revert label status
+            await revertLabelStatus(unitToDelete.labelBarcode);
         }
     
         const saveResult = await savePackingSession(newSessionState);
@@ -450,7 +463,9 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         if (saveResult.success) {
             // Also delete all packedItems associated with this unit
             const itemsToDelete = allPackedItems.filter(item => item.packingUnitId === unitToDelete?.firestoreId).map(item => item.id);
-            // await bulkDeletePackedItems(itemsToDelete); // A new action would be needed
+            if (itemsToDelete.length > 0) {
+                await bulkDeletePackedItems(itemsToDelete);
+            }
             fetchPackedItems(); // Refresh data
             toast({ title: 'Unidad Eliminada', description: `La unidad #${unitIdToDelete} ha sido eliminada.` });
             setIsUnitContentDialogOpen(false); // Close dialog if open
@@ -633,8 +648,8 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         if (lastScan?.status === 'success' && lastScan.item) {
             const itemKey = createItemKey(lastScan.item.referencia, lastScan.item.talla);
             const detail = packingOrder.order.details.find(d => 
-                d.referencia.trim() === lastScan.item!.referencia.trim() && 
-                d.talla.trim() === lastScan.item!.talla.trim()
+                (d.referencia || '').toString().trim() === (lastScan.item?.referencia || '').toString().trim() && 
+                (d.talla || '').toString().trim() === (lastScan.item?.talla || '').toString().trim()
             );
             const ordered = detail?.cantidad || 0;
             const packed = userPackingProgress[itemKey] || 0;
@@ -645,7 +660,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     
     const groupedAndFilteredDetails = useMemo(() => {
         const grouped = packingOrder.order.details.reduce((acc, detail) => {
-            const refKey = detail.referencia.trim();
+            const refKey = (detail.referencia || '').toString().trim();
             if (!acc[refKey]) {
                 acc[refKey] = {
                     referencia: refKey,
@@ -654,7 +669,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 };
             }
             
-            const tallaKey = detail.talla.trim();
+            const tallaKey = (detail.talla || '').toString().trim();
             const packedKey = createItemKey(refKey, tallaKey);
             const packed = globalPackingProgress[packedKey] || 0;
             
@@ -682,7 +697,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     
         const dataToExport = Array.from(packedRefs).map(ref => {
             const orderedTotal = packingOrder.order.details
-                .filter(d => d.referencia.trim() === ref)
+                .filter(d => (d.referencia || '').toString().trim() === ref)
                 .reduce((sum, d) => sum + d.cantidad, 0);
             
             const packedTotal = Object.entries(packedByRefTalla)
@@ -702,9 +717,9 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             const detailedData = [];
             for (const refData of dataToExport) {
                 const ref = refData.Referencia;
-                const detailsForRef = packingOrder.order.details.filter(d => d.referencia.trim() === ref);
+                const detailsForRef = packingOrder.order.details.filter(d => (d.referencia || '').toString().trim() === ref);
                 for (const detail of detailsForRef) {
-                    const talla = detail.talla.trim();
+                    const talla = (detail.talla || '').toString().trim();
                     const itemKey = createItemKey(ref, talla);
                     const packedQty = packedByRefTalla[itemKey] || 0;
                     const diff = packedQty - detail.cantidad;

@@ -11,14 +11,14 @@ import { Label } from './ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { findCaseInsensitiveKey, parseFlexibleDate } from '@/lib/parsingUtils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { calculateAnalysis } from '@/services/distributionEngine';
+import { calculateAnalysis } from '@/services/tulasEngine';
 import type { TulaRotation, AnalysisResults } from '@/types';
 import { StatCard } from './StatCard';
-import { ResponsiveContainer, BarChart as RechartsBarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
+import { ResponsiveContainer, BarChart as RechartsBarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend } from 'recharts';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { exportToXlsx } from '@/services/export';
-import { TooltipProvider, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
+import { Tooltip, TooltipProvider, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
@@ -375,7 +375,7 @@ export const TulasDistribucion: React.FC<TulasDistribucionProps> = ({ onReturn }
                                     <CartesianGrid strokeDasharray="3 3" stroke="#4A5568" />
                                     <XAxis dataKey="date" tickFormatter={(date) => format(new Date(date), "dd MMM", { locale: es })} />
                                     <YAxis />
-                                    <Tooltip />
+                                    <RechartsTooltip />
                                     <Legend />
                                     <Bar dataKey="tulasEnCirculacion" name="Tulas en Circulación" fill="#38bdf8" />
                                 </RechartsBarChart>
@@ -400,7 +400,7 @@ export const TulasDistribucion: React.FC<TulasDistribucionProps> = ({ onReturn }
                                             <TooltipTrigger asChild>
                                               <Info className="inline-block ml-1 h-4 w-4 text-muted-foreground cursor-help" />
                                             </TooltipTrigger>
-                                            <TooltipContent>
+                                            <TooltipContent className="bg-white border-slate-200 shadow-lg rounded-xl p-3 text-slate-900">
                                               <p className="max-w-xs">
                                                 (Prom. Viajes/Día × Días de Ciclo) + 20% de seguridad.
                                                 <br/>
@@ -447,7 +447,7 @@ export const TulasDistribucion: React.FC<TulasDistribucionProps> = ({ onReturn }
                                     <CartesianGrid strokeDasharray="3 3" />
                                     <XAxis dataKey="week" tickFormatter={(week) => format(new Date(week), "dd MMM", { locale: es })} />
                                     <YAxis />
-                                    <Tooltip />
+                                    <RechartsTooltip />
                                     <Legend />
                                     <Bar dataKey="count" name="Nº de Tulas" fill="#8884d8" />
                                 </RechartsBarChart>
@@ -462,7 +462,7 @@ export const TulasDistribucion: React.FC<TulasDistribucionProps> = ({ onReturn }
                                     <CartesianGrid strokeDasharray="3 3" />
                                     <XAxis dataKey="month" tickFormatter={(month) => format(new Date(`${month}-02`), "MMM yyyy", { locale: es })} />
                                     <YAxis />
-                                    <Tooltip />
+                                    <RechartsTooltip />
                                     <Legend />
                                     <Bar dataKey="count" name="Nº de Tulas" fill="#82ca9d" />
                                 </RechartsBarChart>

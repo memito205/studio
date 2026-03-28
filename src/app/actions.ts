@@ -1170,6 +1170,37 @@ export async function deletePackedItem(itemId: string): Promise<{ success: boole
     }
 }
 
+export async function bulkDeletePackedItems(itemIds: string[]): Promise<{ success: boolean, error?: string }> {
+    if (!itemIds || itemIds.length === 0) return { success: true };
+    try {
+        const batch = writeBatch(firestore);
+        itemIds.forEach(id => {
+            batch.delete(doc(firestore, "packedItems", id));
+        });
+        await batch.commit();
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error in bulk delete:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function revertLabelStatus(labelId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        const labelRef = doc(firestore, "preprintedLabels", labelId);
+        await updateDoc(labelRef, {
+            status: 'available',
+            usedAt: deleteField(),
+            unitId: deleteField(),
+            usedBy: deleteField(),
+        });
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error reverting label status:", error);
+        return { success: false, error: `Failed to revert label status: ${error.message}` };
+    }
+}
+
 // --- Dispatch Actions ---
 
 export async function getShipments(): Promise<{ success: boolean; data?: DispatchSessionInfo[]; error?: string; }> {
@@ -1434,10 +1465,14 @@ export async function lookupBarcode(barcode: string, operationId?: string): Prom
         const docRef = doc(firestore, "productDatabase", trimmedBarcode);
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
+            const data = docSnap.data();
             const item: ProductDatabaseItem = {
-              ...(convertTimestampsToDates(docSnap.data()) as Omit<ProductDatabaseItem, 'id'>),
+              ...(convertTimestampsToDates(data) as Omit<ProductDatabaseItem, 'id'>),
               id: docSnap.id,
               codigoBarras: docSnap.id,
+              // Normalize fields
+              referencia: data.referencia || data.reference || '',
+              talla: data.talla || data.size || '',
             };
             return { status: 'success', message: `Producto encontrado: ${item.referencia}`, scannedBarcode: trimmedBarcode, item };
         }
@@ -1455,10 +1490,10 @@ export async function lookupBarcode(barcode: string, operationId?: string): Prom
                     const item: ProductDatabaseItem = {
                         id: trimmedBarcode,
                         codigoBarras: trimmedBarcode,
-                        referencia: expectedItem.reference,
-                        talla: expectedItem.size,
+                        referencia: expectedItem.reference || (expectedItem as any).referencia || '',
+                        talla: expectedItem.size || (expectedItem as any).talla || '',
                         item: expectedItem.item,
-                        marca: undefined, // Or try to deduce
+                        marca: undefined,
                     };
                     return { status: 'success', message: `Producto encontrado en la orden: ${item.referencia}`, scannedBarcode: trimmedBarcode, item };
                 }
