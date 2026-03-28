@@ -1,4 +1,3 @@
-
 "use client";
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
@@ -8,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogClose } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ArrowLeft, LayoutGrid, Package, Check, AlertTriangle, ScanLine, Clock, X, Archive, ArchiveRestore, Tag, Search, Pencil, Trash2, FileDown, Timer, BarChartHorizontal, Play, Pause, Loader2, Trophy, AlarmClockOff, Eye, RotateCcw } from 'lucide-react';
+import { ArrowLeft, LayoutGrid, Package, Check, AlertTriangle, ScanLine, Clock, X, Archive, ArchiveRestore, Tag, Search, Pencil, Trash2, FileDown, Timer, BarChartHorizontal, Play, Pause, Loader2, Trophy, AlarmClockOff, Eye, RotateCcw, History } from 'lucide-react';
 import type { WholesaleOrder, ProductDatabaseItem, PackingScanResult, PackingSession, PackingUnit, PackedItem, UnitSearchResult, WholesaleOrderDetail, PauseReason, LabelValidationResult, PackingPause, OperationPulse, PreprintedLabel } from '@/types';
 import { validateLabel, markLabelAsUsed, savePackingSession, updateOrderStatus, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, lookupBarcode, getUserPulsesForDay, bulkDeletePackedItems, revertLabelStatus } from '@/app/actions';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
@@ -479,7 +478,10 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     };
     
     const handleDeleteItem = async (unitId: number, itemKey: string) => {
-        const itemToDelete = allPackedItems.find(item => item.packingUnitId === activeUnit?.firestoreId && item.itemKey === itemKey);
+        const unit = session.units.find(u => u.id === unitId);
+        if (!unit) return;
+        
+        const itemToDelete = allPackedItems.find(item => item.packingUnitId === unit.firestoreId && item.itemKey === itemKey);
         if (itemToDelete) {
             const result = await deletePackedItem(itemToDelete.id);
             if (result.success) {
@@ -491,20 +493,84 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         }
     };
 
-    const handleEditItemQuantity = async (item: PackedItem, newQuantity: number) => {
+    const handleEditItemQuantity = async (unitId: number, itemKey: string, newQuantity: number) => {
+        const unit = session.units.find(u => u.id === unitId);
+        if (!unit) return;
+
+        // Find all packed items for this unit and itemKey
+        const itemsToUpdate = allPackedItems.filter(i => i.packingUnitId === unit.firestoreId && i.itemKey === itemKey);
+        
         if (newQuantity > 0) {
-            const result = await updatePackedItem(item.id, { quantity: newQuantity });
-            if (result.success) {
-                fetchPackedItems();
-            } else {
-                toast({ variant: 'destructive', title: 'Error de Actualización', description: result.error });
+            // In this specific system, we might have multiple PackedItem docs for the same itemKey.
+            // Simplified: we update the first one's quantity to match the total requested, 
+            // or we adjust across all of them. Usually, there's only one entry per itemKey per box.
+            if (itemsToUpdate.length > 0) {
+                const totalCurrent = itemsToUpdate.reduce((sum, i) => sum + i.quantity, 0);
+                if (totalCurrent === newQuantity) return;
+
+                // For simplicity, we'll update the first one and delete the rest, or just adjust the first one.
+                const firstItem = itemsToUpdate[0];
+                const result = await updatePackedItem(firstItem.id, { quantity: newQuantity });
+                
+                if (itemsToUpdate.length > 1) {
+                    for (let i = 1; i < itemsToUpdate.length; i++) {
+                        await deletePackedItem(itemsToUpdate[i].id);
+                    }
+                }
+
+                if (result.success) {
+                    fetchPackedItems();
+                } else {
+                    toast({ variant: 'destructive', title: 'Error', description: result.error });
+                }
             }
         } else {
-            const itemToDelete = allPackedItems.find(i => i.id === item.id);
-            if(itemToDelete) {
-                await deletePackedItem(itemToDelete.id);
+            if (itemsToUpdate.length > 0) {
+                for (const item of itemsToUpdate) {
+                    await deletePackedItem(item.id);
+                }
                 fetchPackedItems();
             }
+        }
+    };
+
+    const handleEditItemTalla = async (unitId: number, itemKey: string, newTalla: string) => {
+        if (!newTalla.trim()) return;
+        
+        const unit = session.units.find(u => u.id === unitId);
+        if (!unit) return;
+
+        const itemsToUpdate = allPackedItems.filter(i => i.packingUnitId === unit.firestoreId && i.itemKey === itemKey);
+        if (itemsToUpdate.length === 0) return;
+
+        const firstItem = itemsToUpdate[0];
+        const oldTalla = firstItem.item?.talla || firstItem.item?.size || '';
+        if (oldTalla.trim().toLowerCase() === newTalla.trim().toLowerCase()) return;
+
+        // Calculate new itemKey
+        const reference = firstItem.item?.referencia || firstItem.item?.reference || '';
+        const newItemKey = createItemKey(reference, newTalla);
+
+        setIsLoading(true);
+        try {
+            for (const item of itemsToUpdate) {
+                const updatedItemData = { 
+                    ...item.item,
+                    talla: newTalla,
+                    size: newTalla // ensure both are updated
+                } as ProductDatabaseItem;
+
+                await updatePackedItem(item.id, { 
+                    itemKey: newItemKey,
+                    item: updatedItemData
+                });
+            }
+            toast({ title: 'Talla Actualizada', description: `Se cambió de ${oldTalla} a ${newTalla}` });
+            fetchPackedItems();
+        } catch (error: any) {
+            toast({ variant: 'destructive', title: 'Error', description: error.message });
+        } finally {
+            setIsLoading(false);
         }
     };
 
@@ -793,15 +859,16 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
        <CloseUnitDialog isOpen={isCloseUnitDialogOpen} onOpenChange={setIsCloseUnitDialogOpen} onConfirm={handleCloseUnit} isLoading={isClosingUnit} />
        <PauseDialog isOpen={isPauseDialogOpen} onOpenChange={setIsPauseDialogOpen} onConfirm={handlePause} />
        <UnitContentDialog 
-            unit={selectedUnit}
-            session={session}
-            isOpen={isUnitContentDialogOpen}
-            onOpenChange={setIsUnitContentDialogOpen}
-            onDeleteItem={handleDeleteItem}
-            onEditItemQuantity={handleEditItemQuantity}
-            onReopenUnit={handleReopenUnit}
-            onDeleteUnit={handleDeleteUnit}
-       />
+             unit={selectedUnit}
+             session={session}
+             isOpen={isUnitContentDialogOpen}
+             onOpenChange={setIsUnitContentDialogOpen}
+             onDeleteItem={handleDeleteItem}
+             onEditItemQuantity={handleEditItemQuantity}
+             onEditItemTalla={handleEditItemTalla}
+             onReopenUnit={handleReopenUnit}
+             onDeleteUnit={handleDeleteUnit}
+        />
        <Card>
         <CardHeader className="flex flex-row justify-between items-center flex-wrap gap-4">
           <div>
@@ -910,11 +977,11 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 <span className="font-medium text-muted-foreground">Tiempo Total</span>
                 <span className="font-bold text-lg font-mono">{productivityStats.totalElapsedTimeFormatted}</span>
             </div>
-             <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
+            <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
                 <span className="font-medium text-muted-foreground">Tiempo Efectivo</span>
                 <span className="font-bold text-lg font-mono text-green-600">{productivityStats.effectiveWorkTimeFormatted}</span>
             </div>
-             <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
+            <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
                 <span className="font-medium text-muted-foreground">Mi Productividad</span>
                 <span className="font-bold text-lg">{productivityStats.unitsPerHour} <span className="text-sm font-normal text-muted-foreground">u/hr</span></span>
             </div>
@@ -922,7 +989,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 <span className="font-medium text-muted-foreground flex items-center gap-2"><Trophy /> Mi Cumplimiento</span>
                 <span className={cn("font-bold text-lg", getComplianceColor(parseFloat(productivityStats.compliance)))}>{productivityStats.compliance}%</span>
             </div>
-             <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
+            <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
                 <span className="font-medium text-muted-foreground">Mis Unidades</span>
                 <span className="font-bold text-lg">{totalUserPackedQuantity}</span>
             </div>
@@ -970,6 +1037,76 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
            )}
         </CardContent>
        </Card>
+
+         <Card>
+            <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                    <History className="w-6 h-6 text-primary" />
+                    Historial de Unidades del Pedido
+                </CardTitle>
+                <CardDescription>Todas las cajas creadas para este pedido.</CardDescription>
+            </CardHeader>
+            <CardContent>
+                <div className="max-h-80 overflow-y-auto">
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead>ID</TableHead>
+                                <TableHead>Estado</TableHead>
+                                <TableHead>Etiqueta</TableHead>
+                                <TableHead className="text-right">Items</TableHead>
+                                <TableHead className="text-center">Acciones</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {[...session.units].sort((a,b) => b.id - a.id).map((unit) => {
+                                const unitItems = allPackedItems.filter(i => i.packingUnitId === unit.firestoreId);
+                                const totalQty = unitItems.reduce((sum, i) => sum + i.quantity, 0);
+                                return (
+                                    <TableRow key={unit.firestoreId}>
+                                        <TableCell className="font-bold">#{unit.id}</TableCell>
+                                        <TableCell>
+                                            <Badge variant={unit.status === 'open' ? 'default' : 'secondary'}>
+                                                {unit.status === 'open' ? 'Abierta' : 'Cerrada'}
+                                            </Badge>
+                                        </TableCell>
+                                        <TableCell className="font-mono text-xs">{unit.labelBarcode || '-'}</TableCell>
+                                        <TableCell className="text-right font-bold">{totalQty}</TableCell>
+                                        <TableCell className="text-center space-x-2">
+                                            <Button variant="outline" size="sm" onClick={() => handleViewUnitContent(unit)}>
+                                                <Eye className="mr-2 h-4 w-4" /> Ver/Editar
+                                            </Button>
+                                            <AlertDialog>
+                                                <AlertDialogTrigger asChild>
+                                                    <Button variant="destructive" size="sm">
+                                                        <Trash2 className="h-4 w-4" />
+                                                    </Button>
+                                                </AlertDialogTrigger>
+                                                <AlertDialogContent>
+                                                    <AlertDialogHeader>
+                                                        <AlertDialogTitle>¿Eliminar Unidad #{unit.id}?</AlertDialogTitle>
+                                                        <AlertDialogDescription>Esta acción borrará la caja y todos sus productos de forma permanente.</AlertDialogDescription>
+                                                    </AlertDialogHeader>
+                                                    <AlertDialogFooter>
+                                                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                                        <AlertDialogAction onClick={() => handleDeleteUnit(unit.id)}>Eliminar</AlertDialogAction>
+                                                    </AlertDialogFooter>
+                                                </AlertDialogContent>
+                                            </AlertDialog>
+                                        </TableCell>
+                                    </TableRow>
+                                );
+                            })}
+                            {session.units.length === 0 && (
+                                <TableRow>
+                                    <TableCell colSpan={5} className="text-center text-muted-foreground py-8">No hay unidades creadas aún.</TableCell>
+                                </TableRow>
+                            )}
+                        </TableBody>
+                    </Table>
+                </div>
+            </CardContent>
+        </Card>
 
         <Card>
             <CardHeader>
@@ -1116,6 +1253,3 @@ const StatDisplay: React.FC<{title: string, value: string | number, variant?: 'd
         <p className={cn("text-4xl font-bold", variant === 'success' ? 'text-green-600' : 'text-foreground')}>{value}</p>
     </div>
 )
-
-
-    

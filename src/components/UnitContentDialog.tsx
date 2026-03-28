@@ -16,12 +16,13 @@ interface UnitContentDialogProps {
     isOpen: boolean; 
     onOpenChange: (open: boolean) => void;
     onDeleteItem: (unitId: number, itemKey: string) => void;
-    onEditItemQuantity: (item: PackedItem, newQuantity: number) => void;
+    onEditItemQuantity: (unitId: number, itemKey: string, newQuantity: number) => void;
+    onEditItemTalla: (unitId: number, itemKey: string, newTalla: string) => void;
     onReopenUnit: (unitId: number) => void;
-    onDeleteUnit: (unitId: number) => void; // Add this prop
+    onDeleteUnit: (unitId: number) => void;
 }
 
-export const UnitContentDialog: React.FC<UnitContentDialogProps> = ({ unit, session, isOpen, onOpenChange, onDeleteItem, onEditItemQuantity, onReopenUnit, onDeleteUnit }) => {
+export const UnitContentDialog: React.FC<UnitContentDialogProps> = ({ unit, session, isOpen, onOpenChange, onDeleteItem, onEditItemQuantity, onEditItemTalla, onReopenUnit, onDeleteUnit }) => {
 
     const unitToShow = session.units.find(u => u.id === unit?.id);
 
@@ -54,12 +55,19 @@ export const UnitContentDialog: React.FC<UnitContentDialogProps> = ({ unit, sess
                                 itemsInUnit.map(([key, packedItem]) => (
                                     <TableRow key={key}>
                                         <TableCell className="font-medium">{packedItem.item.referencia}</TableCell>
-                                        <TableCell>{packedItem.item.talla}</TableCell>
+                                        <TableCell>
+                                            <Input
+                                                type="text"
+                                                defaultValue={packedItem.item.talla}
+                                                onBlur={(e) => onEditItemTalla(unitToShow.id, key, e.target.value)}
+                                                className="w-20 text-center"
+                                            />
+                                        </TableCell>
                                         <TableCell className="text-center">
                                            <Input
                                                 type="number"
                                                 defaultValue={packedItem.packedQuantity}
-                                                onBlur={(e) => onEditItemQuantity(packedItem, parseInt(e.target.value, 10) || 0)}
+                                                onBlur={(e) => onEditItemQuantity(unitToShow.id, key, parseInt(e.target.value, 10) || 0)}
                                                 className="w-20 mx-auto text-center"
                                                 min="0"
                                            />
