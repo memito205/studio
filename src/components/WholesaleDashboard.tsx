@@ -1,7 +1,7 @@
 
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -319,14 +319,44 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
 
   const ordersByStatus = React.useMemo(() => {
     return orders.reduce((acc, order) => {
-      const status = order.status;
-      if (!acc[status]) {
-        acc[status] = [];
-      }
-      acc[status].push(order);
-      return acc;
-    }, {} as Record<OrderStatus, WholesaleOrder[]>);
-  }, [orders]);
+        const packedUnits = allPackedItems.filter(item => item.orderId === order.id).reduce((sum, item) => sum + item.quantity, 0);
+        let status = order.status || 'Pte Empaque';
+        
+        // Logical correction for UI grouping
+        if (status === 'Pte Empaque' && packedUnits > 0) {
+            status = 'En Empaque';
+        } else if (status === 'En Empaque' && packedUnits >= order.cantidadTotal && order.cantidadTotal > 0) {
+            status = 'Empacado';
+        }
+        
+        if (!acc[status]) acc[status] = [];
+        acc[status].push({ ...order, status }); // Pass corrected status to children
+        return acc;
+    }, {} as Record<string, WholesaleOrder[]>);
+  }, [orders, allPackedItems]);
+
+  // Background sync for stale statuses
+  useEffect(() => {
+    const syncStatuses = async () => {
+        for (const order of orders) {
+            const packedUnits = allPackedItems.filter(item => item.orderId === order.id).reduce((sum, item) => sum + item.quantity, 0);
+            let targetStatus: OrderStatus | null = null;
+
+            if (order.status === 'Pte Empaque' && packedUnits > 0) {
+                targetStatus = 'En Empaque';
+            } else if (order.status === 'En Empaque' && packedUnits >= order.cantidadTotal && order.cantidadTotal > 0) {
+                targetStatus = 'Empacado';
+            }
+
+            if (targetStatus) {
+                await updateOrderStatus(order.id, targetStatus);
+            }
+        }
+    };
+    if (orders.length > 0 && allPackedItems.length > 0) {
+        syncStatuses();
+    }
+  }, [orders.length, allPackedItems.length]);
   
   return (
     <div className="space-y-8">
