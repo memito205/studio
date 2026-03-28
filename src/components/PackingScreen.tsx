@@ -239,8 +239,13 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     }, [session, onSessionChange]);
 
     useEffect(() => {
-        barcodeInputRef.current?.focus();
-    }, [lastScan]);
+        if (!isLoading && session.status === 'active') {
+            const timer = setTimeout(() => {
+                barcodeInputRef.current?.focus();
+            }, 50);
+            return () => clearTimeout(timer);
+        }
+    }, [isLoading, session.status]);
     
     const activeUnit = useMemo(() => {
         if (!user) return null;
@@ -373,7 +378,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             setIsLoading(false);
             if (barcodeInput) {
                 barcodeInput.value = '';
-                barcodeInput.focus();
             }
         }
     };
@@ -435,7 +439,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
         setIsClosingUnit(false);
         setIsCloseUnitDialogOpen(false);
-        barcodeInputRef.current?.focus();
     };
 
 
