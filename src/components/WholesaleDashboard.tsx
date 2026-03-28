@@ -51,6 +51,7 @@ const OrderTable: React.FC<{
       case 'Pte Empaque': return 'warning';
       case 'En Empaque': return 'default';
       case 'Empacado': return 'success';
+      case 'En Cargue': return 'default';
       case 'Despachado': return 'secondary';
       case 'Cancelado': return 'destructive';
       default: return 'secondary';
@@ -385,10 +386,11 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
              </div>
           ) : (
             <Tabs defaultValue="Pte Empaque" className="w-full">
-              <TabsList className="grid w-full grid-cols-5">
+              <TabsList className="grid w-full grid-cols-6">
                 <TabsTrigger value="Pte Empaque">Pendiente Empaque ({ordersByStatus['Pte Empaque']?.length || 0})</TabsTrigger>
                 <TabsTrigger value="En Empaque">En Empaque ({ordersByStatus['En Empaque']?.length || 0})</TabsTrigger>
                 <TabsTrigger value="Empacado">Empacado ({ordersByStatus['Empacado']?.length || 0})</TabsTrigger>
+                <TabsTrigger value="En Cargue">En Cargue ({ordersByStatus['En Cargue']?.length || 0})</TabsTrigger>
                 <TabsTrigger value="Despachado">Despachado ({ordersByStatus['Despachado']?.length || 0})</TabsTrigger>
                 <TabsTrigger value="Cancelado">Cancelado ({ordersByStatus['Cancelado']?.length || 0})</TabsTrigger>
               </TabsList>
@@ -400,6 +402,9 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
               </TabsContent>
               <TabsContent value="Empacado" className="mt-4">
                   <OrderTable orders={ordersByStatus['Empacado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} />
+              </TabsContent>
+              <TabsContent value="En Cargue" className="mt-4">
+                  <OrderTable orders={ordersByStatus['En Cargue'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} />
               </TabsContent>
               <TabsContent value="Despachado" className="mt-4">
                   <OrderTable orders={ordersByStatus['Despachado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} />

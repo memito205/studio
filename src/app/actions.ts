@@ -1277,9 +1277,22 @@ export async function addScannedLabelToShipment(shipmentId: string, labelId: str
             // Update label
             transaction.update(labelRef, { status: 'used' });
 
-            // Update associated order status to 'Despachado'
+            // Fetch all labels for the order to determine if it's fully dispatched
+            const labelsQuery = query(collection(firestore, "preprintedLabels"), where("orderId", "==", orderId));
+            const labelsSnapshot = await getDocs(labelsQuery);
+            const allLabels = labelsSnapshot.docs.map(doc => doc.data());
+            
+            // Re-calculate based on current action (the label we just updated is now 'used')
+            const totalLabels = allLabels.filter(l => l.status !== 'void').length;
+            const usedLabels = allLabels.filter(l => l.status === 'used' || l.id === labelId).length;
+            const availableLabels = totalLabels - usedLabels;
+
             const orderRef = doc(firestore, "wholesaleOrders", orderId);
-            transaction.update(orderRef, { status: 'Despachado' });
+            if (availableLabels > 0) {
+                transaction.update(orderRef, { status: 'En Cargue' });
+            } else {
+                transaction.update(orderRef, { status: 'Despachado' });
+            }
         });
         return { success: true };
     } catch (error: any) {
@@ -1303,11 +1316,40 @@ export async function removeScannedLabelFromShipment(shipmentId: string, labelId
                 [`scannedLabels.${labelId}`]: deleteField()
             });
 
-            // Update label status back to available
-            transaction.update(labelRef, { status: 'available' });
-            
             // Note: We are not removing the orderId from the arrayUnion as it's complex to determine
             // if other labels from the same order still exist in the shipment. This is a simplification.
+
+            // Update associated order status
+            const labelDoc = await transaction.get(labelRef);
+            const labelData = labelDoc.data();
+            if (labelData) {
+                const orderId = labelData.orderId;
+                const labelsQuery = query(collection(firestore, "preprintedLabels"), where("orderId", "==", orderId));
+                const labelsSnapshot = await getDocs(labelsQuery);
+                const allLabels = labelsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PreprintedLabel));
+
+                // Re-calculate based on current action (the label we just updated will be 'available')
+                const totalLabels = allLabels.filter(l => l.status !== 'void').length;
+                const usedLabelsCount = allLabels.filter(l => (l.status === 'used' && l.id !== labelId)).length;
+
+                const orderRef = doc(firestore, "wholesaleOrders", orderId);
+                if (usedLabelsCount > 0) {
+                    transaction.update(orderRef, { status: 'En Cargue' });
+                } else {
+                    // Back to packing state
+                    const orderDoc = await transaction.get(orderRef);
+                    const orderData = orderDoc.data();
+                    if (orderData) {
+                        const packedItemsQuery = query(collection(firestore, "packedItems"), where("orderId", "==", orderId));
+                        const packedItemsSnap = await getDocs(packedItemsQuery);
+                        const packedCount = packedItemsSnap.docs.reduce((sum, d) => sum + (d.data().quantity || 1), 0);
+                        const totalCount = orderData.cantidadTotal || 0;
+                        
+                        const newStatus = packedCount >= totalCount ? 'Empacado' : 'En Empaque';
+                        transaction.update(orderRef, { status: newStatus });
+                    }
+                }
+            }
         });
         return { success: true };
     } catch (error: any) {
