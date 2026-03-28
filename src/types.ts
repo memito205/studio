@@ -1140,6 +1140,7 @@ export interface DispatchSessionInfo {
     status: 'open' | 'closed';
     scannedLabels?: { [labelId: string]: any }; // Map of labelId to timestamp
     orderIds?: string[];
+    allowedOrderIds?: string[];
 }
 
 // Add new type for the returns module

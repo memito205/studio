@@ -5,28 +5,34 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Loader2, PlusCircle, ArrowLeft, Send } from 'lucide-react';
+import { Loader2, PlusCircle, ArrowLeft, Send, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import type { DispatchSessionInfo } from '@/types';
-import { getShipments, createShipment } from '@/app/actions';
+import type { DispatchSessionInfo, WholesaleOrder } from '@/types';
+import { getShipments, createShipment, deleteShipment } from '@/app/actions';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Badge } from './ui/badge';
+import { Checkbox } from './ui/checkbox';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 
 
 interface CreateShipmentDialogProps {
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
     onShipmentCreated: (shipmentId: string) => void;
+    orders: WholesaleOrder[];
 }
 
-const CreateShipmentDialog: React.FC<CreateShipmentDialogProps> = ({ isOpen, onOpenChange, onShipmentCreated }) => {
+const CreateShipmentDialog: React.FC<CreateShipmentDialogProps> = ({ isOpen, onOpenChange, onShipmentCreated, orders }) => {
     const [truckPlate, setTruckPlate] = useState('');
     const [driverName, setDriverName] = useState('');
     const [sealNumber, setSealNumber] = useState('');
+    const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
     const [isCreating, setIsCreating] = useState(false);
     const { toast } = useToast();
+
+    const packedOrders = orders.filter(o => o.status === 'Empacado' || o.status === 'En Empaque');
 
     const handleCreate = async () => {
         if (!truckPlate || !driverName) {
@@ -34,7 +40,12 @@ const CreateShipmentDialog: React.FC<CreateShipmentDialogProps> = ({ isOpen, onO
             return;
         }
         setIsCreating(true);
-        const result = await createShipment({ truckPlate, driverName, sealNumber });
+        const result = await createShipment({ 
+            truckPlate, 
+            driverName, 
+            sealNumber,
+            allowedOrderIds: selectedOrderIds
+        });
         if (result.success && result.shipmentId) {
             toast({ title: 'Éxito', description: `Nuevo envío #${result.shipmentId.slice(-6)} creado.` });
             onShipmentCreated(result.shipmentId);
@@ -43,10 +54,19 @@ const CreateShipmentDialog: React.FC<CreateShipmentDialogProps> = ({ isOpen, onO
             setTruckPlate('');
             setDriverName('');
             setSealNumber('');
+            setSelectedOrderIds([]);
         } else {
             toast({ variant: 'destructive', title: 'Error', description: result.error });
         }
         setIsCreating(false);
+    };
+
+    const toggleOrderSelection = (orderId: string) => {
+        setSelectedOrderIds(prev => 
+            prev.includes(orderId) 
+            ? prev.filter(id => id !== orderId) 
+            : [...prev, orderId]
+        );
     };
 
     return (
@@ -69,6 +89,32 @@ const CreateShipmentDialog: React.FC<CreateShipmentDialogProps> = ({ isOpen, onO
                         <Label htmlFor="seal">Número de Precinto (Opcional)</Label>
                         <Input id="seal" value={sealNumber} onChange={e => setSealNumber(e.target.value)} placeholder="Ej: P123456" />
                     </div>
+                    <div className="space-y-4 pt-4 border-t">
+                        <Label className="flex justify-between items-center">
+                            <span>Seleccionar Pedidos (Clientes)</span>
+                            {selectedOrderIds.length > 0 && <Badge variant="secondary">{selectedOrderIds.length} selec.</Badge>}
+                        </Label>
+                        <div className="max-h-48 overflow-y-auto border rounded-md p-2 space-y-2">
+                            {packedOrders.length > 0 ? packedOrders.map(order => (
+                                <div key={order.id} className="flex items-center space-x-2">
+                                    <Checkbox 
+                                        id={`order-${order.id}`} 
+                                        checked={selectedOrderIds.includes(order.id)}
+                                        onCheckedChange={() => toggleOrderSelection(order.id)}
+                                    />
+                                    <Label htmlFor={`order-${order.id}`} className="flex-1 cursor-pointer text-sm">
+                                        <div className="flex justify-between items-center">
+                                            <span className="font-medium truncate max-w-[180px]">{order.cliente}</span>
+                                            <span className="text-[10px] text-muted-foreground font-mono bg-muted px-1 rounded">{order.id.slice(-6)}</span>
+                                        </div>
+                                    </Label>
+                                </div>
+                            )) : (
+                                <p className="text-xs text-muted-foreground text-center py-4 italic">No hay pedidos empacados disponibles.</p>
+                            )}
+                        </div>
+                        <p className="text-[10px] text-muted-foreground italic">* Si no selecciona ninguno, se permitirán todos los pedidos en este despacho.</p>
+                    </div>
                 </div>
                 <DialogFooter>
                     <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
@@ -84,13 +130,15 @@ const CreateShipmentDialog: React.FC<CreateShipmentDialogProps> = ({ isOpen, onO
 
 
 interface DispatchDashboardProps {
+    orders: WholesaleOrder[];
     onReturnToWholesale: () => void;
     onStartDispatching: (shipmentId: string) => void;
 }
 
-export const DispatchDashboard: React.FC<DispatchDashboardProps> = ({ onReturnToWholesale, onStartDispatching }) => {
+export const DispatchDashboard: React.FC<DispatchDashboardProps> = ({ orders, onReturnToWholesale, onStartDispatching }) => {
     const [shipments, setShipments] = useState<DispatchSessionInfo[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const [isDeletingId, setIsDeletingId] = useState<string | null>(null);
     const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
     const { toast } = useToast();
 
@@ -114,12 +162,25 @@ export const DispatchDashboard: React.FC<DispatchDashboardProps> = ({ onReturnTo
         onStartDispatching(shipmentId); // Navigate to the scanning screen
     }
 
+    const handleDeleteShipment = async (shipmentId: string) => {
+        setIsDeletingId(shipmentId);
+        const result = await deleteShipment(shipmentId);
+        if (result.success) {
+            toast({ title: 'Envío Eliminado', description: 'El despacho ha sido borrado y sus etiquetas liberadas.' });
+            fetchShipments();
+        } else {
+            toast({ variant: 'destructive', title: 'Error', description: result.error });
+        }
+        setIsDeletingId(null);
+    };
+
     return (
         <>
             <CreateShipmentDialog 
                 isOpen={isCreateDialogOpen} 
                 onOpenChange={setIsCreateDialogOpen}
                 onShipmentCreated={handleShipmentCreated}
+                orders={orders}
             />
             <div className="space-y-6">
                 <Card>
@@ -171,10 +232,31 @@ export const DispatchDashboard: React.FC<DispatchDashboardProps> = ({ onReturnTo
                                                     {shipment.status === 'open' ? 'Abierto' : 'Cerrado'}
                                                 </Badge>
                                             </TableCell>
-                                            <TableCell className="text-right">
+                                            <TableCell className="text-right space-x-2">
                                                 <Button onClick={() => onStartDispatching(shipment.id!)} variant="outline" size="sm">
                                                     {shipment.status === 'open' ? 'Escanear' : 'Ver'}
                                                 </Button>
+                                                <AlertDialog>
+                                                    <AlertDialogTrigger asChild>
+                                                        <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive hover:bg-destructive/10">
+                                                            <Trash2 className="h-4 w-4" />
+                                                        </Button>
+                                                    </AlertDialogTrigger>
+                                                    <AlertDialogContent>
+                                                        <AlertDialogHeader>
+                                                            <AlertDialogTitle>¿Eliminar despacho {shipment.truckPlate}?</AlertDialogTitle>
+                                                            <AlertDialogDescription>
+                                                                Esta acción liberará todas las etiquetas escaneadas en este envío para que puedan ser despachadas en otro camión. No se puede deshacer.
+                                                            </AlertDialogDescription>
+                                                        </AlertDialogHeader>
+                                                        <AlertDialogFooter>
+                                                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                                            <AlertDialogAction onClick={() => handleDeleteShipment(shipment.id!)} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                                                                {isDeletingId === shipment.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Eliminar Permanentemente'}
+                                                            </AlertDialogAction>
+                                                        </AlertDialogFooter>
+                                                    </AlertDialogContent>
+                                                </AlertDialog>
                                             </TableCell>
                                         </TableRow>
                                     ))}

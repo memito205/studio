@@ -676,7 +676,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToPackedOrdersDashboard={handleNavigateToPackedOrdersDashboard}
                 onNavigateToDispatchDashboard={handleNavigateToDispatchDashboard}
             />;
-          case 'dispatch_dashboard': return <DispatchDashboard onReturnToWholesale={handleNavigateToWholesaleModule} onStartDispatching={handleStartDispatching} />;
+          case 'dispatch_dashboard': return <DispatchDashboard orders={orders} onReturnToWholesale={handleNavigateToWholesaleModule} onStartDispatching={handleStartDispatching} />;
           case 'dispatching': return dispatchShipmentId ? <DispatchScreen shipmentId={dispatchShipmentId} onReturnToDispatchDashboard={() => setAppStep('dispatch_dashboard')} /> : null;
           case 'packed_orders_dashboard': return <PackedOrdersDashboard orders={orders} sessions={allPackingSessions} onReturn={handleNavigateToWholesaleModule} />;
           case 'logistics_submenu': return <LogisticsSubMenu onReturnToSuite={handleReturnToSuite} />;

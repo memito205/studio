@@ -1214,14 +1214,15 @@ export async function getShipments(): Promise<{ success: boolean; data?: Dispatc
     }
 }
 
-export async function createShipment(data: { truckPlate: string; driverName: string; sealNumber?: string }): Promise<{ success: boolean; error?: string; shipmentId?: string }> {
+export async function createShipment(data: { truckPlate: string; driverName: string; sealNumber?: string, allowedOrderIds?: string[] }): Promise<{ success: boolean; error?: string; shipmentId?: string }> {
     try {
         const newShipment = {
             ...data,
             createdAt: Timestamp.now(),
             status: 'open',
             scannedLabels: {},
-            orderIds: []
+            orderIds: [],
+            allowedOrderIds: data.allowedOrderIds || []
         };
         const docRef = await addDoc(collection(firestore, "dispatchSessions"), newShipment);
         return { success: true, shipmentId: docRef.id };
@@ -1246,6 +1247,11 @@ export async function addScannedLabelToShipment(shipmentId: string, labelId: str
 
             const labelData = labelDoc.data();
             const orderId = labelData.orderId;
+
+            const allowedOrders = shipmentDoc.data().allowedOrderIds || [];
+            if (allowedOrders.length > 0 && !allowedOrders.includes(orderId)) {
+                throw new Error(`Este pedido (${orderId}) no está en la lista de permitidos para este despacho.`);
+            }
 
             // Update shipment
             transaction.update(shipmentRef, {
@@ -1298,6 +1304,33 @@ export async function closeShipment(shipmentId: string): Promise<{ success: bool
         return { success: true };
     } catch (error: any) {
         return { success: false, error: `Failed to close shipment: ${error.message}` };
+    }
+}
+
+export async function deleteShipment(shipmentId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        const shipmentRef = doc(firestore, "dispatchSessions", shipmentId);
+        
+        await runTransaction(firestore, async (transaction) => {
+            const shipmentDoc = await transaction.get(shipmentRef);
+            if (!shipmentDoc.exists()) throw new Error("Shipment not found.");
+            
+            const scannedLabels = shipmentDoc.data().scannedLabels || {};
+            const labelIds = Object.keys(scannedLabels);
+            
+            // Revert all labels to available
+            for (const labelId of labelIds) {
+                const labelRef = doc(firestore, "preprintedLabels", labelId);
+                transaction.update(labelRef, { status: 'available' });
+            }
+            
+            // Delete the shipment document
+            transaction.delete(shipmentRef);
+        });
+        
+        return { success: true };
+    } catch (error: any) {
+        return { success: false, error: `Failed to delete shipment: ${error.message}` };
     }
 }
 

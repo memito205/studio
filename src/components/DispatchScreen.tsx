@@ -3,7 +3,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import type { WholesaleOrder, PackingSession, PreprintedLabel, DispatchSessionInfo, BoxToDispatch, LabelValidationResult, PackedItem } from '@/types';
-import { getPackingSession, getLabelsForOrder, getShipments, addScannedLabelToShipment, removeScannedLabelFromShipment, validateLabel, loadWholesaleOrders, closeShipment } from '@/app/actions';
+import { getPackingSession, getLabelsForOrder, getShipments, addScannedLabelToShipment, removeScannedLabelFromShipment, validateLabel, loadWholesaleOrders, closeShipment, getPackedItemsForOrder } from '@/app/actions';
 import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -12,6 +12,7 @@ import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ArrowLeft, Loader2, ScanLine, Truck, Check, X, Trash2 } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
+import { Badge } from '@/components/ui/badge';
 import { DispatchReport } from './DispatchReport';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 
@@ -159,6 +160,11 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
         .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
   }, [sessionInfo?.scannedLabels]);
 
+  const allowedOrdersList = useMemo(() => {
+    if (!sessionInfo?.allowedOrderIds || sessionInfo.allowedOrderIds.length === 0) return null;
+    return allOrders.filter(o => sessionInfo.allowedOrderIds?.includes(o.id));
+  }, [allOrders, sessionInfo?.allowedOrderIds]);
+
   if (isLoading || !sessionInfo) {
     return (
       <div className="flex items-center justify-center h-[50vh]">
@@ -199,6 +205,22 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
                     <p className="font-semibold">{sessionInfo.sealNumber || 'N/A'}</p>
                 </div>
             </div>
+
+            {allowedOrdersList && (
+                <div className="mb-6 p-4 border rounded-md bg-primary/5 border-primary/20">
+                    <p className="text-sm font-semibold mb-2 flex items-center gap-2">
+                        <Check className="h-4 w-4 text-primary" /> Clientes/Pedidos Permitidos para este Camión:
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                        {allowedOrdersList.map(o => (
+                            <Badge key={o.id} variant="secondary" className="bg-white border-primary/20">
+                                {o.cliente} ({o.id.slice(-6)})
+                            </Badge>
+                        ))}
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-2 italic">* Solo se podrán escanear cajas que pertenezcan a estos clientes.</p>
+                </div>
+            )}
 
             <form onSubmit={handleScan}>
                 <div className="flex items-center gap-4">

@@ -20,6 +20,7 @@ import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/hooks/use-auth-context'; // Import useAuth hook
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { UnitContentDialog } from './UnitContentDialog';
 
 interface PackingScreenProps {
@@ -182,7 +183,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
   productivityGoal,
 }) => {
     const { toast } = useToast();
-    const { user } = useAuth(); // Get current user
+    const { user, role } = useAuth(); // Get current user and role
     const [session, setSession] = useState<PackingSession>(() => ({
         ...initialSession,
         units: initialSession.units || [],
@@ -192,9 +193,10 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     
     const [allPackedItems, setAllPackedItems] = useState<PackedItem[]>([]);
     const [lastScan, setLastScan] = React.useState<PackingScanResult | null>(null);
+    const [isCloseUnitDialogOpen, setIsCloseUnitDialogOpen] = useState(false);
+    const [unitToCloseId, setUnitToCloseId] = useState<number | null>(null);
     const [isLoading, setIsLoading] = React.useState(false);
     const [isClosingUnit, setIsClosingUnit] = useState(false);
-    const [isCloseUnitDialogOpen, setIsCloseUnitDialogOpen] = useState(false);
     const [isUnitContentDialogOpen, setIsUnitContentDialogOpen] = useState(false);
     const [isPauseDialogOpen, setIsPauseDialogOpen] = useState(false);
     const [selectedUnit, setSelectedUnit] = useState<PackingUnit | null>(null);
@@ -347,9 +349,11 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
                 const itemsInActiveUnit = allPackedItems.filter(item => item.packingUnitId === unitToUse?.firestoreId);
                 if (itemsInActiveUnit.length > 0) {
-                    const firstItemKey = itemsInActiveUnit[0].itemKey;
-                    const expectedReference = firstItemKey.split('-')[0];
+                    // Find the first item that has a reference (the part before the hyphen)
+                    const itemWithRef = itemsInActiveUnit.find(i => i.itemKey.split('-')[0].trim().length > 0);
+                    const expectedReference = itemWithRef ? itemWithRef.itemKey.split('-')[0].trim() : '';
                     const newReference = (result.item.referencia || '').toString().trim();
+                    
                     if (newReference && expectedReference && newReference !== expectedReference) {
                         setMixedReferenceError({ show: true, expected: expectedReference, scanned: newReference });
                         return;
@@ -362,6 +366,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                     itemKey,
                     barcode: result.item.codigoBarras,
                     packerId: user.uid,
+                    item: result.item,
                 };
 
                 const addResult = await addPackedItem(itemData);
@@ -404,9 +409,19 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             return { ...prev, status: 'active', lastActivity: now };
         });
     };
+
+    const handleOpenCloseUnitDialog = (unitId: number) => {
+        setUnitToCloseId(unitId);
+        setIsCloseUnitDialogOpen(true);
+    };
     
     const handleCloseUnit = async (scannedLabel: string) => {
-        if (!activeUnit) return;
+        const targetUnitId = unitToCloseId || activeUnit?.id;
+        if (!targetUnitId) return;
+        
+        const unit = session.units.find(u => u.id === targetUnitId);
+        if (!unit) return;
+
         setIsClosingUnit(true);
 
         // Integration: Real validation would happen here. For now, mocking success.
@@ -429,8 +444,8 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
         setSession(prev => {
             const newUnits = prev.units.map(u => 
-                u.id === activeUnit?.id 
-                ? { ...u, status: 'closed' as 'closed', labelBarcode: validLabelId, closedAt: new Date().toISOString() }
+                u.id === targetUnitId 
+                ? { ...u, status: 'closed' as 'closed', labelBarcode: validLabelId, closed_at: new Date().toISOString() }
                 : u
             );
             return { ...prev, units: newUnits };
@@ -438,6 +453,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
         setIsClosingUnit(false);
         setIsCloseUnitDialogOpen(false);
+        setUnitToCloseId(null);
     };
 
 
@@ -481,12 +497,12 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         const unit = session.units.find(u => u.id === unitId);
         if (!unit) return;
         
-        const itemToDelete = allPackedItems.find(item => item.packingUnitId === unit.firestoreId && item.itemKey === itemKey);
-        if (itemToDelete) {
-            const result = await deletePackedItem(itemToDelete.id);
+        const itemsToDelete = allPackedItems.filter(item => item.packingUnitId === unit.firestoreId && item.itemKey === itemKey);
+        if (itemsToDelete.length > 0) {
+            const result = await bulkDeletePackedItems(itemsToDelete.map(i => i.id));
             if (result.success) {
                 fetchPackedItems();
-                toast({ title: 'Ítem Eliminado', description: 'El ítem fue eliminado de la caja.' });
+                toast({ title: 'Ítems Eliminados', description: `Se eliminaron ${itemsToDelete.length} unidades de la caja.` });
             } else {
                 toast({ variant: 'destructive', title: 'Error de Borrado', description: result.error });
             }
@@ -510,7 +526,18 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
                 // For simplicity, we'll update the first one and delete the rest, or just adjust the first one.
                 const firstItem = itemsToUpdate[0];
-                const result = await updatePackedItem(firstItem.id, { quantity: newQuantity });
+                const [ref, tallaPart] = itemKey.split('-');
+                const updateData: any = { quantity: newQuantity };
+
+                if (!firstItem.item) {
+                     updateData.item = {
+                        referencia: ref,
+                        talla: tallaPart,
+                        codigoBarras: firstItem.barcode
+                     };
+                }
+
+                const result = await updatePackedItem(firstItem.id, updateData);
                 
                 if (itemsToUpdate.length > 1) {
                     for (let i = 1; i < itemsToUpdate.length; i++) {
@@ -544,29 +571,91 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         if (itemsToUpdate.length === 0) return;
 
         const firstItem = itemsToUpdate[0];
-        const oldTalla = firstItem.item?.talla || firstItem.item?.size || '';
-        if (oldTalla.trim().toLowerCase() === newTalla.trim().toLowerCase()) return;
+        const [oldRef, oldTallaPart] = itemKey.split('-');
+        
+        const currentTalla = firstItem.item?.talla || firstItem.item?.size || oldTallaPart || '';
+        if (currentTalla.trim().toLowerCase() === newTalla.trim().toLowerCase()) return;
 
-        // Calculate new itemKey
-        const reference = firstItem.item?.referencia || firstItem.item?.reference || '';
+        const reference = firstItem.item?.referencia || firstItem.item?.reference || oldRef || '';
         const newItemKey = createItemKey(reference, newTalla);
 
         setIsLoading(true);
         try {
             for (const item of itemsToUpdate) {
-                const updatedItemData = { 
+                // If item object exists, update it. If not, create a minimal one.
+                const updatedItemData = item.item ? { 
                     ...item.item,
                     talla: newTalla,
-                    size: newTalla // ensure both are updated
-                } as ProductDatabaseItem;
+                    size: newTalla 
+                } : {
+                    referencia: reference,
+                    talla: newTalla,
+                    codigoBarras: item.barcode,
+                };
 
                 await updatePackedItem(item.id, { 
                     itemKey: newItemKey,
-                    item: updatedItemData
+                    item: updatedItemData as any
                 });
             }
-            toast({ title: 'Talla Actualizada', description: `Se cambió de ${oldTalla} a ${newTalla}` });
+            toast({ title: 'Talla Actualizada', description: `Se cambió de ${currentTalla} a ${newTalla}` });
             fetchPackedItems();
+        } catch (error: any) {
+            toast({ variant: 'destructive', title: 'Error', description: error.message });
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleAddManualItem = async (unitId: number, reference: string, talla: string, quantity: number) => {
+        if (!reference || !talla || quantity <= 0) return;
+
+        const unit = session.units.find(u => u.id === unitId);
+        if (!unit) return;
+
+        setIsLoading(true);
+        try {
+            // Try to find a barcode for this ref-talla in order details or existing items
+            let barcode = '';
+            const detail = packingOrder.order.details.find(d => 
+                (d.referencia || '').toString().trim() === reference.trim() && 
+                (d.talla || '').toString().trim() === talla.trim()
+            );
+            
+            if (detail) {
+                const existingItem = allPackedItems.find(p => 
+                    (p.item?.referencia || p.itemKey.split('-')[0]) === reference && 
+                    (p.item?.talla || p.itemKey.split('-')[1]) === talla
+                );
+                barcode = existingItem?.barcode || detail.item || ''; 
+            }
+
+            const itemKey = createItemKey(reference, talla);
+            const itemData: Omit<PackedItem, 'id' | 'scannedAt' | 'quantity'> = {
+                orderId: session.orderId,
+                packingUnitId: unit.firestoreId,
+                itemKey,
+                barcode,
+                packerId: user?.uid || 'manual-admin',
+                item: {
+                    codigoBarras: barcode,
+                    referencia: reference,
+                    talla: talla,
+                    id: barcode
+                } as ProductDatabaseItem
+            };
+
+            const result = await addPackedItem(itemData);
+            if (result.success && result.itemId && quantity > 1) {
+                await updatePackedItem(result.itemId, { quantity });
+            }
+
+            if (result.success) {
+                toast({ title: 'Ítem Agregado', description: `${quantity} x ${reference} - ${talla} agregados a la caja.` });
+                fetchPackedItems();
+            } else {
+                throw new Error(result.error);
+            }
         } catch (error: any) {
             toast({ variant: 'destructive', title: 'Error', description: error.message });
         } finally {
@@ -721,11 +810,12 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 (d.talla || '').toString().trim() === (lastScan.item?.talla || '').toString().trim()
             );
             const ordered = detail?.cantidad || 0;
-            const packed = userPackingProgress[itemKey] || 0;
-            return { ordered, packed, remaining: ordered - packed };
+            const packedGlobal = globalPackingProgress[itemKey] || 0;
+            const packedUser = userPackingProgress[itemKey] || 0;
+            return { ordered, packedGlobal, packedUser, remaining: ordered - packedGlobal };
         }
         return null;
-    }, [lastScan, userPackingProgress, packingOrder.order.details]);
+    }, [lastScan, globalPackingProgress, userPackingProgress, packingOrder.order.details]);
     
     const groupedAndFilteredDetails = useMemo(() => {
         const grouped = packingOrder.order.details.reduce((acc, detail) => {
@@ -858,17 +948,20 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         </AlertDialog>
        <CloseUnitDialog isOpen={isCloseUnitDialogOpen} onOpenChange={setIsCloseUnitDialogOpen} onConfirm={handleCloseUnit} isLoading={isClosingUnit} />
        <PauseDialog isOpen={isPauseDialogOpen} onOpenChange={setIsPauseDialogOpen} onConfirm={handlePause} />
-       <UnitContentDialog 
-             unit={selectedUnit}
-             session={session}
-             isOpen={isUnitContentDialogOpen}
-             onOpenChange={setIsUnitContentDialogOpen}
-             onDeleteItem={handleDeleteItem}
-             onEditItemQuantity={handleEditItemQuantity}
-             onEditItemTalla={handleEditItemTalla}
-             onReopenUnit={handleReopenUnit}
-             onDeleteUnit={handleDeleteUnit}
-        />
+       <UnitContentDialog
+                    isOpen={isUnitContentDialogOpen}
+                    onOpenChange={setIsUnitContentDialogOpen}
+                    unit={selectedUnit}
+                    session={session}
+                    allPackedItems={allPackedItems}
+                    onDeleteItem={handleDeleteItem}
+                    onEditItemQuantity={handleEditItemQuantity}
+                    onEditItemTalla={handleEditItemTalla}
+                    onAddItem={handleAddManualItem}
+                    onCloseUnit={handleOpenCloseUnitDialog}
+                    onReopenUnit={handleReopenUnit}
+                    onDeleteUnit={handleDeleteUnit}
+                />
        <Card>
         <CardHeader className="flex flex-row justify-between items-center flex-wrap gap-4">
           <div>
@@ -878,14 +971,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             </CardDescription>
           </div>
           <div className="flex gap-2 flex-wrap">
-            <Button onClick={() => handleExport('general')} variant="outline">
-              <FileDown className="mr-2 h-4 w-4" />
-              Exportar General
-            </Button>
-             <Button onClick={() => handleExport('detailed')} variant="outline">
-              <FileDown className="mr-2 h-4 w-4" />
-              Exportar Detallado
-            </Button>
             <Button onClick={onReturnToOrders} variant="outline">
               <ArrowLeft className="mr-2 h-4 w-4" />
               Volver a Pedidos
@@ -896,353 +981,314 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             </Button>
           </div>
         </CardHeader>
-        <CardContent>
-            <div className="space-y-2">
-                <div className="flex justify-between text-sm font-medium text-muted-foreground">
-                    <span>Progreso General del Pedido ({overallProgress.toFixed(1)}%)</span>
-                    <span>Total Empacado: {totalPackedGlobal} / {totalOrdered}</span>
-                </div>
-                <Progress value={overallProgress} />
-            </div>
-        </CardContent>
       </Card>
-      
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
-            <Card>
-                <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                        <ScanLine className="w-6 h-6 text-primary" />
-                        Escanear Código de Barras
-                    </CardTitle>
-                </CardHeader>
-                <CardContent>
-                    <form onSubmit={handleBarcodeSubmit}>
-                        <Input
-                            ref={barcodeInputRef}
-                            type="text"
-                            defaultValue=""
-                            placeholder={session.status === 'paused' ? "Operación Pausada" : "Esperando escaneo..."}
-                            className="w-full text-center text-lg h-12"
-                            disabled={isLoading || session.status === 'paused'}
-                        />
-                    </form>
-                </CardContent>
-            </Card>
 
-            {lastScan && (
-                <Card className={cn(
-                    'border-l-4',
-                    lastScan.status === 'success' && 'border-green-500',
-                    lastScan.status === 'warning' && 'border-yellow-500',
-                    lastScan.status === 'error' && 'border-red-500',
-                )}>
+      <Tabs defaultValue="operation" className="w-full">
+            <TabsList className="grid w-full grid-cols-2 max-w-md mb-4">
+                <TabsTrigger value="operation">Operación</TabsTrigger>
+                {role === 'admin' && <TabsTrigger value="history">Historial de Unidades</TabsTrigger>}
+            </TabsList>
+
+            <TabsContent value="operation" className="space-y-6">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div className="lg:col-span-2 space-y-6">
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2">
+                                    <ScanLine className="w-6 h-6 text-primary" />
+                                    Escanear Código de Barras
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                <form onSubmit={handleBarcodeSubmit}>
+                                    <Input
+                                        ref={barcodeInputRef}
+                                        type="text"
+                                        defaultValue=""
+                                        placeholder={session.status === 'paused' ? "Operación Pausada" : "Esperando escaneo..."}
+                                        className="w-full text-center text-lg h-12"
+                                        disabled={isLoading || session.status === 'paused'}
+                                    />
+                                </form>
+                            </CardContent>
+                        </Card>
+
+                        {lastScan && (
+                            <Card className={cn(
+                                'border-l-4',
+                                lastScan.status === 'success' && 'border-green-500',
+                                lastScan.status === 'warning' && 'border-yellow-500',
+                                lastScan.status === 'error' && 'border-red-500',
+                            )}>
+                                <CardHeader>
+                                    <CardTitle className="flex items-center gap-3">
+                                       {lastScan.status === 'success' && <Check className="w-6 h-6 text-green-500" />}
+                                       {lastScan.status === 'error' && <AlertTriangle className="w-6 h-6 text-red-500" />}
+                                       <span>Último Escaneo</span>
+                                    </CardTitle>
+                                     <CardDescription>{lastScan.message}</CardDescription>
+                                </CardHeader>
+                                {lastScan.status === 'success' && lastScan.item && lastScanInfo && (
+                                    <CardContent className="space-y-4">
+                                        <div className="flex justify-between items-start">
+                                            <div>
+                                                <p className="text-3xl font-bold text-foreground">{lastScan.item.referencia}</p>
+                                                <p className="text-2xl text-muted-foreground">{lastScan.item.talla}</p>
+                                            </div>
+                                            <div className="text-right">
+                                                <Badge variant="outline" className="text-lg py-1 px-3">
+                                                    Escaneo: {lastScanInfo.packedGlobal} / {lastScanInfo.ordered}
+                                                </Badge>
+                                            </div>
+                                        </div>
+                                        
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                            <StatDisplay title="Pedido (Talla)" value={lastScanInfo.ordered} />
+                                            <StatDisplay title="Leído (Talla)" value={lastScanInfo.packedGlobal} />
+                                            <StatDisplay title="Mi Conteo" value={lastScanInfo.packedUser} />
+                                        </div>
+
+                                        <div className="p-3 bg-muted rounded-lg">
+                                            <p className="text-sm font-medium mb-1">Total Referencia {lastScan.item.referencia}</p>
+                                            <div className="flex items-center gap-4">
+                                                <Progress 
+                                                    value={((groupedAndFilteredDetails.find(g => g.referencia === lastScan.item?.referencia)?.sizes && Object.values(groupedAndFilteredDetails.find(g => g.referencia === lastScan.item?.referencia)!.sizes).reduce((sum, s) => sum + s.packed, 0)) || 0) / 
+                                                           ((groupedAndFilteredDetails.find(g => g.referencia === lastScan.item?.referencia)?.sizes && Object.values(groupedAndFilteredDetails.find(g => g.referencia === lastScan.item?.referencia)!.sizes).reduce((sum, s) => sum + s.ordered, 0)) || 1) * 100} 
+                                                    className="h-2 flex-1" 
+                                                />
+                                                <span className="text-sm font-bold whitespace-nowrap">
+                                                    {Object.values(groupedAndFilteredDetails.find(g => g.referencia === lastScan.item?.referencia)?.sizes || {}).reduce((sum, s) => sum + s.packed, 0)} / {Object.values(groupedAndFilteredDetails.find(g => g.referencia === lastScan.item?.referencia)?.sizes || {}).reduce((sum, s) => sum + s.ordered, 0)}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </CardContent>
+                                )}
+                            </Card>
+                        )}
+                        
+                        <Card>
+                            <CardHeader>
+                                <CardTitle>Mi Unidad Activa</CardTitle>
+                                <CardDescription>Caja actual abierta para tu sesión.</CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                                {activeUnit ? (
+                                    <Card className="border-primary border-2">
+                                        <CardHeader className="flex-row justify-between items-center pb-2">
+                                            <CardTitle className="text-lg">Unidad #{activeUnit.id}</CardTitle>
+                                            <Badge variant={'default'}>Abierta</Badge>
+                                        </CardHeader>
+                                        <CardContent>
+                                            <p className="text-2xl font-bold">
+                                                {allPackedItems.filter(i => i.packingUnitId === activeUnit.firestoreId).reduce((sum, item) => sum + item.quantity, 0)} items
+                                            </p>
+                                        </CardContent>
+                                        <CardFooter className="grid grid-cols-2 gap-2">
+                                            <Button onClick={() => setIsCloseUnitDialogOpen(true)} disabled={allPackedItems.filter(i => i.packingUnitId === activeUnit.firestoreId).length === 0}>Cerrar Caja</Button>
+                                            <Button variant="outline" onClick={() => handleViewUnitContent(activeUnit)}>Ver Contenido</Button>
+                                        </CardFooter>
+                                    </Card>
+                                ) : (
+                                    <div className="text-center py-8 bg-muted/20 rounded-lg border-2 border-dashed">
+                                        <p className="text-muted-foreground">No tienes una unidad abierta.</p>
+                                        <p className="text-xs text-muted-foreground mt-1">Escanea un artículo para crear una automáticamente.</p>
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+                    </div>
+
+                    <div className="space-y-6">
+                        <Card className="flex flex-col">
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2">
+                                    <Timer className="w-6 h-6" />
+                                    Productividad
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                                <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
+                                    <span className="text-sm font-medium text-muted-foreground">Items Empacados (Míos)</span>
+                                    <span className="font-bold text-lg">{totalUserPackedQuantity}</span>
+                                </div>
+                                <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
+                                    <span className="text-sm font-medium text-muted-foreground">Tiempo Efectivo</span>
+                                    <span className="font-bold font-mono text-green-600">{productivityStats.effectiveWorkTimeFormatted}</span>
+                                </div>
+                                <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
+                                    <span className="text-sm font-medium text-muted-foreground">Unidades/hr</span>
+                                    <span className="font-bold">{productivityStats.unitsPerHour}</span>
+                                </div>
+                                <div className={cn("flex justify-between items-center p-3 rounded-md", getComplianceColor(parseFloat(productivityStats.compliance)).replace('text-', 'bg-') + '/20')}>
+                                    <span className="text-sm font-medium text-muted-foreground">Cumplimiento</span>
+                                    <span className={cn("font-bold", getComplianceColor(parseFloat(productivityStats.compliance)))}>{productivityStats.compliance}%</span>
+                                </div>
+                            </CardContent>
+                            <CardFooter>
+                                {session.status === 'active' ? (
+                                    <Button className="w-full" variant="destructive" onClick={() => setIsPauseDialogOpen(true)}>
+                                        <Pause className="mr-2 h-4 w-4"/> Pausar
+                                    </Button>
+                                ) : (
+                                    <Button className="w-full" variant="secondary" onClick={handleResume}>
+                                        <Play className="mr-2 h-4 w-4"/> Reanudar
+                                    </Button>
+                                )}
+                            </CardFooter>
+                        </Card>
+                    </div>
+                </div>
+
+                <Card>
                     <CardHeader>
-                        <CardTitle className="flex items-center gap-3">
-                           {lastScan.status === 'success' && <Check className="w-6 h-6 text-green-500" />}
-                           {lastScan.status === 'error' && <AlertTriangle className="w-6 h-6 text-red-500" />}
-                           <span>Último Escaneo</span>
-                        </CardTitle>
-                         <CardDescription>{lastScan.message}</CardDescription>
-                    </CardHeader>
-                    {lastScan.status === 'success' && lastScan.item && lastScanInfo && (
-                        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <div className="col-span-1 md:col-span-3">
-                                <p className="text-3xl font-bold text-foreground">{lastScan.item.referencia}</p>
-                                <p className="text-2xl text-muted-foreground">{lastScan.item.talla}</p>
+                        <div className="flex justify-between items-center flex-wrap gap-4">
+                            <div>
+                                <CardTitle>Resumen del Pedido</CardTitle>
+                                <CardDescription>Consolidado global de empaque.</CardDescription>
                             </div>
-                            <StatDisplay title="Pedido" value={lastScanInfo.ordered} />
-                            <StatDisplay title="Mi Conteo" value={lastScanInfo.packed} />
-                            <StatDisplay title="Faltante" value={lastScanInfo.remaining} variant={lastScanInfo.remaining === 0 ? 'success' : 'default'} />
-                        </CardContent>
-                    )}
-                </Card>
-            )}
-        </div>
-
-        <Card className="flex flex-col">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-                <Timer className="w-6 h-6" />
-                Mi Productividad
-            </CardTitle>
-             <CardDescription>Métricas de rendimiento para tu sesión en este pedido.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4 flex-grow">
-             <div className="space-y-2">
-                <p className="text-sm font-medium text-muted-foreground">Meta de Productividad</p>
-                <p className="text-lg font-semibold">{productivityGoal} <span className="text-sm font-normal text-muted-foreground">u/hr</span></p>
-            </div>
-            <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
-                <span className="font-medium text-muted-foreground">Tiempo Total</span>
-                <span className="font-bold text-lg font-mono">{productivityStats.totalElapsedTimeFormatted}</span>
-            </div>
-            <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
-                <span className="font-medium text-muted-foreground">Tiempo Efectivo</span>
-                <span className="font-bold text-lg font-mono text-green-600">{productivityStats.effectiveWorkTimeFormatted}</span>
-            </div>
-            <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
-                <span className="font-medium text-muted-foreground">Mi Productividad</span>
-                <span className="font-bold text-lg">{productivityStats.unitsPerHour} <span className="text-sm font-normal text-muted-foreground">u/hr</span></span>
-            </div>
-            <div className={cn("flex justify-between items-center p-3 rounded-md", getComplianceColor(parseFloat(productivityStats.compliance)).replace('text-', 'bg-') + '/20')}>
-                <span className="font-medium text-muted-foreground flex items-center gap-2"><Trophy /> Mi Cumplimiento</span>
-                <span className={cn("font-bold text-lg", getComplianceColor(parseFloat(productivityStats.compliance)))}>{productivityStats.compliance}%</span>
-            </div>
-            <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
-                <span className="font-medium text-muted-foreground">Mis Unidades</span>
-                <span className="font-bold text-lg">{totalUserPackedQuantity}</span>
-            </div>
-          </CardContent>
-           <CardFooter>
-            {session.status === 'active' ? (
-                <Button className="w-full" variant="destructive" onClick={() => setIsPauseDialogOpen(true)} disabled={!session.startTime}>
-                    <Pause className="mr-2"/> Pausar Operación
-                </Button>
-            ) : (
-                 <Button className="w-full" variant="secondary" onClick={handleResume} disabled={!session.startTime}>
-                    <Play className="mr-2"/> Reanudar Operación
-                </Button>
-            )}
-           </CardFooter>
-        </Card>
-      </div>
-
-       <Card>
-        <CardHeader>
-          <CardTitle>Mi Unidad de Empaque Activa</CardTitle>
-           <CardDescription>Aquí se muestra la caja que tienes actualmente abierta.</CardDescription>
-        </CardHeader>
-        <CardContent>
-            {activeUnit ? (
-                <div className="p-1 h-full">
-                    <Card className="flex flex-col h-full border-primary border-2">
-                        <CardHeader className="flex-row justify-between items-center">
-                            <CardTitle className="text-lg">Mi Unidad #{activeUnit.id}</CardTitle>
-                            <Badge variant={'default'}>
-                                Abierta
-                            </Badge>
-                        </CardHeader>
-                        <CardContent className="flex-grow space-y-3">
-                                <p>Items: <span className="font-bold">{allPackedItems.filter(i => i.packingUnitId === activeUnit.firestoreId).reduce((sum, item) => sum + item.quantity, 0)}</span></p>
-                        </CardContent>
-                        <CardFooter className="mt-auto grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                <Button className="w-full" onClick={() => setIsCloseUnitDialogOpen(true)} disabled={allPackedItems.filter(i => i.packingUnitId === activeUnit.firestoreId).length === 0}>Cerrar Unidad</Button>
-                            <Button className="w-full" variant="outline" onClick={() => handleViewUnitContent(activeUnit)}>Ver Contenido</Button>
-                        </CardFooter>
-                    </Card>
-                </div>
-            ) : (
-               <p className="text-muted-foreground text-center col-span-full py-8">Aún no has creado una unidad. Escanea un artículo para comenzar.</p>
-           )}
-        </CardContent>
-       </Card>
-
-         <Card>
-            <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                    <History className="w-6 h-6 text-primary" />
-                    Historial de Unidades del Pedido
-                </CardTitle>
-                <CardDescription>Todas las cajas creadas para este pedido.</CardDescription>
-            </CardHeader>
-            <CardContent>
-                <div className="max-h-80 overflow-y-auto">
-                    <Table>
-                        <TableHeader>
-                            <TableRow>
-                                <TableHead>ID</TableHead>
-                                <TableHead>Estado</TableHead>
-                                <TableHead>Etiqueta</TableHead>
-                                <TableHead className="text-right">Items</TableHead>
-                                <TableHead className="text-center">Acciones</TableHead>
-                            </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                            {[...session.units].sort((a,b) => b.id - a.id).map((unit) => {
-                                const unitItems = allPackedItems.filter(i => i.packingUnitId === unit.firestoreId);
-                                const totalQty = unitItems.reduce((sum, i) => sum + i.quantity, 0);
-                                return (
-                                    <TableRow key={unit.firestoreId}>
-                                        <TableCell className="font-bold">#{unit.id}</TableCell>
-                                        <TableCell>
-                                            <Badge variant={unit.status === 'open' ? 'default' : 'secondary'}>
-                                                {unit.status === 'open' ? 'Abierta' : 'Cerrada'}
-                                            </Badge>
-                                        </TableCell>
-                                        <TableCell className="font-mono text-xs">{unit.labelBarcode || '-'}</TableCell>
-                                        <TableCell className="text-right font-bold">{totalQty}</TableCell>
-                                        <TableCell className="text-center space-x-2">
-                                            <Button variant="outline" size="sm" onClick={() => handleViewUnitContent(unit)}>
-                                                <Eye className="mr-2 h-4 w-4" /> Ver/Editar
-                                            </Button>
-                                            <AlertDialog>
-                                                <AlertDialogTrigger asChild>
-                                                    <Button variant="destructive" size="sm">
-                                                        <Trash2 className="h-4 w-4" />
-                                                    </Button>
-                                                </AlertDialogTrigger>
-                                                <AlertDialogContent>
-                                                    <AlertDialogHeader>
-                                                        <AlertDialogTitle>¿Eliminar Unidad #{unit.id}?</AlertDialogTitle>
-                                                        <AlertDialogDescription>Esta acción borrará la caja y todos sus productos de forma permanente.</AlertDialogDescription>
-                                                    </AlertDialogHeader>
-                                                    <AlertDialogFooter>
-                                                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                                                        <AlertDialogAction onClick={() => handleDeleteUnit(unit.id)}>Eliminar</AlertDialogAction>
-                                                    </AlertDialogFooter>
-                                                </AlertDialogContent>
-                                            </AlertDialog>
-                                        </TableCell>
-                                    </TableRow>
-                                );
-                            })}
-                            {session.units.length === 0 && (
-                                <TableRow>
-                                    <TableCell colSpan={5} className="text-center text-muted-foreground py-8">No hay unidades creadas aún.</TableCell>
-                                </TableRow>
-                            )}
-                        </TableBody>
-                    </Table>
-                </div>
-            </CardContent>
-        </Card>
-
-        <Card>
-            <CardHeader>
-                <CardTitle>Búsqueda de Artículos en Unidades</CardTitle>
-                <CardDescription>Encuentre rápidamente en qué caja se empacó un artículo (incluye todas las cajas del pedido).</CardDescription>
-            </CardHeader>
-            <CardContent>
-                <div className="flex gap-2 mb-4">
-                    <Search className="w-5 h-5 text-muted-foreground mt-2" />
-                    <Input
-                        type="text"
-                        value={searchQuery}
-                        onChange={e => setSearchQuery(e.target.value)}
-                        placeholder="Buscar por referencia o item..."
-                        className="w-full"
-                    />
-                </div>
-
-                <div className="max-h-60 overflow-y-auto">
-                    <Table>
-                        <TableHeader>
-                            <TableRow>
-                                <TableHead>Unidad ID</TableHead>
-                                <TableHead>Etiqueta Unidad</TableHead>
-                                <TableHead className="text-right">Items Totales en Caja</TableHead>
-                                <TableHead className="text-center">Acciones de Caja</TableHead>
-                            </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                            {searchResults.map((result, index) => (
-                                <TableRow key={index}>
-                                    <TableCell className="font-medium">{result.unitId}</TableCell>
-                                    <TableCell>{result.unitLabel}</TableCell>
-                                    <TableCell className="text-right font-bold">{result.totalItems}</TableCell>
-                                    <TableCell className="text-center">
-                                        <Button variant="outline" size="sm" className="mr-2" onClick={() => handleViewUnitContent(result.unitObject)}>
-                                            <Eye className="mr-2 h-4 w-4" />
-                                            Ver/Editar
-                                        </Button>
-                                         <AlertDialog>
-                                            <AlertDialogTrigger asChild>
-                                                <Button variant="destructive" size="sm">
-                                                    <Trash2 className="mr-2 h-4 w-4" />
-                                                    Eliminar
-                                                </Button>
-                                            </AlertDialogTrigger>
-                                            <AlertDialogContent>
-                                                <AlertDialogHeader>
-                                                <AlertDialogTitle>¿Está seguro?</AlertDialogTitle>
-                                                <AlertDialogDescription>
-                                                    Esta acción eliminará permanentemente la Unidad #{result.unitId} y todos sus artículos. No se puede deshacer.
-                                                </AlertDialogDescription>
-                                                </AlertDialogHeader>
-                                                <AlertDialogFooter>
-                                                <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                                                <AlertDialogAction onClick={() => handleDeleteUnit(result.unitId)}>Eliminar</AlertDialogAction>
-                                                </AlertDialogFooter>
-                                            </AlertDialogContent>
-                                        </AlertDialog>
-                                    </TableCell>
-                                </TableRow>
-                            ))}
-                             {searchQuery.trim() && searchResults.length === 0 && (
-                                <TableRow>
-                                    <TableCell colSpan={4} className="text-center text-muted-foreground">
-                                        No se encontraron unidades con ese artículo.
-                                    </TableCell>
-                                </TableRow>
-                            )}
-                        </TableBody>
-                    </Table>
-                </div>
-            </CardContent>
-        </Card>
-
-       <Card>
-        <CardHeader>
-            <CardTitle>Resumen General del Pedido</CardTitle>
-            <CardDescription>Progreso consolidado del empaque para la orden actual.</CardDescription>
-            <div className="flex gap-4 pt-4">
-                <Input
-                    placeholder="Filtrar por Referencia..."
-                    value={referenciaFilter}
-                    onChange={(e) => setReferenciaFilter(e.target.value)}
-                    className="max-w-xs"
-                />
-                <Input
-                    placeholder="Filtrar por Item..."
-                    value={itemFilter}
-                    onChange={(e) => setItemFilter(e.target.value)}
-                    className="max-w-xs"
-                />
-            </div>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-6 max-h-[60vh] overflow-y-auto pr-2">
-            {groupedAndFilteredDetails.map((group) => {
-                const sortedSizes = Object.keys(group.sizes).sort((a, b) => {
-                    const numA = Number(String(a).replace(/[^0-9.]/g, ''));
-                    const numB = Number(String(b).replace(/[^0-9.]/g, ''));
-                    return numA - numB;
-                });
-
-                return (
-                    <div key={`${group.referencia}-${group.item}`} className="p-4 border rounded-lg bg-background shadow-sm">
-                        <div className="mb-3">
-                            <p className="font-bold text-lg text-primary">{group.referencia}</p>
-                            <p className="text-sm text-muted-foreground">Item: {group.item || '-'}</p>
+                            <div className="flex items-center gap-4 min-w-[300px]">
+                                <div className="flex-1">
+                                    <div className="flex justify-between text-xs mb-1">
+                                        <span>{overallProgress.toFixed(1)}%</span>
+                                        <span>{totalPackedGlobal}/{totalOrdered}</span>
+                                    </div>
+                                    <Progress value={overallProgress} className="h-2" />
+                                </div>
+                                <div className="flex gap-1">
+                                    <Button onClick={() => handleExport('general')} variant="outline" size="sm" title="Excel General"><FileDown className="h-4 w-4" /></Button>
+                                    <Button onClick={() => handleExport('detailed')} variant="outline" size="sm" title="Excel Detallado"><FileDown className="h-4 w-4 text-green-600" /></Button>
+                                </div>
+                            </div>
                         </div>
-                        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-x-4 gap-y-3">
-                            {sortedSizes.map(talla => {
-                                const { ordered, packed } = group.sizes[talla];
-                                const statusColor = packed > ordered ? 'text-blue-600'
-                                    : packed === ordered && packed > 0 ? 'text-green-600'
-                                    : packed < ordered && packed > 0 ? 'text-amber-600'
-                                    : 'text-muted-foreground';
-
+                        <div className="flex gap-4 pt-4 border-t mt-4">
+                            <Input
+                                placeholder="Filtrar Referencia..."
+                                value={referenciaFilter}
+                                onChange={(e) => setReferenciaFilter(e.target.value)}
+                                className="max-w-[200px]"
+                            />
+                            <Input
+                                placeholder="Filtrar Item..."
+                                value={itemFilter}
+                                onChange={(e) => setItemFilter(e.target.value)}
+                                className="max-w-[200px]"
+                            />
+                        </div>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="space-y-4 max-h-[50vh] overflow-y-auto pr-2">
+                            {groupedAndFilteredDetails.map((group) => {
+                                const sortedSizes = Object.keys(group.sizes).sort((a,b) => {
+                                    const numA = Number(String(a).replace(/[^0-9.]/g, ''));
+                                    const numB = Number(String(b).replace(/[^0-9.]/g, ''));
+                                    return numA - numB;
+                                });
                                 return (
-                                    <div key={talla} className="text-center bg-muted/50 p-2 rounded-md">
-                                        <p className="font-semibold text-sm text-card-foreground">{talla}</p>
-                                        <p className={cn("text-lg font-bold", statusColor)}>
-                                            {packed}/{ordered}
-                                        </p>
+                                    <div key={`${group.referencia}-${group.item}`} className="p-3 border rounded-lg hover:bg-muted/30 transition-colors">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div>
+                                                <p className="font-bold text-primary">{group.referencia}</p>
+                                                <p className="text-xs text-muted-foreground">{group.item}</p>
+                                            </div>
+                                        </div>
+                                        <div className="flex flex-wrap gap-2">
+                                            {sortedSizes.map(talla => {
+                                                const { ordered, packed } = group.sizes[talla];
+                                                const status = packed >= ordered ? 'bg-green-100 text-green-700' : packed > 0 ? 'bg-amber-100 text-amber-700' : 'bg-muted text-muted-foreground';
+                                                return (
+                                                    <div key={talla} className={cn("px-2 py-1 rounded text-xs font-medium flex gap-2 items-center", status)}>
+                                                        <span>{talla}</span>
+                                                        <span className="font-bold">{packed}/{ordered}</span>
+                                                    </div>
+                                                )
+                                            })}
+                                        </div>
                                     </div>
                                 )
                             })}
                         </div>
-                    </div>
-                )
-            })}
-             {groupedAndFilteredDetails.length === 0 && (
-                <p className="text-center text-muted-foreground py-4">No se encontraron productos con los filtros actuales.</p>
-             )}
-          </div>
-        </CardContent>
-       </Card>
+                    </CardContent>
+                </Card>
+            </TabsContent>
+
+            {role === 'admin' && (
+                <TabsContent value="history" className="space-y-6">
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>Búsqueda de Unidades</CardTitle>
+                            <CardDescription>Localice en qué caja se empacó un artículo.</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <div className="flex gap-2 mb-4">
+                                <Search className="w-5 h-5 text-muted-foreground mt-2" />
+                                <Input
+                                    value={searchQuery}
+                                    onChange={e => setSearchQuery(e.target.value)}
+                                    placeholder="Referencia o ítem..."
+                                />
+                            </div>
+                            <div className="max-h-[40vh] overflow-y-auto">
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead>ID</TableHead>
+                                            <TableHead>Etiqueta</TableHead>
+                                            <TableHead className="text-right">Items</TableHead>
+                                            <TableHead className="text-center">Acción</TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {(searchQuery.trim() ? searchResults : session.units.map(u => ({
+                                            unitId: u.id,
+                                            unitLabel: u.labelBarcode || (u.status === 'open' ? 'Abierta' : 'Sin Etiqueta'),
+                                            totalItems: allPackedItems.filter(p => p.packingUnitId === u.firestoreId).reduce((sum, i) => sum + i.quantity, 0),
+                                            unitObject: u
+                                        }))).sort((a,b) => b.unitId - a.unitId).map((res) => (
+                                            <TableRow key={res.unitId}>
+                                                <TableCell className="font-medium">#{res.unitId}</TableCell>
+                                                <TableCell><Badge variant="outline">{res.unitLabel}</Badge></TableCell>
+                                                <TableCell className="text-right">{res.totalItems}</TableCell>
+                                                <TableCell className="text-center">
+                                                    <Button variant="ghost" size="sm" onClick={() => handleViewUnitContent(res.unitObject)}>
+                                                        <Eye className="h-4 w-4" />
+                                                    </Button>
+                                                </TableCell>
+                                            </TableRow>
+                                        ))}
+                                    </TableBody>
+                                </Table>
+                            </div>
+                        </CardContent>
+                    </Card>
+
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>Todas las Unidades del Pedido</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                {session.units.sort((a,b) => b.id - a.id).map(unit => {
+                                    const itemsCount = allPackedItems.filter(i => i.packingUnitId === unit.firestoreId).reduce((sum, item) => sum + item.quantity, 0);
+                                    return (
+                                        <Card key={unit.id} className="cursor-pointer hover:border-primary transition-colors" onClick={() => handleViewUnitContent(unit)}>
+                                            <CardHeader className="p-4 pb-2 flex-row justify-between items-center">
+                                                <CardTitle className="text-md">Unidad #{unit.id}</CardTitle>
+                                                <Badge variant={unit.status === 'open' ? 'default' : 'secondary'}>{unit.status}</Badge>
+                                            </CardHeader>
+                                            <CardContent className="p-4 pt-0">
+                                                <p className="text-sm text-muted-foreground">{unit.labelBarcode || 'Sin etiqueta'}</p>
+                                                <p className="text-lg font-bold mt-2">{itemsCount} items</p>
+                                                {unit.closed_at && <p className="text-[10px] text-muted-foreground mt-1">Cerrada: {new Date(unit.closed_at).toLocaleString()}</p>}
+                                            </CardContent>
+                                        </Card>
+                                    );
+                                })}
+                             </div>
+                        </CardContent>
+                    </Card>
+                </TabsContent>
+            )}
+        </Tabs>
     </div>
   );
 };
@@ -1252,4 +1298,4 @@ const StatDisplay: React.FC<{title: string, value: string | number, variant?: 'd
         <p className="text-sm font-medium text-muted-foreground">{title}</p>
         <p className={cn("text-4xl font-bold", variant === 'success' ? 'text-green-600' : 'text-foreground')}>{value}</p>
     </div>
-)
+);
