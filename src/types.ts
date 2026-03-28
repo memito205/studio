@@ -409,7 +409,7 @@ export interface CollectionLog {
 
 // EXISTING TYPES BELOW - DO NOT REMOVE
 
-export type OrderStatus = 'Pte Empaque' | 'En Empaque' | 'Empacado' | 'Cancelado';
+export type OrderStatus = 'Pte Empaque' | 'En Empaque' | 'Empacado' | 'Despachado' | 'Cancelado';
 export type ProductCategory = 'CALZADO' | 'ROPA' | 'ACCESORIOS' | 'NO CLASIFICADO';
 
 export interface RemisionEntry {

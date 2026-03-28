@@ -1133,6 +1133,22 @@ export async function addPackedItem(itemData: Omit<PackedItem, 'id' | 'scannedAt
             scannedAt: new Date()
         };
         await setDoc(itemRef, convertDatesToTimestamps(newItem));
+
+        // Update order status if it's currently 'Pte Empaque'
+        try {
+            const orderRef = doc(firestore, "wholesaleOrders", itemData.orderId);
+            const orderSnap = await getDoc(orderRef);
+            if (orderSnap.exists()) {
+                const orderData = orderSnap.data();
+                if (orderData.status === 'Pte Empaque') {
+                    await updateDoc(orderRef, { status: 'En Empaque' });
+                }
+            }
+        } catch (statusError) {
+            console.error("Error updating order status during addPackedItem:", statusError);
+            // Non-blocking error
+        }
+
         return { success: true, itemId: itemRef.id };
     } catch (error: any) {
         console.error("Error adding packed item:", error);
@@ -1260,6 +1276,10 @@ export async function addScannedLabelToShipment(shipmentId: string, labelId: str
             });
             // Update label
             transaction.update(labelRef, { status: 'used' });
+
+            // Update associated order status to 'Despachado'
+            const orderRef = doc(firestore, "wholesaleOrders", orderId);
+            transaction.update(orderRef, { status: 'Despachado' });
         });
         return { success: true };
     } catch (error: any) {
