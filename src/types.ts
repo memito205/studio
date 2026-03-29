@@ -820,6 +820,7 @@ export interface PackingUnit {
     closed_at?: string;
     createdAt?: string;
     createdBy?: string;
+    createdByName?: string;
     destination?: string;
     reception_id?: string; // Add this if units can be linked to receptions
 }

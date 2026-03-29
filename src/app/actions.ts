@@ -1502,7 +1502,7 @@ export async function updateNovelty(noveltyId: string, updates: Partial<Omit<Ite
   }
 }
 
-export async function createPackingUnit(orderId: string, userId: string): Promise<{ success: boolean; error?: string; newUnit?: PackingUnit }> {
+export async function createPackingUnit(orderId: string, userId: string, userName?: string): Promise<{ success: boolean; error?: string; newUnit?: PackingUnit }> {
   let newUnitData: PackingUnit | null = null;
   try {
       await runTransaction(firestore, async (transaction) => {
@@ -1522,6 +1522,7 @@ export async function createPackingUnit(orderId: string, userId: string): Promis
               status: 'open',
               createdAt: new Date().toISOString(),
               createdBy: userId,
+              createdByName: userName,
               items: {},
           };
 

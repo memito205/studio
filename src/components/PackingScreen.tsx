@@ -334,7 +334,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
                 let unitToUse = activeUnit;
                 if (!unitToUse) {
-                    const newUnitResult = await createPackingUnit(session.orderId, user.uid);
+                    const newUnitResult = await createPackingUnit(session.orderId, user.uid, user.displayName || undefined);
                     if (newUnitResult.success && newUnitResult.newUnit) {
                         setSession(prev => ({ ...prev, units: [...prev.units, newUnitResult.newUnit!] }));
                         unitToUse = newUnitResult.newUnit;
@@ -1233,6 +1233,8 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                         <TableRow>
                                             <TableHead>ID</TableHead>
                                             <TableHead>Etiqueta</TableHead>
+                                            <TableHead>Usuario</TableHead>
+                                            <TableHead>Fecha/Hora</TableHead>
                                             <TableHead className="text-right">Items</TableHead>
                                             <TableHead className="text-center">Acción</TableHead>
                                         </TableRow>
@@ -1247,6 +1249,10 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                             <TableRow key={res.unitId}>
                                                 <TableCell className="font-medium">#{res.unitId}</TableCell>
                                                 <TableCell><Badge variant="outline">{res.unitLabel}</Badge></TableCell>
+                                                <TableCell className="text-sm">{res.unitObject.createdByName || res.unitObject.createdBy || 'N/A'}</TableCell>
+                                                <TableCell className="text-xs text-muted-foreground">
+                                                    {res.unitObject.createdAt ? new Date(res.unitObject.createdAt).toLocaleString() : 'N/A'}
+                                                </TableCell>
                                                 <TableCell className="text-right">{res.totalItems}</TableCell>
                                                 <TableCell className="text-center">
                                                     <Button variant="ghost" size="sm" onClick={() => handleViewUnitContent(res.unitObject)}>
@@ -1277,8 +1283,14 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                             </CardHeader>
                                             <CardContent className="p-4 pt-0">
                                                 <p className="text-sm text-muted-foreground">{unit.labelBarcode || 'Sin etiqueta'}</p>
-                                                <p className="text-lg font-bold mt-2">{itemsCount} items</p>
-                                                {unit.closed_at && <p className="text-[10px] text-muted-foreground mt-1">Cerrada: {new Date(unit.closed_at).toLocaleString()}</p>}
+                                                <div className="flex justify-between items-end mt-2">
+                                                    <p className="text-lg font-bold">{itemsCount} items</p>
+                                                    <div className="text-right">
+                                                        <p className="text-[10px] font-medium text-primary uppercase">{unit.createdByName || 'Usuario'}</p>
+                                                        {unit.createdAt && <p className="text-[9px] text-muted-foreground">{new Date(unit.createdAt).toLocaleString()}</p>}
+                                                    </div>
+                                                </div>
+                                                {unit.closed_at && <p className="text-[10px] text-muted-foreground mt-1 border-t pt-1">Cerrada: {new Date(unit.closed_at).toLocaleString()}</p>}
                                             </CardContent>
                                         </Card>
                                     );
