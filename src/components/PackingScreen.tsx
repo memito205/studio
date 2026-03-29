@@ -336,8 +336,9 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
                 let unitToUse = activeUnit;
                 if (!unitToUse) {
-                    const userName = user.displayName || user.email || 'Usuario';
-                    const newUnitResult = await createPackingUnit(session.orderId, user.uid, userName);
+                    // Use session.packerName as the most reliable source for the current operator's name
+                    const userName = user?.displayName || user?.email || session.packerName || 'Usuario';
+                    const newUnitResult = await createPackingUnit(session.orderId, user?.uid || 'Unknown', userName);
                     if (newUnitResult.success && newUnitResult.newUnit) {
                         setSession(prev => ({ ...prev, units: [...prev.units, newUnitResult.newUnit!] }));
                         unitToUse = newUnitResult.newUnit;
@@ -1316,13 +1317,14 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                         }))) as UnitSummarySearchResult[]).sort((a,b) => b.unitId - a.unitId).map((res) => {
                                             const unitObj = res.unitObject;
                                             return (
-                                                <TableRow key={res.isOrphan ? (res.firestoreId || res.unitId) : res.unitId}>
+                                                <TableRow key={res.firestoreId || `unit-${res.unitId}-${index}`}>
                                                     <TableCell className="font-medium">{res.isOrphan ? 'N/A' : `#${res.unitId}`}</TableCell>
                                                     <TableCell><Badge variant={res.isOrphan ? 'destructive' : 'outline'}>{res.unitLabel}</Badge></TableCell>
                                                     <TableCell className="text-sm">
                                                         {unitObj ? (
-                                                            unitObj.createdByName || 
-                                                            (unitObj.createdBy === user?.uid ? (user?.displayName || user?.email || 'Usuario (Mí)') : unitObj.createdBy)
+                                                            unitObj.createdByName && unitObj.createdByName !== unitObj.createdBy ? unitObj.createdByName : 
+                                                            (unitObj.createdBy === user?.uid ? (user?.displayName || user?.email || 'Mí') : 
+                                                             (unitObj.createdBy === (session as any).packerId ? session.packerName : unitObj.createdBy))
                                                         ) : 'N/A'}
                                                     </TableCell>
                                                     <TableCell className="text-xs text-muted-foreground">
