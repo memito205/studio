@@ -185,7 +185,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
   productivityGoal,
 }) => {
     const { toast } = useToast();
-    const { user, role } = useAuth(); // Get current user and role
+    const { user, role, userName: contextUserName } = useAuth(); // Get current user and role
     const [session, setSession] = useState<PackingSession>(() => ({
         ...initialSession,
         units: initialSession.units || [],
@@ -336,8 +336,8 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
                 let unitToUse = activeUnit;
                 if (!unitToUse) {
-                    // Use session.packerName as the most reliable source for the current operator's name
-                    const userName = user?.displayName || user?.email || session.packerName || 'Usuario';
+                    // Use userName from context (fetched from Firestore) as priority
+                    const userName = contextUserName || user?.displayName || user?.email || session.packerName || 'Usuario';
                     const newUnitResult = await createPackingUnit(session.orderId, user?.uid || 'Unknown', userName);
                     if (newUnitResult.success && newUnitResult.newUnit) {
                         setSession(prev => ({ ...prev, units: [...prev.units, newUnitResult.newUnit!] }));
@@ -1314,7 +1314,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                             unitObject: u,
                                             isOrphan: false,
                                             firestoreId: u.firestoreId
-                                        }))) as UnitSummarySearchResult[]).sort((a,b) => b.unitId - a.unitId).map((res) => {
+                                        }))) as UnitSummarySearchResult[]).sort((a,b) => b.unitId - a.unitId).map((res, index) => {
                                             const unitObj = res.unitObject;
                                             return (
                                                 <TableRow key={res.firestoreId || `unit-${res.unitId}-${index}`}>
@@ -1323,7 +1323,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                                     <TableCell className="text-sm">
                                                         {unitObj ? (
                                                             unitObj.createdByName && unitObj.createdByName !== unitObj.createdBy ? unitObj.createdByName : 
-                                                            (unitObj.createdBy === user?.uid ? (user?.displayName || user?.email || 'Mí') : 
+                                                            (unitObj.createdBy === user?.uid ? (contextUserName || user?.displayName || user?.email || 'Mí') : 
                                                              (unitObj.createdBy === (session as any).packerId ? session.packerName : unitObj.createdBy))
                                                         ) : 'N/A'}
                                                     </TableCell>

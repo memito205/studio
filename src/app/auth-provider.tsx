@@ -10,6 +10,7 @@ import { AuthContext, type UserRole } from '@/hooks/use-auth-context';
 export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [user, setUser] = useState<User | null>(null);
     const [role, setRole] = useState<UserRole | null>(null);
+    const [userName, setUserName] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -27,15 +28,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 const userDocRef = doc(firestore, 'users', user.uid);
                 const userDocSnap = await getDoc(userDocRef);
                 if (userDocSnap.exists()) {
-                    setRole(userDocSnap.data().role || null);
+                    const userData = userDocSnap.data();
+                    setRole(userData.role || null);
+                    setUserName(userData.displayName || user.displayName || user.email || 'Operario');
                 } else {
                     // Handle cases where user exists in Auth but not in Firestore 'users' collection
                     console.warn(`User document not found in Firestore for UID: ${user.uid}`);
                     setRole(null);
+                    setUserName(user.displayName || user.email || 'Operario');
                 }
             } else {
                 setUser(null);
                 setRole(null);
+                setUserName(null);
             }
             setLoading(false);
         });
@@ -46,8 +51,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const value = useMemo(() => ({
         user,
         role,
+        userName,
         loading
-    }), [user, role, loading]);
+    }), [user, role, userName, loading]);
 
     return (
         <AuthContext.Provider value={value}>
