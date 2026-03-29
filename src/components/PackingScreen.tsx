@@ -235,6 +235,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     
     // State for productivity timer
     const [elapsedTime, setElapsedTime] = useState(0);
+    const [manualLabelToRelease, setManualLabelToRelease] = useState('');
     
     const fetchPackedItems = useCallback(async () => {
         const result = await getPackedItemsForOrder(packingOrder.order.id);
@@ -1527,15 +1528,17 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                                                         <Eye className="h-4 w-4" />
                                                                     </Button>
 
-                                                                    <Button 
-                                                                        variant="ghost" 
-                                                                        size="sm" 
-                                                                        className="h-8 w-8 p-0 text-amber-600 hover:text-amber-700 hover:bg-amber-50" 
-                                                                        onClick={() => handleResetLabel(res.unitLabel)} 
-                                                                        title="Liberar etiqueta bloqueada"
-                                                                    >
-                                                                        <Tag className="h-4 w-4" />
-                                                                    </Button>
+                                                                    {res.unitLabel && res.unitLabel.startsWith('VXM') && (
+                                                                        <Button 
+                                                                            variant="ghost" 
+                                                                            size="sm" 
+                                                                            className="h-8 w-8 p-0 text-amber-600 hover:text-amber-700 hover:bg-amber-50" 
+                                                                            onClick={() => handleResetLabel(res.unitLabel)} 
+                                                                            title="Liberar etiqueta bloqueada"
+                                                                        >
+                                                                            <Tag className="h-4 w-4" />
+                                                                        </Button>
+                                                                    )}
 
                                                                     <Button variant="outline" size="sm" className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 border-blue-200" onClick={() => handleRecoverOrphan(res.firestoreId!, res.unitLabel)} title="Recuperar como nueva unidad">
                                                                         <ArchiveRestore className="h-4 w-4" />
@@ -1576,6 +1579,36 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                         </div>
                                     </div>
                                 )}
+
+                                {/* SECTION 3: EMERGENCY TOOLS */}
+                                <div className="mt-8 pt-6 border-t border-muted">
+                                    <div className="flex items-center gap-2 mb-3">
+                                        <Tag className="w-5 h-5 text-amber-500" />
+                                        <h3 className="text-lg font-semibold text-amber-900">Herramientas de Emergencia (Etiquetas)</h3>
+                                    </div>
+                                    <p className="text-sm text-muted-foreground mb-4 max-w-2xl">
+                                        Si una etiqueta aparece como <strong>"Ya utilizada"</strong> pero la caja no figura en el seguimiento superior, ingrese el código de barras aquí para desbloquearla manualmente.
+                                    </p>
+                                    <div className="flex gap-2 max-w-md">
+                                        <Input 
+                                            value={manualLabelToRelease}
+                                            onChange={(e) => setManualLabelToRelease(e.target.value.toUpperCase())}
+                                            placeholder="Ej: VXM-0000..."
+                                            className="font-mono uppercase bg-amber-50/30 border-amber-200"
+                                        />
+                                        <Button 
+                                            variant="outline" 
+                                            className="text-amber-600 border-amber-200 hover:bg-amber-100 whitespace-nowrap"
+                                            onClick={() => {
+                                                handleResetLabel(manualLabelToRelease);
+                                                setManualLabelToRelease('');
+                                            }}
+                                            disabled={manualLabelToRelease.length < 5 || isLoading}
+                                        >
+                                            Liberar Etiqueta
+                                        </Button>
+                                    </div>
+                                </div>
                             </div>
                         </CardContent>
                     </Card>
