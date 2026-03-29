@@ -1522,7 +1522,7 @@ export async function createPackingUnit(orderId: string, userId: string, userNam
               status: 'open',
               createdAt: new Date().toISOString(),
               createdBy: userId,
-              createdByName: userName,
+              createdByName: userName || null,
               items: {},
           };
 
@@ -1551,6 +1551,44 @@ export async function createPackingUnit(orderId: string, userId: string, userNam
       return { success: false, error: error.message };
   }
 }
+
+export async function deletePackingUnit(orderId: string, firestoreId: string, labelBarcode?: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        const batch = writeBatch(firestore);
+        
+        // 1. Update Session
+        const sessionRef = doc(firestore, 'packingSessions', orderId);
+        const sessionSnap = await getDoc(sessionRef);
+        if (sessionSnap.exists()) {
+            const sessionData = sessionSnap.data() as PackingSession;
+            const updatedUnits = (sessionData.units || []).filter(u => u.firestoreId !== firestoreId);
+            batch.update(sessionRef, { units: updatedUnits });
+        }
+
+        // 2. Delete Items
+        const q = query(collection(firestore, 'packedItems'), where('packingUnitId', '==', firestoreId));
+        const itemsSnap = await getDocs(q);
+        itemsSnap.docs.forEach(d => batch.delete(d.ref));
+
+        // 3. Revert Label
+        if (labelBarcode) {
+            const labelRef = doc(firestore, 'preprintedLabels', labelBarcode);
+            batch.update(labelRef, { 
+                status: 'available', 
+                usedAt: deleteField(), 
+                unitId: deleteField(), 
+                usedBy: deleteField() 
+            });
+        }
+
+        await batch.commit();
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error in deletePackingUnit:", error);
+        return { success: false, error: error.message };
+    }
+}
+
 
 export async function lookupBarcode(barcode: string, operationId?: string): Promise<PackingScanResult> {
     const trimmedBarcode = barcode.trim();

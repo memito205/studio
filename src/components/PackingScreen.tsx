@@ -9,7 +9,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ArrowLeft, LayoutGrid, Package, Check, AlertTriangle, ScanLine, Clock, X, Archive, ArchiveRestore, Tag, Search, Pencil, Trash2, FileDown, Timer, BarChartHorizontal, Play, Pause, Loader2, Trophy, AlarmClockOff, Eye, RotateCcw, History } from 'lucide-react';
 import type { WholesaleOrder, ProductDatabaseItem, PackingScanResult, PackingSession, PackingUnit, PackedItem, UnitSearchResult, WholesaleOrderDetail, PauseReason, LabelValidationResult, PackingPause, OperationPulse, PreprintedLabel } from '@/types';
-import { validateLabel, markLabelAsUsed, savePackingSession, updateOrderStatus, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, lookupBarcode, getUserPulsesForDay, bulkDeletePackedItems, revertLabelStatus } from '@/app/actions';
+import { validateLabel, markLabelAsUsed, savePackingSession, updateOrderStatus, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, lookupBarcode, getUserPulsesForDay, bulkDeletePackedItems, revertLabelStatus, deletePackingUnit } from '@/app/actions';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
@@ -170,7 +170,9 @@ interface UnitSummarySearchResult {
     unitId: number;
     unitLabel: string;
     totalItems: number;
-    unitObject: PackingUnit; // Pass the whole unit object for the detail view
+    unitObject: PackingUnit | null;
+    isOrphan?: boolean;
+    firestoreId?: string;
 }
 
 
@@ -334,7 +336,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
                 let unitToUse = activeUnit;
                 if (!unitToUse) {
-                    const newUnitResult = await createPackingUnit(session.orderId, user.uid, user.displayName || undefined);
+                    const newUnitResult = await createPackingUnit(session.orderId, user.uid, user.displayName || 'Usuario');
                     if (newUnitResult.success && newUnitResult.newUnit) {
                         setSession(prev => ({ ...prev, units: [...prev.units, newUnitResult.newUnit!] }));
                         unitToUse = newUnitResult.newUnit;
@@ -464,35 +466,41 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     
     const handleDeleteUnit = async (unitIdToDelete: number) => {
         const unitToDelete = session.units.find(u => u.id === unitIdToDelete);
-      
-        const newUnits = session.units.filter(u => u.id !== unitIdToDelete);
-        const newSessionState = { ...session, units: newUnits };
-    
-        // Update UI immediately
-        setSession(newSessionState);
-    
-        // Perform DB operations
-        if (unitToDelete?.labelBarcode) {
-            await revertLabelStatus(unitToDelete.labelBarcode);
-        }
-    
-        const saveResult = await savePackingSession(newSessionState);
-    
-        if (saveResult.success) {
-            // Also delete all packedItems associated with this unit
-            const itemsToDelete = allPackedItems.filter(item => item.packingUnitId === unitToDelete?.firestoreId).map(item => item.id);
-            if (itemsToDelete.length > 0) {
-                await bulkDeletePackedItems(itemsToDelete);
+        if (!unitToDelete || !unitToDelete.firestoreId) return;
+
+        try {
+            const result = await deletePackingUnit(packingOrder.order.id, unitToDelete.firestoreId, unitToDelete.labelBarcode);
+            
+            if (result.success) {
+                // Optimistic UI update
+                const updatedUnits = session.units.filter(u => u.id !== unitIdToDelete);
+                const updatedSession = { ...session, units: updatedUnits };
+                setSession(updatedSession);
+                
+                // Refresh local items
+                fetchPackedItems();
+                
+                toast({
+                    title: "Unidad Eliminada",
+                    description: `La unidad #${unitIdToDelete} y su contenido han sido eliminados correctamente.`,
+                });
+                setIsUnitContentDialogOpen(false);
+            } else {
+                toast({
+                    variant: "destructive",
+                    title: "Error al eliminar",
+                    description: result.error || "No se pudo eliminar la unidad.",
+                });
             }
-            fetchPackedItems(); // Refresh data
-            toast({ title: 'Unidad Eliminada', description: `La unidad #${unitIdToDelete} ha sido eliminada.` });
-            setIsUnitContentDialogOpen(false); // Close dialog if open
-        } else {
-            toast({ variant: "destructive", title: "Error de Guardado", description: `No se pudo guardar la eliminación: ${saveResult.error}. Refrescando datos para evitar inconsistencias.` });
-            setSession(prev => ({...prev, units: session.units}));
+        } catch (error: any) {
+            console.error("Error deleting unit:", error);
+            toast({
+                variant: "destructive",
+                title: "Error Crítico",
+            });
         }
     };
-    
+
     const handleDeleteItem = async (unitId: number, itemKey: string) => {
         const unit = session.units.find(u => u.id === unitId);
         if (!unit) return;
@@ -509,22 +517,35 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         }
     };
 
+    const handleCleanupOrphans = async (firestoreId: string) => {
+        const itemsToDelete = allPackedItems.filter(item => item.packingUnitId === firestoreId);
+        if (itemsToDelete.length > 0) {
+            setIsLoading(true);
+            const result = await bulkDeletePackedItems(itemsToDelete.map(i => i.id));
+            setIsLoading(false);
+            if (result.success) {
+                fetchPackedItems();
+                toast({ 
+                    title: 'Registros Huérfanos Eliminados', 
+                    description: `Se eliminaron ${itemsToDelete.length} ítems que no estaban asociados a ninguna caja activa.` 
+                });
+            } else {
+                toast({ variant: 'destructive', title: 'Error al limpiar', description: result.error });
+            }
+        }
+    };
+
     const handleEditItemQuantity = async (unitId: number, itemKey: string, newQuantity: number) => {
         const unit = session.units.find(u => u.id === unitId);
         if (!unit) return;
 
-        // Find all packed items for this unit and itemKey
         const itemsToUpdate = allPackedItems.filter(i => i.packingUnitId === unit.firestoreId && i.itemKey === itemKey);
         
         if (newQuantity > 0) {
-            // In this specific system, we might have multiple PackedItem docs for the same itemKey.
-            // Simplified: we update the first one's quantity to match the total requested, 
-            // or we adjust across all of them. Usually, there's only one entry per itemKey per box.
             if (itemsToUpdate.length > 0) {
                 const totalCurrent = itemsToUpdate.reduce((sum, i) => sum + i.quantity, 0);
                 if (totalCurrent === newQuantity) return;
 
-                // For simplicity, we'll update the first one and delete the rest, or just adjust the first one.
                 const firstItem = itemsToUpdate[0];
                 const [ref, tallaPart] = itemKey.split('-');
                 const updateData: any = { quantity: newQuantity };
@@ -677,7 +698,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         setSession(prev => {
             const newUnits = prev.units.map(u => {
                 if (u.id === unitIdToReopen) {
-                    return { ...u, status: 'open' as 'open', labelBarcode: undefined, closedAt: undefined };
+                    return { ...u, status: 'open' as 'open', labelBarcode: undefined, closed_at: undefined };
                 }
                 return u;
             });
@@ -687,35 +708,54 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         setIsUnitContentDialogOpen(false); // Close the dialog
     };
 
-    const searchResults = useMemo((): UnitSummarySearchResult[] => {
+    const searchResults = useMemo<UnitSummarySearchResult[]>(() => {
         if (!searchQuery.trim()) return [];
         const query = searchQuery.toLowerCase();
-        const resultsMap = new Map<number, UnitSummarySearchResult>();
+        const results: UnitSummarySearchResult[] = [];
 
+        // 1. Search in valid units
+        const unitFirestoreIds = new Set(session.units.map(u => u.firestoreId));
+        
         session.units.forEach(unit => {
-            let unitContainsQueryItem = false;
             const itemsInUnit = allPackedItems.filter(p => p.packingUnitId === unit.firestoreId);
+            const matchesQuery = itemsInUnit.some(p => p.itemKey.toLowerCase().includes(query));
 
-            for (const packedItem of itemsInUnit) {
-                const [ref, talla] = packedItem.itemKey.split('-');
-                 if (ref.toLowerCase().includes(query)) {
-                    unitContainsQueryItem = true;
-                    break;
-                }
-            }
-
-
-            if (unitContainsQueryItem) {
-                const totalItemsInUnit = itemsInUnit.reduce((sum, item) => sum + item.quantity, 0);
-                resultsMap.set(unit.id, {
+            if (matchesQuery) {
+                results.push({
                     unitId: unit.id,
                     unitLabel: unit.labelBarcode || (unit.status === 'open' ? 'Abierta' : 'Sin Etiqueta'),
-                    totalItems: totalItemsInUnit,
+                    totalItems: itemsInUnit.reduce((sum, item) => sum + item.quantity, 0),
                     unitObject: unit,
+                    isOrphan: false
                 });
             }
         });
-        return Array.from(resultsMap.values()).sort((a,b) => a.unitId - b.unitId);
+
+        // 2. Identify and group orphan items that match the query
+        const orphanItems = allPackedItems.filter(p => !unitFirestoreIds.has(p.packingUnitId));
+        const matchedOrphans = orphanItems.filter(p => p.itemKey.toLowerCase().includes(query));
+
+        if (matchedOrphans.length > 0) {
+            // Group orphans by packingUnitId (even if deleted, they share the same ID if they were in the same deleted box)
+            const orphanGroups = new Map<string, PackedItem[]>();
+            matchedOrphans.forEach(p => {
+                if (!orphanGroups.has(p.packingUnitId)) orphanGroups.set(p.packingUnitId, []);
+                orphanGroups.get(p.packingUnitId)!.push(p);
+            });
+
+            orphanGroups.forEach((items, firestoreId) => {
+                results.push({
+                    unitId: -1, // Use -1 or similar for orphans
+                    unitLabel: 'SIN CAJA (Huérfano)',
+                    totalItems: items.reduce((sum, item) => sum + item.quantity, 0),
+                    unitObject: null,
+                    isOrphan: true,
+                    firestoreId: firestoreId
+                });
+            });
+        }
+
+        return results.sort((a,b) => a.unitId - b.unitId);
     }, [searchQuery, session.units, allPackedItems]);
     
     const totalOrdered = useMemo(() => packingOrder.order.details.reduce((sum, detail) => sum + detail.cantidad, 0), [packingOrder.order.details]);
@@ -817,7 +857,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         return null;
     }, [lastScan, globalPackingProgress, userPackingProgress, packingOrder.order.details]);
     
-    const groupedAndFilteredDetails = useMemo(() => {
+    const groupedAndFilteredDetails = useMemo<GroupedReference[]>(() => {
         const grouped = packingOrder.order.details.reduce((acc, detail) => {
             const refKey = (detail.referencia || '').toString().trim();
             if (!acc[refKey]) {
@@ -836,7 +876,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             return acc;
         }, {} as { [key: string]: GroupedReference });
         
-        let filtered = Object.values(grouped);
+        let filtered = Object.values(grouped) as GroupedReference[];
         
         if (referenciaFilter) {
             filtered = filtered.filter(g => g.referencia.toLowerCase().includes(referenciaFilter.toLowerCase()));
@@ -961,6 +1001,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                     onCloseUnit={handleOpenCloseUnitDialog}
                     onReopenUnit={handleReopenUnit}
                     onDeleteUnit={handleDeleteUnit}
+                    role={role}
                 />
        <Card>
         <CardHeader className="flex flex-row justify-between items-center flex-wrap gap-4">
@@ -1240,27 +1281,56 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                         </TableRow>
                                     </TableHeader>
                                     <TableBody>
-                                        {(searchQuery.trim() ? searchResults : session.units.map(u => ({
+                                        {((searchQuery.trim() ? searchResults : session.units.map(u => ({
                                             unitId: u.id,
                                             unitLabel: u.labelBarcode || (u.status === 'open' ? 'Abierta' : 'Sin Etiqueta'),
                                             totalItems: allPackedItems.filter(p => p.packingUnitId === u.firestoreId).reduce((sum, i) => sum + i.quantity, 0),
-                                            unitObject: u
-                                        }))).sort((a,b) => b.unitId - a.unitId).map((res) => (
-                                            <TableRow key={res.unitId}>
-                                                <TableCell className="font-medium">#{res.unitId}</TableCell>
-                                                <TableCell><Badge variant="outline">{res.unitLabel}</Badge></TableCell>
-                                                <TableCell className="text-sm">{res.unitObject.createdByName || res.unitObject.createdBy || 'N/A'}</TableCell>
-                                                <TableCell className="text-xs text-muted-foreground">
-                                                    {res.unitObject.createdAt ? new Date(res.unitObject.createdAt).toLocaleString() : 'N/A'}
-                                                </TableCell>
-                                                <TableCell className="text-right">{res.totalItems}</TableCell>
-                                                <TableCell className="text-center">
-                                                    <Button variant="ghost" size="sm" onClick={() => handleViewUnitContent(res.unitObject)}>
-                                                        <Eye className="h-4 w-4" />
-                                                    </Button>
-                                                </TableCell>
-                                            </TableRow>
-                                        ))}
+                                            unitObject: u,
+                                            isOrphan: false,
+                                            firestoreId: u.firestoreId
+                                        }))) as UnitSummarySearchResult[]).sort((a,b) => b.unitId - a.unitId).map((res) => {
+                                            const unitObj = res.unitObject;
+                                            return (
+                                                <TableRow key={res.isOrphan ? (res.firestoreId || res.unitId) : res.unitId}>
+                                                    <TableCell className="font-medium">{res.isOrphan ? 'N/A' : `#${res.unitId}`}</TableCell>
+                                                    <TableCell><Badge variant={res.isOrphan ? 'destructive' : 'outline'}>{res.unitLabel}</Badge></TableCell>
+                                                    <TableCell className="text-sm">{unitObj ? (unitObj.createdByName || unitObj.createdBy || 'N/A') : 'N/A'}</TableCell>
+                                                    <TableCell className="text-xs text-muted-foreground">
+                                                        {unitObj?.createdAt ? new Date(unitObj.createdAt).toLocaleString() : 'N/A'}
+                                                    </TableCell>
+                                                    <TableCell className="text-right">{res.totalItems}</TableCell>
+                                                    <TableCell className="text-center">
+                                                        {res.isOrphan ? (
+                                                            <AlertDialog>
+                                                                <AlertDialogTrigger asChild>
+                                                                    <Button variant="ghost" size="sm" title="Limpiar registros huérfanos">
+                                                                        <Trash2 className="h-4 w-4 text-destructive" />
+                                                                    </Button>
+                                                                </AlertDialogTrigger>
+                                                                <AlertDialogContent>
+                                                                    <AlertDialogHeader>
+                                                                        <AlertDialogTitle>¿Confirmar Limpieza?</AlertDialogTitle>
+                                                                        <AlertDialogDescription>
+                                                                            Estos {res.totalItems} ítems están registrados como leídos pero su caja ya no existe. Al eliminarlos, la cantidad leída del pedido disminuirá.
+                                                                        </AlertDialogDescription>
+                                                                    </AlertDialogHeader>
+                                                                    <AlertDialogFooter>
+                                                                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                                                        <AlertDialogAction onClick={() => handleCleanupOrphans(res.firestoreId!)}>Sí, Eliminar</AlertDialogAction>
+                                                                    </AlertDialogFooter>
+                                                                </AlertDialogContent>
+                                                            </AlertDialog>
+                                                        ) : (
+                                                            unitObj && (
+                                                                <Button variant="ghost" size="sm" onClick={() => handleViewUnitContent(unitObj)}>
+                                                                    <Eye className="h-4 w-4" />
+                                                                </Button>
+                                                            )
+                                                        )}
+                                                    </TableCell>
+                                                </TableRow>
+                                            );
+                                        })}
                                     </TableBody>
                                 </Table>
                             </div>

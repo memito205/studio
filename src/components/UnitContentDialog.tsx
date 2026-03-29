@@ -24,6 +24,7 @@ interface UnitContentDialogProps {
     onCloseUnit: (unitId: number) => void;
     onReopenUnit: (unitId: number) => void;
     onDeleteUnit: (unitId: number) => void;
+    role?: any;
 }
 
 export const UnitContentDialog: React.FC<UnitContentDialogProps> = ({ 
@@ -38,7 +39,8 @@ export const UnitContentDialog: React.FC<UnitContentDialogProps> = ({
     onAddItem,
     onCloseUnit,
     onReopenUnit, 
-    onDeleteUnit 
+    onDeleteUnit,
+    role
 }) => {
 
     const [isAdding, setIsAdding] = React.useState(false);
@@ -218,7 +220,7 @@ export const UnitContentDialog: React.FC<UnitContentDialogProps> = ({
                         )}
                          <AlertDialog>
                             <AlertDialogTrigger asChild>
-                                <Button variant="destructive">
+                                <Button variant="destructive" disabled={role !== 'admin'}>
                                     <Trash2 className="mr-2 h-4 w-4" /> Eliminar Caja Completa
                                 </Button>
                             </AlertDialogTrigger>
