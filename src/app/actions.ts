@@ -1151,8 +1151,47 @@ export async function addPackedItem(itemData: Omit<PackedItem, 'id' | 'scannedAt
 
         return { success: true, itemId: itemRef.id };
     } catch (error: any) {
-        console.error("Error adding packed item:", error);
-        return { success: false, error: error.message };
+        console.error("Error in addPackedItem:", error);
+        return { success: false, error: `Failed to add packed item: ${error.message}` };
+    }
+}
+
+export async function associateOrphanToUnit(orderId: string, oldOrphanId: string, newUnitFirestoreId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        const packedItemsRef = collection(firestore, 'packedItems');
+        let itemsToUpdate: QueryDocumentSnapshot<DocumentData, DocumentData>[] = [];
+
+        if (oldOrphanId === 'unassociated') {
+            // Find items with NO packingUnitId (null, empty string, or field missing)
+            // Since Firestore query for 'missing field' is hard, we fetch all for order and filter
+            const q = query(packedItemsRef, where('orderId', '==', orderId.trim()));
+            const querySnapshot = await getDocs(q);
+            itemsToUpdate = querySnapshot.docs.filter(doc => {
+                const data = doc.data();
+                return !data.packingUnitId || data.packingUnitId === '';
+            });
+        } else {
+            const q = query(packedItemsRef, where('orderId', '==', orderId.trim()), where('packingUnitId', '==', oldOrphanId));
+            const querySnapshot = await getDocs(q);
+            itemsToUpdate = querySnapshot.docs as any;
+        }
+
+        if (itemsToUpdate.length === 0) return { success: true };
+
+        const CHUNK_SIZE = 450;
+        for (let i = 0; i < itemsToUpdate.length; i += CHUNK_SIZE) {
+            const batch = writeBatch(firestore);
+            const chunk = itemsToUpdate.slice(i, i + CHUNK_SIZE);
+            chunk.forEach(d => {
+                batch.update(d.ref, { packingUnitId: newUnitFirestoreId });
+            });
+            await batch.commit();
+        }
+
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error in associateOrphanToUnit:", error);
+        return { success: false, error: `Failed to reassociate items: ${error.message}` };
     }
 }
 

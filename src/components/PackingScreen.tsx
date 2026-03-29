@@ -9,7 +9,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ArrowLeft, LayoutGrid, Package, Check, AlertTriangle, ScanLine, Clock, X, Archive, ArchiveRestore, Tag, Search, Pencil, Trash2, FileDown, Timer, BarChartHorizontal, Play, Pause, Loader2, Trophy, AlarmClockOff, Eye, RotateCcw, History } from 'lucide-react';
 import type { WholesaleOrder, ProductDatabaseItem, PackingScanResult, PackingSession, PackingUnit, PackedItem, UnitSearchResult, WholesaleOrderDetail, PauseReason, LabelValidationResult, PackingPause, OperationPulse, PreprintedLabel } from '@/types';
-import { validateLabel, markLabelAsUsed, savePackingSession, updateOrderStatus, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, lookupBarcode, getUserPulsesForDay, bulkDeletePackedItems, revertLabelStatus, deletePackingUnit } from '@/app/actions';
+import { validateLabel, markLabelAsUsed, savePackingSession, updateOrderStatus, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, lookupBarcode, getUserPulsesForDay, bulkDeletePackedItems, revertLabelStatus, deletePackingUnit, associateOrphanToUnit } from '@/app/actions';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
@@ -562,6 +562,50 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             } else {
                 toast({ variant: 'destructive', title: 'Error al limpiar', description: result.error });
             }
+        }
+    };
+
+    const handleRecoverOrphan = async (orphanFirestoreId: string, label: string) => {
+        if (!user) return;
+        
+        setIsLoading(true);
+        try {
+            // 1. Create a new "empty" unit to host these items
+            const userName = contextUserName || user?.displayName || user?.email || session.packerName || 'Usuario';
+            const newUnitResult = await createPackingUnit(session.orderId, user.uid, userName);
+            
+            if (!newUnitResult.success || !newUnitResult.newUnit) {
+                throw new Error(newUnitResult.error || "No se pudo crear la unidad de recuperación.");
+            }
+
+            const newUnit = newUnitResult.newUnit;
+
+            // 2. Reassociate items in Firestore
+            const assocResult = await associateOrphanToUnit(session.orderId, orphanFirestoreId, newUnit.firestoreId);
+            
+            if (!assocResult.success) {
+                throw new Error(assocResult.error || "No se pudieron reasociar los ítems.");
+            }
+
+            // 3. Update local state
+            setSession(prev => ({
+                ...prev,
+                units: [...prev.units, newUnit]
+            }));
+
+            // 4. Refresh items
+            await fetchPackedItems();
+
+            toast({
+                title: "Unidad Recuperada",
+                description: `Los ítems de "${label}" han sido movidos a la nueva Unidad #${newUnit.id}.`
+            });
+
+        } catch (error: any) {
+            console.error("Error recovering orphan:", error);
+            toast({ variant: 'destructive', title: 'Error de Recuperación', description: error.message });
+        } finally {
+            setIsLoading(false);
         }
     };
 
@@ -1417,6 +1461,11 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                                                     <Button variant="ghost" size="sm" onClick={() => { setOrphanToView({ id: res.firestoreId!, label: res.unitLabel }); setIsOrphanDialogOpen(true); }} title="Ver descripción de items">
                                                                         <Eye className="h-4 w-4" />
                                                                     </Button>
+
+                                                                    <Button variant="outline" size="sm" className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 border-blue-200" onClick={() => handleRecoverOrphan(res.firestoreId!, res.unitLabel)} title="Recuperar como nueva unidad">
+                                                                        <ArchiveRestore className="h-4 w-4" />
+                                                                    </Button>
+
                                                                     <AlertDialog>
                                                                         <AlertDialogTrigger asChild>
                                                                             <Button variant="destructive" size="sm" className="h-8 w-8 p-0" title="Limpiar registros huérfanos">
