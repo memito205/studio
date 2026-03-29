@@ -734,45 +734,37 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         setIsUnitContentDialogOpen(false); // Close the dialog
     };
 
-    const searchResults = useMemo<UnitSummarySearchResult[]>(() => {
-        if (!searchQuery.trim()) return [];
-        const query = searchQuery.toLowerCase();
+    const allUnitsSummary = useMemo<UnitSummarySearchResult[]>(() => {
         const results: UnitSummarySearchResult[] = [];
-
-        // 1. Search in valid units
         const unitFirestoreIds = new Set(session.units.map(u => u.firestoreId));
-        
+
+        // 1. Add all valid units from session
         session.units.forEach(unit => {
             const itemsInUnit = allPackedItems.filter(p => p.packingUnitId === unit.firestoreId);
-            const matchesQuery = itemsInUnit.some(p => p.itemKey.toLowerCase().includes(query));
-
-            if (matchesQuery) {
-                results.push({
-                    unitId: unit.id,
-                    unitLabel: unit.labelBarcode || (unit.status === 'open' ? 'Abierta' : 'Sin Etiqueta'),
-                    totalItems: itemsInUnit.reduce((sum, item) => sum + item.quantity, 0),
-                    unitObject: unit,
-                    isOrphan: false
-                });
-            }
+            results.push({
+                unitId: unit.id,
+                unitLabel: unit.labelBarcode || (unit.status === 'open' ? 'Abierta' : 'Sin Etiqueta'),
+                totalItems: itemsInUnit.reduce((sum, item) => sum + item.quantity, 0),
+                unitObject: unit,
+                isOrphan: false,
+                firestoreId: unit.firestoreId
+            });
         });
 
-        // 2. Identify and group orphan items that match the query
-        const orphanItems = allPackedItems.filter(p => !unitFirestoreIds.has(p.packingUnitId));
-        const matchedOrphans = orphanItems.filter(p => p.itemKey.toLowerCase().includes(query));
-
-        if (matchedOrphans.length > 0) {
-            // Group orphans by packingUnitId (even if deleted, they share the same ID if they were in the same deleted box)
+        // 2. Identify and group orphan items (items pointing to a unit ID that no longer exists in session)
+        const orphanItems = allPackedItems.filter(p => p.packingUnitId && !unitFirestoreIds.has(p.packingUnitId));
+        
+        if (orphanItems.length > 0) {
             const orphanGroups = new Map<string, PackedItem[]>();
-            matchedOrphans.forEach(p => {
+            orphanItems.forEach(p => {
                 if (!orphanGroups.has(p.packingUnitId)) orphanGroups.set(p.packingUnitId, []);
                 orphanGroups.get(p.packingUnitId)!.push(p);
             });
 
             orphanGroups.forEach((items, firestoreId) => {
                 results.push({
-                    unitId: -1, // Use -1 or similar for orphans
-                    unitLabel: 'SIN CAJA (Huérfano)',
+                    unitId: -1,
+                    unitLabel: 'CAJA ELIMINADA (Huérfana)',
                     totalItems: items.reduce((sum, item) => sum + item.quantity, 0),
                     unitObject: null,
                     isOrphan: true,
@@ -781,8 +773,36 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             });
         }
 
-        return results.sort((a,b) => a.unitId - b.unitId);
-    }, [searchQuery, session.units, allPackedItems]);
+        // 3. Handle items with NO packingUnitId (truly abandoned items)
+        const abandonedItems = allPackedItems.filter(p => !p.packingUnitId);
+        if (abandonedItems.length > 0) {
+            results.push({
+                unitId: -2,
+                unitLabel: 'ITEMS SIN ASOCIAR (Huérfanos)',
+                totalItems: abandonedItems.reduce((sum, item) => sum + item.quantity, 0),
+                unitObject: null,
+                isOrphan: true,
+                firestoreId: 'unassociated'
+            });
+        }
+
+        return results.sort((a, b) => b.unitId - a.unitId);
+    }, [session.units, allPackedItems]);
+
+    const searchResults = useMemo<UnitSummarySearchResult[]>(() => {
+        if (!searchQuery.trim()) return allUnitsSummary;
+        const query = searchQuery.toLowerCase();
+        
+        return allUnitsSummary.filter(res => {
+            // Match by label
+            if (res.unitLabel.toLowerCase().includes(query)) return true;
+            // Match by items inside
+            const itemsInUnit = allPackedItems.filter(p => 
+                (res.isOrphan && res.firestoreId === 'unassociated' ? !p.packingUnitId : p.packingUnitId === res.firestoreId)
+            );
+            return itemsInUnit.some(p => p.itemKey.toLowerCase().includes(query) || (p.item?.referencia || '').toLowerCase().includes(query));
+        });
+    }, [searchQuery, allUnitsSummary, allPackedItems]);
     
     const totalOrdered = useMemo(() => packingOrder.order.details.reduce((sum, detail) => sum + detail.cantidad, 0), [packingOrder.order.details]);
     const totalPackedGlobal = useMemo(() => Object.values(globalPackingProgress).reduce((sum, count) => sum + count, 0), [globalPackingProgress]);
@@ -1307,14 +1327,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                         </TableRow>
                                     </TableHeader>
                                     <TableBody>
-                                        {((searchQuery.trim() ? searchResults : session.units.map(u => ({
-                                            unitId: u.id,
-                                            unitLabel: u.labelBarcode || (u.status === 'open' ? 'Abierta' : 'Sin Etiqueta'),
-                                            totalItems: allPackedItems.filter(p => p.packingUnitId === u.firestoreId).reduce((sum, i) => sum + i.quantity, 0),
-                                            unitObject: u,
-                                            isOrphan: false,
-                                            firestoreId: u.firestoreId
-                                        }))) as UnitSummarySearchResult[]).sort((a,b) => b.unitId - a.unitId).map((res, index) => {
+                                        {searchResults.map((res, index) => {
                                             const unitObj = res.unitObject;
                                             return (
                                                 <TableRow key={res.firestoreId || `unit-${res.unitId}-${index}`}>
