@@ -425,38 +425,62 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         const unit = session.units.find(u => u.id === targetUnitId);
         if (!unit) return;
 
-        setIsClosingUnit(true);
-
-        // Integration: Real validation would happen here. For now, mocking success.
-        const validationResult: LabelValidationResult = { isValid: true, label: { id: scannedLabel } as PreprintedLabel };
-
-        if (!validationResult.isValid) {
-            const errorMsg = (validationResult as any).message || 'Etiqueta no válida';
-            toast({ variant: 'destructive', title: 'Error', description: errorMsg });
-            setIsClosingUnit(false);
+        if (!scannedLabel.trim()) {
+            toast({ variant: 'destructive', title: 'Error', description: 'Debe escanear una etiqueta para cerrar la caja.' });
             return;
         }
-        
-        const validLabelId = validationResult.label.id;
-        // const markUsedResult = await markLabelAsUsed(validLabelId, activeUnit.id, session.packerName);
-        // if(!markUsedResult.success){
-        //     toast({ variant: 'destructive', title: 'Error al actualizar etiqueta', description: markUsedResult.error });
-        //     setIsClosingUnit(false);
-        //     return;
-        // }
 
-        setSession(prev => {
-            const newUnits = prev.units.map(u => 
-                u.id === targetUnitId 
-                ? { ...u, status: 'closed' as 'closed', labelBarcode: validLabelId, closed_at: new Date().toISOString() }
-                : u
-            );
-            return { ...prev, units: newUnits };
-        });
+        setIsClosingUnit(true);
 
-        setIsClosingUnit(false);
-        setIsCloseUnitDialogOpen(false);
-        setUnitToCloseId(null);
+        try {
+            // 1. Validate the label exists and belongs to this order
+            const validationResult = await validateLabel(scannedLabel, packingOrder.order.id);
+
+            if (!validationResult.isValid) {
+                toast({ 
+                    variant: 'destructive', 
+                    title: 'Etiqueta Inválida', 
+                    description: validationResult.message || 'La etiqueta no es válida para este pedido.' 
+                });
+                setIsClosingUnit(false);
+                return;
+            }
+
+            const validLabelId = validationResult.label!.id;
+            const packerName = user?.displayName || user?.email || 'Operario';
+
+            // 2. Mark the label as used in Firestore
+            const markUsedResult = await markLabelAsUsed(validLabelId, targetUnitId, packerName);
+            
+            if (!markUsedResult.success) {
+                toast({ 
+                    variant: 'destructive', 
+                    title: 'Error de Etiqueta', 
+                    description: markUsedResult.error || 'No se pudo vincular la etiqueta.' 
+                });
+                setIsClosingUnit(false);
+                return;
+            }
+
+            // 3. Update local state
+            setSession(prev => {
+                const newUnits = prev.units.map(u => 
+                    u.id === targetUnitId 
+                    ? { ...u, status: 'closed' as 'closed', labelBarcode: validLabelId, closed_at: new Date().toISOString() }
+                    : u
+                );
+                return { ...prev, units: newUnits };
+            });
+
+            toast({ title: 'Unidad Cerrada', description: `La unidad #${targetUnitId} ha sido cerrada con la etiqueta ${validLabelId}.` });
+            setIsCloseUnitDialogOpen(false);
+            setUnitToCloseId(null);
+        } catch (error: any) {
+            console.error("Error closing unit:", error);
+            toast({ variant: 'destructive', title: 'Error Crítico', description: 'Ocurrió un error inesperado al cerrar la unidad.' });
+        } finally {
+            setIsClosingUnit(false);
+        }
     };
 
 
