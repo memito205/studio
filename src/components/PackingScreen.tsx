@@ -23,6 +23,7 @@ import { Label } from '@/components/ui/label';
 import { useAuth } from '@/hooks/use-auth-context'; // Import useAuth hook
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { UnitContentDialog } from './UnitContentDialog';
+import { OrphanContentDialog } from './OrphanContentDialog';
 
 interface PackingScreenProps {
   packingOrder: { order: WholesaleOrder; details: any[] };
@@ -203,6 +204,8 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     const [isUnitContentDialogOpen, setIsUnitContentDialogOpen] = useState(false);
     const [isPauseDialogOpen, setIsPauseDialogOpen] = useState(false);
     const [selectedUnit, setSelectedUnit] = useState<PackingUnit | null>(null);
+    const [isOrphanDialogOpen, setIsOrphanDialogOpen] = useState(false);
+    const [orphanToView, setOrphanToView] = useState<{ id: string, label: string } | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
     const [referenciaFilter, setReferenciaFilter] = useState('');
     const [itemFilter, setItemFilter] = useState('');
@@ -1410,32 +1413,37 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                                             <TableCell className="text-sm font-semibold">{res.unitLabel}</TableCell>
                                                             <TableCell className="text-right font-bold text-destructive text-lg">{res.totalItems}</TableCell>
                                                             <TableCell className="text-center">
-                                                                <AlertDialog>
-                                                                    <AlertDialogTrigger asChild>
-                                                                        <Button variant="destructive" size="sm" className="h-8 w-8 p-0" title="Limpiar registros huérfanos">
-                                                                            <Trash2 className="h-4 w-4" />
-                                                                        </Button>
-                                                                    </AlertDialogTrigger>
-                                                                    <AlertDialogContent>
-                                                                        <AlertDialogHeader>
-                                                                            <AlertDialogTitle className="text-destructive flex items-center gap-2">
-                                                                                <AlertTriangle className="h-6 w-6" />
-                                                                                Confirmar Limpieza Definitiva
-                                                                            </AlertDialogTitle>
-                                                                            <AlertDialogDescription>
-                                                                                Estás a punto de borrar los registros de <strong className="text-foreground">{res.totalItems}</strong> ítems que NO tienen caja física asociada. 
-                                                                                <br /><br />
-                                                                                <span className="font-bold text-destructive">ADVERTENCIA:</span> Esta acción restará estas unidades del total leído del pedido y no se puede deshacer. Solo proceda si está seguro de que estos artículos no están empacados en ninguna de las cajas válidas de arriba.
-                                                                            </AlertDialogDescription>
-                                                                        </AlertDialogHeader>
-                                                                        <AlertDialogFooter>
-                                                                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                                                                            <AlertDialogAction onClick={() => handleCleanupOrphans(res.firestoreId!)} className="bg-destructive text-white hover:bg-destructive/90">
-                                                                                Sí, Limpiar Registros
-                                                                            </AlertDialogAction>
-                                                                        </AlertDialogFooter>
-                                                                    </AlertDialogContent>
-                                                                </AlertDialog>
+                                                                <div className="flex justify-center gap-1">
+                                                                    <Button variant="ghost" size="sm" onClick={() => { setOrphanToView({ id: res.firestoreId!, label: res.unitLabel }); setIsOrphanDialogOpen(true); }} title="Ver descripción de items">
+                                                                        <Eye className="h-4 w-4" />
+                                                                    </Button>
+                                                                    <AlertDialog>
+                                                                        <AlertDialogTrigger asChild>
+                                                                            <Button variant="destructive" size="sm" className="h-8 w-8 p-0" title="Limpiar registros huérfanos">
+                                                                                <Trash2 className="h-4 w-4" />
+                                                                            </Button>
+                                                                        </AlertDialogTrigger>
+                                                                        <AlertDialogContent>
+                                                                            <AlertDialogHeader>
+                                                                                <AlertDialogTitle className="text-destructive flex items-center gap-2">
+                                                                                    <AlertTriangle className="h-6 w-6" />
+                                                                                    Confirmar Limpieza Definitiva
+                                                                                </AlertDialogTitle>
+                                                                                <AlertDialogDescription>
+                                                                                    Estás a punto de borrar los registros de <strong className="text-foreground">{res.totalItems}</strong> ítems que NO tienen caja física asociada. 
+                                                                                    <br /><br />
+                                                                                    <span className="font-bold text-destructive">ADVERTENCIA:</span> Esta acción restará estas unidades del total leído del pedido y no se puede deshacer. Solo proceda si está seguro de que estos artículos no están empacados en ninguna de las cajas válidas de arriba.
+                                                                                </AlertDialogDescription>
+                                                                            </AlertDialogHeader>
+                                                                            <AlertDialogFooter>
+                                                                                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                                                                <AlertDialogAction onClick={() => handleCleanupOrphans(res.firestoreId!)} className="bg-destructive text-white hover:bg-destructive/90">
+                                                                                    Sí, Limpiar Registros
+                                                                                </AlertDialogAction>
+                                                                            </AlertDialogFooter>
+                                                                        </AlertDialogContent>
+                                                                    </AlertDialog>
+                                                                </div>
                                                             </TableCell>
                                                         </TableRow>
                                                     ))}
@@ -1486,6 +1494,14 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 </TabsContent>
             )}
         </Tabs>
+
+        <OrphanContentDialog 
+            isOpen={isOrphanDialogOpen}
+            onOpenChange={setIsOrphanDialogOpen}
+            firestoreId={orphanToView?.id || null}
+            unitLabel={orphanToView?.label || ''}
+            allPackedItems={allPackedItems}
+        />
     </div>
   );
 };
