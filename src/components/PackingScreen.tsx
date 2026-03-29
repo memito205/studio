@@ -452,7 +452,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             }
 
             const validLabelId = validationResult.label!.id;
-            const packerName = user?.displayName || user?.email || 'Operario';
+            const packerName = contextUserName || user?.displayName || user?.email || 'Operario';
 
             // 2. Mark the label as used in Firestore
             const markUsedResult = await markLabelAsUsed(validLabelId, targetUnitId, packerName);
@@ -467,11 +467,18 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 return;
             }
 
-            // 3. Update local state
+            // 3. SECURE CLOSING: Transactional update in Firestore to prevent orphans
+            const closeResult = await closePackingUnitAction(packingOrder.order.id, targetUnitId, validLabelId, packerName);
+            
+            if (!closeResult.success) {
+                throw new Error(closeResult.error || "No se pudo sincronizar el cierre de la caja con el servidor.");
+            }
+
+            // 4. Update local state
             setSession(prev => {
                 const newUnits = prev.units.map(u => 
                     u.id === targetUnitId 
-                    ? { ...u, status: 'closed' as 'closed', labelBarcode: validLabelId, closed_at: new Date().toISOString() }
+                    ? { ...u, status: 'closed' as 'closed', labelBarcode: validLabelId, closed_at: new Date().toISOString(), closedByName: packerName }
                     : u
                 );
                 return { ...prev, units: newUnits };
@@ -482,7 +489,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             setUnitToCloseId(null);
         } catch (error: any) {
             console.error("Error closing unit:", error);
-            toast({ variant: 'destructive', title: 'Error Crítico', description: 'Ocurrió un error inesperado al cerrar la unidad.' });
+            toast({ variant: 'destructive', title: 'Error Crítico', description: error.message || 'Ocurrió un error inesperado al cerrar la unidad.' });
         } finally {
             setIsClosingUnit(false);
         }

@@ -1195,6 +1195,56 @@ export async function associateOrphanToUnit(orderId: string, oldOrphanId: string
     }
 }
 
+export async function closePackingUnitAction(orderId: string, unitId: number, labelBarcode: string, packerName: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        await runTransaction(firestore, async (transaction) => {
+            const sessionRef = doc(firestore, 'packingSessions', orderId);
+            const sessionDoc = await transaction.get(sessionRef);
+
+            if (!sessionDoc.exists()) throw new Error("La sesión de empaque no existe.");
+
+            const data = sessionDoc.data() as PackingSession;
+            const units = [...(data.units || [])];
+            const unitIndex = units.findIndex(u => u.id === unitId);
+
+            if (unitIndex === -1) {
+                throw new Error("No se pudo cerrar: La caja ya no existe en la base de datos (posible registro huérfano).");
+            }
+            
+            if (units[unitIndex].status === 'closed' && units[unitIndex].labelBarcode === labelBarcode) {
+                // Already closed with this label, potentially a duplicate call
+                return;
+            }
+
+            // Update the unit in the array
+            units[unitIndex] = {
+                ...units[unitIndex],
+                status: 'closed',
+                labelBarcode: labelBarcode,
+                closed_at: new Date().toISOString(),
+                closedByName: packerName
+            };
+
+            transaction.update(sessionRef, { units });
+            
+            // Also log the activity
+            const logRef = doc(collection(firestore, 'activity_logs'));
+            transaction.set(logRef, {
+                type: 'unit_closed',
+                orderId,
+                unitId,
+                labelBarcode,
+                packerName,
+                created_at: Timestamp.now()
+            });
+        });
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error in closePackingUnitAction:", error);
+        return { success: false, error: error.message };
+    }
+}
+
 export async function getPackedItemsForOrder(orderId: string): Promise<{ data?: PackedItem[], error?: string }> {
     try {
         const q = query(collection(firestore, "packedItems"), where("orderId", "==", orderId));

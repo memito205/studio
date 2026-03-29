@@ -818,6 +818,8 @@ export interface PackingUnit {
     status: 'open' | 'closed';
     labelBarcode?: string;
     closed_at?: string;
+    closedBy?: string;
+    closedByName?: string | null;
     createdAt?: string;
     createdBy?: string;
     createdByName?: string | null;
