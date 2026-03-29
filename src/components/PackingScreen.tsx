@@ -1402,11 +1402,29 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                         <div className="flex flex-wrap gap-2">
                                             {sortedSizes.map(talla => {
                                                 const { ordered, packed } = group.sizes[talla];
-                                                const status = packed >= ordered ? 'bg-green-100 text-green-700' : packed > 0 ? 'bg-amber-100 text-amber-700' : 'bg-muted text-muted-foreground';
+                                                const isOverpacked = packed > ordered;
+                                                const isComplete = packed === ordered && ordered > 0;
+                                                const isPartial = packed > 0 && packed < ordered;
+                                                
+                                                const status = isOverpacked 
+                                                    ? 'bg-red-600 text-white border-red-800 shadow-sm animate-pulse' 
+                                                    : isComplete 
+                                                        ? 'bg-green-100 text-green-700 border-green-200' 
+                                                        : isPartial 
+                                                            ? 'bg-amber-100 text-amber-700 border-amber-200' 
+                                                            : 'bg-muted text-muted-foreground border-transparent';
+                                                
                                                 return (
-                                                    <div key={talla} className={cn("px-2 py-1 rounded text-xs font-medium flex gap-2 items-center", status)}>
+                                                    <div key={talla} className={cn(
+                                                        "px-2 py-1 rounded-md text-xs font-bold flex gap-2 items-center border transition-all", 
+                                                        status,
+                                                        isOverpacked && "ring-2 ring-red-200"
+                                                    )}>
                                                         <span>{talla}</span>
-                                                        <span className="font-bold">{packed}/{ordered}</span>
+                                                        <span className={cn("px-1.5 py-0.5 rounded-sm bg-white/20 ml-1")}>
+                                                            {packed}/{ordered}
+                                                        </span>
+                                                        {isOverpacked && <AlertTriangle className="h-3 w-3" />}
                                                     </div>
                                                 )
                                             })}
