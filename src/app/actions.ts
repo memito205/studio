@@ -1323,21 +1323,6 @@ export async function bulkDeletePackedItems(itemIds: string[]): Promise<{ succes
     }
 }
 
-export async function revertLabelStatus(labelId: string): Promise<{ success: boolean; error?: string }> {
-    try {
-        const labelRef = doc(firestore, "preprintedLabels", labelId);
-        await updateDoc(labelRef, {
-            status: 'available',
-            usedAt: deleteField(),
-            unitId: deleteField(),
-            usedBy: deleteField(),
-        });
-        return { success: true };
-    } catch (error: any) {
-        console.error("Error reverting label status:", error);
-        return { success: false, error: `Failed to revert label status: ${error.message}` };
-    }
-}
 
 // --- Dispatch Actions ---
 
