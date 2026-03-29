@@ -336,7 +336,8 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
                 let unitToUse = activeUnit;
                 if (!unitToUse) {
-                    const newUnitResult = await createPackingUnit(session.orderId, user.uid, user.displayName || 'Usuario');
+                    const userName = user.displayName || user.email || 'Usuario';
+                    const newUnitResult = await createPackingUnit(session.orderId, user.uid, userName);
                     if (newUnitResult.success && newUnitResult.newUnit) {
                         setSession(prev => ({ ...prev, units: [...prev.units, newUnitResult.newUnit!] }));
                         unitToUse = newUnitResult.newUnit;
@@ -1294,7 +1295,12 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                                 <TableRow key={res.isOrphan ? (res.firestoreId || res.unitId) : res.unitId}>
                                                     <TableCell className="font-medium">{res.isOrphan ? 'N/A' : `#${res.unitId}`}</TableCell>
                                                     <TableCell><Badge variant={res.isOrphan ? 'destructive' : 'outline'}>{res.unitLabel}</Badge></TableCell>
-                                                    <TableCell className="text-sm">{unitObj ? (unitObj.createdByName || unitObj.createdBy || 'N/A') : 'N/A'}</TableCell>
+                                                    <TableCell className="text-sm">
+                                                        {unitObj ? (
+                                                            unitObj.createdByName || 
+                                                            (unitObj.createdBy === user?.uid ? (user?.displayName || user?.email || 'Usuario (Mí)') : unitObj.createdBy)
+                                                        ) : 'N/A'}
+                                                    </TableCell>
                                                     <TableCell className="text-xs text-muted-foreground">
                                                         {unitObj?.createdAt ? new Date(unitObj.createdAt).toLocaleString() : 'N/A'}
                                                     </TableCell>
@@ -1356,7 +1362,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                                 <div className="flex justify-between items-end mt-2">
                                                     <p className="text-lg font-bold">{itemsCount} items</p>
                                                     <div className="text-right">
-                                                        <p className="text-[10px] font-medium text-primary uppercase">{unit.createdByName || 'Usuario'}</p>
+                                                        <p className="text-[10px] font-medium text-primary uppercase">{unit.createdByName || (unit.createdBy === user?.uid ? (user?.displayName || 'Mí') : 'Usuario')}</p>
                                                         {unit.createdAt && <p className="text-[9px] text-muted-foreground">{new Date(unit.createdAt).toLocaleString()}</p>}
                                                     </div>
                                                 </div>
