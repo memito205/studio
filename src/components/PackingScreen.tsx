@@ -9,7 +9,25 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ArrowLeft, LayoutGrid, Package, Check, AlertTriangle, ScanLine, Clock, X, Archive, ArchiveRestore, Tag, Search, Pencil, Trash2, FileDown, Timer, BarChartHorizontal, Play, Pause, Loader2, Trophy, AlarmClockOff, Eye, RotateCcw, History } from 'lucide-react';
 import type { WholesaleOrder, ProductDatabaseItem, PackingScanResult, PackingSession, PackingUnit, PackedItem, UnitSearchResult, WholesaleOrderDetail, PauseReason, LabelValidationResult, PackingPause, OperationPulse, PreprintedLabel } from '@/types';
-import { validateLabel, markLabelAsUsed, savePackingSession, updateOrderStatus, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, lookupBarcode, getUserPulsesForDay, bulkDeletePackedItems, revertLabelStatus, deletePackingUnit, associateOrphanToUnit } from '@/app/actions';
+import { onSnapshot, doc, collection, query, where, Timestamp, deleteField } from 'firebase/firestore';
+import { firestore } from '@/services/firebase';
+import { 
+    validateLabel, 
+    markLabelAsUsed, 
+    updateOrderStatus, 
+    addPackedItem, 
+    getPackedItemsForOrder, 
+    deletePackedItem, 
+    updatePackedItem, 
+    createPackingUnit, 
+    lookupBarcode, 
+    getUserPulsesForDay, 
+    bulkDeletePackedItems, 
+    revertLabelStatus, 
+    deletePackingUnit, 
+    associateOrphanToUnit,
+    secureCloseUnitAction
+} from '@/app/actions';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
@@ -222,28 +240,48 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         const result = await getPackedItemsForOrder(packingOrder.order.id);
         if(result.data){
             setAllPackedItems(result.data);
-        } else {
-            toast({ variant: "destructive", title: "Error", description: "No se pudieron cargar los ítems empacados." });
         }
-    }, [packingOrder.order.id, toast]);
+    }, [packingOrder.order.id]);
 
+    // 1. Sincronización Real-time de la Sesión
     useEffect(() => {
-        if (!session.startTime) {
-            const now = new Date();
-            const updatedSession = { ...session, startTime: now };
-            setSession(updatedSession);
-            onSessionChange(updatedSession);
-        }
-    }, [session.startTime, onSessionChange]);
+        if (!packingOrder?.order?.id) return;
+        const sessionRef = doc(firestore, 'packingSessions', packingOrder.order.id);
+        const unsubscribe = onSnapshot(sessionRef, (docSnap) => {
+            if (docSnap.exists()) {
+                const data = docSnap.data() as PackingSession;
+                setSession(data);
+            }
+        });
+        return () => unsubscribe();
+    }, [packingOrder?.order?.id]);
+
+    // 2. Sincronización Real-time de Ítems Empacados
+    useEffect(() => {
+        if (!packingOrder?.order?.id) return;
+        const q = query(
+            collection(firestore, 'packedItems'),
+            where('orderId', '==', packingOrder.order.id)
+        );
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+            const items: PackedItem[] = [];
+            snapshot.forEach((doc) => {
+                items.push({ id: doc.id, ...doc.data() } as PackedItem);
+            });
+            setAllPackedItems(items);
+        });
+        return () => unsubscribe();
+    }, [packingOrder?.order?.id]);
+
+    // Remover el guardado automático de la sesión completa
+    // (Ya no se necesita porque cada cambio es atómico en el servidor)
 
     useEffect(() => {
         fetchPackedItems();
     }, [fetchPackedItems]);
 
 
-    useEffect(() => {
-        onSessionChange(session);
-    }, [session, onSessionChange]);
+    // useEffect para guardar la sesión - ELIMINADO para evitar conflictos de concurrencia
 
     useEffect(() => {
         if (!isLoading && session.status === 'active') {
@@ -438,63 +476,83 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         setIsClosingUnit(true);
 
         try {
-            // 1. Validate the label exists and belongs to this order
-            const validationResult = await validateLabel(scannedLabel, packingOrder.order.id);
-
-            if (!validationResult.isValid) {
-                toast({ 
-                    variant: 'destructive', 
-                    title: 'Etiqueta Inválida', 
-                    description: validationResult.message || 'La etiqueta no es válida para este pedido.' 
-                });
-                setIsClosingUnit(false);
-                return;
-            }
-
-            const validLabelId = validationResult.label!.id;
             const packerName = contextUserName || user?.displayName || user?.email || 'Operario';
+            const normalizedLabel = scannedLabel.trim().toUpperCase();
 
-            // 2. Mark the label as used in Firestore
-            const markUsedResult = await markLabelAsUsed(validLabelId, targetUnitId, packerName);
-            
-            if (!markUsedResult.success) {
-                toast({ 
-                    variant: 'destructive', 
-                    title: 'Error de Etiqueta', 
-                    description: markUsedResult.error || 'No se pudo vincular la etiqueta.' 
+            // Usar la nueva acción segura y atómica que valida y cierra en un solo paso
+            const result = await secureCloseUnitAction(
+                packingOrder.order.id,
+                targetUnitId,
+                normalizedLabel,
+                packerName
+            );
+
+            if (result.success) {
+                toast({
+                    title: "Unidad Cerrada",
+                    description: `La unidad #${targetUnitId} ha sido cerrada con la etiqueta ${normalizedLabel}.`,
                 });
-                setIsClosingUnit(false);
-                return;
+                
+                // Reiniciar estados de cierre
+                setUnitToCloseId(null);
+                setIsCloseUnitDialogOpen(false);
+                setLastScan(null);
+                
+                // Refrescar ítems (aunque el listener debería hacerlo, esto asegura consistencia inmediata)
+                fetchPackedItems();
+            } else {
+                toast({
+                    variant: "destructive",
+                    title: "Error al cerrar",
+                    description: result.error || "No se pudo cerrar la unidad.",
+                });
             }
-
-            // 3. SECURE CLOSING: Transactional update in Firestore to prevent orphans
-            const closeResult = await closePackingUnitAction(packingOrder.order.id, targetUnitId, validLabelId, packerName);
-            
-            if (!closeResult.success) {
-                throw new Error(closeResult.error || "No se pudo sincronizar el cierre de la caja con el servidor.");
-            }
-
-            // 4. Update local state
-            setSession(prev => {
-                const newUnits = prev.units.map(u => 
-                    u.id === targetUnitId 
-                    ? { ...u, status: 'closed' as 'closed', labelBarcode: validLabelId, closed_at: new Date().toISOString(), closedByName: packerName }
-                    : u
-                );
-                return { ...prev, units: newUnits };
-            });
-
-            toast({ title: 'Unidad Cerrada', description: `La unidad #${targetUnitId} ha sido cerrada con la etiqueta ${validLabelId}.` });
-            setIsCloseUnitDialogOpen(false);
-            setUnitToCloseId(null);
         } catch (error: any) {
             console.error("Error closing unit:", error);
-            toast({ variant: 'destructive', title: 'Error Crítico', description: error.message || 'Ocurrió un error inesperado al cerrar la unidad.' });
+            toast({
+                variant: 'destructive',
+                title: 'Error Crítico',
+                description: error.message || 'Ocurrió un error inesperado al cerrar la unidad.',
+            });
         } finally {
             setIsClosingUnit(false);
         }
     };
 
+
+    const handleReturnToOrders = () => {
+        // No longer need to save the full session here as it is synced in real-time
+        onReturnToOrders();
+    };
+
+    const handleResetLabel = async (labelId: string) => {
+        if (!labelId || labelId.length < 3) return;
+        
+        setIsLoading(true);
+        try {
+            const result = await revertLabelStatus(labelId.trim().toUpperCase());
+            if (result.success) {
+                toast({
+                    title: "Etiqueta Destrabada",
+                    description: `La etiqueta ${labelId} ha sido marcada como disponible nuevamente.`,
+                });
+            } else {
+                toast({
+                    variant: "destructive",
+                    title: "Error",
+                    description: result.error || "No se pudo liberar la etiqueta.",
+                });
+            }
+        } catch (error: any) {
+            toast({
+                variant: "destructive",
+                title: "Error",
+                description: error.message || "Error al conectar con el servidor.",
+            });
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
     const handleViewUnitContent = (unit: PackingUnit) => {
         setSelectedUnit(unit);
@@ -1467,6 +1525,16 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                                                 <div className="flex justify-center gap-1">
                                                                     <Button variant="ghost" size="sm" onClick={() => { setOrphanToView({ id: res.firestoreId!, label: res.unitLabel }); setIsOrphanDialogOpen(true); }} title="Ver descripción de items">
                                                                         <Eye className="h-4 w-4" />
+                                                                    </Button>
+
+                                                                    <Button 
+                                                                        variant="ghost" 
+                                                                        size="sm" 
+                                                                        className="h-8 w-8 p-0 text-amber-600 hover:text-amber-700 hover:bg-amber-50" 
+                                                                        onClick={() => handleResetLabel(res.unitLabel)} 
+                                                                        title="Liberar etiqueta bloqueada"
+                                                                    >
+                                                                        <Tag className="h-4 w-4" />
                                                                     </Button>
 
                                                                     <Button variant="outline" size="sm" className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 border-blue-200" onClick={() => handleRecoverOrphan(res.firestoreId!, res.unitLabel)} title="Recuperar como nueva unidad">

@@ -1195,52 +1195,85 @@ export async function associateOrphanToUnit(orderId: string, oldOrphanId: string
     }
 }
 
-export async function closePackingUnitAction(orderId: string, unitId: number, labelBarcode: string, packerName: string): Promise<{ success: boolean; error?: string }> {
+export async function secureCloseUnitAction(orderId: string, unitId: number, labelId: string, packerName: string): Promise<{ success: boolean; error?: string }> {
     try {
         await runTransaction(firestore, async (transaction) => {
+            const labelRef = doc(firestore, "preprintedLabels", labelId);
             const sessionRef = doc(firestore, 'packingSessions', orderId);
-            const sessionDoc = await transaction.get(sessionRef);
 
-            if (!sessionDoc.exists()) throw new Error("La sesión de empaque no existe.");
+            const [labelSnap, sessionSnap] = await Promise.all([
+                transaction.get(labelRef),
+                transaction.get(sessionRef)
+            ]);
 
-            const data = sessionDoc.data() as PackingSession;
-            const units = [...(data.units || [])];
-            const unitIndex = units.findIndex(u => u.id === unitId);
+            if (!labelSnap.exists()) throw new Error("La etiqueta no existe en la base de datos.");
+            if (!sessionSnap.exists()) throw new Error("La sesión de empaque ya no existe.");
 
-            if (unitIndex === -1) {
-                throw new Error("No se pudo cerrar: La caja ya no existe en la base de datos (posible registro huérfano).");
+            const labelData = labelSnap.data() as PreprintedLabel;
+            const sessionData = sessionSnap.data() as PackingSession;
+            
+            // Validation: Label must be available OR already assigned to THIS unit (retry scenario)
+            if (labelData.status !== 'available') {
+                const isRetryForSameUnit = labelData.unitId === unitId && labelData.orderId === orderId;
+                if (!isRetryForSameUnit) {
+                    throw new Error(`La etiqueta ${labelId} ya está en uso por otra unidad.`);
+                }
             }
             
-            if (units[unitIndex].status === 'closed' && units[unitIndex].labelBarcode === labelBarcode) {
-                // Already closed with this label, potentially a duplicate call
-                return;
-            }
+            if (labelData.orderId !== orderId) throw new Error(`La etiqueta ${labelId} no pertenece al pedido ${orderId}.`);
 
-            // Update the unit in the array
+            const units = [...(sessionData.units || [])];
+            const unitIndex = units.findIndex(u => u.id === unitId);
+            if (unitIndex === -1) throw new Error("La caja ya no existe en la sesión (posible registro huérfano).");
+
+            // 1. Update Label Status
+            transaction.update(labelRef, {
+                status: 'used',
+                usedAt: Timestamp.now(),
+                unitId: unitId,
+                usedBy: packerName,
+            });
+
+            // 2. Update Unit in Session Array
             units[unitIndex] = {
                 ...units[unitIndex],
                 status: 'closed',
-                labelBarcode: labelBarcode,
+                labelBarcode: labelId,
                 closed_at: new Date().toISOString(),
                 closedByName: packerName
             };
-
             transaction.update(sessionRef, { units });
-            
-            // Also log the activity
+
+            // 3. Log Activity
             const logRef = doc(collection(firestore, 'activity_logs'));
             transaction.set(logRef, {
-                type: 'unit_closed',
+                type: 'unit_closed_secure',
                 orderId,
                 unitId,
-                labelBarcode,
+                labelBarcode: labelId,
                 packerName,
                 created_at: Timestamp.now()
             });
         });
         return { success: true };
     } catch (error: any) {
-        console.error("Error in closePackingUnitAction:", error);
+        console.error("Error in secureCloseUnitAction:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function revertLabelStatus(labelId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        const labelRef = doc(firestore, "preprintedLabels", labelId);
+        await updateDoc(labelRef, {
+            status: 'available',
+            usedAt: deleteField(),
+            unitId: deleteField(),
+            usedBy: deleteField(),
+        });
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error reverting label status:", error);
         return { success: false, error: error.message };
     }
 }
