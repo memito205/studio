@@ -14,6 +14,7 @@ import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { exportToXlsx } from '@/services/export';
 import { useToast } from '@/hooks/use-toast';
 import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious } from '@/components/ui/carousel';
@@ -789,19 +790,26 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         return results.sort((a, b) => b.unitId - a.unitId);
     }, [session.units, allPackedItems]);
 
-    const searchResults = useMemo<UnitSummarySearchResult[]>(() => {
-        if (!searchQuery.trim()) return allUnitsSummary;
-        const query = searchQuery.toLowerCase();
+    const { validHistoryResults, orphanHistoryResults } = useMemo(() => {
+        const query = searchQuery.toLowerCase().trim();
         
-        return allUnitsSummary.filter(res => {
-            // Match by label
+        const valid = allUnitsSummary.filter(res => !res.isOrphan);
+        const orphans = allUnitsSummary.filter(res => res.isOrphan);
+
+        if (!query) return { validHistoryResults: valid, orphanHistoryResults: orphans };
+
+        const filterFn = (res: UnitSummarySearchResult) => {
             if (res.unitLabel.toLowerCase().includes(query)) return true;
-            // Match by items inside
             const itemsInUnit = allPackedItems.filter(p => 
                 (res.isOrphan && res.firestoreId === 'unassociated' ? !p.packingUnitId : p.packingUnitId === res.firestoreId)
             );
             return itemsInUnit.some(p => p.itemKey.toLowerCase().includes(query) || (p.item?.referencia || '').toLowerCase().includes(query));
-        });
+        };
+
+        return {
+            validHistoryResults: valid.filter(filterFn),
+            orphanHistoryResults: orphans.filter(filterFn)
+        };
     }, [searchQuery, allUnitsSummary, allPackedItems]);
     
     const totalOrdered = useMemo(() => packingOrder.order.details.reduce((sum, detail) => sum + detail.cantidad, 0), [packingOrder.order.details]);
@@ -1302,89 +1310,148 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 <TabsContent value="history" className="space-y-6">
                     <Card>
                         <CardHeader>
-                            <CardTitle>Búsqueda de Unidades</CardTitle>
-                            <CardDescription>Localice en qué caja se empacó un artículo.</CardDescription>
+                            <CardTitle>Seguimiento e Integridad de Unidades</CardTitle>
+                            <CardDescription>Consulte el estado de las cajas y limpie registros inconsistentes.</CardDescription>
                         </CardHeader>
                         <CardContent>
-                            <div className="flex gap-2 mb-4">
+                            <div className="flex gap-2 mb-6">
                                 <Search className="w-5 h-5 text-muted-foreground mt-2" />
                                 <Input
                                     value={searchQuery}
                                     onChange={e => setSearchQuery(e.target.value)}
-                                    placeholder="Referencia o ítem..."
+                                    placeholder="Buscar por referencia, ítem o etiqueta..."
+                                    className="flex-1"
                                 />
                             </div>
-                            <div className="max-h-[40vh] overflow-y-auto">
-                                <Table>
-                                    <TableHeader>
-                                        <TableRow>
-                                            <TableHead>ID</TableHead>
-                                            <TableHead>Etiqueta</TableHead>
-                                            <TableHead>Usuario</TableHead>
-                                            <TableHead>Fecha/Hora</TableHead>
-                                            <TableHead className="text-right">Items</TableHead>
-                                            <TableHead className="text-center">Acción</TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-                                    <TableBody>
-                                        {searchResults.map((res, index) => {
-                                            const unitObj = res.unitObject;
-                                            return (
-                                                <TableRow key={res.firestoreId || `unit-${res.unitId}-${index}`}>
-                                                    <TableCell className="font-medium">{res.isOrphan ? 'N/A' : `#${res.unitId}`}</TableCell>
-                                                    <TableCell><Badge variant={res.isOrphan ? 'destructive' : 'outline'}>{res.unitLabel}</Badge></TableCell>
-                                                    <TableCell className="text-sm">
-                                                        {unitObj ? (
-                                                            unitObj.createdByName && unitObj.createdByName !== unitObj.createdBy ? unitObj.createdByName : 
-                                                            (unitObj.createdBy === user?.uid ? (contextUserName || user?.displayName || user?.email || 'Mí') : 
-                                                             (unitObj.createdBy === (session as any).packerId ? session.packerName : unitObj.createdBy))
-                                                        ) : 'N/A'}
-                                                    </TableCell>
-                                                    <TableCell className="text-xs text-muted-foreground">
-                                                        {unitObj?.createdAt ? new Date(unitObj.createdAt).toLocaleString() : 'N/A'}
-                                                    </TableCell>
-                                                    <TableCell className="text-right">{res.totalItems}</TableCell>
-                                                    <TableCell className="text-center">
-                                                        {res.isOrphan ? (
-                                                            <AlertDialog>
-                                                                <AlertDialogTrigger asChild>
-                                                                    <Button variant="ghost" size="sm" title="Limpiar registros huérfanos">
-                                                                        <Trash2 className="h-4 w-4 text-destructive" />
-                                                                    </Button>
-                                                                </AlertDialogTrigger>
-                                                                <AlertDialogContent>
-                                                                    <AlertDialogHeader>
-                                                                        <AlertDialogTitle>¿Confirmar Limpieza?</AlertDialogTitle>
-                                                                        <AlertDialogDescription>
-                                                                            Estos {res.totalItems} ítems están registrados como leídos pero su caja ya no existe. Al eliminarlos, la cantidad leída del pedido disminuirá.
-                                                                        </AlertDialogDescription>
-                                                                    </AlertDialogHeader>
-                                                                    <AlertDialogFooter>
-                                                                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                                                                        <AlertDialogAction onClick={() => handleCleanupOrphans(res.firestoreId!)}>Sí, Eliminar</AlertDialogAction>
-                                                                    </AlertDialogFooter>
-                                                                </AlertDialogContent>
-                                                            </AlertDialog>
-                                                        ) : (
-                                                            unitObj && (
-                                                                <Button variant="ghost" size="sm" onClick={() => handleViewUnitContent(unitObj)}>
-                                                                    <Eye className="h-4 w-4" />
-                                                                </Button>
-                                                            )
-                                                        )}
-                                                    </TableCell>
+
+                            <div className="space-y-8">
+                                {/* SECTION 1: VALID UNITS */}
+                                <div>
+                                    <div className="flex items-center gap-2 mb-3">
+                                        <Package className="w-5 h-5 text-primary" />
+                                        <h3 className="text-lg font-semibold">Seguimiento de Cajas (Válidas)</h3>
+                                    </div>
+                                    <div className="max-h-[40vh] overflow-y-auto border rounded-md shadow-sm">
+                                        <Table>
+                                            <TableHeader className="bg-muted/50 sticky top-0 z-10">
+                                                <TableRow>
+                                                    <TableHead className="w-20">ID</TableHead>
+                                                    <TableHead>Etiqueta</TableHead>
+                                                    <TableHead>Usuario</TableHead>
+                                                    <TableHead>Fecha/Hora</TableHead>
+                                                    <TableHead className="text-right">Items</TableHead>
+                                                    <TableHead className="text-center">Acción</TableHead>
                                                 </TableRow>
-                                            );
-                                        })}
-                                    </TableBody>
-                                </Table>
+                                            </TableHeader>
+                                            <TableBody>
+                                                {validHistoryResults.length > 0 ? validHistoryResults.map((res, index) => {
+                                                    const unitObj = res.unitObject;
+                                                    return (
+                                                        <TableRow key={res.firestoreId || `unit-${res.unitId}-${index}`}>
+                                                            <TableCell className="font-bold">#{res.unitId}</TableCell>
+                                                            <TableCell><Badge variant="outline" className="font-mono">{res.unitLabel}</Badge></TableCell>
+                                                            <TableCell className="text-sm">
+                                                                {unitObj ? (
+                                                                    unitObj.createdByName && unitObj.createdByName !== unitObj.createdBy ? unitObj.createdByName : 
+                                                                    (unitObj.createdBy === user?.uid ? (contextUserName || user?.displayName || user?.email || 'Mí') : 
+                                                                    (unitObj.createdBy === (session as any).packerId ? session.packerName : unitObj.createdBy))
+                                                                ) : 'N/A'}
+                                                            </TableCell>
+                                                            <TableCell className="text-xs text-muted-foreground">
+                                                                {unitObj?.createdAt ? new Date(unitObj.createdAt).toLocaleString() : 'N/A'}
+                                                            </TableCell>
+                                                            <TableCell className="text-right font-medium">{res.totalItems}</TableCell>
+                                                            <TableCell className="text-center">
+                                                                {unitObj && (
+                                                                    <Button variant="ghost" size="sm" onClick={() => handleViewUnitContent(unitObj)}>
+                                                                        <Eye className="h-4 w-4" />
+                                                                    </Button>
+                                                                )}
+                                                            </TableCell>
+                                                        </TableRow>
+                                                    );
+                                                }) : (
+                                                    <TableRow>
+                                                        <TableCell colSpan={6} className="text-center py-8 text-muted-foreground italic">
+                                                            {searchQuery ? 'No se encontraron cajas que coincidan con la búsqueda.' : 'No hay cajas registradas aún.'}
+                                                        </TableCell>
+                                                    </TableRow>
+                                                )}
+                                            </TableBody>
+                                        </Table>
+                                    </div>
+                                </div>
+
+                                {/* SECTION 2: ORPHAN UNITS/INCONSISTENCIES */}
+                                {orphanHistoryResults.length > 0 && (
+                                    <div className="space-y-4 pt-6 border-t border-destructive/20">
+                                        <Alert variant="destructive" className="bg-destructive/5 border-destructive/30">
+                                            <AlertTriangle className="h-5 w-5" />
+                                            <AlertTitle className="text-destructive font-bold">Inconsistencias Detectadas (Registros Huérfanos)</AlertTitle>
+                                            <AlertDescription className="text-sm">
+                                                Estos registros corresponden a artículos leídos que han perdido su asociación con una caja física (posiblemente por eliminaciones accidentales o errores de sincronización). **No pertenecen a las cajas mostradas arriba.**
+                                            </AlertDescription>
+                                        </Alert>
+                                        
+                                        <div className="max-h-[30vh] overflow-y-auto border rounded-md border-destructive/10 shadow-sm">
+                                            <Table>
+                                                <TableHeader className="bg-destructive/5 sticky top-0 z-10">
+                                                    <TableRow>
+                                                        <TableHead className="text-destructive">Estado</TableHead>
+                                                        <TableHead>Origen / Descripción</TableHead>
+                                                        <TableHead className="text-right">Items</TableHead>
+                                                        <TableHead className="text-center">Acción</TableHead>
+                                                    </TableRow>
+                                                </TableHeader>
+                                                <TableBody>
+                                                    {orphanHistoryResults.map((res, index) => (
+                                                        <TableRow key={`orphan-${res.firestoreId}-${index}`} className="hover:bg-destructive/5 transition-colors">
+                                                            <TableCell><Badge variant="destructive" className="animate-pulse">HUÉRFANO</Badge></TableCell>
+                                                            <TableCell className="text-sm font-semibold">{res.unitLabel}</TableCell>
+                                                            <TableCell className="text-right font-bold text-destructive text-lg">{res.totalItems}</TableCell>
+                                                            <TableCell className="text-center">
+                                                                <AlertDialog>
+                                                                    <AlertDialogTrigger asChild>
+                                                                        <Button variant="destructive" size="sm" className="h-8 w-8 p-0" title="Limpiar registros huérfanos">
+                                                                            <Trash2 className="h-4 w-4" />
+                                                                        </Button>
+                                                                    </AlertDialogTrigger>
+                                                                    <AlertDialogContent>
+                                                                        <AlertDialogHeader>
+                                                                            <AlertDialogTitle className="text-destructive flex items-center gap-2">
+                                                                                <AlertTriangle className="h-6 w-6" />
+                                                                                Confirmar Limpieza Definitiva
+                                                                            </AlertDialogTitle>
+                                                                            <AlertDialogDescription>
+                                                                                Estás a punto de borrar los registros de <strong className="text-foreground">{res.totalItems}</strong> ítems que NO tienen caja física asociada. 
+                                                                                <br /><br />
+                                                                                <span className="font-bold text-destructive">ADVERTENCIA:</span> Esta acción restará estas unidades del total leído del pedido y no se puede deshacer. Solo proceda si está seguro de que estos artículos no están empacados en ninguna de las cajas válidas de arriba.
+                                                                            </AlertDialogDescription>
+                                                                        </AlertDialogHeader>
+                                                                        <AlertDialogFooter>
+                                                                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                                                            <AlertDialogAction onClick={() => handleCleanupOrphans(res.firestoreId!)} className="bg-destructive text-white hover:bg-destructive/90">
+                                                                                Sí, Limpiar Registros
+                                                                            </AlertDialogAction>
+                                                                        </AlertDialogFooter>
+                                                                    </AlertDialogContent>
+                                                                </AlertDialog>
+                                                            </TableCell>
+                                                        </TableRow>
+                                                    ))}
+                                                </TableBody>
+                                            </Table>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </CardContent>
                     </Card>
 
                     <Card>
                         <CardHeader>
-                            <CardTitle>Todas las Unidades del Pedido</CardTitle>
+                            <CardTitle>Vista de Tarjetas de Unidades</CardTitle>
+                            <CardDescription>Resumen visual por caja.</CardDescription>
                         </CardHeader>
                         <CardContent>
                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1397,15 +1464,18 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                                 <Badge variant={unit.status === 'open' ? 'default' : 'secondary'}>{unit.status}</Badge>
                                             </CardHeader>
                                             <CardContent className="p-4 pt-0">
-                                                <p className="text-sm text-muted-foreground">{unit.labelBarcode || 'Sin etiqueta'}</p>
+                                                <p className="text-sm text-muted-foreground font-mono">{unit.labelBarcode || 'Sin etiqueta'}</p>
                                                 <div className="flex justify-between items-end mt-2">
                                                     <p className="text-lg font-bold">{itemsCount} items</p>
                                                     <div className="text-right">
-                                                        <p className="text-[10px] font-medium text-primary uppercase">{unit.createdByName || (unit.createdBy === user?.uid ? (user?.displayName || 'Mí') : 'Usuario')}</p>
+                                                        <p className="text-[10px] font-medium text-primary uppercase">
+                                                            {unit.createdByName && unit.createdByName !== unit.createdBy ? unit.createdByName : 
+                                                            (unit.createdBy === user?.uid ? (contextUserName || user?.displayName || 'Mí') : 'Usuario')}
+                                                        </p>
                                                         {unit.createdAt && <p className="text-[9px] text-muted-foreground">{new Date(unit.createdAt).toLocaleString()}</p>}
                                                     </div>
                                                 </div>
-                                                {unit.closed_at && <p className="text-[10px] text-muted-foreground mt-1 border-t pt-1">Cerrada: {new Date(unit.closed_at).toLocaleString()}</p>}
+                                                {unit.closed_at && <p className="text-[10px] text-muted-foreground mt-1 border-t pt-1 italic">Cerrada: {new Date(unit.closed_at).toLocaleString()}</p>}
                                             </CardContent>
                                         </Card>
                                     );
