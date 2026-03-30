@@ -60,6 +60,17 @@ const convertTimestampsToDates = (data: any): any => {
     return data;
 };
 
+// Helper to ensure label IDs (barcodes) are always formatted the same way for Firestore IDs
+const normalizeLabelId = (id: string): string => {
+    if (!id) return id;
+    return id
+        .trim()
+        .toUpperCase()
+        .replace(/\s+/g, '') // Remove all whitespace
+        .replace(/'/g, '-') // Replace single quotes with hyphens
+        .replace(/_/g, '-'); // Standardize underscores to hyphens
+};
+
 
 // Activity Log
 async function createActivityLog(logEntry: Omit<ActivityLog, 'id' | 'created_at'>): Promise<void> {
@@ -930,7 +941,7 @@ export async function addSingleLabel(orderId: string): Promise<{ data?: Preprint
             createdAt: new Date(),
         };
 
-        const docRef = doc(collection(firestore, "preprintedLabels"), labelId);
+        const docRef = doc(collection(firestore, "preprintedLabels"), normalizeLabelId(labelId));
         await setDoc(docRef, {
              ...newLabel,
              createdAt: Timestamp.fromDate(newLabel.createdAt as Date),
@@ -948,13 +959,7 @@ export async function addSingleLabel(orderId: string): Promise<{ data?: Preprint
 export async function validateLabel(labelId: string, orderId: string): Promise<LabelValidationResult> {
   try {
     // Normalize the input label ID for robustness.
-    const normalizedLabelId = labelId
-      .trim()
-      .toUpperCase()
-      .replace(/\s+/g, '') // Remove all whitespace
-      .replace(/'/g, '-') // Replace single quotes with hyphens
-      .replace(/_/g, '-'); // Standardize underscores to hyphens
-
+    const normalizedLabelId = normalizeLabelId(labelId);
     const labelRef = doc(firestore, "preprintedLabels", normalizedLabelId);
     const docSnap = await getDoc(labelRef);
 
@@ -982,7 +987,8 @@ export async function validateLabel(labelId: string, orderId: string): Promise<L
 
 export async function markLabelAsUsed(labelId: string, unitId: number, packerName: string): Promise<{ success: boolean; error?: string }> {
     try {
-        const labelRef = doc(firestore, "preprintedLabels", labelId);
+        const normalizedLabelId = normalizeLabelId(labelId);
+        const labelRef = doc(firestore, "preprintedLabels", normalizedLabelId);
         await updateDoc(labelRef, {
             status: 'used',
             usedAt: Timestamp.now(),
@@ -1198,7 +1204,8 @@ export async function associateOrphanToUnit(orderId: string, oldOrphanId: string
 export async function secureCloseUnitAction(orderId: string, unitId: number, labelId: string, packerName: string): Promise<{ success: boolean; error?: string }> {
     try {
         await runTransaction(firestore, async (transaction) => {
-            const labelRef = doc(firestore, "preprintedLabels", labelId);
+            const normalizedLabelId = normalizeLabelId(labelId);
+            const labelRef = doc(firestore, "preprintedLabels", normalizedLabelId);
             const sessionRef = doc(firestore, 'packingSessions', orderId);
 
             const [labelSnap, sessionSnap] = await Promise.all([
@@ -1206,7 +1213,7 @@ export async function secureCloseUnitAction(orderId: string, unitId: number, lab
                 transaction.get(sessionRef)
             ]);
 
-            if (!labelSnap.exists()) throw new Error("La etiqueta no existe en la base de datos.");
+            if (!labelSnap.exists()) throw new Error(`La etiqueta ${labelId} (${normalizedLabelId}) no existe en la base de datos.`);
             if (!sessionSnap.exists()) throw new Error("La sesión de empaque ya no existe.");
 
             const labelData = labelSnap.data() as PreprintedLabel;
@@ -1264,7 +1271,8 @@ export async function secureCloseUnitAction(orderId: string, unitId: number, lab
 
 export async function revertLabelStatus(labelId: string): Promise<{ success: boolean; error?: string }> {
     try {
-        const labelRef = doc(firestore, "preprintedLabels", labelId);
+        const normalizedLabelId = normalizeLabelId(labelId);
+        const labelRef = doc(firestore, "preprintedLabels", normalizedLabelId);
         await updateDoc(labelRef, {
             status: 'available',
             usedAt: deleteField(),
@@ -1357,7 +1365,8 @@ export async function createShipment(data: { truckPlate: string; driverName: str
 export async function addScannedLabelToShipment(shipmentId: string, labelId: string): Promise<{ success: boolean; error?: string }> {
     try {
         const shipmentRef = doc(firestore, "dispatchSessions", shipmentId);
-        const labelRef = doc(firestore, "preprintedLabels", labelId);
+        const normalizedLabelId = normalizeLabelId(labelId);
+        const labelRef = doc(firestore, "preprintedLabels", normalizedLabelId);
 
         await runTransaction(firestore, async (transaction) => {
             const shipmentDoc = await transaction.get(shipmentRef);
@@ -1365,8 +1374,8 @@ export async function addScannedLabelToShipment(shipmentId: string, labelId: str
 
             if (!shipmentDoc.exists()) throw new Error("Shipment not found.");
             if (shipmentDoc.data().status !== 'open') throw new Error("Shipment is already closed.");
-            if (!labelDoc.exists()) throw new Error(`Label ${labelId} not found.`);
-            if (labelDoc.data().status !== 'available') throw new Error(`Label ${labelId} has already been used or is void.`);
+            if (!labelDoc.exists()) throw new Error(`Label ${normalizedLabelId} not found.`);
+            if (labelDoc.data().status !== 'available') throw new Error(`Label ${normalizedLabelId} has already been used or is void.`);
 
             const labelData = labelDoc.data();
             const orderId = labelData.orderId;
@@ -1378,7 +1387,7 @@ export async function addScannedLabelToShipment(shipmentId: string, labelId: str
 
             // Update shipment
             transaction.update(shipmentRef, {
-                [`scannedLabels.${labelId}`]: Timestamp.now(),
+                [`scannedLabels.${normalizedLabelId}`]: Timestamp.now(),
                 orderIds: arrayUnion(orderId)
             });
             // Update label
@@ -1410,8 +1419,9 @@ export async function addScannedLabelToShipment(shipmentId: string, labelId: str
 
 export async function removeScannedLabelFromShipment(shipmentId: string, labelId: string): Promise<{ success: boolean; error?: string }> {
     try {
+        const normalizedLabelId = normalizeLabelId(labelId);
         const shipmentRef = doc(firestore, "dispatchSessions", shipmentId);
-        const labelRef = doc(firestore, "preprintedLabels", labelId);
+        const labelRef = doc(firestore, "preprintedLabels", normalizedLabelId);
 
         await runTransaction(firestore, async (transaction) => {
             const shipmentDoc = await transaction.get(shipmentRef);
@@ -1704,7 +1714,8 @@ export async function deletePackingUnit(orderId: string, firestoreId: string, la
 
         // 3. Revert Label
         if (labelBarcode) {
-            const labelRef = doc(firestore, 'preprintedLabels', labelBarcode);
+            const normalizedLabelBarcode = normalizeLabelId(labelBarcode);
+            const labelRef = doc(firestore, 'preprintedLabels', normalizedLabelBarcode);
             batch.update(labelRef, { 
                 status: 'available', 
                 usedAt: deleteField(), 
