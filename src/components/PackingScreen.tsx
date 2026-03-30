@@ -377,11 +377,14 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                     .filter(d => (d.referencia || d.reference || '').toString().trim() === scannedReference)
                     .reduce((sum, d) => sum + (d.cantidad || 0), 0);
                 
-                const totalPackedForRef = Object.entries(globalPackingProgress)
+                // Safety check for progress object
+                const safeProgress = globalPackingProgress || {};
+                
+                const totalPackedForRef = Object.entries(safeProgress)
                     .filter(([key]) => key.split('-')[0].trim() === scannedReference)
                     .reduce((sum, [, qty]) => sum + qty, 0);
                     
-                const packedQty = globalPackingProgress[itemKey] || 0;
+                const packedQty = safeProgress[itemKey] || 0;
 
                 // Block if total for reference is exceeded
                 if (totalPackedForRef + 1 > totalOrderedForRef) {
