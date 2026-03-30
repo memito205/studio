@@ -380,6 +380,8 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 const totalPackedForRef = Object.entries(globalPackingProgress)
                     .filter(([key]) => key.split('-')[0].trim() === scannedReference)
                     .reduce((sum, [, qty]) => sum + qty, 0);
+                    
+                const packedQty = globalPackingProgress[itemKey] || 0;
 
                 // Block if total for reference is exceeded
                 if (totalPackedForRef + 1 > totalOrderedForRef) {
