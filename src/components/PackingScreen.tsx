@@ -372,7 +372,25 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 const itemKey = createItemKey(result.item.referencia, result.item.talla);
                 const detail = packingOrder.order.details.find(d => createItemKey(d.referencia, d.talla) === itemKey);
                 const orderedQty = detail?.cantidad || 0;
-                const packedQty = globalPackingProgress[itemKey] || 0;
+                const scannedReference = (result.item.referencia || result.item.reference || '').toString().trim();
+                const totalOrderedForRef = packingOrder.order.details
+                    .filter(d => (d.referencia || d.reference || '').toString().trim() === scannedReference)
+                    .reduce((sum, d) => sum + (d.cantidad || 0), 0);
+                
+                const totalPackedForRef = Object.entries(globalPackingProgress)
+                    .filter(([key]) => key.split('-')[0].trim() === scannedReference)
+                    .reduce((sum, [, qty]) => sum + qty, 0);
+
+                // Block if total for reference is exceeded
+                if (totalPackedForRef + 1 > totalOrderedForRef) {
+                    toast({ 
+                        variant: 'destructive', 
+                        title: 'Límite de Referencia Superado', 
+                        description: `Ya se completó el total pedido para la referencia ${scannedReference} (${totalOrderedForRef} unidades).` 
+                    });
+                    setIsLoading(false);
+                    return;
+                }
 
                 if (packedQty + 1 > orderedQty) {
                     setOverpackAlert({ isOpen: true, itemKey, packed: packedQty + 1, ordered: orderedQty });
