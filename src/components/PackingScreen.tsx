@@ -1423,12 +1423,31 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                     const numB = Number(String(b).replace(/[^0-9.]/g, ''));
                                     return numA - numB;
                                 });
+                                const totalOrderedForRef = Object.values(group.sizes).reduce((sum, s) => sum + s.ordered, 0);
+                                const totalPackedForRef = Object.values(group.sizes).reduce((sum, s) => sum + s.packed, 0);
+                                const isRefComplete = totalPackedForRef === totalOrderedForRef && totalOrderedForRef > 0;
+                                const isRefOverpacked = totalPackedForRef > totalOrderedForRef;
+
                                 return (
                                     <div key={`${group.referencia}-${group.item}`} className="p-3 border rounded-lg hover:bg-muted/30 transition-colors">
                                         <div className="flex justify-between items-start mb-2">
                                             <div>
                                                 <p className="font-bold text-primary">{group.referencia}</p>
                                                 <p className="text-xs text-muted-foreground">{group.item}</p>
+                                            </div>
+                                            <div className="text-right flex flex-col items-end">
+                                                <span className="text-[10px] uppercase font-bold text-muted-foreground mb-0.5 tracking-wider">Total Ref</span>
+                                                <div className={cn(
+                                                    "font-bold text-sm px-2 py-0.5 rounded-md border inline-flex items-center gap-1",
+                                                    isRefOverpacked ? "bg-red-100 text-red-700 border-red-200" :
+                                                    isRefComplete ? "bg-green-100 text-green-700 border-green-200" :
+                                                    "bg-muted border-transparent text-muted-foreground"
+                                                )}>
+                                                    <span>{totalPackedForRef}</span>
+                                                    <span className="opacity-50 font-normal">/</span>
+                                                    <span>{totalOrderedForRef}</span>
+                                                    {isRefOverpacked && <AlertTriangle className="h-3 w-3 ml-1" />}
+                                                </div>
                                             </div>
                                         </div>
                                         <div className="flex flex-wrap gap-2">
