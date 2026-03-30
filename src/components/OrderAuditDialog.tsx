@@ -89,14 +89,31 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
 
     // Add packed quantities
     packedItems.forEach(pi => {
-      const key = `${pi.referencia}-${pi.talla}-${pi.item || ''}`;
+      let ref = '';
+      let talla = '';
+      let itm = ''; // representing the color/variant string
+      
+      if (pi.item) {
+        ref = pi.item.referencia || '';
+        talla = pi.item.talla || '';
+        itm = pi.item.item || '';
+      } else if (pi.itemKey) {
+        // Fallback if item object isn't fully populated
+        const parts = pi.itemKey.split('-');
+        ref = parts[0] || 'Desconocido';
+        talla = parts[1] || '';
+      } else {
+        ref = pi.barcode || 'Desconocido';
+      }
+
+      const key = `${ref}-${talla}-${itm}`;
       if (balanceMap.has(key)) {
         balanceMap.get(key)!.packed += pi.quantity;
       } else {
         balanceMap.set(key, {
-          referencia: pi.referencia,
-          item: pi.item || '',
-          talla: pi.talla || '',
+          referencia: ref,
+          item: itm,
+          talla: talla,
           ordered: 0,
           packed: pi.quantity
         });
@@ -105,9 +122,14 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
 
     // Sort alphabetically by reference, then size
     return Array.from(balanceMap.values()).sort((a, b) => {
-      const refComp = a.referencia.localeCompare(b.referencia);
+      const refA = String(a.referencia || '');
+      const refB = String(b.referencia || '');
+      const refComp = refA.localeCompare(refB);
       if (refComp !== 0) return refComp;
-      return a.talla.localeCompare(b.talla);
+      
+      const tallaA = String(a.talla || '');
+      const tallaB = String(b.talla || '');
+      return tallaA.localeCompare(tallaB);
     });
   }, [order, packedItems]);
 
@@ -265,17 +287,34 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                                       <p className="text-sm text-muted-foreground">La caja está vacía.</p>
                                     ) : (
                                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                                        {itemsInBox.map((pi, i) => (
-                                          <div key={i} className="flex justify-between items-center p-2 rounded-md border bg-background text-sm">
-                                            <div>
-                                              <p className="font-medium text-primary">{pi.referencia}</p>
-                                              <p className="text-[10px] text-muted-foreground">{pi.item || '-'} / Talla: {pi.talla}</p>
+                                        {itemsInBox.map((pi, i) => {
+                                          let ref = 'Desconocido';
+                                          let tal = '-';
+                                          let itm = '-';
+                                          if (pi.item) {
+                                              ref = pi.item.referencia || 'Desconocido';
+                                              tal = pi.item.talla || '-';
+                                              itm = pi.item.item || '-';
+                                          } else if (pi.itemKey) {
+                                              const parts = pi.itemKey.split('-');
+                                              ref = parts[0] || 'Desconocido';
+                                              tal = parts[1] || '-';
+                                          } else {
+                                              ref = pi.barcode;
+                                          }
+                                          
+                                          return (
+                                            <div key={i} className="flex justify-between items-center p-2 rounded-md border bg-background text-sm">
+                                              <div>
+                                                <p className="font-medium text-primary">{ref}</p>
+                                                <p className="text-[10px] text-muted-foreground">{itm} / Talla: {tal}</p>
+                                              </div>
+                                              <div className="bg-muted px-2 py-1 rounded font-mono text-xs font-bold">
+                                                {pi.quantity} unds
+                                              </div>
                                             </div>
-                                            <div className="bg-muted px-2 py-1 rounded font-mono text-xs font-bold">
-                                              {pi.quantity} unds
-                                            </div>
-                                          </div>
-                                        ))}
+                                          );
+                                        })}
                                       </div>
                                     )}
                                   </div>
