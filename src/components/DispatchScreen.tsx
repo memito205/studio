@@ -118,12 +118,24 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
       // Find which order this label belongs to
       const matchedLabel = allLabels.find(l => (l.id || '').toUpperCase() === labelId);
       const matchedOrder = allOrders.find(o => o.id === matchedLabel?.orderId);
-      showOverlay({
-        status: 'success',
-        labelId,
-        orderId: matchedOrder?.ordenDeCompra || matchedLabel?.orderId,
-        message: matchedOrder?.cliente,
-      });
+
+      // Show warning if it was an available label (not packed properly)
+      if (result.auditWarning) {
+        showOverlay({
+          status: 'warning',
+          labelId,
+          orderId: matchedOrder?.ordenDeCompra || matchedLabel?.orderId,
+          message: `${matchedOrder?.cliente} (Cargada, pero no figura como empacada. Requiere Auditoría)`,
+        });
+      } else {
+        showOverlay({
+          status: 'success',
+          labelId,
+          orderId: matchedOrder?.ordenDeCompra || matchedLabel?.orderId,
+          message: matchedOrder?.cliente,
+        });
+      }
+      
       // Refresh session data so pending/dispatched split updates
       const updated = await fetchShipmentData();
       if (updated) setSessionInfo(updated);

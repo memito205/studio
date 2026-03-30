@@ -1368,16 +1368,17 @@ export async function addScannedLabelToShipment(shipmentId: string, labelId: str
         const normalizedLabelId = normalizeLabelId(labelId);
         const labelRef = doc(firestore, "preprintedLabels", normalizedLabelId);
 
-        await runTransaction(firestore, async (transaction) => {
+        const result = await runTransaction(firestore, async (transaction) => {
             const shipmentDoc = await transaction.get(shipmentRef);
             const labelDoc = await transaction.get(labelRef);
 
             if (!shipmentDoc.exists()) throw new Error("Shipment not found.");
             if (shipmentDoc.data().status !== 'open') throw new Error("Shipment is already closed.");
             if (!labelDoc.exists()) throw new Error(`Label ${normalizedLabelId} not found.`);
-            if (labelDoc.data().status === 'available') throw new Error(`La etiqueta ${normalizedLabelId} aún no ha sido empacada.`);
             if (labelDoc.data().status === 'dispatched') throw new Error(`La etiqueta ${normalizedLabelId} ya fue despachada.`);
             if (labelDoc.data().status === 'void') throw new Error(`La etiqueta ${normalizedLabelId} está anulada.`);
+
+            const wasAvailable = labelDoc.data().status === 'available';
 
             const labelData = labelDoc.data();
             const orderId = labelData.orderId;
@@ -1411,8 +1412,12 @@ export async function addScannedLabelToShipment(shipmentId: string, labelId: str
             } else {
                 transaction.update(orderRef, { status: 'Despachado' });
             }
+            
+            return wasAvailable; // Pass this data to the caller inside the transaction
         });
-        return { success: true };
+        
+        // Add auditWarning to the return if it was available
+        return { success: true, auditWarning: result === true };
     } catch (error: any) {
         return { success: false, error: error.message };
     }
