@@ -1623,9 +1623,11 @@ export async function createPackingUnit(orderId: string, userId: string, userNam
           const sessionData = sessionDoc.data() as PackingSession;
           const existingUnits = sessionData.units || [];
           const newUnitId = existingUnits.length > 0 ? Math.max(...existingUnits.map(u => u.id)) + 1 : 1;
+          const generatedId = `unit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
           
-          const newUnit: Omit<PackingUnit, 'firestoreId'> = {
+          const newUnit: PackingUnit = {
               id: newUnitId,
+              firestoreId: generatedId,
               status: 'open',
               createdAt: new Date().toISOString(),
               createdBy: userId,
@@ -1633,18 +1635,10 @@ export async function createPackingUnit(orderId: string, userId: string, userNam
               items: {},
           };
 
-          // We don't have a firestoreId yet, so we'll add it after creation
-          // But for the logic inside the transaction, this is what we append
           const updatedUnits = [...existingUnits, newUnit];
-          
           transaction.update(sessionRef, { units: updatedUnits });
 
-          // This part is tricky as we can't get the ID until after commit.
-          // The calling function will need to re-fetch the session to get the full new unit.
-          newUnitData = {
-              ...newUnit,
-              firestoreId: `temp-${Date.now()}` // Placeholder
-          };
+          newUnitData = newUnit;
       });
 
       // Refetch to get the correct data with firestoreId if we were to implement it fully.
@@ -1657,6 +1651,37 @@ export async function createPackingUnit(orderId: string, userId: string, userNam
       console.error("Error creating packing unit:", error);
       return { success: false, error: error.message };
   }
+}
+
+export async function repairSessionUnitsAction(orderId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        await runTransaction(firestore, async (transaction) => {
+            const sessionRef = doc(firestore, 'packingSessions', orderId);
+            const sessionSnap = await transaction.get(sessionRef);
+            if (!sessionSnap.exists()) return;
+
+            const sessionData = sessionSnap.data() as PackingSession;
+            let modified = false;
+            const updatedUnits = (sessionData.units || []).map(u => {
+                if (!u.firestoreId) {
+                    modified = true;
+                    return { 
+                        ...u, 
+                        firestoreId: u.firestoreId || `unit-repaired-${u.id}-${Date.now()}-${Math.random().toString(36).substring(2, 5)}` 
+                    };
+                }
+                return u;
+            });
+
+            if (modified) {
+                transaction.update(sessionRef, { units: updatedUnits });
+            }
+        });
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error repairing session units:", error);
+        return { success: false, error: error.message };
+    }
 }
 
 export async function deletePackingUnit(orderId: string, firestoreId: string, labelBarcode?: string): Promise<{ success: boolean; error?: string }> {

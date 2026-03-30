@@ -26,7 +26,8 @@ import {
     revertLabelStatus, 
     deletePackingUnit, 
     associateOrphanToUnit,
-    secureCloseUnitAction
+    secureCloseUnitAction,
+    repairSessionUnitsAction
 } from '@/app/actions';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { cn } from '@/lib/utils';
@@ -378,11 +379,19 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 }
 
                 let unitToUse = activeUnit;
+                if (unitToUse && !unitToUse.firestoreId) {
+                    await repairSessionUnitsAction(session.orderId);
+                    toast({ title: 'Sincronizando Unidad', description: 'Se ha actualizado la unidad. Por favor, escanee de nuevo.' });
+                    setIsLoading(false);
+                    return;
+                }
+
                 if (!unitToUse) {
                     // Use userName from context (fetched from Firestore) as priority
                     const userName = contextUserName || user?.displayName || user?.email || session.packerName || 'Usuario';
                     const newUnitResult = await createPackingUnit(session.orderId, user?.uid || 'Unknown', userName);
                     if (newUnitResult.success && newUnitResult.newUnit) {
+                        // Optimistic update - now includes firestoreId from server
                         setSession(prev => ({ ...prev, units: [...prev.units, newUnitResult.newUnit!] }));
                         unitToUse = newUnitResult.newUnit;
                     } else {
