@@ -1626,12 +1626,24 @@ export async function createPackingUnit(orderId: string, userId: string, userNam
           const sessionRef = doc(firestore, 'packingSessions', orderId);
           const sessionDoc = await transaction.get(sessionRef);
 
-          if (!sessionDoc.exists()) {
-              throw new Error("La sesión de empaque para esta orden no existe.");
+          let existingUnits: PackingUnit[] = [];
+          if (sessionDoc.exists()) {
+              const sessionData = sessionDoc.data() as PackingSession;
+              existingUnits = sessionData.units || [];
+          } else {
+              // Create the session document if it doesn't exist
+              const newSession: PackingSession = {
+                  orderId: orderId,
+                  packerId: userId,
+                  packerName: userName || 'Sistema',
+                  units: [],
+                  status: 'active',
+                  pauses: [],
+                  createdAt: new Date().toISOString()
+              };
+              transaction.set(sessionRef, newSession);
           }
           
-          const sessionData = sessionDoc.data() as PackingSession;
-          const existingUnits = sessionData.units || [];
           const newUnitId = existingUnits.length > 0 ? Math.max(...existingUnits.map(u => u.id)) + 1 : 1;
           const generatedId = `unit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
           
