@@ -204,7 +204,7 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
   }, [sessionInfo?.scannedLabels]);
 
   const pendingLabels = useMemo(() =>
-    allLabels.filter(l => l.status === 'available' && !scannedLabelsSet.has((l.id || '').toUpperCase())),
+    allLabels.filter(l => l.status === 'used' && !scannedLabelsSet.has((l.id || '').toUpperCase())),
     [allLabels, scannedLabelsSet]
   );
 
@@ -402,7 +402,7 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
                             <AlertDialogHeader>
                               <AlertDialogTitle>¿Quitar esta etiqueta?</AlertDialogTitle>
                               <AlertDialogDescription>
-                                La etiqueta <strong>{item.labelId}</strong> volverá a estar disponible.
+                                La etiqueta <strong>{item.labelId}</strong> volverá a la lista de por cargar (empacada).
                               </AlertDialogDescription>
                             </AlertDialogHeader>
                             <AlertDialogFooter>

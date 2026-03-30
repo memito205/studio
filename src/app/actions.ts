@@ -1375,7 +1375,9 @@ export async function addScannedLabelToShipment(shipmentId: string, labelId: str
             if (!shipmentDoc.exists()) throw new Error("Shipment not found.");
             if (shipmentDoc.data().status !== 'open') throw new Error("Shipment is already closed.");
             if (!labelDoc.exists()) throw new Error(`Label ${normalizedLabelId} not found.`);
-            if (labelDoc.data().status !== 'available') throw new Error(`Label ${normalizedLabelId} has already been used or is void.`);
+            if (labelDoc.data().status === 'available') throw new Error(`La etiqueta ${normalizedLabelId} aún no ha sido empacada.`);
+            if (labelDoc.data().status === 'dispatched') throw new Error(`La etiqueta ${normalizedLabelId} ya fue despachada.`);
+            if (labelDoc.data().status === 'void') throw new Error(`La etiqueta ${normalizedLabelId} está anulada.`);
 
             const labelData = labelDoc.data();
             const orderId = labelData.orderId;
@@ -1391,17 +1393,17 @@ export async function addScannedLabelToShipment(shipmentId: string, labelId: str
                 orderIds: arrayUnion(orderId)
             });
             // Update label
-            transaction.update(labelRef, { status: 'used' });
+            transaction.update(labelRef, { status: 'dispatched' });
 
             // Fetch all labels for the order to determine if it's fully dispatched
             const labelsQuery = query(collection(firestore, "preprintedLabels"), where("orderId", "==", orderId));
             const labelsSnapshot = await getDocs(labelsQuery);
             const allLabels = labelsSnapshot.docs.map(doc => doc.data());
             
-            // Re-calculate based on current action (the label we just updated is now 'used')
+            // Re-calculate based on current action (the label we just updated is now 'dispatched')
             const totalLabels = allLabels.filter(l => l.status !== 'void').length;
-            const usedLabels = allLabels.filter(l => l.status === 'used' || l.id === labelId).length;
-            const availableLabels = totalLabels - usedLabels;
+            const dispatchedLabels = allLabels.filter(l => l.status === 'dispatched' || l.id === labelId).length;
+            const availableLabels = totalLabels - dispatchedLabels;
 
             const orderRef = doc(firestore, "wholesaleOrders", orderId);
             if (availableLabels > 0) {
@@ -1433,6 +1435,9 @@ export async function removeScannedLabelFromShipment(shipmentId: string, labelId
                 [`scannedLabels.${labelId}`]: deleteField()
             });
 
+            // Revert label to 'used' (since it was packed)
+            transaction.update(labelRef, { status: 'used' });
+
             // Note: We are not removing the orderId from the arrayUnion as it's complex to determine
             // if other labels from the same order still exist in the shipment. This is a simplification.
 
@@ -1445,9 +1450,9 @@ export async function removeScannedLabelFromShipment(shipmentId: string, labelId
                 const labelsSnapshot = await getDocs(labelsQuery);
                 const allLabels = labelsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PreprintedLabel));
 
-                // Re-calculate based on current action (the label we just updated will be 'available')
+                // Re-calculate based on current action (the label we just updated will be 'used')
                 const totalLabels = allLabels.filter(l => l.status !== 'void').length;
-                const usedLabelsCount = allLabels.filter(l => (l.status === 'used' && l.id !== labelId)).length;
+                const usedLabelsCount = allLabels.filter(l => (l.status === 'dispatched' && l.id !== labelId)).length;
 
                 const orderRef = doc(firestore, "wholesaleOrders", orderId);
                 if (usedLabelsCount > 0) {
@@ -1497,10 +1502,10 @@ export async function deleteShipment(shipmentId: string): Promise<{ success: boo
             const scannedLabels = shipmentDoc.data().scannedLabels || {};
             const labelIds = Object.keys(scannedLabels);
             
-            // Revert all labels to available
+            // Revert all labels to 'used' (assuming they were packed)
             for (const labelId of labelIds) {
                 const labelRef = doc(firestore, "preprintedLabels", labelId);
-                transaction.update(labelRef, { status: 'available' });
+                transaction.update(labelRef, { status: 'used' });
             }
             
             // Delete the shipment document

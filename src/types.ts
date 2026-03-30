@@ -874,7 +874,7 @@ export interface UnitSearchResult {
     unitLabel: string;
 }
 
-export type LabelStatus = 'available' | 'used' | 'void';
+export type LabelStatus = 'available' | 'used' | 'dispatched' | 'void';
 
 export interface PreprintedLabel {
     id: string;
