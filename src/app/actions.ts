@@ -1426,50 +1426,57 @@ export async function removeScannedLabelFromShipment(shipmentId: string, labelId
         const labelRef = doc(firestore, "preprintedLabels", normalizedLabelId);
 
         await runTransaction(firestore, async (transaction) => {
+            // 1. READS
             const shipmentDoc = await transaction.get(shipmentRef);
+            const labelDoc = await transaction.get(labelRef);
+            const labelData = labelDoc.data();
+            
+            let orderRef = null;
+            let orderDoc = null;
+            
+            if (labelData && labelData.orderId) {
+                orderRef = doc(firestore, "wholesaleOrders", labelData.orderId);
+                orderDoc = await transaction.get(orderRef);
+            }
+
+            // 2. VALIDATIONS
             if (!shipmentDoc.exists()) throw new Error("Shipment not found.");
             if (shipmentDoc.data().status !== 'open') throw new Error("Cannot modify a closed shipment.");
 
-            // Update shipment to remove the label
+            // 3. EXTERNAL QUERIES (outside transaction state but okay here)
+            let packedCount = 0;
+            let totalCount = 0;
+            let allLabels: PreprintedLabel[] = [];
+
+            if (labelData && labelData.orderId) {
+                const orderId = labelData.orderId;
+                const labelsQuery = query(collection(firestore, "preprintedLabels"), where("orderId", "==", orderId));
+                const labelsSnapshot = await getDocs(labelsQuery);
+                allLabels = labelsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PreprintedLabel));
+
+                if (orderDoc && orderDoc.exists()) {
+                    const orderData = orderDoc.data();
+                    const packedItemsQuery = query(collection(firestore, "packedItems"), where("orderId", "==", orderId));
+                    const packedItemsSnap = await getDocs(packedItemsQuery);
+                    packedCount = packedItemsSnap.docs.reduce((sum, d) => sum + (d.data().quantity || 1), 0);
+                    totalCount = orderData.cantidadTotal || 0;
+                }
+            }
+
+            // 4. WRITES
             transaction.update(shipmentRef, {
                 [`scannedLabels.${labelId}`]: deleteField()
             });
 
-            // Revert label to 'used' (since it was packed)
             transaction.update(labelRef, { status: 'used' });
 
-            // Note: We are not removing the orderId from the arrayUnion as it's complex to determine
-            // if other labels from the same order still exist in the shipment. This is a simplification.
-
-            // Update associated order status
-            const labelDoc = await transaction.get(labelRef);
-            const labelData = labelDoc.data();
-            if (labelData) {
-                const orderId = labelData.orderId;
-                const labelsQuery = query(collection(firestore, "preprintedLabels"), where("orderId", "==", orderId));
-                const labelsSnapshot = await getDocs(labelsQuery);
-                const allLabels = labelsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PreprintedLabel));
-
-                // Re-calculate based on current action (the label we just updated will be 'used')
-                const totalLabels = allLabels.filter(l => l.status !== 'void').length;
+            if (labelData && orderRef && orderDoc && orderDoc.exists()) {
                 const usedLabelsCount = allLabels.filter(l => (l.status === 'dispatched' && l.id !== labelId)).length;
-
-                const orderRef = doc(firestore, "wholesaleOrders", orderId);
                 if (usedLabelsCount > 0) {
                     transaction.update(orderRef, { status: 'En Cargue' });
                 } else {
-                    // Back to packing state
-                    const orderDoc = await transaction.get(orderRef);
-                    const orderData = orderDoc.data();
-                    if (orderData) {
-                        const packedItemsQuery = query(collection(firestore, "packedItems"), where("orderId", "==", orderId));
-                        const packedItemsSnap = await getDocs(packedItemsQuery);
-                        const packedCount = packedItemsSnap.docs.reduce((sum, d) => sum + (d.data().quantity || 1), 0);
-                        const totalCount = orderData.cantidadTotal || 0;
-                        
-                        const newStatus = packedCount >= totalCount ? 'Empacado' : 'En Empaque';
-                        transaction.update(orderRef, { status: newStatus });
-                    }
+                    const newStatus = packedCount >= totalCount ? 'Empacado' : 'En Empaque';
+                    transaction.update(orderRef, { status: newStatus });
                 }
             }
         });
