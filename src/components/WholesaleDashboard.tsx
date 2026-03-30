@@ -5,7 +5,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { UploadCloud, Loader2, PackageCheck, ArrowLeft, Database, Boxes, BarChart2, Printer, Send, Lock, Compass, Download } from 'lucide-react';
+import { UploadCloud, Loader2, PackageCheck, ArrowLeft, Database, Boxes, BarChart2, Printer, Send, Lock, Compass, Download, FileSearch } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
 import { exportToXlsx } from '@/services/export';
 import { LabelPrintDialog } from './LabelPrintDialog';
+import { OrderAuditDialog } from './OrderAuditDialog';
 import { excelSerialDateToJSDate } from '@/lib/parsingUtils';
 import { Checkbox } from './ui/checkbox';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
@@ -40,7 +41,8 @@ const OrderTable: React.FC<{
   onStartPacking: (order: WholesaleOrder) => void;
   onOpenPrintDialog: (order: WholesaleOrder) => void;
   onForceCloseOrder: (order: WholesaleOrder) => void;
-}> = ({ orders, sessions, allPackedItems, selectedOrders, onOrderSelect, onStartPacking, onOpenPrintDialog, onForceCloseOrder }) => {
+  onOpenAuditDialog: (order: WholesaleOrder) => void;
+}> = ({ orders, sessions, allPackedItems, selectedOrders, onOrderSelect, onStartPacking, onOpenPrintDialog, onForceCloseOrder, onOpenAuditDialog }) => {
     
   if (orders.length === 0) {
     return <p className="text-muted-foreground text-center py-8">No hay pedidos en esta etapa.</p>;
@@ -130,6 +132,10 @@ const OrderTable: React.FC<{
                                     </AlertDialogContent>
                                 </AlertDialog>
                             )}
+                            <Button onClick={() => onOpenAuditDialog(order)} size="sm" variant="outline" className="mr-2 border-primary/20 hover:bg-primary/10">
+                                <FileSearch className="mr-2 h-4 w-4" />
+                                Auditar
+                            </Button>
                             <Button onClick={() => onOpenPrintDialog(order)} size="sm" variant="outline">
                                 <Printer className="mr-2 h-4 w-4" />
                                 Etiquetas
@@ -160,6 +166,8 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
   const [isProcessing, setIsProcessing] = React.useState(false);
   const [isPrintDialogOpen, setIsPrintDialogOpen] = useState(false);
   const [orderForPrinting, setOrderForPrinting] = useState<WholesaleOrder | null>(null);
+  const [isAuditDialogOpen, setIsAuditDialogOpen] = useState(false);
+  const [orderForAuditing, setOrderForAuditing] = useState<WholesaleOrder | null>(null);
   const [allPackedItems, setAllPackedItems] = useState<PackedItem[]>([]);
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
 
@@ -191,6 +199,10 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
     setIsPrintDialogOpen(true);
   };
   
+  const handleOpenAuditDialog = (order: WholesaleOrder) => {
+    setOrderForAuditing(order);
+    setIsAuditDialogOpen(true);
+  };
   const handleOrderSelect = (orderId: string, isSelected: boolean) => {
     setSelectedOrders(prev => {
         const newSelection = new Set(prev);
@@ -367,6 +379,13 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
             order={orderForPrinting}
         />
       )}
+      {orderForAuditing && (
+        <OrderAuditDialog
+            isOpen={isAuditDialogOpen}
+            onOpenChange={setIsAuditDialogOpen}
+            order={orderForAuditing}
+        />
+      )}
       <div className="flex justify-between items-center flex-wrap gap-4">
           <div className="flex-1">
               <h1 className="text-2xl font-bold">Módulo de Ventas por Mayor</h1>
@@ -425,22 +444,22 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
                 <TabsTrigger value="Cancelado">Cancelado ({ordersByStatus['Cancelado']?.length || 0})</TabsTrigger>
               </TabsList>
               <TabsContent value="Pte Empaque" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Pte Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} />
+                  <OrderTable orders={ordersByStatus['Pte Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} />
               </TabsContent>
               <TabsContent value="En Empaque" className="mt-4">
-                  <OrderTable orders={ordersByStatus['En Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} />
+                  <OrderTable orders={ordersByStatus['En Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} />
               </TabsContent>
               <TabsContent value="Empacado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Empacado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} />
+                  <OrderTable orders={ordersByStatus['Empacado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} />
               </TabsContent>
               <TabsContent value="En Cargue" className="mt-4">
-                  <OrderTable orders={ordersByStatus['En Cargue'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} />
+                  <OrderTable orders={ordersByStatus['En Cargue'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} />
               </TabsContent>
               <TabsContent value="Despachado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Despachado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} />
+                  <OrderTable orders={ordersByStatus['Despachado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} />
               </TabsContent>
                <TabsContent value="Cancelado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Cancelado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} />
+                  <OrderTable orders={ordersByStatus['Cancelado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} />
               </TabsContent>
             </Tabs>
           )}

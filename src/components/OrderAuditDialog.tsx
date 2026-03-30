@@ -1,0 +1,298 @@
+"use client";
+
+import React, { useState, useEffect, useMemo } from 'react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Loader2, Package, Box, ChevronDown, ChevronRight, LayoutTemplate } from 'lucide-react';
+import type { WholesaleOrder, PreprintedLabel, PackedItem } from '@/types';
+import { getLabelsForOrder, getPackedItemsForOrder } from '@/app/actions';
+
+interface OrderAuditDialogProps {
+  order: WholesaleOrder | null;
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDialogProps) {
+  const [isLoading, setIsLoading] = useState(false);
+  const [labels, setLabels] = useState<PreprintedLabel[]>([]);
+  const [packedItems, setPackedItems] = useState<PackedItem[]>([]);
+  const [expandedRowKeys, setExpandedRowKeys] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (isOpen && order) {
+      loadAuditData();
+    } else {
+      setLabels([]);
+      setPackedItems([]);
+      setExpandedRowKeys(new Set());
+    }
+  }, [isOpen, order]);
+
+  const loadAuditData = async () => {
+    if (!order) return;
+    setIsLoading(true);
+    try {
+      const [labelsRes, itemsRes] = await Promise.all([
+        getLabelsForOrder(order.id),
+        getPackedItemsForOrder(order.id)
+      ]);
+      if (labelsRes.data) setLabels(labelsRes.data);
+      if (itemsRes.data) setPackedItems(itemsRes.data);
+    } catch (error) {
+      console.error("Error loading audit data:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const toggleRow = (id: string) => {
+    setExpandedRowKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const translateStatus = (status: string) => {
+    switch (status) {
+      case 'available': return { label: 'Impresa (Disponible)', variant: 'secondary' as const };
+      case 'used': return { label: 'Empacada (Lista)', variant: 'default' as const };
+      case 'dispatched': return { label: 'Despachada', variant: 'success' as const };
+      case 'void': return { label: 'Anulada', variant: 'destructive' as const };
+      default: return { label: status, variant: 'outline' as const };
+    }
+  };
+
+  const packingBalance = useMemo(() => {
+    if (!order) return [];
+    
+    // Create a map from the ordered details
+    const balanceMap = new Map<string, {
+      referencia: string;
+      item: string;
+      talla: string;
+      ordered: number;
+      packed: number;
+    }>();
+
+    // Initialize with ordered items
+    order.details?.forEach(d => {
+      const key = `${d.referencia}-${d.talla}-${d.item || ''}`;
+      balanceMap.set(key, { ...d, item: d.item || '', ordered: d.cantidad, packed: 0 });
+    });
+
+    // Add packed quantities
+    packedItems.forEach(pi => {
+      const key = `${pi.referencia}-${pi.talla}-${pi.item || ''}`;
+      if (balanceMap.has(key)) {
+        balanceMap.get(key)!.packed += pi.quantity;
+      } else {
+        balanceMap.set(key, {
+          referencia: pi.referencia,
+          item: pi.item || '',
+          talla: pi.talla || '',
+          ordered: 0,
+          packed: pi.quantity
+        });
+      }
+    });
+
+    // Sort alphabetically by reference, then size
+    return Array.from(balanceMap.values()).sort((a, b) => {
+      const refComp = a.referencia.localeCompare(b.referencia);
+      if (refComp !== 0) return refComp;
+      return a.talla.localeCompare(b.talla);
+    });
+  }, [order, packedItems]);
+
+  const totalOrdered = packingBalance.reduce((sum, b) => sum + b.ordered, 0);
+  const totalPacked = packingBalance.reduce((sum, b) => sum + b.packed, 0);
+
+  if (!order) return null;
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-5xl h-[85vh] flex flex-col p-6">
+        <DialogHeader>
+          <div className="flex justify-between items-start">
+            <div>
+              <DialogTitle className="text-2xl flex items-center gap-2">
+                <LayoutTemplate className="h-6 w-6 text-primary" />
+                Auditoría de Pedido: {order.id}
+              </DialogTitle>
+              <DialogDescription className="mt-1">
+                Cliente: <span className="font-semibold text-foreground">{order.cliente}</span>
+                <span className="mx-2">•</span>
+                Estado Actual: <Badge variant="outline" className="ml-1">{order.status}</Badge>
+              </DialogDescription>
+            </div>
+          </div>
+        </DialogHeader>
+
+        {isLoading ? (
+          <div className="flex-1 flex flex-col items-center justify-center">
+            <Loader2 className="h-10 w-10 animate-spin text-primary" />
+            <p className="mt-4 text-sm text-muted-foreground">Cargando datos de auditoría...</p>
+          </div>
+        ) : (
+          <Tabs defaultValue="balance" className="flex-1 flex flex-col min-h-0 mt-4">
+            <TabsList className="grid w-full max-w-md grid-cols-2">
+              <TabsTrigger value="balance">Balance Consolidado</TabsTrigger>
+              <TabsTrigger value="etiquetas">Cajas y Etiquetas</TabsTrigger>
+            </TabsList>
+            
+            {/* PESTAÑA: BALANCE CONSOLIDADO */}
+            <TabsContent value="balance" className="flex-1 overflow-hidden flex flex-col mt-4 border rounded-md">
+              <div className="bg-muted/50 p-4 border-b flex items-center justify-between">
+                <div>
+                  <p className="font-semibold">Progreso General</p>
+                  <p className="text-sm text-muted-foreground">Unidades pedidas frente a las físicamente empacadas.</p>
+                </div>
+                <div className="text-right flex gap-6">
+                  <div>
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Pedido</p>
+                    <p className="font-mono text-xl font-bold">{totalOrdered}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Empacado</p>
+                    <p className="font-mono text-xl font-bold text-primary">{totalPacked}</p>
+                  </div>
+                </div>
+              </div>
+              <ScrollArea className="flex-1">
+                <Table>
+                  <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
+                    <TableRow>
+                      <TableHead>Referencia</TableHead>
+                      <TableHead>Item</TableHead>
+                      <TableHead className="text-center">Talla</TableHead>
+                      <TableHead className="text-right">Pedido</TableHead>
+                      <TableHead className="text-right">Empacado</TableHead>
+                      <TableHead className="text-right">Diferencia</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {packingBalance.map((row, idx) => {
+                      const diff = row.packed - row.ordered;
+                      return (
+                        <TableRow key={idx}>
+                          <TableCell className="font-medium">{row.referencia}</TableCell>
+                          <TableCell className="text-muted-foreground text-xs">{row.item || '-'}</TableCell>
+                          <TableCell className="text-center">{row.talla}</TableCell>
+                          <TableCell className="text-right">{row.ordered}</TableCell>
+                          <TableCell className="text-right font-semibold">{row.packed}</TableCell>
+                          <TableCell className="text-right">
+                            <Badge variant={diff === 0 ? 'success' : diff < 0 ? 'destructive' : 'warning'}>
+                              {diff > 0 ? '+' : ''}{diff}
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                    {packingBalance.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                          No hay detalles encontrados para este pedido.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </ScrollArea>
+            </TabsContent>
+
+            {/* PESTAÑA: CAJAS Y ETIQUETAS */}
+            <TabsContent value="etiquetas" className="flex-1 overflow-hidden flex flex-col mt-4 border rounded-md">
+              <ScrollArea className="flex-1 p-0">
+                <Table>
+                  <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
+                    <TableRow>
+                      <TableHead className="w-12"></TableHead>
+                      <TableHead>Código Etiqueta</TableHead>
+                      <TableHead>Unidad/Caja</TableHead>
+                      <TableHead>Estado Real</TableHead>
+                      <TableHead className="text-right">Unidades Adentro</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {labels.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                          Aún no se han generado etiquetas para este pedido.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      labels.map(label => {
+                        const itemsInBox = packedItems.filter(p => p.packingUnitId === label.unitId?.toString() || p.packingUnitId === label.id);
+                        const totalUnitsInBox = itemsInBox.reduce((sum, p) => sum + p.quantity, 0);
+                        const isExpanded = expandedRowKeys.has(label.id);
+                        const statusBadge = translateStatus(label.status);
+
+                        return (
+                          <React.Fragment key={label.id}>
+                            <TableRow className="hover:bg-muted/30 cursor-pointer" onClick={() => toggleRow(label.id)}>
+                              <TableCell>
+                                <Button variant="ghost" size="icon" className="h-6 w-6">
+                                  {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                                </Button>
+                              </TableCell>
+                              <TableCell className="font-mono font-medium">{label.id}</TableCell>
+                              <TableCell>
+                                <div className="flex items-center gap-2">
+                                  <Box className="h-4 w-4 text-muted-foreground" />
+                                  Caja {label.unitId || '-'}
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant={statusBadge.variant}>{statusBadge.label}</Badge>
+                              </TableCell>
+                              <TableCell className="text-right font-semibold">{totalUnitsInBox}</TableCell>
+                            </TableRow>
+                            {isExpanded && (
+                              <TableRow className="bg-muted/10">
+                                <TableCell colSpan={5} className="p-0">
+                                  <div className="px-14 py-3 bg-card border-b shadow-inner">
+                                    <p className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-widest">
+                                      Contenido Físico
+                                    </p>
+                                    {itemsInBox.length === 0 ? (
+                                      <p className="text-sm text-muted-foreground">La caja está vacía.</p>
+                                    ) : (
+                                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                                        {itemsInBox.map((pi, i) => (
+                                          <div key={i} className="flex justify-between items-center p-2 rounded-md border bg-background text-sm">
+                                            <div>
+                                              <p className="font-medium text-primary">{pi.referencia}</p>
+                                              <p className="text-[10px] text-muted-foreground">{pi.item || '-'} / Talla: {pi.talla}</p>
+                                            </div>
+                                            <div className="bg-muted px-2 py-1 rounded font-mono text-xs font-bold">
+                                              {pi.quantity} unds
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          </React.Fragment>
+                        );
+                      })
+                    )}
+                  </TableBody>
+                </Table>
+              </ScrollArea>
+            </TabsContent>
+          </Tabs>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
