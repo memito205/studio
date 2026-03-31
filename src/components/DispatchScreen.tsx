@@ -3,7 +3,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { WholesaleOrder, PreprintedLabel, DispatchSessionInfo, BoxToDispatch, PackedItem } from '@/types';
-import { getLabelsForOrder, getShipments, addScannedLabelToShipment, removeScannedLabelFromShipment, loadWholesaleOrders, closeShipment, getPackedItemsForOrder } from '@/app/actions';
+import { getLabelsForOrder, getShipments, addScannedLabelToShipment, removeScannedLabelFromShipment, loadWholesaleOrders, closeShipment, getPackedItemsForOrder, loadWholesaleOrderById, getPackingSession } from '@/app/actions';
 import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -119,7 +119,9 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
 
     const result = await addScannedLabelToShipment(shipmentId, labelId);
 
-    if (result.success) {
+    const isDuplicate = !result.success && result.error?.includes('ya fue despachada') && !!(result as any).orderId;
+
+    if (result.success || isDuplicate) {
       let currentAllLabels = [...allLabels];
       let currentAllPackedItems = [...allPackedItems];
       let matchedLabel = currentAllLabels.find(l => (l.id || '').toUpperCase() === labelId);
@@ -136,9 +138,37 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
           matchedLabel = currentAllLabels.find(l => (l.id || '').toUpperCase() === labelId);
       }
 
-      const matchedOrder = allOrders.find(o => o.id === matchedLabel?.orderId);
-      
-      const itemsInBox = currentAllPackedItems.filter(p => p.packingUnitId === matchedLabel?.unitId?.toString() || p.packingUnitId === matchedLabel?.id);
+      let currentAllOrders = [...allOrders];
+      let matchedOrder = currentAllOrders.find(o => o.id === matchedLabel?.orderId);
+
+      if (!matchedOrder && result.orderId) {
+          const orderRes = await loadWholesaleOrderById(result.orderId);
+          if (orderRes.data) {
+              currentAllOrders = [...currentAllOrders, orderRes.data];
+              setAllOrders(currentAllOrders);
+              matchedOrder = orderRes.data;
+          }
+      }
+
+      let itemsInBox: PackedItem[] = [];
+      let unitReferenceId = matchedLabel?.unitId?.toString();
+
+      // IMPORTANT FIX: Resolve human readable unit number to firestoreId
+      if (matchedLabel?.orderId && matchedLabel?.unitId) {
+          const sessionRes = await getPackingSession(matchedLabel.orderId);
+          if (sessionRes?.data?.units) {
+              const unitDoc = sessionRes.data.units.find(u => u.id === matchedLabel.unitId);
+              if (unitDoc?.firestoreId) {
+                  unitReferenceId = unitDoc.firestoreId;
+              }
+          }
+      }
+
+      itemsInBox = currentAllPackedItems.filter(p => 
+          (unitReferenceId && p.packingUnitId === unitReferenceId) || 
+          (matchedLabel?.id && p.packingUnitId === matchedLabel.id)
+      );
+
       const totalItems = itemsInBox.reduce((sum, item) => sum + item.quantity, 0);
 
       const referenceMap = new Map<string, number>();
@@ -155,28 +185,44 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
           let scannedBoxesForRef = 0;
           
           const itemsByLabelId = new Map<string, string[]>();
+          const unitIdToFirestoreId = new Map<number, string>();
+          const firestoreIdToLabelId = new Map<string, string>();
+          
+          if (matchedOrder?.id) {
+              const sessionRes = await getPackingSession(matchedOrder.id);
+              if (sessionRes?.data?.units) {
+                  sessionRes.data.units.forEach(u => {
+                      unitIdToFirestoreId.set(u.id, u.firestoreId);
+                      const lbl = currentAllLabels.find(lb => lb.unitId === u.id || lb.id === u.labelBarcode);
+                      if (lbl?.id) firestoreIdToLabelId.set(u.firestoreId, lbl.id);
+                  });
+              }
+          }
+
           currentAllPackedItems.forEach(p => {
-              const l = currentAllLabels.find(lb => lb.unitId?.toString() === p.packingUnitId || lb.id === p.packingUnitId);
-              if (l && l.id) {
+              let targetLabelId = firestoreIdToLabelId.get(p.packingUnitId) || 
+                                currentAllLabels.find(lb => lb.id === p.packingUnitId)?.id;
+                                
+              if (targetLabelId) {
                  const r = (p.item?.referencia || p.itemKey.split('-')[0] || 'Desconocida').trim();
-                 if (!itemsByLabelId.has(l.id)) itemsByLabelId.set(l.id, []);
-                 itemsByLabelId.get(l.id)!.push(r);
+                 if (!itemsByLabelId.has(targetLabelId)) itemsByLabelId.set(targetLabelId, []);
+                 itemsByLabelId.get(targetLabelId)!.push(r);
               }
           });
 
           currentAllLabels.forEach(l => {
-              if (l.orderId === matchedOrder?.id) {
+              if (matchedOrder && l.orderId === matchedOrder.id) {
                   const refs = itemsByLabelId.get(l.id || '') || [];
                   if (refs.includes(mainRef)) {
                       totalBoxesForRef++;
-                      if (sessionInfo.scannedLabels && sessionInfo.scannedLabels[(l.id || '').toUpperCase()]) {
+                      if (sessionInfo?.scannedLabels && sessionInfo.scannedLabels[(l.id || '').toUpperCase()]) {
                           scannedBoxesForRef++;
                       }
                   }
               }
           });
           
-          if (!sessionInfo.scannedLabels || !sessionInfo.scannedLabels[labelId]) {
+          if (!sessionInfo?.scannedLabels || !sessionInfo.scannedLabels[labelId]) {
               scannedBoxesForRef++;
           }
           
@@ -184,27 +230,36 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
       }
 
       const unitMessage = totalItems > 0 ? `(${totalItems} Unds)${countMsg}` : `${countMsg}`;
+      const customerName = matchedOrder?.cliente || 'Cliente Desconocido';
 
-      // Show warning if it was an available label (not packed properly)
-      if ((result as any).auditWarning) {
+      if (isDuplicate) {
+        showOverlay({
+          status: 'duplicate',
+          labelId,
+          orderId: matchedOrder?.ordenDeCompra || matchedLabel?.orderId,
+          message: `${customerName} ${unitMessage}\n(ESTA ETIQUETA YA FUE DESPACHADA)`,
+        });
+      } else if ((result as any).auditWarning) {
         showOverlay({
           status: 'warning',
           labelId,
           orderId: matchedOrder?.ordenDeCompra || matchedLabel?.orderId,
-          message: `${matchedOrder?.cliente} ${unitMessage} (Cargada, requiere Auditoría)`,
+          message: `${customerName} ${unitMessage} (Cargada, requiere Auditoría)`,
         });
       } else {
         showOverlay({
           status: 'success',
           labelId,
           orderId: matchedOrder?.ordenDeCompra || matchedLabel?.orderId,
-          message: `${matchedOrder?.cliente} ${unitMessage}`,
+          message: `${customerName} ${unitMessage}`,
         });
       }
       
       // Refresh session data so pending/dispatched split updates
-      const updated = await fetchShipmentData();
-      if (updated) setSessionInfo(updated);
+      if (!isDuplicate) {
+         const updated = await fetchShipmentData();
+         if (updated) setSessionInfo(updated);
+      }
     } else {
       // Determine if it's a duplicate-type error or a different error
       const isDuplicate = result.error?.toLowerCase().includes('ya fue') || result.error?.toLowerCase().includes('already been used');

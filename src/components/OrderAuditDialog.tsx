@@ -149,11 +149,14 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
         });
         const refsString = Array.from(uniqueRefs).join(', ');
 
+        const totalUnitsInBox = itemsInBox.reduce((sum, p) => sum + p.quantity, 0);
+
         return {
             'Pedido': order.id,
             'Caja': label.unitId || '-',
             'Etiqueta': label.id,
             'Referencia(s)': refsString || 'Desconocida',
+            'Cantidad': totalUnitsInBox,
             'Estado Etiqueta': translateStatus(label.status).label
         };
     });
@@ -418,7 +421,7 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                       <TableHead>Código Etiqueta</TableHead>
                       <TableHead>Unidad/Caja</TableHead>
                       <TableHead>Estado Real</TableHead>
-                      <TableHead className="text-right">Unidades Adentro</TableHead>
+                      <TableHead className="text-right">Cantidad</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -597,12 +600,22 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                         <ScrollArea className="flex-1 p-0">
                             <Table>
                                 <TableBody>
-                                    {targetLabelsForAudit.filter(l => !scannedBoxIds.has(l.id)).map(label => (
-                                        <TableRow key={`faltante-${label.id}`}>
-                                            <TableCell className="font-medium">{label.id}</TableCell>
-                                            <TableCell className="text-right">Caja {label.unitId}</TableCell>
-                                        </TableRow>
-                                    ))}
+                                    {targetLabelsForAudit.filter(l => !scannedBoxIds.has(l.id)).map(label => {
+                                        const unitFirestoreId = labelToUnitIdMap.get(label.id) || labelToUnitIdMap.get(label.unitId?.toString() || "");
+                                        const totalUnitsInBox = packedItems.filter(p => 
+                                            p.packingUnitId === unitFirestoreId || 
+                                            p.packingUnitId === label.unitId?.toString() || 
+                                            p.packingUnitId === label.id
+                                        ).reduce((sum, p) => sum + p.quantity, 0);
+                                        
+                                        return (
+                                            <TableRow key={`faltante-${label.id}`}>
+                                                <TableCell className="font-medium p-2 text-xs">{label.id}</TableCell>
+                                                <TableCell className="text-center p-2 text-xs">Caja {label.unitId}</TableCell>
+                                                <TableCell className="text-right p-2 text-xs font-bold text-orange-700">{totalUnitsInBox} unds</TableCell>
+                                            </TableRow>
+                                        );
+                                    })}
                                     {targetLabelsForAudit.filter(l => !scannedBoxIds.has(l.id)).length === 0 && (
                                         <TableRow><TableCell colSpan={2} className="text-center text-muted-foreground py-8">Todas las cajas físicas encontradas.</TableCell></TableRow>
                                     )}
@@ -643,15 +656,25 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                             <ScrollArea className="flex-1 p-0">
                                 <Table>
                                     <TableBody>
-                                        {targetLabelsForAudit.filter(l => scannedBoxIds.has(l.id)).map(label => (
-                                            <TableRow key={`verificada-${label.id}`} className="bg-green-50/30">
-                                                <TableCell className="font-medium text-green-800 flex items-center gap-2">
-                                                    <Check className="h-4 w-4 text-green-600" />
-                                                    {label.id}
-                                                </TableCell>
-                                                <TableCell className="text-right text-green-700">Caja {label.unitId}</TableCell>
-                                            </TableRow>
-                                        ))}
+                                        {targetLabelsForAudit.filter(l => scannedBoxIds.has(l.id)).map(label => {
+                                            const unitFirestoreId = labelToUnitIdMap.get(label.id) || labelToUnitIdMap.get(label.unitId?.toString() || "");
+                                            const totalUnitsInBox = packedItems.filter(p => 
+                                                p.packingUnitId === unitFirestoreId || 
+                                                p.packingUnitId === label.unitId?.toString() || 
+                                                p.packingUnitId === label.id
+                                            ).reduce((sum, p) => sum + p.quantity, 0);
+
+                                            return (
+                                                <TableRow key={`verificada-${label.id}`} className="bg-green-50/30">
+                                                    <TableCell className="font-medium text-green-800 p-2 text-xs flex items-center gap-2">
+                                                        <Check className="h-4 w-4 text-green-600 shrink-0" />
+                                                        <span className="truncate">{label.id}</span>
+                                                    </TableCell>
+                                                    <TableCell className="text-center p-2 text-xs text-green-700">Caja {label.unitId}</TableCell>
+                                                    <TableCell className="text-right p-2 text-xs font-bold text-green-700">{totalUnitsInBox} unds</TableCell>
+                                                </TableRow>
+                                            );
+                                        })}
                                     </TableBody>
                                 </Table>
                             </ScrollArea>

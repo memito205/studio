@@ -746,6 +746,33 @@ export async function processAndSaveWholesaleFile(orders: WholesaleOrder[]): Pro
 }
 
 
+export async function loadWholesaleOrderById(orderId: string): Promise<{ data?: WholesaleOrder; error?: string }> {
+    try {
+        const docSnap = await getDoc(doc(firestore, "wholesaleOrders", orderId));
+        if (docSnap.exists()) {
+            const data = docSnap.data();
+            const order = {
+                id: docSnap.id.trim(),
+                vendedor: data.vendedor,
+                fecha: (data.fecha as Timestamp).toDate().toISOString(),
+                bodega: data.bodega,
+                cliente: data.cliente,
+                sucursal: data.sucursal,
+                ordenDeCompra: data.ordenDeCompra,
+                cantidadTotal: data.cantidadTotal,
+                valorNetoTotal: data.valorNetoTotal,
+                status: data.status || 'Pte Empaque',
+                details: data.details,
+            } as WholesaleOrder;
+            return { data: order };
+        }
+        return { error: "Order not found" };
+    } catch (error: any) {
+        console.error("Error loading wholesale order:", error);
+        return { error: error.message };
+    }
+}
+
 export async function loadWholesaleOrders(): Promise<{ data?: WholesaleOrder[]; error?: string }> {
     try {
         const querySnapshot = await getDocs(collection(firestore, "wholesaleOrders"));
@@ -1375,13 +1402,16 @@ export async function addScannedLabelToShipment(shipmentId: string, labelId: str
             if (!shipmentDoc.exists()) throw new Error("Shipment not found.");
             if (shipmentDoc.data().status !== 'open') throw new Error("Shipment is already closed.");
             if (!labelDoc.exists()) throw new Error(`Label ${normalizedLabelId} not found.`);
-            if (labelDoc.data().status === 'dispatched') throw new Error(`La etiqueta ${normalizedLabelId} ya fue despachada.`);
-            if (labelDoc.data().status === 'void') throw new Error(`La etiqueta ${normalizedLabelId} está anulada.`);
-
-            const wasAvailable = labelDoc.data().status === 'available';
-
+            
             const labelData = labelDoc.data();
             const orderId = labelData.orderId;
+
+            if (labelData.status === 'dispatched') {
+                return { isDuplicate: true, orderId };
+            }
+            if (labelData.status === 'void') throw new Error(`La etiqueta ${normalizedLabelId} está anulada.`);
+
+            const wasAvailable = labelData.status === 'available';
 
             const allowedOrders = shipmentDoc.data().allowedOrderIds || [];
             if (allowedOrders.length > 0 && !allowedOrders.includes(orderId)) {
@@ -1415,6 +1445,10 @@ export async function addScannedLabelToShipment(shipmentId: string, labelId: str
             
             return { wasAvailable, orderId }; // Pass this data to the caller inside the transaction
         });
+        
+        if (result.isDuplicate) {
+            return { success: false, error: `La etiqueta ${normalizedLabelId} ya fue despachada.`, orderId: result.orderId };
+        }
         
         // Add auditWarning to the return if it was available
         return { success: true, auditWarning: result.wasAvailable, orderId: result.orderId };
@@ -1656,7 +1690,7 @@ export async function createPackingUnit(orderId: string, userId: string, userNam
                   units: [],
                   status: 'active',
                   pauses: [],
-                  createdAt: new Date().toISOString()
+                  startTime: new Date()
               };
               transaction.set(sessionRef, newSession);
           }
