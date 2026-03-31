@@ -1362,7 +1362,7 @@ export async function createShipment(data: { truckPlate: string; driverName: str
     }
 }
 
-export async function addScannedLabelToShipment(shipmentId: string, labelId: string): Promise<{ success: boolean; error?: string }> {
+export async function addScannedLabelToShipment(shipmentId: string, labelId: string): Promise<{ success: boolean; error?: string; auditWarning?: boolean; orderId?: string }> {
     try {
         const shipmentRef = doc(firestore, "dispatchSessions", shipmentId);
         const normalizedLabelId = normalizeLabelId(labelId);
@@ -1413,11 +1413,11 @@ export async function addScannedLabelToShipment(shipmentId: string, labelId: str
                 transaction.update(orderRef, { status: 'Despachado' });
             }
             
-            return wasAvailable; // Pass this data to the caller inside the transaction
+            return { wasAvailable, orderId }; // Pass this data to the caller inside the transaction
         });
         
         // Add auditWarning to the return if it was available
-        return { success: true, auditWarning: result === true };
+        return { success: true, auditWarning: result.wasAvailable, orderId: result.orderId };
     } catch (error: any) {
         return { success: false, error: error.message };
     }

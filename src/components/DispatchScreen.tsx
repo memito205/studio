@@ -120,11 +120,25 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
     const result = await addScannedLabelToShipment(shipmentId, labelId);
 
     if (result.success) {
-      // Find which order this label belongs to
-      const matchedLabel = allLabels.find(l => (l.id || '').toUpperCase() === labelId);
+      let currentAllLabels = [...allLabels];
+      let currentAllPackedItems = [...allPackedItems];
+      let matchedLabel = currentAllLabels.find(l => (l.id || '').toUpperCase() === labelId);
+
+      if (!matchedLabel && result.orderId) {
+          const labelsRes = await getLabelsForOrder(result.orderId);
+          const itemsRes = await getPackedItemsForOrder(result.orderId);
+          if (labelsRes.data) currentAllLabels = [...currentAllLabels, ...labelsRes.data];
+          if (itemsRes.data) currentAllPackedItems = [...currentAllPackedItems, ...itemsRes.data];
+          
+          setAllLabels(currentAllLabels);
+          setAllPackedItems(currentAllPackedItems);
+          
+          matchedLabel = currentAllLabels.find(l => (l.id || '').toUpperCase() === labelId);
+      }
+
       const matchedOrder = allOrders.find(o => o.id === matchedLabel?.orderId);
       
-      const itemsInBox = allPackedItems.filter(p => p.packingUnitId === matchedLabel?.unitId?.toString() || p.packingUnitId === matchedLabel?.id);
+      const itemsInBox = currentAllPackedItems.filter(p => p.packingUnitId === matchedLabel?.unitId?.toString() || p.packingUnitId === matchedLabel?.id);
       const totalItems = itemsInBox.reduce((sum, item) => sum + item.quantity, 0);
 
       const referenceMap = new Map<string, number>();
@@ -141,8 +155,8 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
           let scannedBoxesForRef = 0;
           
           const itemsByLabelId = new Map<string, string[]>();
-          allPackedItems.forEach(p => {
-              const l = allLabels.find(lb => lb.unitId?.toString() === p.packingUnitId || lb.id === p.packingUnitId);
+          currentAllPackedItems.forEach(p => {
+              const l = currentAllLabels.find(lb => lb.unitId?.toString() === p.packingUnitId || lb.id === p.packingUnitId);
               if (l && l.id) {
                  const r = (p.item?.referencia || p.itemKey.split('-')[0] || 'Desconocida').trim();
                  if (!itemsByLabelId.has(l.id)) itemsByLabelId.set(l.id, []);
@@ -150,7 +164,7 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
               }
           });
 
-          allLabels.forEach(l => {
+          currentAllLabels.forEach(l => {
               if (l.orderId === matchedOrder?.id) {
                   const refs = itemsByLabelId.get(l.id || '') || [];
                   if (refs.includes(mainRef)) {
