@@ -25,6 +25,10 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
   const [expandedRowKeys, setExpandedRowKeys] = useState<Set<string>>(new Set());
   const [searchTerm, setSearchTerm] = useState('');
   
+  // States for scanner tool
+  const [scannerInput, setScannerInput] = useState('');
+  const [scannedLabel, setScannedLabel] = useState<PreprintedLabel | null>(null);
+  
   // States for inline editing
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editQuantity, setEditQuantity] = useState<number>(0);
@@ -64,6 +68,23 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
       else next.add(id);
       return next;
     });
+  };
+
+  const handleScannerKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        const term = scannerInput.trim();
+        if (!term) return;
+        
+        const found = labels.find(l => l.id.toLowerCase() === term.toLowerCase() || (l.unitId && l.unitId.toString() === term));
+        if (found) {
+            setScannedLabel(found);
+            setScannerInput('');
+        } else {
+            alert(`No se encontró la caja/etiqueta con el código: ${term}`);
+            setScannerInput('');
+        }
+    }
   };
 
   const translateStatus = (status: string) => {
@@ -199,9 +220,10 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
           </div>
         ) : (
           <Tabs defaultValue="balance" className="flex-1 flex flex-col min-h-0 mt-4">
-            <TabsList className="grid w-full max-w-md grid-cols-2">
+            <TabsList className="grid w-full max-w-2xl grid-cols-3">
               <TabsTrigger value="balance">Balance Consolidado</TabsTrigger>
               <TabsTrigger value="etiquetas">Cajas y Etiquetas</TabsTrigger>
+              <TabsTrigger value="escaner">Escáner de Validación</TabsTrigger>
             </TabsList>
             
             {/* PESTAÑA: BALANCE CONSOLIDADO */}
@@ -407,6 +429,113 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                 </Table>
               </ScrollArea>
              </div>
+            </TabsContent>
+
+            {/* PESTAÑA: ESCÁNER DE VALIDACIÓN */}
+            <TabsContent value="escaner" className="flex-1 mt-4 border rounded-md data-[state=inactive]:hidden bg-muted/10">
+              <div className="h-full flex flex-col items-center">
+                <div className="w-full max-w-xl mt-8 mb-6 text-center space-y-2 px-6">
+                    <h3 className="text-xl font-semibold">Validación de Cajas (Auditoría Física)</h3>
+                    <p className="text-sm text-muted-foreground">Utilice un lector de código de barras para escanear una caja o etiqueta de este pedido y verificar su contenido específico para encontrar sobrantes o faltantes.</p>
+                </div>
+                <div className="w-full max-w-sm px-6 mb-8">
+                    <Input 
+                        placeholder="Escanee la etiqueta de la caja aquí..." 
+                        className="text-center text-lg h-12 shadow-sm border-primary/30 focus-visible:ring-primary"
+                        value={scannerInput}
+                        onChange={(e) => setScannerInput(e.target.value)}
+                        onKeyDown={handleScannerKeyDown}
+                        autoFocus
+                    />
+                </div>
+                
+                {scannedLabel && (
+                    <div className="w-full max-w-2xl flex-1 px-6 pb-6 overflow-hidden flex flex-col">
+                        {(() => {
+                           const itemsInBox = packedItems.filter(p => p.packingUnitId === scannedLabel.unitId?.toString() || p.packingUnitId === scannedLabel.id);
+                           const totalUnits = itemsInBox.reduce((sum, p) => sum + p.quantity, 0);
+                           const status = translateStatus(scannedLabel.status);
+                           return (
+                               <div className="flex-1 flex flex-col overflow-hidden border rounded-md bg-card shadow-sm">
+                                   <div className="p-4 border-b flex justify-between items-center bg-muted/20">
+                                       <div>
+                                           <h4 className="font-bold text-lg">{scannedLabel.id}</h4>
+                                           <p className="text-sm text-muted-foreground flex items-center gap-1"><Box className="h-3.5 w-3.5"/>Caja {scannedLabel.unitId || '-'}</p>
+                                       </div>
+                                       <div className="text-right">
+                                           <Badge variant={status.variant} className="mb-1">{status.label}</Badge>
+                                           <p className="font-mono font-semibold text-lg">{totalUnits} empacadas</p>
+                                       </div>
+                                   </div>
+                                   <ScrollArea className="flex-1">
+                                       {itemsInBox.length === 0 ? (
+                                           <div className="p-12 text-center text-muted-foreground">La caja se encuentra vacía o no tiene registros asociados.</div>
+                                       ) : (
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-4">
+                                                {itemsInBox.map((pi, i) => {
+                                                    let ref = 'Desconocido';
+                                                    let tal = '-';
+                                                    let itm = '-';
+                                                    if (pi.item) {
+                                                        ref = pi.item.referencia || 'Desconocido';
+                                                        tal = pi.item.talla || '-';
+                                                        itm = pi.item.item || '-';
+                                                    } else if (pi.itemKey) {
+                                                        const parts = pi.itemKey.split('-');
+                                                        ref = parts[0] || 'Desconocido';
+                                                        tal = parts[1] || '-';
+                                                    } else {
+                                                        ref = pi.barcode;
+                                                    }
+                                                    
+                                                    return (
+                                                        <div key={i} className="flex justify-between items-center p-3 rounded-md border bg-background shadow-xs">
+                                                            <div>
+                                                                <p className="font-bold text-primary text-base">{ref}</p>
+                                                                <p className="text-xs text-muted-foreground uppercase">{itm} / T <span className="font-bold">{tal}</span></p>
+                                                            </div>
+                                                            <div className="flex items-center gap-3">
+                                                                {editingItemId === pi.id ? (
+                                                                    <div className="flex items-center gap-1 bg-muted/50 p-1 rounded-md">
+                                                                        <Input 
+                                                                        type="number" 
+                                                                        className="h-8 w-16 px-2 text-center font-bold text-sm" 
+                                                                        value={editQuantity} 
+                                                                        onChange={(e) => setEditQuantity(Number(e.target.value))} 
+                                                                        min={0}
+                                                                        autoFocus
+                                                                        disabled={isSavingEdit}
+                                                                        />
+                                                                        <Button size="icon" variant="ghost" className="h-8 w-8 text-green-600 hover:text-green-700 hover:bg-green-100" onClick={() => handleEditQuantity(pi.id, scannedLabel.id)} disabled={isSavingEdit}>
+                                                                        {isSavingEdit ? <Loader2 className="h-4 w-4 animate-spin"/> : <Check className="h-5 w-5" />}
+                                                                        </Button>
+                                                                        <Button size="icon" variant="ghost" className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-100" onClick={() => setEditingItemId(null)} disabled={isSavingEdit}>
+                                                                        <X className="h-5 w-5" />
+                                                                        </Button>
+                                                                    </div>
+                                                                ) : (
+                                                                    <>
+                                                                    <div className="bg-primary/10 text-primary px-3 py-1 rounded-md font-mono text-base font-bold text-center">
+                                                                        {pi.quantity}
+                                                                    </div>
+                                                                    <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => { setEditingItemId(pi.id); setEditQuantity(pi.quantity); }}>
+                                                                        <Edit2 className="h-4 w-4" />
+                                                                    </Button>
+                                                                    </>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                       )}
+                                   </ScrollArea>
+                               </div>
+                           );
+                        })()}
+                    </div>
+                )}
+              </div>
             </TabsContent>
           </Tabs>
         )}

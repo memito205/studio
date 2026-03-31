@@ -42,7 +42,8 @@ const OrderTable: React.FC<{
   onOpenPrintDialog: (order: WholesaleOrder) => void;
   onForceCloseOrder: (order: WholesaleOrder) => void;
   onOpenAuditDialog: (order: WholesaleOrder) => void;
-}> = ({ orders, sessions, allPackedItems, selectedOrders, onOrderSelect, onStartPacking, onOpenPrintDialog, onForceCloseOrder, onOpenAuditDialog }) => {
+  onForceDispatchOrder: (order: WholesaleOrder) => void;
+}> = ({ orders, sessions, allPackedItems, selectedOrders, onOrderSelect, onStartPacking, onOpenPrintDialog, onForceCloseOrder, onOpenAuditDialog, onForceDispatchOrder }) => {
     
   if (orders.length === 0) {
     return <p className="text-muted-foreground text-center py-8">No hay pedidos en esta etapa.</p>;
@@ -128,6 +129,30 @@ const OrderTable: React.FC<{
                                         <AlertDialogFooter>
                                             <AlertDialogCancel>No</AlertDialogCancel>
                                             <AlertDialogAction onClick={() => onForceCloseOrder(order)}>Sí, Cerrar Pedido</AlertDialogAction>
+                                        </AlertDialogFooter>
+                                    </AlertDialogContent>
+                                </AlertDialog>
+                            )}
+                            {order.status === 'En Cargue' && (
+                                <AlertDialog>
+                                    <AlertDialogTrigger asChild>
+                                        <Button size="sm" variant="outline" className="mr-2 text-blue-600 hover:text-blue-700 hover:bg-blue-50">
+                                            <Send className="mr-2 h-4 w-4" />
+                                            Forzar Despacho
+                                        </Button>
+                                    </AlertDialogTrigger>
+                                    <AlertDialogContent>
+                                        <AlertDialogHeader>
+                                            <AlertDialogTitle>¿Confirmar Despacho Forzado?</AlertDialogTitle>
+                                            <AlertDialogDescription>
+                                                Esta acción pasará el pedido a estado 'Despachado' aunque no se hayan cargado todas sus cajas en el panel de despacho.
+                                            </AlertDialogDescription>
+                                        </AlertDialogHeader>
+                                        <AlertDialogFooter>
+                                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                            <AlertDialogAction onClick={() => onForceDispatchOrder(order)} className="bg-blue-600 hover:bg-blue-700">
+                                                Confirmar
+                                            </AlertDialogAction>
                                         </AlertDialogFooter>
                                     </AlertDialogContent>
                                 </AlertDialog>
@@ -327,6 +352,24 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
     }
   };
 
+  const handleForceDispatch = async (order: WholesaleOrder) => {
+    setIsProcessing(true);
+    try {
+        const result = await updateOrderStatus(order.id, 'Despachado');
+        if (result.success) {
+            toast({ title: "Estado Actualizado", description: `El pedido ${order.id} ha sido forzado a Despachado.` });
+            fetchOrders();
+        } else {
+            console.error("Failed to force dispatch:", result.error);
+            toast({ variant: 'destructive', title: "Error", description: `Error al forzar despacho: ${result.error}` });
+        }
+    } catch (error) {
+        console.error("Error force dispatching order:", error);
+    } finally {
+        setIsProcessing(false);
+    }
+  };
+
   const onUploadClick = () => fileInputRef.current?.click();
 
   const ordersByStatus = React.useMemo(() => {
@@ -444,22 +487,22 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
                 <TabsTrigger value="Cancelado">Cancelado ({ordersByStatus['Cancelado']?.length || 0})</TabsTrigger>
               </TabsList>
               <TabsContent value="Pte Empaque" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Pte Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} />
+                  <OrderTable orders={ordersByStatus['Pte Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onForceDispatchOrder={handleForceDispatch} />
               </TabsContent>
               <TabsContent value="En Empaque" className="mt-4">
-                  <OrderTable orders={ordersByStatus['En Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} />
+                  <OrderTable orders={ordersByStatus['En Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onForceDispatchOrder={handleForceDispatch} />
               </TabsContent>
               <TabsContent value="Empacado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Empacado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} />
+                  <OrderTable orders={ordersByStatus['Empacado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onForceDispatchOrder={handleForceDispatch} />
               </TabsContent>
               <TabsContent value="En Cargue" className="mt-4">
-                  <OrderTable orders={ordersByStatus['En Cargue'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} />
+                  <OrderTable orders={ordersByStatus['En Cargue'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onForceDispatchOrder={handleForceDispatch} />
               </TabsContent>
               <TabsContent value="Despachado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Despachado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} />
+                  <OrderTable orders={ordersByStatus['Despachado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onForceDispatchOrder={handleForceDispatch} />
               </TabsContent>
                <TabsContent value="Cancelado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Cancelado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} />
+                  <OrderTable orders={ordersByStatus['Cancelado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onForceDispatchOrder={handleForceDispatch} />
               </TabsContent>
             </Tabs>
           )}
