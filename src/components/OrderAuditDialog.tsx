@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from 'react';
+import * as XLSX from 'xlsx';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -9,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Loader2, Package, Box, ChevronDown, ChevronRight, LayoutTemplate, Search, Edit2, Check, X, Filter } from 'lucide-react';
+import { Loader2, Package, Box, ChevronDown, ChevronRight, LayoutTemplate, Search, Edit2, Check, X, Filter, Download } from 'lucide-react';
 import type { WholesaleOrder, PreprintedLabel, PackedItem } from '@/types';
 import { getLabelsForOrder, getPackedItemsForOrder, updatePackedItem } from '@/app/actions';
 
@@ -101,6 +102,47 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
         });
     });
   }, [labels, packedItems, auditReferenceFilter]);
+
+  const handleDownloadBoxesExcel = () => {
+    if (!order || packedItems.length === 0) return;
+    
+    const data = packedItems.map(pi => {
+        let ref = '';
+        let talla = '';
+        let item = '';
+        if (pi.item) {
+            ref = pi.item.referencia || '';
+            talla = pi.item.talla || '';
+            item = pi.item.item || '';
+        } else if (pi.itemKey) {
+            const parts = pi.itemKey.split('-');
+            ref = parts[0] || '';
+            talla = parts[1] || '';
+        } else {
+            ref = pi.barcode || '';
+        }
+        
+        // Match label
+        const label = labels.find(l => l.unitId?.toString() === pi.packingUnitId || l.id === pi.packingUnitId);
+        const statusLabel = label ? translateStatus(label.status).label : 'Generada/Empacada';
+        
+        return {
+            'Pedido': order.id,
+            'Caja': label?.unitId || pi.packingUnitId || '',
+            'Etiqueta': label?.id || '',
+            'Referencia': ref,
+            'Talla': talla,
+            'Item': item,
+            'Cantidad': pi.quantity,
+            'Estado Etiqueta': statusLabel
+        };
+    });
+    
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "ContenidoCajas");
+    XLSX.writeFile(wb, `Auditoria_Cajas_${order.id}.xlsx`);
+  };
 
   const handleScannerKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
@@ -479,7 +521,13 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
             <TabsContent value="escaner" className="flex-1 mt-4 border rounded-md data-[state=inactive]:hidden bg-muted/10">
               <div className="h-full flex flex-col items-center">
                 <div className="w-full max-w-xl mt-8 mb-6 text-center space-y-4 px-6 flex flex-col items-center">
-                    <h3 className="text-xl font-semibold">Validación de Cajas Físicas</h3>
+                    <div className="flex items-center justify-between w-full">
+                        <h3 className="text-xl font-semibold">Validación de Cajas Físicas</h3>
+                        <Button onClick={handleDownloadBoxesExcel} variant="outline" size="sm" className="h-8 gap-1 border-primary/20 text-primary hover:bg-primary/10">
+                            <Download className="h-4 w-4" />
+                            Descargar Excel
+                        </Button>
+                    </div>
                     <p className="text-sm text-muted-foreground w-full">Seleccione una referencia para auditar únicamente las cajas que la contienen, luego escanee físicamente esas cajas.</p>
                     
                     <div className="flex items-center gap-3 w-full max-w-sm">
