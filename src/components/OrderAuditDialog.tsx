@@ -114,10 +114,20 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
     });
     
     const data = sortedLabels.map(label => {
+        const itemsInBox = packedItems.filter(p => p.packingUnitId === label.unitId?.toString() || p.packingUnitId === label.id);
+        const uniqueRefs = new Set<string>();
+        itemsInBox.forEach(pi => {
+            if (pi.item && pi.item.referencia) uniqueRefs.add(pi.item.referencia.trim());
+            else if (pi.itemKey) uniqueRefs.add(pi.itemKey.split('-')[0].trim());
+            else if (pi.barcode) uniqueRefs.add(pi.barcode.trim());
+        });
+        const refsString = Array.from(uniqueRefs).join(', ');
+
         return {
             'Pedido': order.id,
             'Caja': label.unitId || '-',
             'Etiqueta': label.id,
+            'Referencia(s)': refsString || 'Desconocida',
             'Estado Etiqueta': translateStatus(label.status).label
         };
     });
