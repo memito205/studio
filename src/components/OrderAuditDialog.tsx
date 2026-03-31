@@ -27,7 +27,8 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
   
   // States for scanner tool
   const [scannerInput, setScannerInput] = useState('');
-  const [scannedLabel, setScannedLabel] = useState<PreprintedLabel | null>(null);
+  const [scannedBoxIds, setScannedBoxIds] = useState<Set<string>>(new Set());
+  const [extraScannedBoxes, setExtraScannedBoxes] = useState<string[]>([]);
   
   // States for inline editing
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
@@ -41,6 +42,8 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
       setLabels([]);
       setPackedItems([]);
       setExpandedRowKeys(new Set());
+      setScannedBoxIds(new Set());
+      setExtraScannedBoxes([]);
     }
   }, [isOpen, order]);
 
@@ -78,12 +81,17 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
         
         const found = labels.find(l => l.id.toLowerCase() === term.toLowerCase() || (l.unitId && l.unitId.toString() === term));
         if (found) {
-            setScannedLabel(found);
-            setScannerInput('');
+            setScannedBoxIds(prev => {
+                const next = new Set(prev);
+                next.add(found.id);
+                return next;
+            });
         } else {
-            alert(`No se encontró la caja/etiqueta con el código: ${term}`);
-            setScannerInput('');
+            if (!extraScannedBoxes.includes(term)) {
+                setExtraScannedBoxes(prev => [...prev, term]);
+            }
         }
+        setScannerInput('');
     }
   };
 
@@ -440,7 +448,7 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                 </div>
                 <div className="w-full max-w-sm px-6 mb-8">
                     <Input 
-                        placeholder="Escanee la etiqueta de la caja aquí..." 
+                        placeholder="Escanee el consecutivo o la etiqueta completa..." 
                         className="text-center text-lg h-12 shadow-sm border-primary/30 focus-visible:ring-primary"
                         value={scannerInput}
                         onChange={(e) => setScannerInput(e.target.value)}
@@ -449,92 +457,79 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                     />
                 </div>
                 
-                {scannedLabel && (
-                    <div className="w-full max-w-2xl flex-1 px-6 pb-6 overflow-hidden flex flex-col">
-                        {(() => {
-                           const itemsInBox = packedItems.filter(p => p.packingUnitId === scannedLabel.unitId?.toString() || p.packingUnitId === scannedLabel.id);
-                           const totalUnits = itemsInBox.reduce((sum, p) => sum + p.quantity, 0);
-                           const status = translateStatus(scannedLabel.status);
-                           return (
-                               <div className="flex-1 flex flex-col overflow-hidden border rounded-md bg-card shadow-sm">
-                                   <div className="p-4 border-b flex justify-between items-center bg-muted/20">
-                                       <div>
-                                           <h4 className="font-bold text-lg">{scannedLabel.id}</h4>
-                                           <p className="text-sm text-muted-foreground flex items-center gap-1"><Box className="h-3.5 w-3.5"/>Caja {scannedLabel.unitId || '-'}</p>
-                                       </div>
-                                       <div className="text-right">
-                                           <Badge variant={status.variant} className="mb-1">{status.label}</Badge>
-                                           <p className="font-mono font-semibold text-lg">{totalUnits} empacadas</p>
-                                       </div>
-                                   </div>
-                                   <ScrollArea className="flex-1">
-                                       {itemsInBox.length === 0 ? (
-                                           <div className="p-12 text-center text-muted-foreground">La caja se encuentra vacía o no tiene registros asociados.</div>
-                                       ) : (
-                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-4">
-                                                {itemsInBox.map((pi, i) => {
-                                                    let ref = 'Desconocido';
-                                                    let tal = '-';
-                                                    let itm = '-';
-                                                    if (pi.item) {
-                                                        ref = pi.item.referencia || 'Desconocido';
-                                                        tal = pi.item.talla || '-';
-                                                        itm = pi.item.item || '-';
-                                                    } else if (pi.itemKey) {
-                                                        const parts = pi.itemKey.split('-');
-                                                        ref = parts[0] || 'Desconocido';
-                                                        tal = parts[1] || '-';
-                                                    } else {
-                                                        ref = pi.barcode;
-                                                    }
-                                                    
-                                                    return (
-                                                        <div key={i} className="flex justify-between items-center p-3 rounded-md border bg-background shadow-xs">
-                                                            <div>
-                                                                <p className="font-bold text-primary text-base">{ref}</p>
-                                                                <p className="text-xs text-muted-foreground uppercase">{itm} / T <span className="font-bold">{tal}</span></p>
-                                                            </div>
-                                                            <div className="flex items-center gap-3">
-                                                                {editingItemId === pi.id ? (
-                                                                    <div className="flex items-center gap-1 bg-muted/50 p-1 rounded-md">
-                                                                        <Input 
-                                                                        type="number" 
-                                                                        className="h-8 w-16 px-2 text-center font-bold text-sm" 
-                                                                        value={editQuantity} 
-                                                                        onChange={(e) => setEditQuantity(Number(e.target.value))} 
-                                                                        min={0}
-                                                                        autoFocus
-                                                                        disabled={isSavingEdit}
-                                                                        />
-                                                                        <Button size="icon" variant="ghost" className="h-8 w-8 text-green-600 hover:text-green-700 hover:bg-green-100" onClick={() => handleEditQuantity(pi.id, scannedLabel.id)} disabled={isSavingEdit}>
-                                                                        {isSavingEdit ? <Loader2 className="h-4 w-4 animate-spin"/> : <Check className="h-5 w-5" />}
-                                                                        </Button>
-                                                                        <Button size="icon" variant="ghost" className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-100" onClick={() => setEditingItemId(null)} disabled={isSavingEdit}>
-                                                                        <X className="h-5 w-5" />
-                                                                        </Button>
-                                                                    </div>
-                                                                ) : (
-                                                                    <>
-                                                                    <div className="bg-primary/10 text-primary px-3 py-1 rounded-md font-mono text-base font-bold text-center">
-                                                                        {pi.quantity}
-                                                                    </div>
-                                                                    <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => { setEditingItemId(pi.id); setEditQuantity(pi.quantity); }}>
-                                                                        <Edit2 className="h-4 w-4" />
-                                                                    </Button>
-                                                                    </>
-                                                                )}
-                                                            </div>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                       )}
-                                   </ScrollArea>
-                               </div>
-                           );
-                        })()}
+                <div className="w-full max-w-4xl flex-1 px-6 pb-6 overflow-hidden flex gap-4">
+                    {/* COLUMNA FALTANTES */}
+                    <div className="flex-1 flex flex-col border rounded-md overflow-hidden bg-background">
+                        <div className="bg-orange-100/50 p-3 border-b">
+                            <h4 className="font-semibold text-orange-800 flex justify-between items-center">
+                                Faltantes / Por Leer
+                                <Badge variant="outline" className="bg-background">{labels.filter(l => !scannedBoxIds.has(l.id)).length}</Badge>
+                            </h4>
+                        </div>
+                        <ScrollArea className="flex-1 p-0">
+                            <Table>
+                                <TableBody>
+                                    {labels.filter(l => !scannedBoxIds.has(l.id)).map(label => (
+                                        <TableRow key={`faltante-${label.id}`}>
+                                            <TableCell className="font-medium">{label.id}</TableCell>
+                                            <TableCell className="text-right">Caja {label.unitId}</TableCell>
+                                        </TableRow>
+                                    ))}
+                                    {labels.filter(l => !scannedBoxIds.has(l.id)).length === 0 && (
+                                        <TableRow><TableCell colSpan={2} className="text-center text-muted-foreground py-8">No hay cajas faltantes.</TableCell></TableRow>
+                                    )}
+                                </TableBody>
+                            </Table>
+                        </ScrollArea>
                     </div>
-                )}
+
+                    {/* COLUMNA LEIDAS Y SOBRANTES */}
+                    <div className="flex-1 flex flex-col gap-4 overflow-hidden">
+                        {extraScannedBoxes.length > 0 && (
+                            <div className="flex-[0.5] flex flex-col border border-red-200 rounded-md overflow-hidden bg-background">
+                                <div className="bg-red-50 p-3 border-b border-red-100 flex justify-between items-center">
+                                    <h4 className="font-semibold text-red-700">Sobrantes (No pertenecen)</h4>
+                                    <Button size="sm" variant="ghost" className="h-6 px-2 text-xs text-red-700 hover:text-red-900 hover:bg-red-100" onClick={() => setExtraScannedBoxes([])}>Limpiar</Button>
+                                </div>
+                                <ScrollArea className="flex-1 p-2 space-y-2">
+                                    {extraScannedBoxes.map(term => (
+                                        <div key={term} className="bg-red-50 text-red-700 font-mono p-2 text-sm rounded border border-red-100 flex justify-between">
+                                            <span>{term}</span>
+                                            <X className="h-4 w-4 cursor-pointer hover:scale-110 transition-transform" onClick={() => setExtraScannedBoxes(prev => prev.filter(t => t !== term))} />
+                                        </div>
+                                    ))}
+                                </ScrollArea>
+                            </div>
+                        )}
+
+                        <div className={`flex flex-col border rounded-md overflow-hidden bg-background ${extraScannedBoxes.length > 0 ? 'flex-[0.5]' : 'flex-1'}`}>
+                            <div className="bg-green-50 p-3 border-b flex justify-between items-center">
+                                <h4 className="font-semibold text-green-700 flex items-center gap-2">
+                                    Verificadas
+                                    <Badge variant="outline" className="bg-background text-green-700 border-green-200">{scannedBoxIds.size}</Badge>
+                                </h4>
+                                {scannedBoxIds.size > 0 && (
+                                    <Button size="sm" variant="ghost" className="h-6 px-2 text-xs text-green-700 hover:bg-green-100" onClick={() => setScannedBoxIds(new Set())}>Reiniciar</Button>
+                                )}
+                            </div>
+                            <ScrollArea className="flex-1 p-0">
+                                <Table>
+                                    <TableBody>
+                                        {labels.filter(l => scannedBoxIds.has(l.id)).map(label => (
+                                            <TableRow key={`verificada-${label.id}`} className="bg-green-50/30">
+                                                <TableCell className="font-medium text-green-800 flex items-center gap-2">
+                                                    <Check className="h-4 w-4 text-green-600" />
+                                                    {label.id}
+                                                </TableCell>
+                                                <TableCell className="text-right text-green-700">Caja {label.unitId}</TableCell>
+                                            </TableRow>
+                                        ))}
+                                    </TableBody>
+                                </Table>
+                            </ScrollArea>
+                        </div>
+                    </div>
+                </div>
               </div>
             </TabsContent>
           </Tabs>
