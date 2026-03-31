@@ -5,10 +5,10 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Loader2, PlusCircle, ArrowLeft, Send, Trash2 } from 'lucide-react';
+import { Loader2, PlusCircle, ArrowLeft, Send, Trash2, Check } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import type { DispatchSessionInfo, WholesaleOrder } from '@/types';
-import { getShipments, createShipment, deleteShipment } from '@/app/actions';
+import { getShipments, createShipment, deleteShipment, closeShipment } from '@/app/actions';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -174,6 +174,18 @@ export const DispatchDashboard: React.FC<DispatchDashboardProps> = ({ orders, on
         setIsDeletingId(null);
     };
 
+    const handleManualCloseShipment = async (shipmentId: string) => {
+        setIsLoading(true);
+        const result = await closeShipment(shipmentId);
+        if (result.success) {
+            toast({ title: 'Envío Cerrado', description: 'El despacho ha sido cerrado exitosamente.' });
+            fetchShipments();
+        } else {
+            toast({ variant: 'destructive', title: 'Error al Cerrar', description: result.error });
+            setIsLoading(false);
+        }
+    };
+
     return (
         <>
             <CreateShipmentDialog 
@@ -236,6 +248,29 @@ export const DispatchDashboard: React.FC<DispatchDashboardProps> = ({ orders, on
                                                 <Button onClick={() => onStartDispatching(shipment.id!)} variant="outline" size="sm">
                                                     {shipment.status === 'open' ? 'Escanear' : 'Ver'}
                                                 </Button>
+                                                {shipment.status === 'open' && (
+                                                    <AlertDialog>
+                                                        <AlertDialogTrigger asChild>
+                                                            <Button variant="outline" size="sm" className="text-amber-600 hover:text-amber-700 hover:bg-amber-50" title="Cerrar Manualmente">
+                                                                <Check className="h-4 w-4" />
+                                                            </Button>
+                                                        </AlertDialogTrigger>
+                                                        <AlertDialogContent>
+                                                            <AlertDialogHeader>
+                                                                <AlertDialogTitle>¿Cerrar envío manualmente?</AlertDialogTitle>
+                                                                <AlertDialogDescription>
+                                                                    Esto marcará el envío como "Cerrado" sin necesidad de escanear. Útil si las cajas ya se fueron o el pedido se forzó desde otra pantalla.
+                                                                </AlertDialogDescription>
+                                                            </AlertDialogHeader>
+                                                            <AlertDialogFooter>
+                                                                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                                                <AlertDialogAction onClick={() => handleManualCloseShipment(shipment.id!)} className="bg-amber-600 hover:bg-amber-700">
+                                                                    Cerrar Envío
+                                                                </AlertDialogAction>
+                                                            </AlertDialogFooter>
+                                                        </AlertDialogContent>
+                                                    </AlertDialog>
+                                                )}
                                                 <AlertDialog>
                                                     <AlertDialogTrigger asChild>
                                                         <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive hover:bg-destructive/10">

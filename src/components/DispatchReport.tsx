@@ -5,8 +5,9 @@ import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from './ui/button';
-import { ArrowLeft, Printer } from 'lucide-react';
+import { ArrowLeft, Printer, Download } from 'lucide-react';
 import type { DispatchSessionInfo, BoxToDispatch } from '@/types';
+import * as XLSX from 'xlsx';
 
 interface DispatchReportProps {
   sessionInfo: DispatchSessionInfo;
@@ -20,6 +21,52 @@ export const DispatchReport: React.FC<DispatchReportProps> = ({ sessionInfo, box
     window.print();
   };
 
+  const flattenBoxes = () => {
+      const flattened: any[] = [];
+      boxes.forEach(box => {
+          if (box.items && box.items.length > 0) {
+              box.items.forEach(item => {
+                  flattened.push({
+                      labelId: box.labelId,
+                      unitId: box.unitId,
+                      orderId: box.orderId,
+                      customer: box.customer,
+                      referencia: item.referencia,
+                      cantidad: item.cantidad
+                  });
+              });
+          } else {
+              flattened.push({
+                  labelId: box.labelId,
+                  unitId: box.unitId,
+                  orderId: box.orderId,
+                  customer: box.customer,
+                  referencia: 'N/A',
+                  cantidad: box.totalItems
+              });
+          }
+      });
+      return flattened;
+  };
+
+  const handleDownloadExcel = () => {
+      const rows = flattenBoxes().map(r => ({
+          'Caja ID': r.unitId || '',
+          'Etiqueta': r.labelId,
+          'Referencia': r.referencia,
+          'Cantidad': r.cantidad,
+          'Pedido / Orden': r.orderId,
+          'Cliente': r.customer,
+      }));
+      
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(wb, ws, "Despacho");
+      XLSX.writeFile(wb, `Resumen_Despacho_${sessionInfo.id?.substring(0,6) || 'Doc'}.xlsx`);
+  };
+
+  const rowsToPrint = flattenBoxes();
+
   const totalBoxes = boxes.length;
   const totalUnits = boxes.reduce((sum, box) => sum + box.totalItems, 0);
 
@@ -30,6 +77,9 @@ export const DispatchReport: React.FC<DispatchReportProps> = ({ sessionInfo, box
             <div className="flex gap-2">
                 <Button variant="outline" onClick={onReturn}>
                     <ArrowLeft className="mr-2 h-4 w-4" /> Volver
+                </Button>
+                <Button onClick={handleDownloadExcel} variant="outline" className="border-primary/20 text-primary hover:bg-primary/10">
+                    <Download className="mr-2 h-4 w-4" /> Excel
                 </Button>
                 <Button onClick={handlePrint}>
                     <Printer className="mr-2 h-4 w-4" /> Imprimir
@@ -49,26 +99,31 @@ export const DispatchReport: React.FC<DispatchReportProps> = ({ sessionInfo, box
                     <p><strong>Precinto:</strong> {sessionInfo.sealNumber}</p>
                 </div>
                 
-                <h3 className="font-semibold mb-2">Detalle de Cajas:</h3>
+                <h3 className="font-semibold mb-2">Detalle de Artículos:</h3>
                 <div className="border rounded-md">
                     <Table>
                         <TableHeader>
                             <TableRow>
                                 <TableHead>#</TableHead>
-                                <TableHead>Cód. Etiqueta (Caja)</TableHead>
-                                <TableHead>Pedido</TableHead>
-                                <TableHead>Cliente</TableHead>
-                                <TableHead className="text-right">Cant. Unidades</TableHead>
+                                <TableHead>Pedido/Cliente</TableHead>
+                                <TableHead>Referencia</TableHead>
+                                <TableHead className="text-right">Cantidad</TableHead>
+                                <TableHead>Caja #</TableHead>
+                                <TableHead>Etiqueta</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
-                            {boxes.map((box, index) => (
-                                <TableRow key={box.labelId}>
+                            {rowsToPrint.map((row, index) => (
+                                <TableRow key={`${row.labelId}-${index}`}>
                                     <TableCell>{index + 1}</TableCell>
-                                    <TableCell className="font-mono">{box.labelId}</TableCell>
-                                    <TableCell>{box.orderId}</TableCell>
-                                    <TableCell>{box.customer}</TableCell>
-                                    <TableCell className="text-right font-medium">{box.totalItems}</TableCell>
+                                    <TableCell>
+                                        <div className="font-semibold">{row.orderId}</div>
+                                        <div className="text-xs text-muted-foreground truncate max-w-[200px]">{row.customer}</div>
+                                    </TableCell>
+                                    <TableCell className="font-medium">{row.referencia}</TableCell>
+                                    <TableCell className="text-right font-medium">{row.cantidad}</TableCell>
+                                    <TableCell>{row.unitId}</TableCell>
+                                    <TableCell className="font-mono text-xs">{row.labelId}</TableCell>
                                 </TableRow>
                             ))}
                         </TableBody>

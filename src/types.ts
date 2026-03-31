@@ -1131,6 +1131,8 @@ export interface BoxToDispatch {
     orderId: string;
     customer: string;
     totalItems: number;
+    unitId?: string;
+    items?: { referencia: string; cantidad: number }[];
 }
 
 export interface DispatchSessionInfo {

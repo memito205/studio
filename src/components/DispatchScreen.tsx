@@ -22,7 +22,7 @@ interface DispatchScreenProps {
   onReturnToDispatchDashboard: () => void;
 }
 
-type ScanStatus = 'success' | 'duplicate' | 'error' | null;
+type ScanStatus = 'success' | 'duplicate' | 'error' | 'warning' | null;
 
 interface ScanOverlayData {
   status: ScanStatus;
@@ -42,6 +42,7 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
   const [reportData, setReportData] = useState<{ sessionInfo: DispatchSessionInfo; boxes: BoxToDispatch[] } | null>(null);
   const [allOrders, setAllOrders] = useState<WholesaleOrder[]>([]);
   const [allLabels, setAllLabels] = useState<PreprintedLabel[]>([]);
+  const [allPackedItems, setAllPackedItems] = useState<PackedItem[]>([]);
   const [scanOverlay, setScanOverlay] = useState<ScanOverlayData | null>(null);
   const overlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -73,14 +74,18 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
       const ordersResult = await loadWholesaleOrders();
       if (ordersResult.data) setAllOrders(ordersResult.data);
 
-      // Load labels for all allowed orders
+      // Load labels and packed items for all allowed orders
       if (shipment?.allowedOrderIds && shipment.allowedOrderIds.length > 0) {
         const labelsArr: PreprintedLabel[] = [];
+        const itemsArr: PackedItem[] = [];
         for (const ordId of shipment.allowedOrderIds) {
           const labelsRes = await getLabelsForOrder(ordId);
           if (labelsRes.data) labelsArr.push(...labelsRes.data);
+          const itemsRes = await getPackedItemsForOrder(ordId);
+          if (itemsRes.data) itemsArr.push(...itemsRes.data);
         }
         setAllLabels(labelsArr);
+        setAllPackedItems(itemsArr);
       }
       setIsLoading(false);
     };
@@ -118,21 +123,68 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
       // Find which order this label belongs to
       const matchedLabel = allLabels.find(l => (l.id || '').toUpperCase() === labelId);
       const matchedOrder = allOrders.find(o => o.id === matchedLabel?.orderId);
+      
+      const itemsInBox = allPackedItems.filter(p => p.packingUnitId === matchedLabel?.unitId?.toString() || p.packingUnitId === matchedLabel?.id);
+      const totalItems = itemsInBox.reduce((sum, item) => sum + item.quantity, 0);
+
+      const referenceMap = new Map<string, number>();
+      itemsInBox.forEach(item => {
+          const ref = (item.item?.referencia || item.itemKey.split('-')[0] || 'Desconocida').trim();
+          referenceMap.set(ref, (referenceMap.get(ref) || 0) + item.quantity);
+      });
+      const itemsList = Array.from(referenceMap.entries());
+      const mainRef = itemsList.length > 0 ? itemsList.sort((a,b) => b[1] - a[1])[0][0] : null;
+
+      let countMsg = '';
+      if (mainRef) {
+          let totalBoxesForRef = 0;
+          let scannedBoxesForRef = 0;
+          
+          const itemsByLabelId = new Map<string, string[]>();
+          allPackedItems.forEach(p => {
+              const l = allLabels.find(lb => lb.unitId?.toString() === p.packingUnitId || lb.id === p.packingUnitId);
+              if (l && l.id) {
+                 const r = (p.item?.referencia || p.itemKey.split('-')[0] || 'Desconocida').trim();
+                 if (!itemsByLabelId.has(l.id)) itemsByLabelId.set(l.id, []);
+                 itemsByLabelId.get(l.id)!.push(r);
+              }
+          });
+
+          allLabels.forEach(l => {
+              if (l.orderId === matchedOrder?.id) {
+                  const refs = itemsByLabelId.get(l.id || '') || [];
+                  if (refs.includes(mainRef)) {
+                      totalBoxesForRef++;
+                      if (sessionInfo.scannedLabels && sessionInfo.scannedLabels[(l.id || '').toUpperCase()]) {
+                          scannedBoxesForRef++;
+                      }
+                  }
+              }
+          });
+          
+          if (!sessionInfo.scannedLabels || !sessionInfo.scannedLabels[labelId]) {
+              scannedBoxesForRef++;
+          }
+          
+          countMsg = `\nRef: ${mainRef} (Caja ${scannedBoxesForRef}/${totalBoxesForRef})`;
+      }
+
+      const unitMessage = totalItems > 0 ? `(${totalItems} Unds)${countMsg}` : `${countMsg}`;
 
       // Show warning if it was an available label (not packed properly)
-      if (result.auditWarning) {
+      if ((result as any).auditWarning) {
         showOverlay({
           status: 'warning',
           labelId,
           orderId: matchedOrder?.ordenDeCompra || matchedLabel?.orderId,
-          message: `${matchedOrder?.cliente} (Cargada, pero no figura como empacada. Requiere Auditoría)`,
+          message: `${matchedOrder?.cliente} ${unitMessage} (Cargada, requiere Auditoría)`,
         });
       } else {
         showOverlay({
           status: 'success',
           labelId,
           orderId: matchedOrder?.ordenDeCompra || matchedLabel?.orderId,
-          message: matchedOrder?.cliente,
+          message: `${matchedOrder?.cliente} ${unitMessage}`,
         });
       }
       
@@ -189,13 +241,23 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
     const boxesForReport: BoxToDispatch[] = labelIds.map(labelId => {
       const labelInfo = tempLabels.find(l => l.id === labelId);
       const orderInfo = allOrders.find(o => o.id === labelInfo?.orderId);
-      const itemsInBox = tempPackedItems.filter(p => p.packingUnitId === labelInfo?.unitId?.toString());
+      const itemsInBox = tempPackedItems.filter(p => p.packingUnitId === labelInfo?.unitId?.toString() || p.packingUnitId === labelInfo?.id);
       const totalItems = itemsInBox.reduce((sum, item) => sum + item.quantity, 0);
+      
+      const referenceMap = new Map<string, number>();
+      itemsInBox.forEach(item => {
+          const ref = (item.item?.referencia || item.itemKey.split('-')[0] || 'Desconocida').trim();
+          referenceMap.set(ref, (referenceMap.get(ref) || 0) + item.quantity);
+      });
+      const items = Array.from(referenceMap.entries()).map(([referencia, cantidad]) => ({ referencia, cantidad }));
+
       return {
         labelId,
         orderId: orderInfo?.ordenDeCompra || labelInfo?.orderId || 'N/A',
         customer: orderInfo?.cliente || 'N/A',
         totalItems,
+        unitId: labelInfo?.unitId?.toString() || '',
+        items
       };
     });
 
@@ -265,7 +327,7 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
               <p className="text-2xl font-semibold opacity-90">Pedido: {scanOverlay.orderId}</p>
             )}
             {scanOverlay.message && (
-              <p className="text-xl opacity-80 max-w-lg">{scanOverlay.message}</p>
+              <p className="text-xl opacity-80 max-w-lg whitespace-pre-line">{scanOverlay.message}</p>
             )}
             <p className="text-sm opacity-60 mt-4">
               {scanOverlay.status === 'success' ? '✓ Cargada correctamente' :
