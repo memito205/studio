@@ -104,44 +104,28 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
   }, [labels, packedItems, auditReferenceFilter]);
 
   const handleDownloadBoxesExcel = () => {
-    if (!order || packedItems.length === 0) return;
+    if (!order || labels.length === 0) return;
     
-    const data = packedItems.map(pi => {
-        let ref = '';
-        let talla = '';
-        let item = '';
-        if (pi.item) {
-            ref = pi.item.referencia || '';
-            talla = pi.item.talla || '';
-            item = pi.item.item || '';
-        } else if (pi.itemKey) {
-            const parts = pi.itemKey.split('-');
-            ref = parts[0] || '';
-            talla = parts[1] || '';
-        } else {
-            ref = pi.barcode || '';
-        }
-        
-        // Match label
-        const label = labels.find(l => l.unitId?.toString() === pi.packingUnitId || l.id === pi.packingUnitId);
-        const statusLabel = label ? translateStatus(label.status).label : 'Generada/Empacada';
-        
+    const sortedLabels = [...labels].sort((a, b) => {
+        const numA = Number(a.unitId);
+        const numB = Number(b.unitId);
+        if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+        return String(a.unitId).localeCompare(String(b.unitId));
+    });
+    
+    const data = sortedLabels.map(label => {
         return {
             'Pedido': order.id,
-            'Caja': label?.unitId || pi.packingUnitId || '',
-            'Etiqueta': label?.id || '',
-            'Referencia': ref,
-            'Talla': talla,
-            'Item': item,
-            'Cantidad': pi.quantity,
-            'Estado Etiqueta': statusLabel
+            'Caja': label.unitId || '-',
+            'Etiqueta': label.id,
+            'Estado Etiqueta': translateStatus(label.status).label
         };
     });
     
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "ContenidoCajas");
-    XLSX.writeFile(wb, `Auditoria_Cajas_${order.id}.xlsx`);
+    XLSX.utils.book_append_sheet(wb, ws, "EtiquetasDeCajas");
+    XLSX.writeFile(wb, `Listado_Cajas_${order.id}.xlsx`);
   };
 
   const handleScannerKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
