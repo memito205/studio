@@ -11,8 +11,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Loader2, Package, Box, ChevronDown, ChevronRight, LayoutTemplate, Search, Edit2, Check, X, Filter, Download } from 'lucide-react';
-import type { WholesaleOrder, PreprintedLabel, PackedItem } from '@/types';
-import { getLabelsForOrder, getPackedItemsForOrder, updatePackedItem } from '@/app/actions';
+import type { WholesaleOrder, PreprintedLabel, PackedItem, PackingSession } from '@/types';
+import { getLabelsForOrder, getPackedItemsForOrder, updatePackedItem, getPackingSession } from '@/app/actions';
 
 interface OrderAuditDialogProps {
   order: WholesaleOrder | null;
@@ -24,6 +24,7 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
   const [isLoading, setIsLoading] = useState(false);
   const [labels, setLabels] = useState<PreprintedLabel[]>([]);
   const [packedItems, setPackedItems] = useState<PackedItem[]>([]);
+  const [packingSession, setPackingSession] = useState<PackingSession | null>(null);
   const [expandedRowKeys, setExpandedRowKeys] = useState<Set<string>>(new Set());
   const [searchTerm, setSearchTerm] = useState('');
   
@@ -55,12 +56,14 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
     if (!order) return;
     setIsLoading(true);
     try {
-      const [labelsRes, itemsRes] = await Promise.all([
+      const [labelsRes, itemsRes, sessionRes] = await Promise.all([
         getLabelsForOrder(order.id),
-        getPackedItemsForOrder(order.id)
+        getPackedItemsForOrder(order.id),
+        getPackingSession(order.id)
       ]);
       if (labelsRes.data) setLabels(labelsRes.data);
       if (itemsRes.data) setPackedItems(itemsRes.data);
+      if (sessionRes.data) setPackingSession(sessionRes.data);
     } catch (error) {
       console.error("Error loading audit data:", error);
     } finally {
@@ -89,11 +92,29 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
     return Array.from(refs).sort();
   }, [packedItems]);
 
+  // Helper to map label to packing unit firestore ID
+  const labelToUnitIdMap = useMemo(() => {
+    const map = new Map<string, string>();
+    if (packingSession && packingSession.units) {
+      packingSession.units.forEach(u => {
+        if (u.labelBarcode) map.set(u.labelBarcode, u.firestoreId);
+        // Also map sequential unitId for cases where label isn't printed yet but exists
+        map.set(u.id.toString(), u.firestoreId);
+      });
+    }
+    return map;
+  }, [packingSession]);
+
   const targetLabelsForAudit = useMemo(() => {
     if (auditReferenceFilter === 'all') return labels;
     
     return labels.filter(label => {
-        const itemsInBox = packedItems.filter(p => p.packingUnitId === label.unitId?.toString() || p.packingUnitId === label.id);
+        const unitFirestoreId = labelToUnitIdMap.get(label.id) || labelToUnitIdMap.get(label.unitId?.toString() || "");
+        const itemsInBox = packedItems.filter(p => 
+            p.packingUnitId === unitFirestoreId || 
+            p.packingUnitId === label.unitId?.toString() || 
+            p.packingUnitId === label.id
+        );
         return itemsInBox.some(pi => {
             let ref = '';
             if (pi.item && pi.item.referencia) ref = pi.item.referencia;
@@ -101,7 +122,7 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
             return ref.trim() === auditReferenceFilter;
         });
     });
-  }, [labels, packedItems, auditReferenceFilter]);
+  }, [labels, packedItems, auditReferenceFilter, labelToUnitIdMap]);
 
   const handleDownloadBoxesExcel = () => {
     if (!order || labels.length === 0) return;
@@ -114,7 +135,12 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
     });
     
     const data = sortedLabels.map(label => {
-        const itemsInBox = packedItems.filter(p => p.packingUnitId === label.unitId?.toString() || p.packingUnitId === label.id);
+        const unitFirestoreId = labelToUnitIdMap.get(label.id) || labelToUnitIdMap.get(label.unitId?.toString() || "");
+        const itemsInBox = packedItems.filter(p => 
+            p.packingUnitId === unitFirestoreId || 
+            p.packingUnitId === label.unitId?.toString() || 
+            p.packingUnitId === label.id
+        );
         const uniqueRefs = new Set<string>();
         itemsInBox.forEach(pi => {
             if (pi.item && pi.item.referencia) uniqueRefs.add(pi.item.referencia.trim());
@@ -404,7 +430,12 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                       </TableRow>
                     ) : (
                       filteredLabels.map(label => {
-                        const itemsInBox = packedItems.filter(p => p.packingUnitId === label.unitId?.toString() || p.packingUnitId === label.id);
+                        const unitFirestoreId = labelToUnitIdMap.get(label.id) || labelToUnitIdMap.get(label.unitId?.toString() || "");
+                        const itemsInBox = packedItems.filter(p => 
+                            p.packingUnitId === unitFirestoreId || 
+                            p.packingUnitId === label.unitId?.toString() || 
+                            p.packingUnitId === label.id
+                        );
                         const totalUnitsInBox = itemsInBox.reduce((sum, p) => sum + p.quantity, 0);
                         const isExpanded = expandedRowKeys.has(label.id);
                         const statusBadge = translateStatus(label.status);
