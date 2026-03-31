@@ -7,9 +7,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Loader2, Package, Box, ChevronDown, ChevronRight, LayoutTemplate } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Loader2, Package, Box, ChevronDown, ChevronRight, LayoutTemplate, Search, Edit2, Check, X } from 'lucide-react';
 import type { WholesaleOrder, PreprintedLabel, PackedItem } from '@/types';
-import { getLabelsForOrder, getPackedItemsForOrder } from '@/app/actions';
+import { getLabelsForOrder, getPackedItemsForOrder, updatePackedItem } from '@/app/actions';
 
 interface OrderAuditDialogProps {
   order: WholesaleOrder | null;
@@ -22,6 +23,12 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
   const [labels, setLabels] = useState<PreprintedLabel[]>([]);
   const [packedItems, setPackedItems] = useState<PackedItem[]>([]);
   const [expandedRowKeys, setExpandedRowKeys] = useState<Set<string>>(new Set());
+  const [searchTerm, setSearchTerm] = useState('');
+  
+  // States for inline editing
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [editQuantity, setEditQuantity] = useState<number>(0);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   useEffect(() => {
     if (isOpen && order) {
@@ -68,6 +75,34 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
       default: return { label: status, variant: 'outline' as const };
     }
   };
+
+  const handleEditQuantity = async (packedItemId: string, labelId: string) => {
+    if (editQuantity < 0) return;
+    setIsSavingEdit(true);
+    try {
+      const result = await updatePackedItem(packedItemId, { quantity: editQuantity });
+      if (result.success) {
+        setPackedItems(prev => prev.map(p => p.id === packedItemId ? { ...p, quantity: editQuantity } : p));
+        setEditingItemId(null);
+      } else {
+        console.error("Error saving new quantity:", result.error);
+        alert(`Error al guardar: ${result.error}`);
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  const filteredLabels = useMemo(() => {
+    if (!searchTerm) return labels;
+    const term = searchTerm.toLowerCase();
+    return labels.filter(l => 
+      l.id.toLowerCase().includes(term) || 
+      (l.unitId && l.unitId.toString().includes(term))
+    );
+  }, [labels, searchTerm]);
 
   const packingBalance = useMemo(() => {
     if (!order) return [];
@@ -170,7 +205,8 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
             </TabsList>
             
             {/* PESTAÑA: BALANCE CONSOLIDADO */}
-            <TabsContent value="balance" className="flex-1 overflow-hidden flex flex-col mt-4 border rounded-md">
+            <TabsContent value="balance" className="flex-1 mt-4 border rounded-md data-[state=inactive]:hidden">
+             <div className="h-full flex flex-col overflow-hidden">
               <div className="bg-muted/50 p-4 border-b flex items-center justify-between">
                 <div>
                   <p className="font-semibold">Progreso General</p>
@@ -227,10 +263,25 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                   </TableBody>
                 </Table>
               </ScrollArea>
+             </div>
             </TabsContent>
 
             {/* PESTAÑA: CAJAS Y ETIQUETAS */}
-            <TabsContent value="etiquetas" className="flex-1 overflow-hidden flex flex-col mt-4 border rounded-md">
+            <TabsContent value="etiquetas" className="flex-1 mt-4 border rounded-md data-[state=inactive]:hidden">
+             <div className="h-full flex flex-col overflow-hidden">
+              
+              <div className="p-4 border-b bg-muted/30">
+                <div className="relative max-w-sm">
+                  <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input 
+                    placeholder="Buscar por código de etiqueta o Nro de caja..." 
+                    className="pl-9 bg-background"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                  />
+                </div>
+              </div>
+
               <ScrollArea className="flex-1 p-0">
                 <Table>
                   <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
@@ -243,14 +294,14 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {labels.length === 0 ? (
+                    {filteredLabels.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
-                          Aún no se han generado etiquetas para este pedido.
+                          {searchTerm ? 'No se encontraron etiquetas con esa búsqueda.' : 'Aún no se han generado etiquetas para este pedido.'}
                         </TableCell>
                       </TableRow>
                     ) : (
-                      labels.map(label => {
+                      filteredLabels.map(label => {
                         const itemsInBox = packedItems.filter(p => p.packingUnitId === label.unitId?.toString() || p.packingUnitId === label.id);
                         const totalUnitsInBox = itemsInBox.reduce((sum, p) => sum + p.quantity, 0);
                         const isExpanded = expandedRowKeys.has(label.id);
@@ -309,8 +360,35 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                                                 <p className="font-medium text-primary">{ref}</p>
                                                 <p className="text-[10px] text-muted-foreground">{itm} / Talla: {tal}</p>
                                               </div>
-                                              <div className="bg-muted px-2 py-1 rounded font-mono text-xs font-bold">
-                                                {pi.quantity} unds
+                                              <div className="flex items-center gap-3">
+                                                {editingItemId === pi.id ? (
+                                                  <div className="flex items-center gap-1">
+                                                    <Input 
+                                                      type="number" 
+                                                      className="h-7 w-16 px-2 text-right text-xs" 
+                                                      value={editQuantity} 
+                                                      onChange={(e) => setEditQuantity(Number(e.target.value))} 
+                                                      min={0}
+                                                      autoFocus
+                                                      disabled={isSavingEdit}
+                                                    />
+                                                    <Button size="icon" variant="ghost" className="h-7 w-7 text-green-600 hover:text-green-700 hover:bg-green-100" onClick={() => handleEditQuantity(pi.id, label.id)} disabled={isSavingEdit}>
+                                                      {isSavingEdit ? <Loader2 className="h-3 w-3 animate-spin"/> : <Check className="h-4 w-4" />}
+                                                    </Button>
+                                                    <Button size="icon" variant="ghost" className="h-7 w-7 text-red-500 hover:text-red-700 hover:bg-red-100" onClick={() => setEditingItemId(null)} disabled={isSavingEdit}>
+                                                      <X className="h-4 w-4" />
+                                                    </Button>
+                                                  </div>
+                                                ) : (
+                                                  <>
+                                                    <div className="bg-muted px-2 py-1 rounded font-mono text-xs font-bold w-16 text-center">
+                                                      {pi.quantity} unds
+                                                    </div>
+                                                    <Button size="icon" variant="ghost" className="h-7 w-7 opacity-50 hover:opacity-100" onClick={() => { setEditingItemId(pi.id); setEditQuantity(pi.quantity); }}>
+                                                      <Edit2 className="h-3.5 w-3.5" />
+                                                    </Button>
+                                                  </>
+                                                )}
                                               </div>
                                             </div>
                                           );
@@ -328,6 +406,7 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                   </TableBody>
                 </Table>
               </ScrollArea>
+             </div>
             </TabsContent>
           </Tabs>
         )}
