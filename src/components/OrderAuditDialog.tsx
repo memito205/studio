@@ -8,7 +8,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
-import { Loader2, Package, Box, ChevronDown, ChevronRight, LayoutTemplate, Search, Edit2, Check, X } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Loader2, Package, Box, ChevronDown, ChevronRight, LayoutTemplate, Search, Edit2, Check, X, Filter } from 'lucide-react';
 import type { WholesaleOrder, PreprintedLabel, PackedItem } from '@/types';
 import { getLabelsForOrder, getPackedItemsForOrder, updatePackedItem } from '@/app/actions';
 
@@ -29,6 +30,7 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
   const [scannerInput, setScannerInput] = useState('');
   const [scannedBoxIds, setScannedBoxIds] = useState<Set<string>>(new Set());
   const [extraScannedBoxes, setExtraScannedBoxes] = useState<string[]>([]);
+  const [auditReferenceFilter, setAuditReferenceFilter] = useState<string>('all');
   
   // States for inline editing
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
@@ -44,6 +46,7 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
       setExpandedRowKeys(new Set());
       setScannedBoxIds(new Set());
       setExtraScannedBoxes([]);
+      setAuditReferenceFilter('all');
     }
   }, [isOpen, order]);
 
@@ -73,22 +76,55 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
     });
   };
 
+  // Extract unique references correctly from packed items for the filter
+  const uniqueReferences = useMemo(() => {
+    const refs = new Set<string>();
+    packedItems.forEach(pi => {
+        let ref = '';
+        if (pi.item && pi.item.referencia) ref = pi.item.referencia;
+        else if (pi.itemKey) ref = pi.itemKey.split('-')[0] || '';
+        if (ref) refs.add(ref);
+    });
+    return Array.from(refs).sort();
+  }, [packedItems]);
+
+  const targetLabelsForAudit = useMemo(() => {
+    if (auditReferenceFilter === 'all') return labels;
+    
+    return labels.filter(label => {
+        const itemsInBox = packedItems.filter(p => p.packingUnitId === label.unitId?.toString() || p.packingUnitId === label.id);
+        return itemsInBox.some(pi => {
+            let ref = '';
+            if (pi.item && pi.item.referencia) ref = pi.item.referencia;
+            else if (pi.itemKey) ref = pi.itemKey.split('-')[0] || '';
+            return ref === auditReferenceFilter;
+        });
+    });
+  }, [labels, packedItems, auditReferenceFilter]);
+
   const handleScannerKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
         e.preventDefault();
         const term = scannerInput.trim();
         if (!term) return;
         
-        const found = labels.find(l => l.id.toLowerCase() === term.toLowerCase() || (l.unitId && l.unitId.toString() === term));
-        if (found) {
-            setScannedBoxIds(prev => {
-                const next = new Set(prev);
-                next.add(found.id);
-                return next;
-            });
+        const foundGlobally = labels.find(l => l.id.toLowerCase() === term.toLowerCase() || (l.unitId && l.unitId.toString() === term));
+        if (foundGlobally) {
+            const isTarget = targetLabelsForAudit.some(l => l.id === foundGlobally.id);
+            if (isTarget) {
+                setScannedBoxIds(prev => {
+                    const next = new Set(prev);
+                    next.add(foundGlobally.id);
+                    return next;
+                });
+            } else {
+                const msg = `${term} (No tiene ref. seleccionada)`;
+                if (!extraScannedBoxes.includes(msg)) setExtraScannedBoxes(prev => [...prev, msg]);
+            }
         } else {
-            if (!extraScannedBoxes.includes(term)) {
-                setExtraScannedBoxes(prev => [...prev, term]);
+            const msg = `${term} (No pertenece al pedido)`;
+            if (!extraScannedBoxes.includes(msg)) {
+                setExtraScannedBoxes(prev => [...prev, msg]);
             }
         }
         setScannerInput('');
@@ -442,13 +478,32 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
             {/* PESTAÑA: ESCÁNER DE VALIDACIÓN */}
             <TabsContent value="escaner" className="flex-1 mt-4 border rounded-md data-[state=inactive]:hidden bg-muted/10">
               <div className="h-full flex flex-col items-center">
-                <div className="w-full max-w-xl mt-8 mb-6 text-center space-y-2 px-6">
-                    <h3 className="text-xl font-semibold">Validación de Cajas (Auditoría Física)</h3>
-                    <p className="text-sm text-muted-foreground">Utilice un lector de código de barras para escanear una caja o etiqueta de este pedido y verificar su contenido específico para encontrar sobrantes o faltantes.</p>
+                <div className="w-full max-w-xl mt-8 mb-6 text-center space-y-4 px-6 flex flex-col items-center">
+                    <h3 className="text-xl font-semibold">Validación de Cajas Físicas</h3>
+                    <p className="text-sm text-muted-foreground w-full">Seleccione una referencia para auditar únicamente las cajas que la contienen, luego escanee físicamente esas cajas.</p>
+                    
+                    <div className="flex items-center gap-3 w-full max-w-sm">
+                        <Filter className="h-5 w-5 text-muted-foreground" />
+                        <Select value={auditReferenceFilter} onValueChange={(val) => {
+                            setAuditReferenceFilter(val);
+                            setScannedBoxIds(new Set());
+                            setExtraScannedBoxes([]);
+                        }}>
+                            <SelectTrigger className="w-full font-medium">
+                                <SelectValue placeholder="Filtrar por Referencia..." />
+                            </SelectTrigger>
+                            <SelectContent className="max-h-64">
+                                <SelectItem value="all" className="font-bold">Todas las Referencias</SelectItem>
+                                {uniqueReferences.map(ref => (
+                                    <SelectItem key={ref} value={ref}>Ref. {ref}</SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </div>
                 </div>
-                <div className="w-full max-w-sm px-6 mb-8">
+                <div className="w-full max-w-sm px-6 mb-8 mt-2">
                     <Input 
-                        placeholder="Escanee el consecutivo o la etiqueta completa..." 
+                        placeholder="Escanee la etiqueta de la caja aquí..." 
                         className="text-center text-lg h-12 shadow-sm border-primary/30 focus-visible:ring-primary"
                         value={scannerInput}
                         onChange={(e) => setScannerInput(e.target.value)}
@@ -462,21 +517,21 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                     <div className="flex-1 flex flex-col border rounded-md overflow-hidden bg-background">
                         <div className="bg-orange-100/50 p-3 border-b">
                             <h4 className="font-semibold text-orange-800 flex justify-between items-center">
-                                Faltantes / Por Leer
-                                <Badge variant="outline" className="bg-background">{labels.filter(l => !scannedBoxIds.has(l.id)).length}</Badge>
+                                Cajas Faltantes
+                                <Badge variant="outline" className="bg-background">{targetLabelsForAudit.filter(l => !scannedBoxIds.has(l.id)).length}</Badge>
                             </h4>
                         </div>
                         <ScrollArea className="flex-1 p-0">
                             <Table>
                                 <TableBody>
-                                    {labels.filter(l => !scannedBoxIds.has(l.id)).map(label => (
+                                    {targetLabelsForAudit.filter(l => !scannedBoxIds.has(l.id)).map(label => (
                                         <TableRow key={`faltante-${label.id}`}>
                                             <TableCell className="font-medium">{label.id}</TableCell>
                                             <TableCell className="text-right">Caja {label.unitId}</TableCell>
                                         </TableRow>
                                     ))}
-                                    {labels.filter(l => !scannedBoxIds.has(l.id)).length === 0 && (
-                                        <TableRow><TableCell colSpan={2} className="text-center text-muted-foreground py-8">No hay cajas faltantes.</TableCell></TableRow>
+                                    {targetLabelsForAudit.filter(l => !scannedBoxIds.has(l.id)).length === 0 && (
+                                        <TableRow><TableCell colSpan={2} className="text-center text-muted-foreground py-8">Todas las cajas físicas encontradas.</TableCell></TableRow>
                                     )}
                                 </TableBody>
                             </Table>
@@ -488,14 +543,14 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                         {extraScannedBoxes.length > 0 && (
                             <div className="flex-[0.5] flex flex-col border border-red-200 rounded-md overflow-hidden bg-background">
                                 <div className="bg-red-50 p-3 border-b border-red-100 flex justify-between items-center">
-                                    <h4 className="font-semibold text-red-700">Sobrantes (No pertenecen)</h4>
+                                    <h4 className="font-semibold text-red-700">Sobrantes</h4>
                                     <Button size="sm" variant="ghost" className="h-6 px-2 text-xs text-red-700 hover:text-red-900 hover:bg-red-100" onClick={() => setExtraScannedBoxes([])}>Limpiar</Button>
                                 </div>
                                 <ScrollArea className="flex-1 p-2 space-y-2">
                                     {extraScannedBoxes.map(term => (
-                                        <div key={term} className="bg-red-50 text-red-700 font-mono p-2 text-sm rounded border border-red-100 flex justify-between">
-                                            <span>{term}</span>
-                                            <X className="h-4 w-4 cursor-pointer hover:scale-110 transition-transform" onClick={() => setExtraScannedBoxes(prev => prev.filter(t => t !== term))} />
+                                        <div key={term} className="bg-red-50 text-red-700 font-mono p-2 text-sm rounded border border-red-100 flex justify-between items-start gap-2">
+                                            <span className="break-all">{term}</span>
+                                            <X className="h-4 w-4 shrink-0 cursor-pointer hover:scale-110 transition-transform" onClick={() => setExtraScannedBoxes(prev => prev.filter(t => t !== term))} />
                                         </div>
                                     ))}
                                 </ScrollArea>
@@ -515,7 +570,7 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                             <ScrollArea className="flex-1 p-0">
                                 <Table>
                                     <TableBody>
-                                        {labels.filter(l => scannedBoxIds.has(l.id)).map(label => (
+                                        {targetLabelsForAudit.filter(l => scannedBoxIds.has(l.id)).map(label => (
                                             <TableRow key={`verificada-${label.id}`} className="bg-green-50/30">
                                                 <TableCell className="font-medium text-green-800 flex items-center gap-2">
                                                     <Check className="h-4 w-4 text-green-600" />
