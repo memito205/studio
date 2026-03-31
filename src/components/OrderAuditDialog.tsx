@@ -83,7 +83,7 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
         let ref = '';
         if (pi.item && pi.item.referencia) ref = pi.item.referencia;
         else if (pi.itemKey) ref = pi.itemKey.split('-')[0] || '';
-        if (ref) refs.add(ref);
+        if (ref) refs.add(ref.trim());
     });
     return Array.from(refs).sort();
   }, [packedItems]);
@@ -97,7 +97,7 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
             let ref = '';
             if (pi.item && pi.item.referencia) ref = pi.item.referencia;
             else if (pi.itemKey) ref = pi.itemKey.split('-')[0] || '';
-            return ref === auditReferenceFilter;
+            return ref.trim() === auditReferenceFilter;
         });
     });
   }, [labels, packedItems, auditReferenceFilter]);
