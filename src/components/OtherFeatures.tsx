@@ -13,13 +13,14 @@ import { useRouter } from 'next/navigation';
 import { FletesVtex } from './FletesVtex';
 import { PropuestaTransportadora } from './PropuestaTransportadora';
 import { TulasDistribucion } from './TulasDistribucion';
+import { BagCounting } from './BagCounting';
 
 
 interface OtherFeaturesProps {
   onReturnToSuite: () => void;
 }
 
-type OtherFeaturesView = 'main' | 'financial_calculator' | 'credit_simulator' | 'returns_module' | 'fletes_vtex' | 'propuesta_transportadora' | 'tulas_distribucion';
+type OtherFeaturesView = 'main' | 'financial_calculator' | 'credit_simulator' | 'returns_module' | 'fletes_vtex' | 'propuesta_transportadora' | 'tulas_distribucion' | 'bag_counting';
 
 export const OtherFeatures: React.FC<OtherFeaturesProps> = ({ onReturnToSuite }) => {
   const [view, setView] = useState<OtherFeaturesView>('main');
@@ -43,6 +44,10 @@ export const OtherFeatures: React.FC<OtherFeaturesProps> = ({ onReturnToSuite })
 
   if (view === 'tulas_distribucion') {
     return <TulasDistribucion onReturn={() => setView('main')} />;
+  }
+
+  if (view === 'bag_counting') {
+    return <BagCounting onReturn={() => setView('main')} />;
   }
 
   // The returns module is now a dedicated page, so we navigate to it.
@@ -120,6 +125,13 @@ export const OtherFeatures: React.FC<OtherFeaturesProps> = ({ onReturnToSuite })
             description="Analice el movimiento de tulas para optimizar el stock y la distribución."
             actionText="Acceder"
             onAction={() => setView('tulas_distribucion')}
+          />
+          <SubModuleCard
+            iconName="PackageCheck"
+            title="Conteo de Bolsas"
+            description="Inicie sesiones de validación para contar bolsas por lote de forma rápida."
+            actionText="Acceder"
+            onAction={() => setView('bag_counting')}
           />
         </div>
       </div>

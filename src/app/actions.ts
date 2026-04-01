@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import type { ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications } from "@/types";
+import type { ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, BagValidationSession } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -2883,5 +2883,89 @@ export async function loadHolidays(): Promise<{success: boolean; data?: Date[]; 
         return { success: true, data: [] };
     } catch (e: any) {
          return { success: false, error: e.message };
+    }
+}
+
+// BAG COUNTING ACTIONS
+export async function createBagValidationSession(name: string, totalBags: number, userId: string, userName: string): Promise<{ success: boolean; data?: BagValidationSession; error?: string }> {
+    try {
+        const id = `bag-count-${Date.now()}`;
+        const newSession: BagValidationSession = {
+            id,
+            name,
+            totalBags,
+            validatedBags: [],
+            createdAt: new Date(),
+            status: 'active',
+            createdBy: userId,
+            createdByName: userName
+        };
+
+        await setDoc(doc(firestore, "bagValidationSessions", id), convertDatesToTimestamps(newSession));
+        return { success: true, data: newSession };
+    } catch (error: any) {
+        console.error("Error creating bag validation session:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function getBagValidationSessions(): Promise<{ success: boolean; data?: BagValidationSession[]; error?: string }> {
+    try {
+        const q = query(collection(firestore, "bagValidationSessions"), orderBy("createdAt", "desc"));
+        const querySnapshot = await getDocs(q);
+        const sessions = querySnapshot.docs.map(doc => convertTimestampsToDates(doc.data()) as BagValidationSession);
+        return { success: true, data: sessions };
+    } catch (error: any) {
+        console.error("Error getting bag validation sessions:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function validateBagInSession(sessionId: string, bagNumber: number): Promise<{ success: boolean; error?: string; alreadyValidated?: boolean }> {
+    try {
+        const sessionRef = doc(firestore, "bagValidationSessions", sessionId);
+        const result = await runTransaction(firestore, async (transaction) => {
+            const sessionDoc = await transaction.get(sessionRef);
+            if (!sessionDoc.exists()) throw new Error("La sesión no existe");
+
+            const data = sessionDoc.data() as BagValidationSession;
+            const validatedBags = data.validatedBags || [];
+
+            if (validatedBags.includes(bagNumber)) {
+                return { success: true, alreadyValidated: true };
+            }
+
+            if (bagNumber < 1 || bagNumber > data.totalBags) {
+                throw new Error(`Número de bolsa fuera de rango (1-${data.totalBags})`);
+            }
+
+            const updatedBags = [...validatedBags, bagNumber].sort((a, b) => a - b);
+            transaction.update(sessionRef, { validatedBags: updatedBags });
+            return { success: true };
+        });
+        return result;
+    } catch (error: any) {
+        console.error("Error validating bag:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function deleteBagValidationSession(sessionId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        await deleteDoc(doc(firestore, "bagValidationSessions", sessionId));
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error deleting bag validation session:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function updateBagValidationSessionStatus(sessionId: string, status: 'active' | 'completed'): Promise<{ success: boolean; error?: string }> {
+    try {
+        await updateDoc(doc(firestore, "bagValidationSessions", sessionId), { status });
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error updating bag validation session status:", error);
+        return { success: false, error: error.message };
     }
 }
