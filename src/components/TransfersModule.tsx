@@ -1572,6 +1572,13 @@ const OperatorView: React.FC<{
 }> = ({ allTransfers, collectionLogs, isLoading, onRefresh }) => {
     const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', status: 'all' });
     const { toast } = useToast();
+    
+    // States for Label Printing and History
+    const [isLabelDialogOpen, setIsLabelDialogOpen] = useState(false);
+    const [transferForLabel, setTransferForLabel] = useState<TransferEntry | null>(null);
+    const [isPrinting, setIsPrinting] = useState(false);
+    const [isLogOpen, setIsLogOpen] = useState(false);
+    const [selectedTransferForLog, setSelectedTransferForLog] = useState<TransferEntry | null>(null);
 
     const transferIdToPlacaMap = useMemo(() => {
         const map = new Map<string, string>();
@@ -1584,14 +1591,46 @@ const OperatorView: React.FC<{
         return map;
     }, [collectionLogs]);
 
-    const handleDeleteTransfer = async (transferId: string) => {
-        const result = await deleteTransfer(transferId);
-        if (result.success) {
-          toast({ title: 'Éxito', description: 'Transferencia eliminada.' });
-          onRefresh();
-        } else {
-          toast({ variant: 'destructive', title: 'Error', description: result.error });
+    const handleViewLog = (transfer: TransferEntry) => {
+        setSelectedTransferForLog(transfer);
+        setIsLogOpen(true);
+    };
+
+    const handleConfirmPrintAndReceive = useCallback(async (transfer: TransferEntry) => {
+        if (!transfer) return;
+        setIsPrinting(true);
+        try {
+            const result = await updateTransferStatus(transfer.id, 'Recibido en Bodega');
+            if (result.success) {
+                toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
+                onRefresh();
+                
+                const input = document.getElementById(`transfer-label-to-print-${transfer.id}`);
+                if (!input) {
+                    throw new Error('Elemento del rótulo no encontrado.');
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, 100));
+                const canvas = await html2canvas(input, { scale: 3, useCORS: true, backgroundColor: '#ffffff' });
+                const imgData = canvas.toDataURL('image/png');
+                const pdf = new jsPDF({ orientation: 'landscape', unit: 'cm', format: [10, 5] });
+                pdf.addImage(imgData, 'PNG', 0, 0, 10, 5);
+                pdf.autoPrint();
+                window.open(pdf.output('bloburl'), '_blank');
+            } else {
+                throw new Error(result.error);
+            }
+        } catch(error: any) {
+             toast({ variant: 'destructive', title: 'Error', description: error.message });
+        } finally {
+            setIsPrinting(false);
+            setIsLabelDialogOpen(false);
         }
+    }, [onRefresh, toast]);
+
+    const handlePrintLabelClick = (transfer: TransferEntry) => {
+        setTransferForLabel(transfer);
+        setIsLabelDialogOpen(true);
     };
 
     const filteredTransfers = useMemo(() => {
@@ -1637,11 +1676,12 @@ const OperatorView: React.FC<{
                         <TableHead>Placa Recolección</TableHead>
                         <TableHead>Fecha Recibido</TableHead>
                         <TableHead>Fecha Enviado</TableHead>
+                        <TableHead className="text-right">Acciones</TableHead>
                     </TableRow>
                 </TableHeader>
                 <TableBody>
                     {isLoading ? (
-                        <TableRow><TableCell colSpan={9} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
+                        <TableRow><TableCell colSpan={10} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
                     ) : filteredTransfers.length > 0 ? (
                         filteredTransfers.map(t => {
                             const placa = transferIdToPlacaMap.get(t.id) || 'N/A';
@@ -1656,15 +1696,44 @@ const OperatorView: React.FC<{
                                 <TableCell>{placa}</TableCell>
                                 <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
                                 <TableCell>{t.enviadoAt ? format(t.enviadoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
+                                <TableCell className="text-right">
+                                    <DropdownMenu>
+                                        <DropdownMenuTrigger asChild>
+                                            <Button variant="ghost" size="icon">
+                                                <MoreHorizontal className="h-4 w-4" />
+                                            </Button>
+                                        </DropdownMenuTrigger>
+                                        <DropdownMenuContent align="end">
+                                            <DropdownMenuItem onSelect={() => handleViewLog(t)}>
+                                                <History className="mr-2 h-4 w-4" /> Ver Historial
+                                            </DropdownMenuItem>
+                                            <DropdownMenuItem onSelect={() => handlePrintLabelClick(t)} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
+                                                <Printer className="mr-2 h-4 w-4" /> Imprimir Rótulo
+                                            </DropdownMenuItem>
+                                        </DropdownMenuContent>
+                                    </DropdownMenu>
+                                </TableCell>
                             </TableRow>
                         )})
                     ) : (
-                        <TableRow><TableCell colSpan={9} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
+                        <TableRow><TableCell colSpan={10} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
                     )}
                 </TableBody>
-            </Table>
+              </Table>
             </div>
           </CardContent>
+          <TransferLabelDialog
+            isOpen={isLabelDialogOpen}
+            onOpenChange={setIsLabelDialogOpen}
+            transfer={transferForLabel}
+            onConfirm={handleConfirmPrintAndReceive}
+            isSaving={isPrinting}
+          />
+          <TransferLogDialog
+            isOpen={isLogOpen}
+            onOpenChange={setIsLogOpen}
+            transfer={selectedTransferForLog}
+          />
         </Card>
     );
 };
