@@ -17,7 +17,11 @@ import {
   Package, 
   AlertTriangle,
   History,
-  XCircle
+  XCircle,
+  Printer,
+  Download,
+  CheckCircle,
+  FileText
 } from 'lucide-react';
 import { 
   createBagValidationSession, 
@@ -31,6 +35,9 @@ import type { BagValidationSession } from '@/types';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from './ui/scroll-area';
+import * as XLSX from 'xlsx';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 interface BagCountingProps {
   onReturn: () => void;
@@ -154,10 +161,89 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
       if (result.success) {
           setActiveSession({ ...activeSession, status: 'completed' });
           setSessions(sessions.map(s => s.id === activeSession.id ? { ...s, status: 'completed' } : s));
-          toast({ title: "Sesión Finalizada" });
+          toast({ title: "Sesión Finalizada", description: "Generando reporte de cierre..." });
+          setTimeout(() => {
+              handleDownloadPDF();
+          }, 1000);
       }
       setIsProcessing(false);
   }
+
+  const handleDownloadExcel = () => {
+      if (!activeSession) return;
+      
+      const validatedSet = new Set(activeSession.validatedBags || []);
+      const rows = Array.from({ length: activeSession.totalBags }, (_, i) => i + 1).map(num => ({
+          'Número de Bolsa': num,
+          'Estado': validatedSet.has(num) ? 'VALIDADA' : 'PENDIENTE',
+          'Lote': activeSession.name,
+          'ID Sesión': activeSession.id
+      }));
+
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(wb, ws, "Validación");
+      XLSX.writeFile(wb, `Reporte_Bolsas_${activeSession.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.xlsx`);
+      toast({ title: "Excel Generado" });
+  };
+
+  const handleDownloadPDF = () => {
+      if (!activeSession) return;
+      
+      const doc = new jsPDF();
+      const validatedSet = new Set(activeSession.validatedBags || []);
+      const progress = Math.round((validatedSet.size / activeSession.totalBags) * 100);
+      
+      // Header
+      doc.setFontSize(20);
+      doc.setTextColor(40, 40, 40);
+      doc.text("REPORTE DE VALIDACIÓN DE BOLSAS", 105, 20, { align: 'center' });
+      
+      doc.setFontSize(12);
+      doc.setTextColor(100, 100, 100);
+      doc.text(`Lote: ${activeSession.name}`, 20, 35);
+      doc.text(`ID Sesión: ${activeSession.id}`, 20, 42);
+      doc.text(`Fecha: ${activeSession.createdAt.toLocaleDateString()}`, 20, 49);
+      doc.text(`Estado: ${activeSession.status === 'active' ? 'EN PROCESO' : 'COMPLETADO'}`, 20, 56);
+
+      // Summary Table
+      autoTable(doc, {
+          startY: 65,
+          head: [['Concepto', 'Cantidad', 'Porcentaje']],
+          body: [
+              ['Total Bolsas', activeSession.totalBags.toString(), '100%'],
+              ['Validadas', validatedSet.size.toString(), `${progress}%`],
+              ['Pendientes', (activeSession.totalBags - validatedSet.size).toString(), `${100 - progress}%`]
+          ],
+          theme: 'striped',
+          headStyles: { fillColor: [79, 70, 229] } // Primary color
+      });
+
+      // Detailed List
+      const rows = Array.from({ length: activeSession.totalBags }, (_, i) => i + 1).map(num => [
+          num.toString(),
+          validatedSet.has(num) ? 'VALIDADA' : 'PENDIENTE'
+      ]);
+
+      const finalY = (doc as any).lastAutoTable.finalY + 10;
+      doc.text("Detalle de Validación:", 20, finalY);
+
+      autoTable(doc, {
+          startY: finalY + 5,
+          head: [['Número de Bolsa', 'Estado']],
+          body: rows,
+          theme: 'grid',
+          headStyles: { fillColor: [100, 100, 100] },
+          margin: { top: 10 }
+      });
+
+      doc.save(`Reporte_Bolsas_${activeSession.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`);
+      toast({ title: "PDF Generado", description: "El reporte se ha descargado correctamente." });
+  };
+
+  const handlePrint = () => {
+      handleDownloadPDF();
+  };
 
   // View: Scanner
   if (activeSession) {
@@ -168,22 +254,30 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
       <div className="space-y-6">
         <div className="flex justify-between items-center bg-card p-6 rounded-xl border shadow-sm">
             <div>
-                <h2 className="text-3xl font-black text-primary">{activeSession.name}</h2>
+                <h2 className="text-3xl font-black text-primary print:text-black">{activeSession.name}</h2>
                 <div className="flex gap-2 items-center mt-2">
-                    <Badge variant={activeSession.status === 'active' ? 'default' : 'secondary'} className="px-3 shrink-0">
+                    <Badge variant={activeSession.status === 'active' ? 'default' : 'secondary'} className="px-3 shrink-0 print:border print:text-black">
                         {activeSession.status === 'active' ? '🟢 EN PROCESO' : '🏁 COMPLETADO'}
                     </Badge>
-                    <p className="text-muted-foreground text-sm font-medium">ID: {activeSession.id.slice(-6)} · Creado el {activeSession.createdAt.toLocaleDateString()}</p>
+                    <p className="text-muted-foreground text-sm font-medium print:text-black">ID: {activeSession.id.slice(-6)} · Creado el {activeSession.createdAt.toLocaleDateString()}</p>
                 </div>
             </div>
-            <Button variant="outline" onClick={() => setActiveSession(null)}>
-                <ArrowLeft className="mr-2 h-4 w-4" /> Volver al Listado
-            </Button>
+            <div className="flex gap-2 print:hidden">
+                <Button variant="outline" onClick={handleDownloadExcel} title="Descargar Excel">
+                    <Download className="mr-2 h-4 w-4" /> Excel
+                </Button>
+                <Button variant="outline" onClick={handlePrint} title="Generar PDF">
+                    <Printer className="mr-2 h-4 w-4" /> PDF / Imprimir
+                </Button>
+                <Button variant="outline" onClick={() => setActiveSession(null)}>
+                    <ArrowLeft className="mr-2 h-4 w-4" /> Volver
+                </Button>
+            </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
             {/* LEFT: Scanner & Summary */}
-            <div className="lg:col-span-1 space-y-6">
+            <div className="lg:col-span-1 space-y-6 print:hidden">
                 <Card className="border-4 border-primary/20 shadow-xl overflow-hidden">
                     <CardHeader className="bg-primary/5 pb-4">
                         <CardTitle className="text-lg">Escáner de Bolsa</CardTitle>
@@ -270,31 +364,31 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
             </div>
 
             {/* RIGHT: Visual Grid */}
-            <div className="lg:col-span-3">
-                <Card className="h-full shadow-lg border-2">
-                    <CardHeader className="flex flex-row items-center justify-between border-b bg-muted/10">
+            <div className="lg:col-span-3 print:col-span-1 print:w-full">
+                <Card className="h-full shadow-lg border-2 print:border-none print:shadow-none">
+                    <CardHeader className="flex flex-row items-center justify-between border-b bg-muted/10 print:bg-white">
                         <div>
                             <CardTitle className="text-xl font-black">Grilla de Control</CardTitle>
                             <CardDescription className="font-medium text-xs uppercase tracking-tight">Seguimiento visual de bolsas</CardDescription>
                         </div>
-                        <div className="flex gap-4 text-[10px] font-black uppercase tracking-widest">
-                            <div className="flex items-center gap-2"><div className="w-4 h-4 bg-green-500 rounded shadow-md"></div> Validada</div>
+                        <div className="flex gap-4 text-[10px] font-black uppercase tracking-widest print:text-xs">
+                            <div className="flex items-center gap-2"><div className="w-4 h-4 bg-green-500 rounded shadow-md print:border"></div> Validada</div>
                             <div className="flex items-center gap-2"><div className="w-4 h-4 bg-slate-200 rounded border"></div> Pendiente</div>
                         </div>
                     </CardHeader>
                     <CardContent className="p-6">
-                        <ScrollArea className="h-[calc(85vh-240px)]">
-                            <div className="grid grid-cols-6 sm:grid-cols-10 md:grid-cols-12 lg:grid-cols-15 xl:grid-cols-20 gap-2 pr-6">
+                        <ScrollArea className="h-[calc(85vh-240px)] print:h-auto">
+                            <div className="grid grid-cols-6 sm:grid-cols-10 md:grid-cols-12 lg:grid-cols-15 xl:grid-cols-20 gap-2 pr-6 print:grid-cols-10 print:gap-1">
                                 {Array.from({ length: activeSession.totalBags }, (_, i) => i + 1).map(num => {
                                     const isValidated = validatedSet.has(num);
                                     return (
                                         <div 
                                             key={num}
                                             className={cn(
-                                                "aspect-square rounded-lg flex items-center justify-center text-xs font-black transition-all duration-300 border-2",
+                                                "aspect-square rounded-lg flex items-center justify-center text-xs font-black transition-all duration-300 border-2 print:border",
                                                 isValidated 
-                                                    ? "bg-green-500 border-green-600 text-white shadow-md scale-105" 
-                                                    : "bg-slate-100 border-slate-200 text-slate-400 hover:bg-slate-200 hover:border-slate-300 cursor-default"
+                                                    ? "bg-green-500 border-green-600 text-white shadow-md scale-105 print:bg-green-100 print:text-green-800 print:border-green-300 print:scale-100" 
+                                                    : "bg-slate-100 border-slate-200 text-slate-400 hover:bg-slate-200 hover:border-slate-300 cursor-default print:bg-white print:text-slate-300"
                                             )}
                                         >
                                             {num}
@@ -303,6 +397,25 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
                                 })}
                             </div>
                         </ScrollArea>
+                        
+                        {/* Print Only Summary */}
+                        <div className="hidden print:block mt-12 border-t pt-8">
+                            <div className="grid grid-cols-2 gap-12">
+                                <div className="space-y-4">
+                                    <h3 className="font-black text-lg underline decoration-primary decoration-4 underline-offset-4">RESUMEN TÉCNICO</h3>
+                                    <div className="grid grid-cols-2 gap-2 text-sm">
+                                        <span className="font-bold">Total Bolsas:</span> <span>{activeSession.totalBags}</span>
+                                        <span className="font-bold">Validadas:</span> <span className="text-green-600">{validatedSet.size}</span>
+                                        <span className="font-bold">Pendientes:</span> <span className="text-red-600">{activeSession.totalBags - validatedSet.size}</span>
+                                        <span className="font-bold">Cumplimiento:</span> <span>{progress}%</span>
+                                    </div>
+                                </div>
+                                <div className="flex flex-col justify-end gap-12 italic text-xs text-muted-foreground">
+                                    <div className="border-t border-black pt-2 text-center w-full">Firma Responsable Validación</div>
+                                    <div className="border-t border-black pt-2 text-center w-full">Firma Coordinador Logística</div>
+                                </div>
+                            </div>
+                        </div>
                     </CardContent>
                 </Card>
             </div>
