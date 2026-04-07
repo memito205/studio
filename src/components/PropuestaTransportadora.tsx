@@ -57,6 +57,32 @@ const fmt = (n: number) => `$${n.toLocaleString('es-CO', { minimumFractionDigits
 const fmtDate = (d?: Date) => d ? new Date(d).toLocaleDateString('es-CO') : '—';
 
 // ---------------------------------------------------------------------------
+// Helper: generate and download an Excel template
+// ---------------------------------------------------------------------------
+function downloadTemplate(filename: string, rows: Record<string, any>[]) {
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Plantilla');
+    XLSX.writeFile(wb, filename);
+}
+
+const MUNICIPIOS_TEMPLATE = [
+    { Codigo: '05001', Municipio: 'MEDELLIN', Departamento: 'ANTIOQUIA' },
+    { Codigo: '11001', Municipio: 'BOGOTA D.C.', Departamento: 'BOGOTA D.C.' },
+    { Codigo: '76001', Municipio: 'CALI', Departamento: 'VALLE DEL CAUCA' },
+    { Codigo: '08001', Municipio: 'BARRANQUILLA', Departamento: 'ATLANTICO' },
+    { Codigo: '13001', Municipio: 'CARTAGENA', Departamento: 'BOLIVAR' },
+];
+
+const TARIFAS_TEMPLATE = [
+    { CodigoMunicipio: '05001', Flete: 8500, IVA: 1615, MargenLogisticaInversa: 500, TipoTrayecto: 'Nacional' },
+    { CodigoMunicipio: '11001', Flete: 7000, IVA: 1330, MargenLogisticaInversa: 500, TipoTrayecto: 'Nacional' },
+    { CodigoMunicipio: '76001', Flete: 8000, IVA: 1520, MargenLogisticaInversa: 500, TipoTrayecto: 'Nacional' },
+    { CodigoMunicipio: '08001', Flete: 9000, IVA: 1710, MargenLogisticaInversa: 500, TipoTrayecto: 'Nacional' },
+    { CodigoMunicipio: '13001', Flete: 9500, IVA: 1805, MargenLogisticaInversa: 500, TipoTrayecto: 'Nacional' },
+];
+
+// ---------------------------------------------------------------------------
 // Helper: parse an Excel file for carrier rates
 // ---------------------------------------------------------------------------
 function parseRatesExcel(buffer: ArrayBuffer): CarrierRateRow[] {
@@ -158,12 +184,17 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
                 <CardContent>
                     <div className="flex flex-col items-center justify-center p-6 border-2 border-dashed rounded-lg">
                         <UploadCloud className="w-10 h-10 text-muted-foreground mb-2" />
-                        <Button asChild size="sm" disabled={isUploadingMunicipios}>
-                            <label htmlFor="mun-upload" className="cursor-pointer">
-                                {isUploadingMunicipios && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                                {isUploadingMunicipios ? 'Procesando...' : 'Seleccionar archivo'}
-                            </label>
-                        </Button>
+                        <div className="flex gap-2 mt-1">
+                            <Button asChild size="sm" disabled={isUploadingMunicipios}>
+                                <label htmlFor="mun-upload" className="cursor-pointer">
+                                    {isUploadingMunicipios && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                                    {isUploadingMunicipios ? 'Procesando...' : 'Seleccionar archivo'}
+                                </label>
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => downloadTemplate('plantilla_municipios.xlsx', MUNICIPIOS_TEMPLATE)}>
+                                Descargar Plantilla
+                            </Button>
+                        </div>
                         <input ref={munRef} id="mun-upload" type="file" className="hidden" accept=".xlsx,.xls" onChange={handleMunicipiosUpload} />
                     </div>
                 </CardContent>
@@ -187,12 +218,17 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
                     </div>
                     <div className="flex flex-col items-center justify-center p-6 border-2 border-dashed rounded-lg">
                         <UploadCloud className="w-10 h-10 text-muted-foreground mb-2" />
-                        <Button asChild size="sm" disabled={!selectedCarrier || isUploadingRates}>
-                            <label htmlFor="rates-upload" className={selectedCarrier ? 'cursor-pointer' : 'cursor-not-allowed'}>
-                                {isUploadingRates && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                                {isUploadingRates ? 'Guardando...' : !selectedCarrier ? 'Seleccione una transportadora primero' : 'Cargar tarifas'}
-                            </label>
-                        </Button>
+                        <div className="flex gap-2 mt-1">
+                            <Button asChild size="sm" disabled={!selectedCarrier || isUploadingRates}>
+                                <label htmlFor="rates-upload" className={selectedCarrier ? 'cursor-pointer' : 'cursor-not-allowed'}>
+                                    {isUploadingRates && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                                    {isUploadingRates ? 'Guardando...' : !selectedCarrier ? 'Seleccione una transportadora primero' : 'Cargar tarifas'}
+                                </label>
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => downloadTemplate('plantilla_tarifas.xlsx', TARIFAS_TEMPLATE)}>
+                                Descargar Plantilla
+                            </Button>
+                        </div>
                         <input ref={ratesRef} id="rates-upload" type="file" className="hidden" accept=".xlsx,.xls" onChange={handleRatesUpload} disabled={!selectedCarrier} />
                     </div>
                 </CardContent>
@@ -654,9 +690,14 @@ const TabAnalisis: React.FC<{ isAdmin: boolean; scoreConfig: CarrierScoreConfig 
                         <div className="flex flex-col items-center justify-center p-4 border-2 border-dashed rounded-lg">
                             <UploadCloud className="w-8 h-8 text-muted-foreground mb-2" />
                             {proposalFileName ? <p className="text-sm font-medium text-green-600">{proposalFileName} ({proposalRates.length} municipios)</p> : <p className="text-sm text-muted-foreground">Excel: CodigoMunicipio | Flete | IVA | MargenLogisticaInversa | TipoTrayecto</p>}
-                            <Button asChild className="mt-2" size="sm" variant="outline">
-                                <label htmlFor="proposal-file" className="cursor-pointer">Seleccionar archivo</label>
-                            </Button>
+                            <div className="flex gap-2 mt-2">
+                                <Button asChild size="sm" variant="outline">
+                                    <label htmlFor="proposal-file" className="cursor-pointer">Seleccionar archivo</label>
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => downloadTemplate('plantilla_propuesta.xlsx', TARIFAS_TEMPLATE)}>
+                                    Descargar Plantilla
+                                </Button>
+                            </div>
                             <input ref={fileRef} id="proposal-file" type="file" className="hidden" accept=".xlsx,.xls" onChange={handleProposalFileChange} />
                         </div>
                         <Button onClick={handleGenerate} disabled={isGenerating || !proposalCarrier || !proposalRates.length} className="w-full">
