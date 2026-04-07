@@ -2969,3 +2969,200 @@ export async function updateBagValidationSessionStatus(sessionId: string, status
         return { success: false, error: error.message };
     }
 }
+
+// ============================================================
+// PROPUESTA TRANSPORTADORA — Actions
+// ============================================================
+
+export interface CarrierRateRow {
+    codigoMunicipio: string;
+    tipoTrayecto: string;      // e.g. "Nacional" | "Regional" | "Local"
+    flete: number;
+    iva: number;
+    margenLogisticaInversa: number;
+    total: number;             // calculated: flete + iva + margenLogisticaInversa
+}
+
+export interface CarrierProposalRow {
+    codigoMunicipio: string;
+    municipio: string;
+    departamento: string;
+    tipoTrayecto: string;
+    actual: { flete: number; iva: number; margenLogisticaInversa: number; total: number };
+    propuesta: { flete: number; iva: number; margenLogisticaInversa: number; total: number };
+    diferencia: number;
+    diferenciaPct: number;
+}
+
+export interface CarrierProposal {
+    id?: string;
+    name: string;
+    carrier: string;
+    date: string;
+    createdAt?: Date;
+    createdBy?: string;
+    summary: {
+        totalMunicipios: number;
+        ahorroTotal: number;
+        incrementoTotal: number;
+        municipiosConAhorro: number;
+        municipiosConIncremento: number;
+    };
+    rows: CarrierProposalRow[];
+}
+
+export interface CarrierScoreConfig {
+    criteriaWeights: {
+        costo: number; calidad: number; novedades: number;
+        cobertura: number; tiempoEntrega: number; soporte: number;
+    };
+    scores: {
+        [carrier: string]: {
+            costo: number; calidad: number; novedades: number;
+            cobertura: number; tiempoEntrega: number; soporte: number;
+        };
+    };
+}
+
+/** Saves current carrier rates (with breakdown) to Firestore */
+export async function saveCarrierCurrentRates(
+    carrier: string,
+    rates: CarrierRateRow[]
+): Promise<{ success: boolean; error?: string; processedCount?: number }> {
+    if (!carrier || !rates?.length) {
+        return { success: false, error: 'Transportadora o tarifas no proporcionadas.' };
+    }
+    try {
+        // Calculate total for each row before saving
+        const ratesWithTotal = rates.map(r => ({
+            ...r,
+            total: (r.flete || 0) + (r.iva || 0) + (r.margenLogisticaInversa || 0),
+        }));
+        await setDoc(doc(firestore, 'carrierRates', carrier), {
+            rates: ratesWithTotal,
+            lastUpdated: Timestamp.now(),
+        });
+        return { success: true, processedCount: ratesWithTotal.length };
+    } catch (error: any) {
+        console.error('Error saving carrier rates:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+/** Reads the current rates for a specific carrier */
+export async function getCarrierCurrentRates(
+    carrier: string
+): Promise<{ success: boolean; data?: { rates: CarrierRateRow[]; lastUpdated?: Date }; error?: string }> {
+    try {
+        const snap = await getDoc(doc(firestore, 'carrierRates', carrier));
+        if (!snap.exists()) return { success: true, data: { rates: [] } };
+        const data = convertTimestampsToDates(snap.data());
+        return { success: true, data: { rates: data.rates || [], lastUpdated: data.lastUpdated } };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+/** Lists all carriers that have rates uploaded, with their last-updated date */
+export async function getAllCarrierRatesMetadata(): Promise<{
+    success: boolean;
+    data?: { carrier: string; lastUpdated?: Date; count: number }[];
+    error?: string;
+}> {
+    try {
+        const querySnapshot = await getDocs(collection(firestore, 'carrierRates'));
+        const metadata = querySnapshot.docs.map(d => {
+            const data = convertTimestampsToDates(d.data());
+            return {
+                carrier: d.id,
+                lastUpdated: data.lastUpdated,
+                count: (data.rates || []).length,
+            };
+        });
+        return { success: true, data: metadata };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+/** Saves a full carrier rate proposal comparison to Firestore */
+export async function saveCarrierProposal(
+    proposal: Omit<CarrierProposal, 'id'>,
+    userId: string
+): Promise<{ success: boolean; id?: string; error?: string }> {
+    try {
+        const docRef = await addDoc(collection(firestore, 'carrierProposals'), {
+            ...convertDatesToTimestamps(proposal),
+            createdAt: Timestamp.now(),
+            createdBy: userId,
+        });
+        return { success: true, id: docRef.id };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+/** Returns a list of all saved proposals (without the full rows array for performance) */
+export async function loadCarrierProposals(): Promise<{
+    success: boolean;
+    data?: (Omit<CarrierProposal, 'rows'> & { id: string })[];
+    error?: string;
+}> {
+    try {
+        const q = query(collection(firestore, 'carrierProposals'), orderBy('createdAt', 'desc'));
+        const snap = await getDocs(q);
+        const proposals = snap.docs.map(d => {
+            const data = convertTimestampsToDates(d.data());
+            const { rows, ...rest } = data as CarrierProposal;
+            return { id: d.id, ...rest };
+        });
+        return { success: true, data: proposals as any };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+/** Returns the full detail of a single proposal including its rows */
+export async function getCarrierProposalById(
+    id: string
+): Promise<{ success: boolean; data?: CarrierProposal; error?: string }> {
+    try {
+        const snap = await getDoc(doc(firestore, 'carrierProposals', id));
+        if (!snap.exists()) return { success: false, error: 'Propuesta no encontrada.' };
+        return { success: true, data: { id: snap.id, ...convertTimestampsToDates(snap.data()) } as CarrierProposal };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+/** Saves the weighting criteria and per-carrier scores */
+export async function saveCarrierScores(
+    config: CarrierScoreConfig,
+    userId: string
+): Promise<{ success: boolean; error?: string }> {
+    try {
+        await setDoc(doc(firestore, 'carrierScores', 'config'), {
+            ...config,
+            updatedAt: Timestamp.now(),
+            updatedBy: userId,
+        });
+        return { success: true };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+/** Reads the saved weighting configuration */
+export async function getCarrierScores(): Promise<{
+    success: boolean;
+    data?: CarrierScoreConfig | null;
+    error?: string;
+}> {
+    try {
+        const snap = await getDoc(doc(firestore, 'carrierScores', 'config'));
+        if (!snap.exists()) return { success: true, data: null };
+        return { success: true, data: snap.data() as CarrierScoreConfig };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
