@@ -75,11 +75,11 @@ const MUNICIPIOS_TEMPLATE = [
 ];
 
 const TARIFAS_TEMPLATE = [
-    { CodigoMunicipio: '05001', Flete: 8500, IVA: 1615, MargenLogisticaInversa: 500, TipoTrayecto: 'Nacional' },
-    { CodigoMunicipio: '11001', Flete: 7000, IVA: 1330, MargenLogisticaInversa: 500, TipoTrayecto: 'Nacional' },
-    { CodigoMunicipio: '76001', Flete: 8000, IVA: 1520, MargenLogisticaInversa: 500, TipoTrayecto: 'Nacional' },
-    { CodigoMunicipio: '08001', Flete: 9000, IVA: 1710, MargenLogisticaInversa: 500, TipoTrayecto: 'Nacional' },
-    { CodigoMunicipio: '13001', Flete: 9500, IVA: 1805, MargenLogisticaInversa: 500, TipoTrayecto: 'Nacional' },
+    { CodigoMunicipio: '05001', Flete: 8500, IVA: 1615, TipoTrayecto: 'Nacional' },
+    { CodigoMunicipio: '11001', Flete: 7000, IVA: 1330, TipoTrayecto: 'Nacional' },
+    { CodigoMunicipio: '76001', Flete: 8000, IVA: 1520, TipoTrayecto: 'Nacional' },
+    { CodigoMunicipio: '08001', Flete: 9000, IVA: 1710, TipoTrayecto: 'Nacional' },
+    { CodigoMunicipio: '13001', Flete: 9500, IVA: 1805, TipoTrayecto: 'Nacional' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -142,6 +142,7 @@ const ScoreBadge: React.FC<{ score: number | null }> = ({ score }) => {
 const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?: Date; count: number }[]; onRatesUploaded: () => void }> = ({ carriersMetadata, onRatesUploaded }) => {
     const { toast } = useToast();
     const [selectedCarrier, setSelectedCarrier] = useState('');
+    const [margenOverride, setMargenOverride] = useState<string>(''); // monetary value COP
     const [isUploadingMunicipios, setIsUploadingMunicipios] = useState(false);
     const [isUploadingRates, setIsUploadingRates] = useState(false);
     const munRef = useRef<HTMLInputElement>(null);
@@ -162,8 +163,17 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
         const file = e.target.files?.[0]; if (!file || !selectedCarrier) return;
         setIsUploadingRates(true);
         try {
-            const rates = parseRatesExcel(await file.arrayBuffer());
+            let rates = parseRatesExcel(await file.arrayBuffer());
             if (!rates.length) throw new Error('No se encontraron filas válidas en el archivo.');
+            // If admin set a global margen override, apply it to every row
+            const margenVal = parseFloat(margenOverride.replace(/[^0-9.]/g, ''));
+            if (!isNaN(margenVal) && margenVal >= 0) {
+                rates = rates.map(r => ({
+                    ...r,
+                    margenLogisticaInversa: margenVal,
+                    total: r.flete + r.iva + margenVal,
+                }));
+            }
             const result = await saveCarrierCurrentRates(selectedCarrier, rates);
             if (result.success) {
                 toast({ title: 'Tarifas guardadas', description: `${result.processedCount} municipios para ${selectedCarrier}.` });
@@ -205,16 +215,36 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
                 <CardHeader>
                     <CardTitle>Tarifas Actuales por Transportadora</CardTitle>
                     <CardDescription>
-                        Excel con columnas: <code>CodigoMunicipio | Flete | IVA | MargenLogisticaInversa | TipoTrayecto</code>
+                        Excel requerido: <code>CodigoMunicipio | Flete | IVA | TipoTrayecto</code>.<br />
+                        El <strong>Margen de Logística Inversa</strong> se define abajo en pesos (COP) y se aplica igual a todos los municipios.
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                    <div className="space-y-2">
-                        <Label>Transportadora</Label>
-                        <Select value={selectedCarrier} onValueChange={setSelectedCarrier}>
-                            <SelectTrigger><SelectValue placeholder="Seleccione..." /></SelectTrigger>
-                            <SelectContent>{CARRIERS.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-                        </Select>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                            <Label>Transportadora</Label>
+                            <Select value={selectedCarrier} onValueChange={setSelectedCarrier}>
+                                <SelectTrigger><SelectValue placeholder="Seleccione..." /></SelectTrigger>
+                                <SelectContent>{CARRIERS.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                            </Select>
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="margen-override">Margen Logística Inversa ($ COP por envío)</Label>
+                            <div className="relative">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm font-semibold">$</span>
+                                <Input
+                                    id="margen-override"
+                                    type="number"
+                                    min={0}
+                                    step={100}
+                                    placeholder="Ej: 500"
+                                    value={margenOverride}
+                                    onChange={e => setMargenOverride(e.target.value)}
+                                    className="pl-7"
+                                />
+                            </div>
+                            <p className="text-xs text-muted-foreground">Valor en pesos que Branchos agrega por envío para cubrir devoluciones. Se aplicará a todos los municipios del archivo.</p>
+                        </div>
                     </div>
                     <div className="flex flex-col items-center justify-center p-6 border-2 border-dashed rounded-lg">
                         <UploadCloud className="w-10 h-10 text-muted-foreground mb-2" />
