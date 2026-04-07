@@ -75,35 +75,40 @@ const MUNICIPIOS_TEMPLATE = [
 ];
 
 const TARIFAS_TEMPLATE = [
-    { CodigoMunicipio: '05001', Flete: 8500, IVA: 1615, TipoTrayecto: 'Nacional' },
-    { CodigoMunicipio: '11001', Flete: 7000, IVA: 1330, TipoTrayecto: 'Nacional' },
-    { CodigoMunicipio: '76001', Flete: 8000, IVA: 1520, TipoTrayecto: 'Nacional' },
-    { CodigoMunicipio: '08001', Flete: 9000, IVA: 1710, TipoTrayecto: 'Nacional' },
-    { CodigoMunicipio: '13001', Flete: 9500, IVA: 1805, TipoTrayecto: 'Nacional' },
+    { CodigoMunicipio: '05001', Flete: 8500, IVA: 1615, MargenLogisticaInversa: 500, TipoTrayecto: 'Nacional' },
+    { CodigoMunicipio: '11001', Flete: 7000, IVA: 1330, MargenLogisticaInversa: 500, TipoTrayecto: 'Nacional' },
+    { CodigoMunicipio: '76001', Flete: 8000, IVA: 1520, MargenLogisticaInversa: 500, TipoTrayecto: 'Nacional' },
+    { CodigoMunicipio: '08001', Flete: 9000, IVA: 1710, MargenLogisticaInversa: 500, TipoTrayecto: 'Nacional' },
+    { CodigoMunicipio: '13001', Flete: 9500, IVA: 1805, MargenLogisticaInversa: 700, TipoTrayecto: 'Regional' },
 ];
 
 // ---------------------------------------------------------------------------
 // Helper: parse an Excel file for carrier rates
 // ---------------------------------------------------------------------------
-function parseRatesExcel(buffer: ArrayBuffer): CarrierRateRow[] {
+type ParsedRateRow = CarrierRateRow & { _hasMargenInExcel: boolean };
+
+function parseRatesExcel(buffer: ArrayBuffer): ParsedRateRow[] {
     const wb = XLSX.read(buffer, { type: 'array' });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const rows: any[] = XLSX.utils.sheet_to_json(ws);
     return rows.map(r => {
         const key = (k: string) => {
             const found = Object.keys(r).find(rk => rk.toLowerCase().replace(/\s/g, '') === k.toLowerCase().replace(/\s/g, ''));
-            return found ? r[found] : 0;
+            return found ? r[found] : undefined;
         };
         const flete = Number(key('flete')) || 0;
         const iva = Number(key('iva')) || 0;
-        const margen = Number(key('margenlogisticainversa')) || Number(key('margen')) || 0;
+        const margenRaw = key('margenlogisticainversa') ?? key('margen');
+        const hasMargenInExcel = margenRaw !== undefined && margenRaw !== '' && !isNaN(Number(margenRaw));
+        const margen = hasMargenInExcel ? Number(margenRaw) : 0;
         return {
-            codigoMunicipio: String(key('codigomunicipio')).trim(),
-            tipoTrayecto: String(key('tipotrayecto') || key('trayecto') || 'Nacional').trim(),
+            codigoMunicipio: String(key('codigomunicipio') ?? '').trim(),
+            tipoTrayecto: String(key('tipotrayecto') ?? key('trayecto') ?? 'Nacional').trim(),
             flete,
             iva,
             margenLogisticaInversa: margen,
             total: flete + iva + margen,
+            _hasMargenInExcel: hasMargenInExcel,
         };
     }).filter(r => r.codigoMunicipio && r.codigoMunicipio !== '0');
 }
@@ -163,20 +168,28 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
         const file = e.target.files?.[0]; if (!file || !selectedCarrier) return;
         setIsUploadingRates(true);
         try {
-            let rates = parseRatesExcel(await file.arrayBuffer());
-            if (!rates.length) throw new Error('No se encontraron filas válidas en el archivo.');
-            // If admin set a global margen override, apply it to every row
-            const margenVal = parseFloat(margenOverride.replace(/[^0-9.]/g, ''));
-            if (!isNaN(margenVal) && margenVal >= 0) {
-                rates = rates.map(r => ({
-                    ...r,
-                    margenLogisticaInversa: margenVal,
-                    total: r.flete + r.iva + margenVal,
-                }));
-            }
+            const parsed = parseRatesExcel(await file.arrayBuffer());
+            if (!parsed.length) throw new Error('No se encontraron filas válidas en el archivo.');
+
+            // Margen logic: Excel value per row takes priority.
+            // If a row has no margen in Excel, fall back to the UI field value.
+            const uiMargenVal = parseFloat(margenOverride.replace(/[^0-9.]/g, ''));
+            const uiFallback = !isNaN(uiMargenVal) && uiMargenVal >= 0 ? uiMargenVal : 0;
+
+            const rates: CarrierRateRow[] = parsed.map(({ _hasMargenInExcel, ...r }) => {
+                const margen = _hasMargenInExcel ? r.margenLogisticaInversa : uiFallback;
+                return { ...r, margenLogisticaInversa: margen, total: r.flete + r.iva + margen };
+            });
+
+            const rowsWithExcel = parsed.filter(r => r._hasMargenInExcel).length;
+            const rowsWithFallback = parsed.length - rowsWithExcel;
+
             const result = await saveCarrierCurrentRates(selectedCarrier, rates);
             if (result.success) {
-                toast({ title: 'Tarifas guardadas', description: `${result.processedCount} municipios para ${selectedCarrier}.` });
+                const detail = rowsWithFallback > 0
+                    ? `${rowsWithExcel} con margen propio del Excel, ${rowsWithFallback} con margen global $${uiFallback.toLocaleString('es-CO')}.`
+                    : `${rates.length} municipios, margen tomado del Excel.`;
+                toast({ title: 'Tarifas guardadas', description: detail });
                 onRatesUploaded();
             } else throw new Error(result.error);
         } catch (err: any) { toast({ variant: 'destructive', title: 'Error al cargar tarifas', description: err.message }); }
@@ -216,7 +229,7 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
                     <CardTitle>Tarifas Actuales por Transportadora</CardTitle>
                     <CardDescription>
                         Excel requerido: <code>CodigoMunicipio | Flete | IVA | TipoTrayecto</code>.<br />
-                        El <strong>Margen de Logística Inversa</strong> se define abajo en pesos (COP) y se aplica igual a todos los municipios.
+                        Columna opcional: <code>MargenLogisticaInversa</code> — si se incluye, cada fila usa su propio valor (diferente por trayecto). Si no se incluye, se aplica el valor global definido abajo.
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
