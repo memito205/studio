@@ -12,11 +12,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Switch } from '@/components/ui/switch';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import {
     ArrowLeft, UploadCloud, Loader2, GitCompareArrows, Database,
     TrendingUp, TrendingDown, Eye, Save, Star, BarChart3, Search, Trophy, Calculator, Shield,
+    CreditCard, Plus, Trash2,
 } from 'lucide-react';
 import {
     saveMunicipios,
@@ -31,9 +33,13 @@ import {
     getCarrierScores,
     saveCarrierInsuranceConfig,
     getCarrierInsuranceConfig,
+    saveCarrierCODConfig,
+    getCarrierCODConfig,
     CarrierRateRow,
     CarrierProposal,
     CarrierScoreConfig,
+    CODRule,
+    CODTier,
 } from '@/app/actions';
 
 // ---------------------------------------------------------------------------
@@ -144,6 +150,25 @@ const ScoreBadge: React.FC<{ score: number | null }> = ({ score }) => {
     );
 };
 
+// ---------------------------------------------------------------------------
+// Helper: Calculate COD fee based on rule
+// ---------------------------------------------------------------------------
+function calculateCODFee(amount: number, rule?: CODRule): number {
+    if (!rule || amount <= 0) return 0;
+    if (rule.type === 'simple') {
+        const pct = rule.percentage || 0;
+        const fee = (amount * pct) / 100;
+        return Math.max(fee, rule.minFee || 0);
+    }
+    if (rule.type === 'tiered' && rule.tiers) {
+        const tier = rule.tiers.find(t => amount >= t.min && amount <= t.max);
+        if (tier) {
+            return tier.feeType === 'fixed' ? tier.value : (amount * tier.value) / 100;
+        }
+    }
+    return 0;
+}
+
 // ===========================================================================
 // TAB 4 — Gestión de Datos Base (Admin only)
 // ===========================================================================
@@ -155,17 +180,20 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
     const [isUploadingRates, setIsUploadingRates] = useState(false);
     const [insuranceRates, setInsuranceRates] = useState<Record<string, string>>({}); // % strings per carrier
     const [isSavingInsurance, setIsSavingInsurance] = useState(false);
+    const [codRules, setCodRules] = useState<Record<string, CODRule>>({});
+    const [isSavingCOD, setIsSavingCOD] = useState(false);
     const munRef = useRef<HTMLInputElement>(null);
     const ratesRef = useRef<HTMLInputElement>(null);
 
-    // Load existing insurance config on mount
+    // Load existing config on mount
     useEffect(() => {
-        getCarrierInsuranceConfig().then(r => {
-            if (r.success && r.data) {
+        Promise.all([getCarrierInsuranceConfig(), getCarrierCODConfig()]).then(([ins, cod]) => {
+            if (ins.success && ins.data) {
                 const strMap: Record<string, string> = {};
-                Object.entries(r.data).forEach(([k, v]) => { strMap[k] = String(v); });
+                Object.entries(ins.data).forEach(([k, v]) => { strMap[k] = String(v); });
                 setInsuranceRates(strMap);
             }
+            if (cod.success && cod.data) setCodRules(cod.data);
         });
     }, []);
 
@@ -182,6 +210,40 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
             else throw new Error(result.error);
         } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
         finally { setIsSavingInsurance(false); }
+    };
+
+    const handleSaveCOD = async () => {
+        setIsSavingCOD(true);
+        try {
+            const result = await saveCarrierCODConfig(codRules);
+            if (result.success) toast({ title: 'Reglas de COD guardadas' });
+            else throw new Error(result.error);
+        } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
+        finally { setIsSavingCOD(false); }
+    };
+
+    const updateCODRule = (carrier: string, patch: Partial<CODRule>) => {
+        setCodRules(prev => ({ ...prev, [carrier]: { ...(prev[carrier] || { type: 'simple' }), ...patch } }));
+    };
+
+    const addTier = (carrier: string) => {
+        const current = codRules[carrier] || { type: 'simple', tiers: [] };
+        const tiers = [...(current.tiers || [])];
+        const lastMax = tiers.length > 0 ? tiers[tiers.length - 1].max : 0;
+        tiers.push({ min: lastMax + 1, max: 99999999, feeType: 'percent', value: 3 });
+        updateCODRule(carrier, { type: 'tiered', tiers });
+    };
+
+    const removeTier = (carrier: string, idx: number) => {
+        const tiers = [...(codRules[carrier]?.tiers || [])];
+        tiers.splice(idx, 1);
+        updateCODRule(carrier, { tiers });
+    };
+
+    const updateTier = (carrier: string, idx: number, patch: Partial<CODTier>) => {
+        const tiers = [...(codRules[carrier]?.tiers || [])];
+        tiers[idx] = { ...tiers[idx], ...patch };
+        updateCODRule(carrier, { tiers });
     };
 
     const handleMunicipiosUpload = async (e: ChangeEvent<HTMLInputElement>) => {
@@ -345,6 +407,105 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
                 </CardContent>
             </Card>
 
+            {/* COD Commission Rules */}
+            <Card>
+                <CardHeader>
+                    <CardTitle className="flex items-center gap-2"><CreditCard className="h-4 w-4" /> Tarifa de Contraentrega (COD) por Transportadora</CardTitle>
+                    <CardDescription>Configura cómo cada transportadora cobra por el recaudo del dinero en destino.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                    {CARRIERS.map(carrier => {
+                        const rule = codRules[carrier] || { type: 'simple', percentage: 0 };
+                        return (
+                            <div key={carrier} className="p-4 border rounded-lg space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <Label className="font-bold text-base">{carrier}</Label>
+                                    <Select value={rule.type} onValueChange={v => updateCODRule(carrier, { type: v as any })}>
+                                        <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="simple">Porcentaje Fijo</SelectItem>
+                                            <SelectItem value="tiered">Escala / Rangos</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
+                                {rule.type === 'simple' ? (
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <Label className="text-xs">Porcentaje de Comisión</Label>
+                                            <div className="relative">
+                                                <Input
+                                                    type="number"
+                                                    min={0}
+                                                    step={0.1}
+                                                    value={rule.percentage ?? ''}
+                                                    onChange={e => updateCODRule(carrier, { percentage: parseFloat(e.target.value) || 0 })}
+                                                    className="pr-6"
+                                                />
+                                                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">%</span>
+                                            </div>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label className="text-xs">Mínimo Cobrado (Floor)</Label>
+                                            <div className="relative">
+                                                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                                                <Input
+                                                    type="number"
+                                                    min={0}
+                                                    step={100}
+                                                    value={rule.minFee ?? ''}
+                                                    onChange={e => updateCODRule(carrier, { minFee: parseFloat(e.target.value) || 0 })}
+                                                    className="pl-5"
+                                                />
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2">
+                                        <div className="overflow-x-auto">
+                                            <Table>
+                                                <TableHeader>
+                                                    <TableRow className="bg-muted/50">
+                                                        <TableHead className="h-8 text-[10px]">Mínimo</TableHead>
+                                                        <TableHead className="h-8 text-[10px]">Máximo</TableHead>
+                                                        <TableHead className="h-8 text-[10px]">Tipo</TableHead>
+                                                        <TableHead className="h-8 text-[10px]">Valor</TableHead>
+                                                        <TableHead className="h-8 w-10"></TableHead>
+                                                    </TableRow>
+                                                </TableHeader>
+                                                <TableBody>
+                                                    {rule.tiers?.map((t, idx) => (
+                                                        <TableRow key={idx}>
+                                                            <TableCell><Input className="h-7 text-xs" type="number" value={t.min} onChange={e => updateTier(carrier, idx, { min: parseInt(e.target.value) || 0 })} /></TableCell>
+                                                            <TableCell><Input className="h-7 text-xs" type="number" value={t.max} onChange={e => updateTier(carrier, idx, { max: parseInt(e.target.value) || 0 })} /></TableCell>
+                                                            <TableCell>
+                                                                <select className="h-7 text-xs bg-background border rounded px-1" value={t.feeType} onChange={e => updateTier(carrier, idx, { feeType: e.target.value as any })}>
+                                                                    <option value="percent">%</option>
+                                                                    <option value="fixed">$ Fixed</option>
+                                                                </select>
+                                                            </TableCell>
+                                                            <TableCell><Input className="h-7 text-xs" type="number" value={t.value} onChange={e => updateTier(carrier, idx, { value: parseFloat(e.target.value) || 0 })} /></TableCell>
+                                                            <TableCell><Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" onClick={() => removeTier(carrier, idx)}><Trash2 className="h-3 w-3" /></Button></TableCell>
+                                                        </TableRow>
+                                                    ))}
+                                                </TableBody>
+                                            </Table>
+                                        </div>
+                                        <Button variant="outline" size="sm" onClick={() => addTier(carrier)} className="w-full text-xs h-8">
+                                            <Plus className="h-3 w-3 mr-1" /> Añadir Rango
+                                        </Button>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                    <Button onClick={handleSaveCOD} disabled={isSavingCOD} className="w-full">
+                        {isSavingCOD && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Guardar Reglas de Contraentrega
+                    </Button>
+                </CardContent>
+            </Card>
+
             {/* Status de carriers cargados */}
             {carriersMetadata.length > 0 && (
                 <Card>
@@ -384,10 +545,11 @@ interface SimResult {
     iva: number;
     margen: number;
     seguro: number;
+    codFee: number;
     total: number;
 }
 
-const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[] }> = ({ carriersMetadata }) => {
+const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[]; codRules: Record<string, CODRule> }> = ({ carriersMetadata, codRules }) => {
     const { toast } = useToast();
     const [munMap, setMunMap] = useState<Record<string, { nombre: string; departamento: string }>>({});
     const [allRates, setAllRates] = useState<Record<string, CarrierRateRow[]>>({});
@@ -396,6 +558,8 @@ const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[] }> = ({ c
     const [searchText, setSearchText] = useState('');
     const [selectedCode, setSelectedCode] = useState('');
     const [productValue, setProductValue] = useState('');
+    const [isCOD, setIsCOD] = useState(false);
+    const [codAmount, setCodAmount] = useState('');
     const [results, setResults] = useState<SimResult[]>([]);
     const [showSuggestions, setShowSuggestions] = useState(false);
 
@@ -440,20 +604,24 @@ const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[] }> = ({ c
         const val = parseFloat(productValue.replace(/[^0-9.]/g, ''));
         if (isNaN(val) || val <= 0) { toast({ variant: 'destructive', title: 'Ingresa el valor del producto' }); return; }
 
+        const recaudo = isCOD ? parseFloat(codAmount.replace(/[^0-9.]/g, '')) || 0 : 0;
+
         const sim: SimResult[] = availableCarriers.map(carrier => {
             const row = (allRates[carrier] || []).find(r => r.codigoMunicipio === selectedCode);
-            if (!row) return { carrier, flete: 0, iva: 0, margen: 0, seguro: 0, total: 0 };
+            if (!row) return { carrier, flete: 0, iva: 0, margen: 0, seguro: 0, codFee: 0, total: 0 };
             const insurancePct = insuranceConfig[carrier] ?? 0;
             const seguro = Math.round(val * insurancePct / 100);
+            const codFee = isCOD ? calculateCODFee(recaudo, codRules[carrier]) : 0;
             return {
                 carrier,
                 flete: row.flete,
                 iva: row.iva,
                 margen: row.margenLogisticaInversa,
                 seguro,
-                total: row.total + seguro,
+                codFee,
+                total: row.total + seguro + codFee,
             };
-        }).filter(r => r.flete > 0 || r.seguro > 0);
+        }).filter(r => r.flete > 0 || r.seguro > 0 || r.codFee > 0);
 
         const sorted = [...sim].sort((a, b) => a.total - b.total);
         setResults(sorted);
@@ -537,7 +705,38 @@ const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[] }> = ({ c
                         </div>
                     </div>
 
-                    <Button className="mt-4 w-full md:w-auto" onClick={simulate} disabled={!selectedCode || !productValue}>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                        <div className="flex items-center space-x-2 border p-3 rounded-lg">
+                            <Switch id="cod-toggle" checked={isCOD} onCheckedChange={setIsCOD} />
+                            <div className="grid gap-1.5 leading-none">
+                                <label htmlFor="cod-toggle" className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+                                    Servicio Contraentrega (COD)
+                                </label>
+                                <p className="text-xs text-muted-foreground">Incluir comisión por recaudo de dinero.</p>
+                            </div>
+                        </div>
+
+                        {isCOD && (
+                            <div className="space-y-2">
+                                <Label htmlFor="cod-amount">Monto a recaudar ($ COP)</Label>
+                                <div className="relative">
+                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm font-semibold">$</span>
+                                    <Input
+                                        id="cod-amount"
+                                        type="number"
+                                        min={0}
+                                        step={1000}
+                                        placeholder="Ej: 180000"
+                                        value={codAmount}
+                                        onChange={e => { setCodAmount(e.target.value); setResults([]); }}
+                                        className="pl-7"
+                                    />
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    <Button className="mt-6 w-full md:w-auto" onClick={simulate} disabled={!selectedCode || !productValue || (isCOD && !codAmount)}>
                         <Calculator className="mr-2 h-4 w-4" /> Calcular costos
                     </Button>
                 </CardContent>
@@ -552,8 +751,8 @@ const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[] }> = ({ c
                             {munInfo && <span className="text-sm font-normal text-muted-foreground ml-2">— {munInfo.departamento}</span>}
                         </CardTitle>
                         <CardDescription>
-                            Producto valorado en <strong>{fmt(parseFloat(productValue))}</strong>
-                            {Object.values(insuranceConfig).some(v => v > 0) && ' · El seguro se calcula sobre el valor del producto'}
+                            Producto: <strong>{fmt(parseFloat(productValue))}</strong>
+                            {isCOD && <> · Recaudo COD: <strong>{fmt(parseFloat(codAmount))}</strong></>}
                         </CardDescription>
                     </CardHeader>
                     <CardContent>
@@ -562,14 +761,9 @@ const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[] }> = ({ c
                                 <TableRow>
                                     <TableHead className="w-8">#</TableHead>
                                     <TableHead>Transportadora</TableHead>
-                                    <TableHead className="text-right">Flete</TableHead>
-                                    <TableHead className="text-right">IVA</TableHead>
-                                    <TableHead className="text-right">Margen Log. Inv.</TableHead>
-                                    <TableHead className="text-right">
-                                        <div className="flex items-center justify-end gap-1">
-                                            <Shield className="h-3 w-3" /> Seguro
-                                        </div>
-                                    </TableHead>
+                                    <TableHead className="text-right">Flete+IVA+Margen</TableHead>
+                                    <TableHead className="text-right">Seguro</TableHead>
+                                    {isCOD && <TableHead className="text-right">Recaudo COD</TableHead>}
                                     <TableHead className="text-right font-bold">TOTAL</TableHead>
                                 </TableRow>
                             </TableHeader>
@@ -577,6 +771,7 @@ const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[] }> = ({ c
                                 {results.map((r, idx) => {
                                     const colorIdx = Math.min(idx, 3);
                                     const insurancePct = insuranceConfig[r.carrier] ?? 0;
+                                    const baseCost = r.flete + r.iva + r.margen;
                                     return (
                                         <TableRow key={r.carrier} className={rankColors[colorIdx]}>
                                             <TableCell>
@@ -588,13 +783,16 @@ const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[] }> = ({ c
                                                 {r.carrier}
                                                 {idx === 0 && <span className="ml-2 text-xs text-green-600 font-semibold">★ más económico</span>}
                                             </TableCell>
-                                            <TableCell className="text-right text-sm">{fmt(r.flete)}</TableCell>
-                                            <TableCell className="text-right text-sm">{fmt(r.iva)}</TableCell>
-                                            <TableCell className="text-right text-sm">{fmt(r.margen)}</TableCell>
+                                            <TableCell className="text-right text-sm">{fmt(baseCost)}</TableCell>
                                             <TableCell className="text-right text-sm">
                                                 {r.seguro > 0 ? fmt(r.seguro) : <span className="text-muted-foreground text-xs">—</span>}
                                                 {insurancePct > 0 && <span className="text-xs text-muted-foreground ml-1">({insurancePct}%)</span>}
                                             </TableCell>
+                                            {isCOD && (
+                                                <TableCell className="text-right text-sm">
+                                                    {r.codFee > 0 ? fmt(r.codFee) : <span className="text-muted-foreground text-xs">—</span>}
+                                                </TableCell>
+                                            )}
                                             <TableCell className={`text-right text-sm font-bold ${rankTextColors[colorIdx]}`}>
                                                 {fmt(r.total)}
                                             </TableCell>
@@ -620,7 +818,7 @@ const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[] }> = ({ c
 // ===========================================================================
 // TAB 2 — Comparativo de Tarifas Actuales
 // ===========================================================================
-const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?: Date; count: number }[]; scoreConfig: CarrierScoreConfig | null }> = ({ carriersMetadata, scoreConfig }) => {
+const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?: Date; count: number }[]; scoreConfig: CarrierScoreConfig | null; codRules: Record<string, CODRule> }> = ({ carriersMetadata, scoreConfig, codRules }) => {
     const { toast } = useToast();
     const [allRates, setAllRates] = useState<Record<string, CarrierRateRow[]>>({});
     const [munMap, setMunMap] = useState<Record<string, { nombre: string; departamento: string }>>({});
@@ -629,8 +827,11 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
     const [search, setSearch] = useState('');
     const [showSummary, setShowSummary] = useState(true);
     const [expandedCarriers, setExpandedCarriers] = useState<Set<string>>(new Set());
+    const [simAmount, setSimAmount] = useState<string>('0');
+    const [isSimulatingCOD, setIsSimulatingCOD] = useState(false);
 
     const availableCarriers = carriersMetadata.map(m => m.carrier);
+    const simVal = isSimulatingCOD ? parseFloat(simAmount) || 0 : 0;
 
     useEffect(() => {
         if (!availableCarriers.length) return;
@@ -776,16 +977,34 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
             )}
 
             {/* Filters */}
-            <div className="flex flex-col sm:flex-row gap-3 items-center">
-                <div className="flex items-center gap-2 flex-1">
+            <div className="flex flex-col xl:flex-row gap-3 items-center">
+                <div className="flex items-center gap-2 flex-1 w-full">
                     <Search className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                     <Input placeholder="Buscar por código, municipio o departamento..." value={search} onChange={e => setSearch(e.target.value)} />
                 </div>
-                <Select value={trayectoFilter} onValueChange={setTrayectoFilter}>
-                    <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
-                    <SelectContent>{TRAYECTO_OPTIONS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground whitespace-nowrap">Haz clic en <strong>+</strong> en cada carrier para ver desglose</p>
+                <div className="flex items-center gap-3 w-full xl:w-auto">
+                    <Select value={trayectoFilter} onValueChange={setTrayectoFilter}>
+                        <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+                        <SelectContent>{TRAYECTO_OPTIONS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
+                    </Select>
+
+                    <div className="flex items-center gap-2 border px-3 py-1.5 rounded-lg bg-muted/20">
+                        <CreditCard className={`h-4 w-4 ${isSimulatingCOD ? 'text-primary' : 'text-muted-foreground'}`} />
+                        <span className="text-xs font-medium whitespace-nowrap">Simular COD:</span>
+                        <Switch checked={isSimulatingCOD} onCheckedChange={setIsSimulatingCOD} />
+                        {isSimulatingCOD && (
+                            <div className="relative w-28">
+                                <span className="absolute left-1.5 top-1/2 -translate-y-1/2 text-[10px]">$</span>
+                                <Input
+                                    type="number"
+                                    className="h-7 text-xs pl-4 pr-1"
+                                    value={simAmount}
+                                    onChange={e => setSimAmount(e.target.value)}
+                                />
+                            </div>
+                        )}
+                    </div>
+                </div>
             </div>
 
             {/* Detail comparison table */}
@@ -800,7 +1019,7 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                             {availableCarriers.map(c => {
                                 const isExpanded = expandedCarriers.has(c);
                                 return isExpanded ? (
-                                    <TableHead key={c} className="text-center min-w-[190px]" colSpan={4}>
+                                    <TableHead key={c} className="text-center min-w-[220px]" colSpan={isSimulatingCOD ? 5 : 4}>
                                         <div className="flex items-center justify-center gap-1">
                                             <span className="font-bold text-xs truncate max-w-[130px]">{c}</span>
                                             <button
@@ -809,8 +1028,8 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                                                 title="Colapsar desglose"
                                             >−</button>
                                         </div>
-                                        <div className="grid grid-cols-4 text-xs font-normal text-muted-foreground mt-0.5">
-                                            <span>Flete</span><span>IVA</span><span>Margen</span><span className="font-semibold text-foreground">Total</span>
+                                        <div className={`grid ${isSimulatingCOD ? 'grid-cols-5' : 'grid-cols-4'} text-[10px] font-normal text-muted-foreground mt-0.5 whitespace-nowrap`}>
+                                            <span>Flete</span><span>IVA</span><span>Margen</span>{isSimulatingCOD && <span>COD</span>}<span className="font-semibold text-foreground">Total</span>
                                         </div>
                                     </TableHead>
                                 ) : (
@@ -823,7 +1042,7 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                                                 title="Ver desglose"
                                             >+</button>
                                         </div>
-                                        <div className="text-xs font-normal text-muted-foreground">Total</div>
+                                        <div className="text-xs font-normal text-muted-foreground">{isSimulatingCOD ? 'T + COD' : 'Total'}</div>
                                     </TableHead>
                                 );
                             })}
@@ -831,11 +1050,16 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                     </TableHeader>
                     <TableBody>
                         {filtered.slice(0, 300).map(code => {
-                            // Build sorted ranking for this row (only carriers with data)
                             const withData = availableCarriers
-                                .map(c => ({ c, r: (allRates[c] || []).find(x => x.codigoMunicipio === code) }))
-                                .filter(({ r }) => r !== undefined) as { c: string; r: CarrierRateRow }[];
-                            const sorted = [...withData].sort((a, b) => a.r.total - b.r.total);
+                                .map(c => {
+                                    const r = (allRates[c] || []).find(x => x.codigoMunicipio === code);
+                                    if (!r) return null;
+                                    const codFee = isSimulatingCOD ? calculateCODFee(simVal, codRules[c]) : 0;
+                                    return { c, r, effectiveTotal: r.total + codFee, codFee };
+                                })
+                                .filter(x => x !== null) as { c: string; r: CarrierRateRow; effectiveTotal: number; codFee: number }[];
+
+                            const sorted = [...withData].sort((a, b) => a.effectiveTotal - b.effectiveTotal);
                             const rankMap = new Map<string, number>();
                             sorted.forEach(({ c }, idx) => rankMap.set(c, idx + 1));
 
@@ -851,20 +1075,20 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
 
                             return (
                                 <TableRow key={code}>
-                                    <TableCell className="sticky left-0 bg-background z-10 font-mono text-xs font-semibold">{code}</TableCell>
-                                    <TableCell className="text-xs font-medium">{mun.nombre}</TableCell>
-                                    <TableCell className="text-xs text-muted-foreground">{mun.departamento}</TableCell>
-                                    <TableCell className="text-xs">{sampleRow?.tipoTrayecto || '—'}</TableCell>
+                                    <TableCell className="sticky left-0 bg-background z-10 font-mono text-[10px] font-semibold">{code}</TableCell>
+                                    <TableCell className="text-[10px] font-medium max-w-[120px] truncate">{mun.nombre}</TableCell>
+                                    <TableCell className="text-[10px] text-muted-foreground">{mun.departamento}</TableCell>
+                                    <TableCell className="text-[10px]">{sampleRow?.tipoTrayecto || '—'}</TableCell>
                                     {availableCarriers.map(c => {
-                                        const r = (allRates[c] || []).find(x => x.codigoMunicipio === code);
+                                        const data = withData.find(x => x.c === c);
                                         const rank = rankMap.get(c);
                                         const style = rank ? rankStyle(rank) : { bg: '', text: '', badge: '' };
                                         const isExpanded = expandedCarriers.has(c);
 
-                                        if (!r) {
+                                        if (!data) {
                                             return isExpanded
-                                                ? <TableCell key={c} colSpan={4} className="text-center text-xs text-muted-foreground">—</TableCell>
-                                                : <TableCell key={c} className="text-center text-xs text-muted-foreground">—</TableCell>;
+                                                ? <TableCell key={c} colSpan={isSimulatingCOD ? 5 : 4} className="text-center text-[10px] text-muted-foreground">—</TableCell>
+                                                : <TableCell key={c} className="text-center text-[10px] text-muted-foreground">—</TableCell>;
                                         }
 
                                         const rankBadge = rank !== undefined && withData.length > 1 ? (
@@ -875,24 +1099,26 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
 
                                         if (isExpanded) {
                                             return (
-                                                <TableCell key={c} colSpan={4} className={`text-xs ${style.bg}`}>
-                                                    <div className="grid grid-cols-4 gap-1 items-center">
-                                                        <span>{fmt(r.flete)}</span>
-                                                        <span>{fmt(r.iva)}</span>
-                                                        <span>{fmt(r.margenLogisticaInversa)}</span>
-                                                        <span className={`font-bold flex items-center gap-1 ${style.text}`}>
-                                                            {fmt(r.total)} {rankBadge}
+                                                <TableCell key={c} colSpan={isSimulatingCOD ? 5 : 4} className={`text-[10px] ${style.bg}`}>
+                                                    <div className={`grid ${isSimulatingCOD ? 'grid-cols-5' : 'grid-cols-4'} gap-1 items-center`}>
+                                                        <span>{fmt(data.r.flete)}</span>
+                                                        <span>{fmt(data.r.iva)}</span>
+                                                        <span>{fmt(data.r.margenLogisticaInversa)}</span>
+                                                        {isSimulatingCOD && <span className="italic">{fmt(data.codFee)}</span>}
+                                                        <span className={`font-bold flex items-center justify-end gap-1 ${style.text}`}>
+                                                            {rankBadge}
+                                                            {fmt(data.effectiveTotal)}
                                                         </span>
                                                     </div>
                                                 </TableCell>
                                             );
                                         }
-                                        // Compact
+
                                         return (
-                                            <TableCell key={c} className={`text-right text-xs ${style.bg}`}>
+                                            <TableCell key={c} className={`text-right text-[10px] font-bold border-x ${style.bg} ${style.text}`}>
                                                 <div className="flex items-center justify-end gap-1">
                                                     {rankBadge}
-                                                    <span className={`font-bold ${style.text}`}>{fmt(r.total)}</span>
+                                                    {fmt(data.effectiveTotal)}
                                                 </div>
                                             </TableCell>
                                         );
@@ -918,6 +1144,107 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
 
 
 
+
+// ===========================================================================
+// TAB — Comparativo de Recaudo COD
+// ===========================================================================
+const TabRecaudoCOD: React.FC = () => {
+    const { toast } = useToast();
+    const [codRules, setCodRules] = useState<Record<string, CODRule>>({});
+    const [isLoading, setIsLoading] = useState(true);
+
+    useEffect(() => {
+        getCarrierCODConfig().then(r => {
+            if (r.success) setCodRules(r.data || {});
+            else toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar las reglas de COD.' });
+            setIsLoading(false);
+        });
+    }, []);
+
+    const testAmounts = [50000, 100000, 200000, 500000, 1000000, 2000000];
+
+    if (isLoading) return <div className="p-10 text-center text-muted-foreground"><Loader2 className="animate-spin mx-auto mb-2" /> Cargando comparativo de recaudo...</div>;
+
+    return (
+        <div className="space-y-6">
+            <Card>
+                <CardHeader>
+                    <CardTitle className="flex items-center gap-2"><CreditCard className="h-5 w-5" /> Análisis Comparativo de Comisiones por Recaudo (COD)</CardTitle>
+                    <CardDescription>Comparativa de cuánto cobra cada transportadora por recaudar diferentes montos de dinero.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <div className="overflow-x-auto border rounded-lg">
+                        <Table>
+                            <TableHeader>
+                                <TableRow className="bg-muted/50">
+                                    <TableHead className="min-w-[150px]">Transportadora</TableHead>
+                                    {testAmounts.map(amt => (
+                                        <TableHead key={amt} className="text-right whitespace-nowrap">Recaudo {fmt(amt)}</TableHead>
+                                    ))}
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {CARRIERS.map(carrier => {
+                                    const rule = codRules[carrier];
+                                    return (
+                                        <TableRow key={carrier} className="hover:bg-muted/30">
+                                            <TableCell className="font-semibold">
+                                                {carrier}
+                                                <div className="text-[10px] text-muted-foreground font-normal">
+                                                    {rule?.type === 'simple'
+                                                        ? `${rule.percentage}% ${rule.minFee ? `(mín. ${fmt(rule.minFee)})` : ''}`
+                                                        : rule?.type === 'tiered'
+                                                            ? `${rule.tiers?.length} rangos definidos`
+                                                            : 'Sin configurar'}
+                                                </div>
+                                            </TableCell>
+                                            {testAmounts.map(amt => {
+                                                const fee = calculateCODFee(amt, rule);
+                                                const pctOfAmt = amt > 0 ? (fee / amt) * 100 : 0;
+                                                return (
+                                                    <TableCell key={amt} className="text-right">
+                                                        <div className="font-medium text-sm">{fee > 0 ? fmt(fee) : '—'}</div>
+                                                        <div className="text-[10px] text-muted-foreground">{fee > 0 ? `${pctOfAmt.toFixed(1)}% real` : ''}</div>
+                                                    </TableCell>
+                                                );
+                                            })}
+                                        </TableRow>
+                                    );
+                                })}
+                            </TableBody>
+                        </Table>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-8">
+                        {CARRIERS.map(carrier => {
+                            const rule = codRules[carrier];
+                            if (!rule || rule.type !== 'tiered') return null;
+                            return (
+                                <Card key={carrier} className="bg-muted/20 border-dashed">
+                                    <CardHeader className="py-3 px-4">
+                                        <CardTitle className="text-sm font-bold flex items-center gap-2">
+                                            Escala de {carrier}
+                                        </CardTitle>
+                                    </CardHeader>
+                                    <CardContent className="py-0 px-4 pb-4">
+                                        <ul className="space-y-1">
+                                            {rule.tiers?.map((t, idx) => (
+                                                <li key={idx} className="text-xs flex justify-between border-b border-muted py-1 last:border-0">
+                                                    <span className="text-muted-foreground">{fmt(t.min)} - {fmt(t.max)}:</span>
+                                                    <span className="font-medium">{t.feeType === 'fixed' ? fmt(t.value) : `${t.value}%`}</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </CardContent>
+                                </Card>
+                            );
+                        })}
+                    </div>
+                </CardContent>
+            </Card>
+        </div>
+    );
+};
 
 // ===========================================================================
 // TAB 3 — Ponderación de Transportadoras
@@ -1390,15 +1717,18 @@ export const PropuestaTransportadora: React.FC<PropuestaTransportadoraProps> = (
 
     const [carriersMetadata, setCarriersMetadata] = useState<{ carrier: string; lastUpdated?: Date; count: number }[]>([]);
     const [scoreConfig, setScoreConfig] = useState<CarrierScoreConfig | null>(null);
+    const [codRules, setCodRules] = useState<Record<string, CODRule>>({});
     const [isBootstrapping, setIsBootstrapping] = useState(true);
 
     useEffect(() => {
         Promise.all([
             getAllCarrierRatesMetadata(),
             getCarrierScores(),
-        ]).then(([meta, scores]) => {
+            getCarrierCODConfig(),
+        ]).then(([meta, scores, cod]) => {
             if (meta.success) setCarriersMetadata(meta.data || []);
             if (scores.success) setScoreConfig(scores.data || null);
+            if (cod.success) setCodRules(cod.data || {});
         }).finally(() => setIsBootstrapping(false));
     }, []);
 
@@ -1426,10 +1756,11 @@ export const PropuestaTransportadora: React.FC<PropuestaTransportadoraProps> = (
                 </div>
             ) : (
                 <Tabs defaultValue="analisis">
-                    <TabsList className={`grid w-full ${isAdmin ? 'grid-cols-5' : 'grid-cols-4'}`}>
+                    <TabsList className={`grid w-full ${isAdmin ? 'grid-cols-6' : 'grid-cols-5'}`}>
                         <TabsTrigger value="analisis"><GitCompareArrows className="mr-1.5 h-4 w-4" /> Análisis</TabsTrigger>
                         <TabsTrigger value="comparativo"><BarChart3 className="mr-1.5 h-4 w-4" /> Comparativo</TabsTrigger>
                         <TabsTrigger value="simulador"><Calculator className="mr-1.5 h-4 w-4" /> Simulador</TabsTrigger>
+                        <TabsTrigger value="recaudo"><CreditCard className="mr-1.5 h-4 w-4" /> Recaudo COD</TabsTrigger>
                         <TabsTrigger value="ponderacion"><Star className="mr-1.5 h-4 w-4" /> Ponderación</TabsTrigger>
                         {isAdmin && <TabsTrigger value="datos"><Database className="mr-1.5 h-4 w-4" /> Datos Base</TabsTrigger>}
                     </TabsList>
@@ -1439,11 +1770,15 @@ export const PropuestaTransportadora: React.FC<PropuestaTransportadoraProps> = (
                     </TabsContent>
 
                     <TabsContent value="comparativo" className="mt-4">
-                        <TabComparativo carriersMetadata={carriersMetadata} scoreConfig={scoreConfig} />
+                        <TabComparativo carriersMetadata={carriersMetadata} scoreConfig={scoreConfig} codRules={codRules} />
                     </TabsContent>
 
                     <TabsContent value="simulador" className="mt-4">
-                        <TabSimulador carriersMetadata={carriersMetadata} />
+                        <TabSimulador carriersMetadata={carriersMetadata} codRules={codRules} />
+                    </TabsContent>
+
+                    <TabsContent value="recaudo" className="mt-4">
+                        <TabRecaudoCOD />
                     </TabsContent>
 
                     <TabsContent value="ponderacion" className="mt-4">

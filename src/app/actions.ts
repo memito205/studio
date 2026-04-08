@@ -3206,3 +3206,38 @@ export async function getCarrierInsuranceConfig(): Promise<{ success: boolean; d
         return { success: false, error: error.message };
     }
 }
+
+export interface CODTier {
+    min: number;
+    max: number;
+    feeType: 'fixed' | 'percent';
+    value: number;
+}
+
+export interface CODRule {
+    type: 'simple' | 'tiered';
+    percentage?: number;  // Standard percentage (e.g. 3)
+    minFee?: number;     // Optional minimum floor fee
+    tiers?: CODTier[];   // Required for 'tiered' type
+}
+
+/** Saves per-carrier COD fee rules */
+export async function saveCarrierCODConfig(config: Record<string, CODRule>): Promise<{ success: boolean; error?: string }> {
+    try {
+        await setDoc(doc(firestore, 'carrierConfig', 'cod'), { rules: config, updatedAt: new Date() });
+        return { success: true };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+/** Reads per-carrier COD fee rules */
+export async function getCarrierCODConfig(): Promise<{ success: boolean; data?: Record<string, CODRule>; error?: string }> {
+    try {
+        const snap = await getDoc(doc(firestore, 'carrierConfig', 'cod'));
+        if (!snap.exists()) return { success: true, data: {} };
+        return { success: true, data: (snap.data().rules as Record<string, CODRule>) || {} };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
