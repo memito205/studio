@@ -23,6 +23,7 @@ import {
     saveCarrierCurrentRates,
     getCarrierCurrentRates,
     getAllCarrierRatesMetadata,
+    getMunicipiosMap,
     saveCarrierProposal,
     loadCarrierProposals,
     getCarrierProposalById,
@@ -313,40 +314,68 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
 const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?: Date; count: number }[]; scoreConfig: CarrierScoreConfig | null }> = ({ carriersMetadata, scoreConfig }) => {
     const { toast } = useToast();
     const [allRates, setAllRates] = useState<Record<string, CarrierRateRow[]>>({});
+    const [munMap, setMunMap] = useState<Record<string, { nombre: string; departamento: string }>>({});
     const [isLoading, setIsLoading] = useState(false);
     const [trayectoFilter, setTrayectoFilter] = useState('Todos');
     const [search, setSearch] = useState('');
-    const [municipioMap, setMunicipioMap] = useState<Record<string, { nombre: string; departamento: string }>>({});
+    const [showSummary, setShowSummary] = useState(true);
 
     const availableCarriers = carriersMetadata.map(m => m.carrier);
 
     useEffect(() => {
         if (!availableCarriers.length) return;
         setIsLoading(true);
-        Promise.all(availableCarriers.map(c => getCarrierCurrentRates(c).then(r => ({ carrier: c, rates: r.data?.rates || [] }))))
-            .then(results => {
-                const map: Record<string, CarrierRateRow[]> = {};
-                const mMap: Record<string, { nombre: string; departamento: string }> = {};
-                results.forEach(({ carrier, rates }) => {
-                    map[carrier] = rates;
-                });
-                setAllRates(map);
+        Promise.all([
+            // Load all carrier rates in parallel
+            Promise.all(availableCarriers.map(c => getCarrierCurrentRates(c).then(r => ({ carrier: c, rates: r.data?.rates || [] })))),
+            // Load municipios map
+            getMunicipiosMap(),
+        ])
+            .then(([ratesResults, munResult]) => {
+                const rMap: Record<string, CarrierRateRow[]> = {};
+                (ratesResults as { carrier: string; rates: CarrierRateRow[] }[]).forEach(({ carrier, rates }) => { rMap[carrier] = rates; });
+                setAllRates(rMap);
+                if (munResult.success) setMunMap(munResult.data || {});
             })
             .catch(() => toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar las tarifas.' }))
             .finally(() => setIsLoading(false));
     }, [carriersMetadata]);
 
-    // Build a unified list of municipios across all carriers
+    // Build unified list of codes
     const allCodes = Array.from(new Set(Object.values(allRates).flatMap(rates => rates.map(r => r.codigoMunicipio))));
 
+    const getMunInfo = (code: string) => munMap[code] || { nombre: code, departamento: '' };
+
     const filtered = allCodes.filter(code => {
-        const rateSample = Object.values(allRates).flatMap(r => r).find(r => r.codigoMunicipio === code);
-        if (trayectoFilter !== 'Todos' && rateSample?.tipoTrayecto !== trayectoFilter) return false;
+        const sampleRate = Object.values(allRates).flatMap(r => r).find(r => r.codigoMunicipio === code);
+        if (trayectoFilter !== 'Todos' && sampleRate?.tipoTrayecto !== trayectoFilter) return false;
         if (search) {
             const q = search.toLowerCase();
-            if (!code.toLowerCase().includes(q)) return false;
+            const mun = getMunInfo(code);
+            if (!code.toLowerCase().includes(q) && !mun.nombre.toLowerCase().includes(q) && !mun.departamento.toLowerCase().includes(q)) return false;
         }
         return true;
+    });
+
+    // --- Trayecto summary per carrier ---
+    const trayectosPresentes = Array.from(new Set(Object.values(allRates).flatMap(r => r.map(x => x.tipoTrayecto)))).sort();
+
+    const trayectoSummary = trayectosPresentes.map(trayecto => {
+        const carrierStats = availableCarriers.map(carrier => {
+            const rows = (allRates[carrier] || []).filter(r => r.tipoTrayecto === trayecto);
+            if (!rows.length) return { carrier, count: 0, avgTotal: null, minTotal: null, maxTotal: null };
+            const totals = rows.map(r => r.total);
+            return {
+                carrier,
+                count: rows.length,
+                avgTotal: Math.round(rows.reduce((s, r) => s + r.total, 0) / rows.length),
+                minTotal: Math.min(...totals),
+                maxTotal: Math.max(...totals),
+            };
+        });
+        // Find the carrier with the lowest avg for this trayecto
+        const minAvg = Math.min(...carrierStats.filter(c => c.avgTotal !== null).map(c => c.avgTotal as number));
+        return { trayecto, carrierStats, minAvg };
     });
 
     if (!availableCarriers.length) return (
@@ -358,13 +387,13 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
 
     if (isLoading) return (
         <div className="flex items-center justify-center h-64 gap-2 text-muted-foreground">
-            <Loader2 className="animate-spin h-6 w-6" /> Cargando tarifas de todas las transportadoras...
+            <Loader2 className="animate-spin h-6 w-6" /> Cargando tarifas y municipios...
         </div>
     );
 
     return (
         <div className="space-y-4">
-            {/* Summary cards */}
+            {/* Carrier summary cards */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 {availableCarriers.map(carrier => {
                     const rates = allRates[carrier] || [];
@@ -378,18 +407,69 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                                 <ScoreBadge score={score} />
                             </div>
                             <p className="text-xs text-muted-foreground mt-1">{rates.length} municipios</p>
-                            <p className="text-sm font-bold mt-1">{fmt(Math.round(avg))} <span className="text-xs font-normal text-muted-foreground">prom.</span></p>
+                            <p className="text-sm font-bold mt-1">{fmt(Math.round(avg))} <span className="text-xs font-normal text-muted-foreground">prom. total</span></p>
                             <p className="text-xs text-muted-foreground">Act: {fmtDate(meta?.lastUpdated)}</p>
                         </Card>
                     );
                 })}
             </div>
 
+            {/* Trayecto summary */}
+            {trayectoSummary.length > 0 && (
+                <Card>
+                    <CardHeader className="pb-2 cursor-pointer flex flex-row items-center justify-between" onClick={() => setShowSummary(s => !s)}>
+                        <CardTitle className="text-base flex items-center gap-2">
+                            <BarChart3 className="h-4 w-4" /> Resumen por Tipo de Trayecto
+                        </CardTitle>
+                        <span className="text-xs text-muted-foreground">{showSummary ? 'Ocultar ▲' : 'Mostrar ▼'}</span>
+                    </CardHeader>
+                    {showSummary && (
+                        <CardContent className="pt-0 space-y-4">
+                            {trayectoSummary.map(({ trayecto, carrierStats, minAvg }) => (
+                                <div key={trayecto}>
+                                    <h4 className="text-sm font-semibold mb-2 text-muted-foreground">{trayecto}</h4>
+                                    <div className="overflow-x-auto">
+                                        <Table>
+                                            <TableHeader>
+                                                <TableRow>
+                                                    <TableHead>Transportadora</TableHead>
+                                                    <TableHead className="text-right">Municipios</TableHead>
+                                                    <TableHead className="text-right">Total Mín.</TableHead>
+                                                    <TableHead className="text-right">Total Prom.</TableHead>
+                                                    <TableHead className="text-right">Total Máx.</TableHead>
+                                                </TableRow>
+                                            </TableHeader>
+                                            <TableBody>
+                                                {carrierStats.map(stat => {
+                                                    const isBest = stat.avgTotal !== null && stat.avgTotal === minAvg;
+                                                    return (
+                                                        <TableRow key={stat.carrier} className={isBest ? 'bg-green-50 dark:bg-green-950' : ''}>
+                                                            <TableCell className="font-medium text-sm">
+                                                                {stat.carrier}
+                                                                {isBest && <span className="ml-2 text-xs text-green-600 font-semibold">★ más económico</span>}
+                                                            </TableCell>
+                                                            <TableCell className="text-right text-sm">{stat.count || '—'}</TableCell>
+                                                            <TableCell className="text-right text-sm">{stat.minTotal !== null ? fmt(stat.minTotal) : '—'}</TableCell>
+                                                            <TableCell className={`text-right text-sm font-bold ${isBest ? 'text-green-700 dark:text-green-400' : ''}`}>{stat.avgTotal !== null ? fmt(stat.avgTotal) : '—'}</TableCell>
+                                                            <TableCell className="text-right text-sm">{stat.maxTotal !== null ? fmt(stat.maxTotal) : '—'}</TableCell>
+                                                        </TableRow>
+                                                    );
+                                                })}
+                                            </TableBody>
+                                        </Table>
+                                    </div>
+                                </div>
+                            ))}
+                        </CardContent>
+                    )}
+                </Card>
+            )}
+
             {/* Filters */}
             <div className="flex flex-col sm:flex-row gap-3">
                 <div className="flex items-center gap-2 flex-1">
                     <Search className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                    <Input placeholder="Buscar por código de municipio..." value={search} onChange={e => setSearch(e.target.value)} />
+                    <Input placeholder="Buscar por código, municipio o departamento..." value={search} onChange={e => setSearch(e.target.value)} />
                 </div>
                 <Select value={trayectoFilter} onValueChange={setTrayectoFilter}>
                     <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
@@ -397,12 +477,14 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                 </Select>
             </div>
 
-            {/* Comparison table */}
+            {/* Detail comparison table */}
             <div className="overflow-x-auto rounded-lg border">
                 <Table>
                     <TableHeader>
                         <TableRow>
-                            <TableHead className="sticky left-0 bg-background z-10 min-w-[120px]">Cód. Municipio</TableHead>
+                            <TableHead className="sticky left-0 bg-background z-10 min-w-[90px]">Código</TableHead>
+                            <TableHead className="min-w-[160px]">Municipio</TableHead>
+                            <TableHead className="min-w-[130px]">Departamento</TableHead>
                             <TableHead className="min-w-[100px]">Trayecto</TableHead>
                             {availableCarriers.map(c => (
                                 <TableHead key={c} className="text-center min-w-[200px]" colSpan={4}>
@@ -416,17 +498,19 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                     </TableHeader>
                     <TableBody>
                         {filtered.slice(0, 200).map(code => {
-                            // Find the minimum total for this municipio across all carriers
                             const totals = availableCarriers.map(c => {
                                 const r = (allRates[c] || []).find(x => x.codigoMunicipio === code);
                                 return r ? r.total : Infinity;
                             });
                             const minTotal = Math.min(...totals);
                             const sampleRow = Object.values(allRates).flatMap(r => r).find(r => r.codigoMunicipio === code);
+                            const mun = getMunInfo(code);
 
                             return (
                                 <TableRow key={code}>
                                     <TableCell className="sticky left-0 bg-background z-10 font-mono text-xs font-semibold">{code}</TableCell>
+                                    <TableCell className="text-xs font-medium">{mun.nombre}</TableCell>
+                                    <TableCell className="text-xs text-muted-foreground">{mun.departamento}</TableCell>
                                     <TableCell className="text-xs">{sampleRow?.tipoTrayecto || '—'}</TableCell>
                                     {availableCarriers.map(c => {
                                         const r = (allRates[c] || []).find(x => x.codigoMunicipio === code);
@@ -448,7 +532,7 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                             );
                         })}
                         {filtered.length === 0 && (
-                            <TableRow><TableCell colSpan={2 + availableCarriers.length * 4} className="text-center text-muted-foreground py-8">Sin resultados para los filtros actuales.</TableCell></TableRow>
+                            <TableRow><TableCell colSpan={4 + availableCarriers.length * 4} className="text-center text-muted-foreground py-8">Sin resultados para los filtros actuales.</TableCell></TableRow>
                         )}
                     </TableBody>
                 </Table>
@@ -457,6 +541,7 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
         </div>
     );
 };
+
 
 // ===========================================================================
 // TAB 3 — Ponderación de Transportadoras

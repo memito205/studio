@@ -3166,3 +3166,22 @@ export async function getCarrierScores(): Promise<{
         return { success: false, error: error.message };
     }
 }
+
+/** Returns all municipios as a lookup map keyed by codigo */
+export async function getMunicipiosMap(): Promise<{
+    success: boolean;
+    data?: Record<string, { nombre: string; departamento: string }>;
+    error?: string;
+}> {
+    try {
+        const snap = await getDocs(collection(firestore, 'municipios'));
+        const map: Record<string, { nombre: string; departamento: string }> = {};
+        snap.docs.forEach(d => {
+            const v = d.data();
+            map[d.id] = { nombre: v.nombre || v.Municipio || d.id, departamento: v.departamento || v.Departamento || '' };
+        });
+        return { success: true, data: map };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
