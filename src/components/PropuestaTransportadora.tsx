@@ -319,6 +319,7 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
     const [trayectoFilter, setTrayectoFilter] = useState('Todos');
     const [search, setSearch] = useState('');
     const [showSummary, setShowSummary] = useState(true);
+    const [showDetalle, setShowDetalle] = useState(false);
 
     const availableCarriers = carriersMetadata.map(m => m.carrier);
 
@@ -465,39 +466,54 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                 </Card>
             )}
 
-            {/* Filters */}
-            <div className="flex flex-col sm:flex-row gap-3">
+            {/* Filters + view toggle */}
+            <div className="flex flex-col sm:flex-row gap-3 items-center">
                 <div className="flex items-center gap-2 flex-1">
                     <Search className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                     <Input placeholder="Buscar por código, municipio o departamento..." value={search} onChange={e => setSearch(e.target.value)} />
                 </div>
                 <Select value={trayectoFilter} onValueChange={setTrayectoFilter}>
-                    <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
                     <SelectContent>{TRAYECTO_OPTIONS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
                 </Select>
+                <Button
+                    variant="outline"
+                    size="sm"
+                    className="whitespace-nowrap"
+                    onClick={() => setShowDetalle(v => !v)}
+                >
+                    {showDetalle ? 'Vista compacta' : 'Ver desglose'}
+                </Button>
             </div>
 
             {/* Detail comparison table */}
-            <div className="overflow-x-auto rounded-lg border">
+            <div className="overflow-x-auto rounded-lg border max-h-[60vh] overflow-y-auto">
                 <Table>
-                    <TableHeader>
+                    <TableHeader className="sticky top-0 bg-background z-20">
                         <TableRow>
-                            <TableHead className="sticky left-0 bg-background z-10 min-w-[90px]">Código</TableHead>
-                            <TableHead className="min-w-[160px]">Municipio</TableHead>
-                            <TableHead className="min-w-[130px]">Departamento</TableHead>
-                            <TableHead className="min-w-[100px]">Trayecto</TableHead>
+                            <TableHead className="sticky left-0 bg-background z-30 min-w-[90px]">Código</TableHead>
+                            <TableHead className="min-w-[150px]">Municipio</TableHead>
+                            <TableHead className="min-w-[120px]">Departamento</TableHead>
+                            <TableHead className="min-w-[90px]">Trayecto</TableHead>
                             {availableCarriers.map(c => (
-                                <TableHead key={c} className="text-center min-w-[200px]" colSpan={4}>
-                                    <div className="font-bold">{c}</div>
-                                    <div className="grid grid-cols-4 text-xs font-normal text-muted-foreground mt-1">
-                                        <span>Flete</span><span>IVA</span><span>Margen</span><span className="font-semibold text-foreground">Total</span>
-                                    </div>
-                                </TableHead>
+                                showDetalle ? (
+                                    <TableHead key={c} className="text-center min-w-[200px]" colSpan={4}>
+                                        <div className="font-bold truncate max-w-[200px]">{c}</div>
+                                        <div className="grid grid-cols-4 text-xs font-normal text-muted-foreground mt-1">
+                                            <span>Flete</span><span>IVA</span><span>Margen</span><span className="font-semibold text-foreground">Total</span>
+                                        </div>
+                                    </TableHead>
+                                ) : (
+                                    <TableHead key={c} className="text-right min-w-[110px]">
+                                        <div className="font-bold truncate text-xs">{c}</div>
+                                        <div className="text-xs font-normal text-muted-foreground">Total</div>
+                                    </TableHead>
+                                )
                             ))}
                         </TableRow>
                     </TableHeader>
                     <TableBody>
-                        {filtered.slice(0, 200).map(code => {
+                        {filtered.slice(0, 300).map(code => {
                             const totals = availableCarriers.map(c => {
                                 const r = (allRates[c] || []).find(x => x.codigoMunicipio === code);
                                 return r ? r.total : Infinity;
@@ -515,16 +531,24 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                                     {availableCarriers.map(c => {
                                         const r = (allRates[c] || []).find(x => x.codigoMunicipio === code);
                                         const isMin = r && r.total === minTotal;
+                                        if (showDetalle) {
+                                            return (
+                                                <TableCell key={c} colSpan={4} className={`text-xs ${isMin ? 'bg-green-50 dark:bg-green-950' : ''}`}>
+                                                    {r ? (
+                                                        <div className="grid grid-cols-4 gap-1">
+                                                            <span>{fmt(r.flete)}</span>
+                                                            <span>{fmt(r.iva)}</span>
+                                                            <span>{fmt(r.margenLogisticaInversa)}</span>
+                                                            <span className={`font-bold ${isMin ? 'text-green-700 dark:text-green-400' : ''}`}>{fmt(r.total)}</span>
+                                                        </div>
+                                                    ) : <span className="text-muted-foreground text-center block">—</span>}
+                                                </TableCell>
+                                            );
+                                        }
+                                        // Compact: just total
                                         return (
-                                            <TableCell key={c} colSpan={4} className={`text-xs ${isMin ? 'bg-green-50 dark:bg-green-950' : ''}`}>
-                                                {r ? (
-                                                    <div className="grid grid-cols-4 gap-1">
-                                                        <span>{fmt(r.flete)}</span>
-                                                        <span>{fmt(r.iva)}</span>
-                                                        <span>{fmt(r.margenLogisticaInversa)}</span>
-                                                        <span className={`font-bold ${isMin ? 'text-green-700 dark:text-green-400' : ''}`}>{fmt(r.total)}</span>
-                                                    </div>
-                                                ) : <span className="text-muted-foreground text-center block">—</span>}
+                                            <TableCell key={c} className={`text-right text-xs font-bold ${isMin ? 'bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-400' : ''}`}>
+                                                {r ? fmt(r.total) : <span className="text-muted-foreground font-normal">—</span>}
                                             </TableCell>
                                         );
                                     })}
@@ -532,15 +556,16 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                             );
                         })}
                         {filtered.length === 0 && (
-                            <TableRow><TableCell colSpan={4 + availableCarriers.length * 4} className="text-center text-muted-foreground py-8">Sin resultados para los filtros actuales.</TableCell></TableRow>
+                            <TableRow><TableCell colSpan={4 + availableCarriers.length * (showDetalle ? 4 : 1)} className="text-center text-muted-foreground py-8">Sin resultados para los filtros actuales.</TableCell></TableRow>
                         )}
                     </TableBody>
                 </Table>
-                {filtered.length > 200 && <p className="text-xs text-muted-foreground text-center py-2">Mostrando 200 de {filtered.length} municipios. Usa el buscador para refinar.</p>}
+                {filtered.length > 300 && <p className="text-xs text-muted-foreground text-center py-2">Mostrando 300 de {filtered.length} municipios. Usa el buscador para refinar.</p>}
             </div>
         </div>
     );
 };
+
 
 
 // ===========================================================================
