@@ -319,7 +319,7 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
     const [trayectoFilter, setTrayectoFilter] = useState('Todos');
     const [search, setSearch] = useState('');
     const [showSummary, setShowSummary] = useState(true);
-    const [showDetalle, setShowDetalle] = useState(false);
+    const [expandedCarriers, setExpandedCarriers] = useState<Set<string>>(new Set());
 
     const availableCarriers = carriersMetadata.map(m => m.carrier);
 
@@ -466,7 +466,7 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                 </Card>
             )}
 
-            {/* Filters + view toggle */}
+            {/* Filters */}
             <div className="flex flex-col sm:flex-row gap-3 items-center">
                 <div className="flex items-center gap-2 flex-1">
                     <Search className="h-4 w-4 text-muted-foreground flex-shrink-0" />
@@ -476,51 +476,69 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                     <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
                     <SelectContent>{TRAYECTO_OPTIONS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
                 </Select>
-                <Button
-                    variant="outline"
-                    size="sm"
-                    className="whitespace-nowrap"
-                    onClick={() => setShowDetalle(v => !v)}
-                >
-                    {showDetalle ? 'Vista compacta' : 'Ver desglose'}
-                </Button>
+                <p className="text-xs text-muted-foreground whitespace-nowrap">Haz clic en <strong>+</strong> en cada carrier para ver desglose</p>
             </div>
 
             {/* Detail comparison table */}
-            <div className="overflow-x-auto rounded-lg border max-h-[60vh] overflow-y-auto">
+            <div className="overflow-x-auto rounded-lg border max-h-[62vh] overflow-y-auto">
                 <Table>
                     <TableHeader className="sticky top-0 bg-background z-20">
                         <TableRow>
                             <TableHead className="sticky left-0 bg-background z-30 min-w-[90px]">Código</TableHead>
                             <TableHead className="min-w-[150px]">Municipio</TableHead>
-                            <TableHead className="min-w-[120px]">Departamento</TableHead>
-                            <TableHead className="min-w-[90px]">Trayecto</TableHead>
-                            {availableCarriers.map(c => (
-                                showDetalle ? (
-                                    <TableHead key={c} className="text-center min-w-[200px]" colSpan={4}>
-                                        <div className="font-bold truncate max-w-[200px]">{c}</div>
-                                        <div className="grid grid-cols-4 text-xs font-normal text-muted-foreground mt-1">
+                            <TableHead className="min-w-[110px]">Depto.</TableHead>
+                            <TableHead className="min-w-[80px]">Trayecto</TableHead>
+                            {availableCarriers.map(c => {
+                                const isExpanded = expandedCarriers.has(c);
+                                return isExpanded ? (
+                                    <TableHead key={c} className="text-center min-w-[190px]" colSpan={4}>
+                                        <div className="flex items-center justify-center gap-1">
+                                            <span className="font-bold text-xs truncate max-w-[130px]">{c}</span>
+                                            <button
+                                                onClick={() => setExpandedCarriers(prev => { const s = new Set(prev); s.delete(c); return s; })}
+                                                className="text-xs text-muted-foreground hover:text-foreground border rounded px-1 leading-none flex-shrink-0"
+                                                title="Colapsar desglose"
+                                            >−</button>
+                                        </div>
+                                        <div className="grid grid-cols-4 text-xs font-normal text-muted-foreground mt-0.5">
                                             <span>Flete</span><span>IVA</span><span>Margen</span><span className="font-semibold text-foreground">Total</span>
                                         </div>
                                     </TableHead>
                                 ) : (
-                                    <TableHead key={c} className="text-right min-w-[110px]">
-                                        <div className="font-bold truncate text-xs">{c}</div>
+                                    <TableHead key={c} className="text-right min-w-[100px]">
+                                        <div className="flex items-center justify-end gap-1">
+                                            <span className="font-bold text-xs truncate max-w-[70px]">{c}</span>
+                                            <button
+                                                onClick={() => setExpandedCarriers(prev => new Set([...prev, c]))}
+                                                className="text-xs text-muted-foreground hover:text-foreground border rounded px-1 leading-none flex-shrink-0"
+                                                title="Ver desglose"
+                                            >+</button>
+                                        </div>
                                         <div className="text-xs font-normal text-muted-foreground">Total</div>
                                     </TableHead>
-                                )
-                            ))}
+                                );
+                            })}
                         </TableRow>
                     </TableHeader>
                     <TableBody>
                         {filtered.slice(0, 300).map(code => {
-                            const totals = availableCarriers.map(c => {
-                                const r = (allRates[c] || []).find(x => x.codigoMunicipio === code);
-                                return r ? r.total : Infinity;
-                            });
-                            const minTotal = Math.min(...totals);
-                            const sampleRow = Object.values(allRates).flatMap(r => r).find(r => r.codigoMunicipio === code);
+                            // Build sorted ranking for this row (only carriers with data)
+                            const withData = availableCarriers
+                                .map(c => ({ c, r: (allRates[c] || []).find(x => x.codigoMunicipio === code) }))
+                                .filter(({ r }) => r !== undefined) as { c: string; r: CarrierRateRow }[];
+                            const sorted = [...withData].sort((a, b) => a.r.total - b.r.total);
+                            const rankMap = new Map<string, number>();
+                            sorted.forEach(({ c }, idx) => rankMap.set(c, idx + 1));
+
+                            const sampleRow = withData[0]?.r;
                             const mun = getMunInfo(code);
+
+                            const rankStyle = (rank: number) => {
+                                if (rank === 1) return { bg: 'bg-green-50 dark:bg-green-950', text: 'text-green-700 dark:text-green-400', badge: 'bg-green-600' };
+                                if (rank === 2) return { bg: 'bg-amber-50 dark:bg-amber-950', text: 'text-amber-700 dark:text-amber-400', badge: 'bg-amber-500' };
+                                if (rank === 3) return { bg: 'bg-orange-50 dark:bg-orange-950', text: 'text-orange-700 dark:text-orange-400', badge: 'bg-orange-500' };
+                                return { bg: '', text: 'text-muted-foreground', badge: 'bg-slate-400' };
+                            };
 
                             return (
                                 <TableRow key={code}>
@@ -530,25 +548,43 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                                     <TableCell className="text-xs">{sampleRow?.tipoTrayecto || '—'}</TableCell>
                                     {availableCarriers.map(c => {
                                         const r = (allRates[c] || []).find(x => x.codigoMunicipio === code);
-                                        const isMin = r && r.total === minTotal;
-                                        if (showDetalle) {
+                                        const rank = rankMap.get(c);
+                                        const style = rank ? rankStyle(rank) : { bg: '', text: '', badge: '' };
+                                        const isExpanded = expandedCarriers.has(c);
+
+                                        if (!r) {
+                                            return isExpanded
+                                                ? <TableCell key={c} colSpan={4} className="text-center text-xs text-muted-foreground">—</TableCell>
+                                                : <TableCell key={c} className="text-center text-xs text-muted-foreground">—</TableCell>;
+                                        }
+
+                                        const rankBadge = rank !== undefined && withData.length > 1 ? (
+                                            <span className={`inline-flex items-center justify-center w-4 h-4 rounded-full text-white text-[10px] font-bold flex-shrink-0 ${style.badge}`}>
+                                                {rank}
+                                            </span>
+                                        ) : null;
+
+                                        if (isExpanded) {
                                             return (
-                                                <TableCell key={c} colSpan={4} className={`text-xs ${isMin ? 'bg-green-50 dark:bg-green-950' : ''}`}>
-                                                    {r ? (
-                                                        <div className="grid grid-cols-4 gap-1">
-                                                            <span>{fmt(r.flete)}</span>
-                                                            <span>{fmt(r.iva)}</span>
-                                                            <span>{fmt(r.margenLogisticaInversa)}</span>
-                                                            <span className={`font-bold ${isMin ? 'text-green-700 dark:text-green-400' : ''}`}>{fmt(r.total)}</span>
-                                                        </div>
-                                                    ) : <span className="text-muted-foreground text-center block">—</span>}
+                                                <TableCell key={c} colSpan={4} className={`text-xs ${style.bg}`}>
+                                                    <div className="grid grid-cols-4 gap-1 items-center">
+                                                        <span>{fmt(r.flete)}</span>
+                                                        <span>{fmt(r.iva)}</span>
+                                                        <span>{fmt(r.margenLogisticaInversa)}</span>
+                                                        <span className={`font-bold flex items-center gap-1 ${style.text}`}>
+                                                            {fmt(r.total)} {rankBadge}
+                                                        </span>
+                                                    </div>
                                                 </TableCell>
                                             );
                                         }
-                                        // Compact: just total
+                                        // Compact
                                         return (
-                                            <TableCell key={c} className={`text-right text-xs font-bold ${isMin ? 'bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-400' : ''}`}>
-                                                {r ? fmt(r.total) : <span className="text-muted-foreground font-normal">—</span>}
+                                            <TableCell key={c} className={`text-right text-xs ${style.bg}`}>
+                                                <div className="flex items-center justify-end gap-1">
+                                                    {rankBadge}
+                                                    <span className={`font-bold ${style.text}`}>{fmt(r.total)}</span>
+                                                </div>
                                             </TableCell>
                                         );
                                     })}
@@ -556,7 +592,11 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                             );
                         })}
                         {filtered.length === 0 && (
-                            <TableRow><TableCell colSpan={4 + availableCarriers.length * (showDetalle ? 4 : 1)} className="text-center text-muted-foreground py-8">Sin resultados para los filtros actuales.</TableCell></TableRow>
+                            <TableRow>
+                                <TableCell colSpan={4 + availableCarriers.reduce((s, c) => s + (expandedCarriers.has(c) ? 4 : 1), 0)} className="text-center text-muted-foreground py-8">
+                                    Sin resultados para los filtros actuales.
+                                </TableCell>
+                            </TableRow>
                         )}
                     </TableBody>
                 </Table>
@@ -565,6 +605,8 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
         </div>
     );
 };
+
+
 
 
 
