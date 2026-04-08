@@ -3185,3 +3185,24 @@ export async function getMunicipiosMap(): Promise<{
         return { success: false, error: error.message };
     }
 }
+
+/** Saves per-carrier insurance rate percentages (e.g. { Servientrega: 0.8, Coordinadora: 0.5 }) */
+export async function saveCarrierInsuranceConfig(config: Record<string, number>): Promise<{ success: boolean; error?: string }> {
+    try {
+        await setDoc(doc(firestore, 'carrierConfig', 'insurance'), { rates: config, updatedAt: new Date() });
+        return { success: true };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+/** Reads per-carrier insurance rate percentages */
+export async function getCarrierInsuranceConfig(): Promise<{ success: boolean; data?: Record<string, number>; error?: string }> {
+    try {
+        const snap = await getDoc(doc(firestore, 'carrierConfig', 'insurance'));
+        if (!snap.exists()) return { success: true, data: {} };
+        return { success: true, data: (snap.data().rates as Record<string, number>) || {} };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}

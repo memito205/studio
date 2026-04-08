@@ -16,7 +16,7 @@ import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import {
     ArrowLeft, UploadCloud, Loader2, GitCompareArrows, Database,
-    TrendingUp, TrendingDown, Eye, Save, Star, BarChart3, Search, Trophy,
+    TrendingUp, TrendingDown, Eye, Save, Star, BarChart3, Search, Trophy, Calculator, Shield,
 } from 'lucide-react';
 import {
     saveMunicipios,
@@ -29,6 +29,8 @@ import {
     getCarrierProposalById,
     saveCarrierScores,
     getCarrierScores,
+    saveCarrierInsuranceConfig,
+    getCarrierInsuranceConfig,
     CarrierRateRow,
     CarrierProposal,
     CarrierScoreConfig,
@@ -148,11 +150,39 @@ const ScoreBadge: React.FC<{ score: number | null }> = ({ score }) => {
 const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?: Date; count: number }[]; onRatesUploaded: () => void }> = ({ carriersMetadata, onRatesUploaded }) => {
     const { toast } = useToast();
     const [selectedCarrier, setSelectedCarrier] = useState('');
-    const [margenOverride, setMargenOverride] = useState<string>(''); // monetary value COP
+    const [margenOverride, setMargenOverride] = useState<string>('');
     const [isUploadingMunicipios, setIsUploadingMunicipios] = useState(false);
     const [isUploadingRates, setIsUploadingRates] = useState(false);
+    const [insuranceRates, setInsuranceRates] = useState<Record<string, string>>({}); // % strings per carrier
+    const [isSavingInsurance, setIsSavingInsurance] = useState(false);
     const munRef = useRef<HTMLInputElement>(null);
     const ratesRef = useRef<HTMLInputElement>(null);
+
+    // Load existing insurance config on mount
+    useEffect(() => {
+        getCarrierInsuranceConfig().then(r => {
+            if (r.success && r.data) {
+                const strMap: Record<string, string> = {};
+                Object.entries(r.data).forEach(([k, v]) => { strMap[k] = String(v); });
+                setInsuranceRates(strMap);
+            }
+        });
+    }, []);
+
+    const handleSaveInsurance = async () => {
+        setIsSavingInsurance(true);
+        try {
+            const numMap: Record<string, number> = {};
+            Object.entries(insuranceRates).forEach(([k, v]) => {
+                const n = parseFloat(v);
+                if (!isNaN(n) && n >= 0) numMap[k] = n;
+            });
+            const result = await saveCarrierInsuranceConfig(numMap);
+            if (result.success) toast({ title: 'Tarifas de seguro guardadas' });
+            else throw new Error(result.error);
+        } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
+        finally { setIsSavingInsurance(false); }
+    };
 
     const handleMunicipiosUpload = async (e: ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0]; if (!file) return;
@@ -278,6 +308,43 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
                 </CardContent>
             </Card>
 
+            {/* Insurance rates per carrier */}
+            <Card>
+                <CardHeader>
+                    <CardTitle className="flex items-center gap-2"><Shield className="h-4 w-4" /> Tarifa de Seguro por Transportadora</CardTitle>
+                    <CardDescription>
+                        Porcentaje aplicado sobre el <strong>valor del producto</strong> para calcular el costo de seguro en el simulador.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    {CARRIERS.map(carrier => (
+                        <div key={carrier} className="flex items-center gap-3">
+                            <Label className="w-36 flex-shrink-0 text-sm font-medium">{carrier}</Label>
+                            <div className="relative w-36">
+                                <Input
+                                    type="number"
+                                    min={0}
+                                    max={10}
+                                    step={0.01}
+                                    placeholder="Ej: 0.8"
+                                    value={insuranceRates[carrier] ?? ''}
+                                    onChange={e => setInsuranceRates(prev => ({ ...prev, [carrier]: e.target.value }))}
+                                    className="pr-6"
+                                />
+                                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">%</span>
+                            </div>
+                            <span className="text-xs text-muted-foreground">
+                                {insuranceRates[carrier] ? `$${(10000 * parseFloat(insuranceRates[carrier] || '0') / 100).toLocaleString('es-CO')} por cada $10.000 de valor` : ''}
+                            </span>
+                        </div>
+                    ))}
+                    <Button onClick={handleSaveInsurance} disabled={isSavingInsurance}>
+                        {isSavingInsurance && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Guardar tarifas de seguro
+                    </Button>
+                </CardContent>
+            </Card>
+
             {/* Status de carriers cargados */}
             {carriersMetadata.length > 0 && (
                 <Card>
@@ -301,6 +368,248 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
                                 ))}
                             </TableBody>
                         </Table>
+                    </CardContent>
+                </Card>
+            )}
+        </div>
+    );
+};
+
+// ===========================================================================
+// TAB — Simulador de Costos de Envío
+// ===========================================================================
+interface SimResult {
+    carrier: string;
+    flete: number;
+    iva: number;
+    margen: number;
+    seguro: number;
+    total: number;
+}
+
+const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[] }> = ({ carriersMetadata }) => {
+    const { toast } = useToast();
+    const [munMap, setMunMap] = useState<Record<string, { nombre: string; departamento: string }>>({});
+    const [allRates, setAllRates] = useState<Record<string, CarrierRateRow[]>>({});
+    const [insuranceConfig, setInsuranceConfig] = useState<Record<string, number>>({});
+    const [isLoading, setIsLoading] = useState(true);
+    const [searchText, setSearchText] = useState('');
+    const [selectedCode, setSelectedCode] = useState('');
+    const [productValue, setProductValue] = useState('');
+    const [results, setResults] = useState<SimResult[]>([]);
+    const [showSuggestions, setShowSuggestions] = useState(false);
+
+    const availableCarriers = carriersMetadata.map(m => m.carrier);
+
+    useEffect(() => {
+        setIsLoading(true);
+        Promise.all([
+            Promise.all(availableCarriers.map(c => getCarrierCurrentRates(c).then(r => ({ carrier: c, rates: r.data?.rates || [] })))),
+            getMunicipiosMap(),
+            getCarrierInsuranceConfig(),
+        ]).then(([ratesResults, munResult, insuranceResult]) => {
+            const rMap: Record<string, CarrierRateRow[]> = {};
+            (ratesResults as { carrier: string; rates: CarrierRateRow[] }[]).forEach(({ carrier, rates }) => { rMap[carrier] = rates; });
+            setAllRates(rMap);
+            if (munResult.success) setMunMap(munResult.data || {});
+            if (insuranceResult.success) setInsuranceConfig(insuranceResult.data || {});
+        }).catch(() => toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los datos.' }))
+          .finally(() => setIsLoading(false));
+    }, [carriersMetadata]);
+
+    // Suggestions autocomplete
+    const suggestions = searchText.length >= 2
+        ? Object.entries(munMap)
+            .filter(([code, info]) => {
+                const q = searchText.toLowerCase();
+                return info.nombre.toLowerCase().includes(q) || code.includes(q) || info.departamento.toLowerCase().includes(q);
+            })
+            .slice(0, 10)
+        : [];
+
+    const selectMunicipio = (code: string) => {
+        const info = munMap[code];
+        setSelectedCode(code);
+        setSearchText(info ? `${info.nombre} (${code})` : code);
+        setShowSuggestions(false);
+        setResults([]);
+    };
+
+    const simulate = () => {
+        if (!selectedCode) { toast({ variant: 'destructive', title: 'Selecciona un destino' }); return; }
+        const val = parseFloat(productValue.replace(/[^0-9.]/g, ''));
+        if (isNaN(val) || val <= 0) { toast({ variant: 'destructive', title: 'Ingresa el valor del producto' }); return; }
+
+        const sim: SimResult[] = availableCarriers.map(carrier => {
+            const row = (allRates[carrier] || []).find(r => r.codigoMunicipio === selectedCode);
+            if (!row) return { carrier, flete: 0, iva: 0, margen: 0, seguro: 0, total: 0 };
+            const insurancePct = insuranceConfig[carrier] ?? 0;
+            const seguro = Math.round(val * insurancePct / 100);
+            return {
+                carrier,
+                flete: row.flete,
+                iva: row.iva,
+                margen: row.margenLogisticaInversa,
+                seguro,
+                total: row.total + seguro,
+            };
+        }).filter(r => r.flete > 0 || r.seguro > 0);
+
+        const sorted = [...sim].sort((a, b) => a.total - b.total);
+        setResults(sorted);
+    };
+
+    const rankColors = ['bg-green-50 dark:bg-green-950', 'bg-amber-50 dark:bg-amber-950', 'bg-orange-50 dark:bg-orange-950', ''];
+    const rankBadgeColors = ['bg-green-600', 'bg-amber-500', 'bg-orange-500', 'bg-slate-400'];
+    const rankTextColors = ['text-green-700 dark:text-green-400', 'text-amber-700 dark:text-amber-400', 'text-orange-600 dark:text-orange-400', 'text-muted-foreground'];
+
+    if (isLoading) return (
+        <div className="flex items-center justify-center h-64 gap-2 text-muted-foreground">
+            <Loader2 className="animate-spin h-6 w-6" /> Cargando datos para el simulador...
+        </div>
+    );
+
+    if (!availableCarriers.length) return (
+        <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-2">
+            <Database className="h-10 w-10" />
+            <p>No hay tarifas cargadas. Carga tarifas en el Tab "Datos Base" primero.</p>
+        </div>
+    );
+
+    const munInfo = selectedCode ? munMap[selectedCode] : null;
+
+    return (
+        <div className="space-y-6">
+            <Card>
+                <CardHeader>
+                    <CardTitle className="flex items-center gap-2"><Calculator className="h-5 w-5" /> Simulador de Costos de Envío</CardTitle>
+                    <CardDescription>Selecciona el destino e ingresa el valor del producto para ver la liquidación completa por cada transportadora.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {/* Municipio autocomplete */}
+                        <div className="md:col-span-2 space-y-2 relative">
+                            <Label htmlFor="sim-mun">Municipio de destino</Label>
+                            <div className="relative">
+                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                                <Input
+                                    id="sim-mun"
+                                    className="pl-9"
+                                    placeholder="Escribe el nombre o código del municipio..."
+                                    value={searchText}
+                                    onChange={e => { setSearchText(e.target.value); setSelectedCode(''); setShowSuggestions(true); setResults([]); }}
+                                    onFocus={() => setShowSuggestions(true)}
+                                    autoComplete="off"
+                                />
+                            </div>
+                            {showSuggestions && suggestions.length > 0 && (
+                                <div className="absolute z-50 w-full bg-background border rounded-lg shadow-lg top-full mt-1 max-h-60 overflow-y-auto">
+                                    {suggestions.map(([code, info]) => (
+                                        <button
+                                            key={code}
+                                            className="w-full text-left px-4 py-2.5 hover:bg-muted text-sm flex justify-between items-center"
+                                            onMouseDown={() => selectMunicipio(code)}
+                                        >
+                                            <span className="font-medium">{info.nombre}</span>
+                                            <span className="text-xs text-muted-foreground">{info.departamento} · {code}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Product value */}
+                        <div className="space-y-2">
+                            <Label htmlFor="sim-valor">Valor del producto ($ COP)</Label>
+                            <div className="relative">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm font-semibold">$</span>
+                                <Input
+                                    id="sim-valor"
+                                    type="number"
+                                    min={0}
+                                    step={1000}
+                                    placeholder="Ej: 150000"
+                                    value={productValue}
+                                    onChange={e => { setProductValue(e.target.value); setResults([]); }}
+                                    className="pl-7"
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    <Button className="mt-4 w-full md:w-auto" onClick={simulate} disabled={!selectedCode || !productValue}>
+                        <Calculator className="mr-2 h-4 w-4" /> Calcular costos
+                    </Button>
+                </CardContent>
+            </Card>
+
+            {/* Results */}
+            {results.length > 0 && (
+                <Card>
+                    <CardHeader>
+                        <CardTitle className="text-base">
+                            Liquidación para <span className="text-primary">{munInfo?.nombre ?? selectedCode}</span>
+                            {munInfo && <span className="text-sm font-normal text-muted-foreground ml-2">— {munInfo.departamento}</span>}
+                        </CardTitle>
+                        <CardDescription>
+                            Producto valorado en <strong>{fmt(parseFloat(productValue))}</strong>
+                            {Object.values(insuranceConfig).some(v => v > 0) && ' · El seguro se calcula sobre el valor del producto'}
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead className="w-8">#</TableHead>
+                                    <TableHead>Transportadora</TableHead>
+                                    <TableHead className="text-right">Flete</TableHead>
+                                    <TableHead className="text-right">IVA</TableHead>
+                                    <TableHead className="text-right">Margen Log. Inv.</TableHead>
+                                    <TableHead className="text-right">
+                                        <div className="flex items-center justify-end gap-1">
+                                            <Shield className="h-3 w-3" /> Seguro
+                                        </div>
+                                    </TableHead>
+                                    <TableHead className="text-right font-bold">TOTAL</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {results.map((r, idx) => {
+                                    const colorIdx = Math.min(idx, 3);
+                                    const insurancePct = insuranceConfig[r.carrier] ?? 0;
+                                    return (
+                                        <TableRow key={r.carrier} className={rankColors[colorIdx]}>
+                                            <TableCell>
+                                                <span className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-white text-[10px] font-bold ${rankBadgeColors[colorIdx]}`}>
+                                                    {idx + 1}
+                                                </span>
+                                            </TableCell>
+                                            <TableCell className="font-medium">
+                                                {r.carrier}
+                                                {idx === 0 && <span className="ml-2 text-xs text-green-600 font-semibold">★ más económico</span>}
+                                            </TableCell>
+                                            <TableCell className="text-right text-sm">{fmt(r.flete)}</TableCell>
+                                            <TableCell className="text-right text-sm">{fmt(r.iva)}</TableCell>
+                                            <TableCell className="text-right text-sm">{fmt(r.margen)}</TableCell>
+                                            <TableCell className="text-right text-sm">
+                                                {r.seguro > 0 ? fmt(r.seguro) : <span className="text-muted-foreground text-xs">—</span>}
+                                                {insurancePct > 0 && <span className="text-xs text-muted-foreground ml-1">({insurancePct}%)</span>}
+                                            </TableCell>
+                                            <TableCell className={`text-right text-sm font-bold ${rankTextColors[colorIdx]}`}>
+                                                {fmt(r.total)}
+                                            </TableCell>
+                                        </TableRow>
+                                    );
+                                })}
+                            </TableBody>
+                        </Table>
+
+                        {/* Cheapest savings note */}
+                        {results.length >= 2 && (
+                            <p className="text-xs text-muted-foreground mt-3">
+                                💡 Con <strong>{results[0].carrier}</strong> ahorras <strong>{fmt(results[results.length - 1].total - results[0].total)}</strong> vs. la opción más cara ({results[results.length - 1].carrier}).
+                            </p>
+                        )}
                     </CardContent>
                 </Card>
             )}
@@ -1117,9 +1426,10 @@ export const PropuestaTransportadora: React.FC<PropuestaTransportadoraProps> = (
                 </div>
             ) : (
                 <Tabs defaultValue="analisis">
-                    <TabsList className="grid w-full grid-cols-4">
+                    <TabsList className={`grid w-full ${isAdmin ? 'grid-cols-5' : 'grid-cols-4'}`}>
                         <TabsTrigger value="analisis"><GitCompareArrows className="mr-1.5 h-4 w-4" /> Análisis</TabsTrigger>
                         <TabsTrigger value="comparativo"><BarChart3 className="mr-1.5 h-4 w-4" /> Comparativo</TabsTrigger>
+                        <TabsTrigger value="simulador"><Calculator className="mr-1.5 h-4 w-4" /> Simulador</TabsTrigger>
                         <TabsTrigger value="ponderacion"><Star className="mr-1.5 h-4 w-4" /> Ponderación</TabsTrigger>
                         {isAdmin && <TabsTrigger value="datos"><Database className="mr-1.5 h-4 w-4" /> Datos Base</TabsTrigger>}
                     </TabsList>
@@ -1130,6 +1440,10 @@ export const PropuestaTransportadora: React.FC<PropuestaTransportadoraProps> = (
 
                     <TabsContent value="comparativo" className="mt-4">
                         <TabComparativo carriersMetadata={carriersMetadata} scoreConfig={scoreConfig} />
+                    </TabsContent>
+
+                    <TabsContent value="simulador" className="mt-4">
+                        <TabSimulador carriersMetadata={carriersMetadata} />
                     </TabsContent>
 
                     <TabsContent value="ponderacion" className="mt-4">
