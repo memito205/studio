@@ -138,6 +138,25 @@ function computeScore(
 }
 
 // ---------------------------------------------------------------------------
+// Helper: Parse numerical strings safely supporting both dot and comma
+// ---------------------------------------------------------------------------
+const parseSafeFloat = (val: string | number | undefined | null): number => {
+    if (val === undefined || val === null || val === '') return 0;
+    if (typeof val === 'number') return val;
+    let s = val.trim();
+    if (s.includes(',') && s.includes('.')) {
+        const lastComma = s.lastIndexOf(',');
+        const lastDot = s.lastIndexOf('.');
+        if (lastComma > lastDot) s = s.replace(/\./g, '').replace(',', '.');
+        else s = s.replace(/,/g, '');
+    } else if (s.includes(',')) {
+        s = s.replace(',', '.');
+    }
+    const parsed = parseFloat(s.replace(/[^0-9.-]/g, ''));
+    return isNaN(parsed) ? 0 : parsed;
+};
+
+// ---------------------------------------------------------------------------
 // Sub-component: ScoreBadge
 // ---------------------------------------------------------------------------
 const ScoreBadge: React.FC<{ score: number | null }> = ({ score }) => {
@@ -396,7 +415,7 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
                                 <span className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">%</span>
                             </div>
                             <span className="text-xs text-muted-foreground">
-                                {insuranceRates[carrier] ? `$${(10000 * parseFloat(insuranceRates[carrier] || '0') / 100).toLocaleString('es-CO')} por cada $10.000 de valor` : ''}
+                                {insuranceRates[carrier] ? `$${(10000 * parseSafeFloat(insuranceRates[carrier]) / 100).toLocaleString('es-CO')} por cada $10.000 de valor` : ''}
                             </span>
                         </div>
                     ))}
@@ -435,11 +454,11 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
                                             <Label className="text-xs">Porcentaje de Comisión</Label>
                                             <div className="relative">
                                                 <Input
-                                                    type="number"
-                                                    min={0}
-                                                    step={0.1}
+                                                    type="text"
+                                                    inputMode="decimal"
+                                                    placeholder="Ej: 3,5"
                                                     value={rule.percentage ?? ''}
-                                                    onChange={e => updateCODRule(carrier, { percentage: parseFloat(e.target.value) || 0 })}
+                                                    onChange={e => updateCODRule(carrier, { percentage: parseSafeFloat(e.target.value) })}
                                                     className="pr-6"
                                                 />
                                                 <span className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">%</span>
@@ -450,11 +469,11 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
                                             <div className="relative">
                                                 <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
                                                 <Input
-                                                    type="number"
-                                                    min={0}
-                                                    step={100}
+                                                    type="text"
+                                                    inputMode="numeric"
+                                                    placeholder="5000"
                                                     value={rule.minFee ?? ''}
-                                                    onChange={e => updateCODRule(carrier, { minFee: parseFloat(e.target.value) || 0 })}
+                                                    onChange={e => updateCODRule(carrier, { minFee: parseSafeFloat(e.target.value) })}
                                                     className="pl-5"
                                                 />
                                             </div>
@@ -476,15 +495,15 @@ const TabDatosBase: React.FC<{ carriersMetadata: { carrier: string; lastUpdated?
                                                 <TableBody>
                                                     {rule.tiers?.map((t, idx) => (
                                                         <TableRow key={idx}>
-                                                            <TableCell><Input className="h-7 text-xs" type="number" value={t.min} onChange={e => updateTier(carrier, idx, { min: parseInt(e.target.value) || 0 })} /></TableCell>
-                                                            <TableCell><Input className="h-7 text-xs" type="number" value={t.max} onChange={e => updateTier(carrier, idx, { max: parseInt(e.target.value) || 0 })} /></TableCell>
+                                                            <TableCell><Input className="h-7 text-xs" type="text" inputMode="numeric" value={t.min} onChange={e => updateTier(carrier, idx, { min: parseSafeFloat(e.target.value) })} /></TableCell>
+                                                            <TableCell><Input className="h-7 text-xs" type="text" inputMode="numeric" value={t.max} onChange={e => updateTier(carrier, idx, { max: parseSafeFloat(e.target.value) })} /></TableCell>
                                                             <TableCell>
                                                                 <select className="h-7 text-xs bg-background border rounded px-1" value={t.feeType} onChange={e => updateTier(carrier, idx, { feeType: e.target.value as any })}>
                                                                     <option value="percent">%</option>
                                                                     <option value="fixed">$ Fixed</option>
                                                                 </select>
                                                             </TableCell>
-                                                            <TableCell><Input className="h-7 text-xs" type="number" value={t.value} onChange={e => updateTier(carrier, idx, { value: parseFloat(e.target.value) || 0 })} /></TableCell>
+                                                            <TableCell><Input className="h-7 text-xs" type="text" inputMode="decimal" value={t.value} onChange={e => updateTier(carrier, idx, { value: parseSafeFloat(e.target.value) })} /></TableCell>
                                                             <TableCell><Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" onClick={() => removeTier(carrier, idx)}><Trash2 className="h-3 w-3" /></Button></TableCell>
                                                         </TableRow>
                                                     ))}
@@ -601,10 +620,10 @@ const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[]; codRules
 
     const simulate = () => {
         if (!selectedCode) { toast({ variant: 'destructive', title: 'Selecciona un destino' }); return; }
-        const val = parseFloat(productValue.replace(/[^0-9.]/g, ''));
-        if (isNaN(val) || val <= 0) { toast({ variant: 'destructive', title: 'Ingresa el valor del producto' }); return; }
+        const val = parseSafeFloat(productValue);
+        if (val <= 0) { toast({ variant: 'destructive', title: 'Ingresa el valor del producto' }); return; }
 
-        const recaudo = isCOD ? parseFloat(codAmount.replace(/[^0-9.]/g, '')) || 0 : 0;
+        const recaudo = isCOD ? parseSafeFloat(codAmount) : 0;
 
         const sim: SimResult[] = availableCarriers.map(carrier => {
             const row = (allRates[carrier] || []).find(r => r.codigoMunicipio === selectedCode);
@@ -831,7 +850,7 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
     const [isSimulatingCOD, setIsSimulatingCOD] = useState(false);
 
     const availableCarriers = carriersMetadata.map(m => m.carrier);
-    const simVal = isSimulatingCOD ? parseFloat(simAmount) || 0 : 0;
+    const simVal = isSimulatingCOD ? parseSafeFloat(simAmount) : 0;
 
     useEffect(() => {
         if (!availableCarriers.length) return;
@@ -996,7 +1015,8 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                             <div className="relative w-28">
                                 <span className="absolute left-1.5 top-1/2 -translate-y-1/2 text-[10px]">$</span>
                                 <Input
-                                    type="number"
+                                    type="text"
+                                    inputMode="decimal"
                                     className="h-7 text-xs pl-4 pr-1"
                                     value={simAmount}
                                     onChange={e => setSimAmount(e.target.value)}
