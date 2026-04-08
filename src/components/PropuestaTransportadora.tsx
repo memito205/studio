@@ -188,6 +188,11 @@ function calculateCODFee(amount: number, rule?: CODRule): number {
     return 0;
 }
 
+function isCODAvailable(carrier: string, codRules: Record<string, CODRule>): boolean {
+    if (carrier === 'Logicuartas') return true;
+    return !!codRules[carrier];
+}
+
 // ===========================================================================
 // TAB 4 — Gestión de Datos Base (Admin only)
 // ===========================================================================
@@ -566,6 +571,8 @@ interface SimResult {
     seguro: number;
     codFee: number;
     total: number;
+    normalTotal: number;
+    hasCODService: boolean;
 }
 
 const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[]; codRules: Record<string, CODRule> }> = ({ carriersMetadata, codRules }) => {
@@ -627,10 +634,12 @@ const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[]; codRules
 
         const sim: SimResult[] = availableCarriers.map(carrier => {
             const row = (allRates[carrier] || []).find(r => r.codigoMunicipio === selectedCode);
-            if (!row) return { carrier, flete: 0, iva: 0, margen: 0, seguro: 0, codFee: 0, total: 0 };
+            if (!row) return { carrier, flete: 0, iva: 0, margen: 0, seguro: 0, codFee: 0, total: 0, normalTotal: 0, hasCODService: false };
             const insurancePct = insuranceConfig[carrier] ?? 0;
             const seguro = Math.round(val * insurancePct / 100);
-            const codFee = isCOD ? calculateCODFee(recaudo, codRules[carrier]) : 0;
+            const hasCODService = isCODAvailable(carrier, codRules);
+            const codFee = (isCOD && hasCODService) ? calculateCODFee(recaudo, codRules[carrier]) : 0;
+            const normalTotal = row.total + seguro;
             return {
                 carrier,
                 flete: row.flete,
@@ -638,9 +647,11 @@ const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[]; codRules
                 margen: row.margenLogisticaInversa,
                 seguro,
                 codFee,
-                total: row.total + seguro + codFee,
+                total: normalTotal + (isCOD && hasCODService ? codFee : 0),
+                normalTotal,
+                hasCODService,
             };
-        }).filter(r => r.flete > 0 || r.seguro > 0 || r.codFee > 0);
+        }).filter(r => r.flete > 0 || r.seguro > 0 || (isCOD && r.hasCODService));
 
         const sorted = [...sim].sort((a, b) => a.total - b.total);
         setResults(sorted);
@@ -787,37 +798,59 @@ const TabSimulador: React.FC<{ carriersMetadata: { carrier: string }[]; codRules
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
-                                {results.map((r, idx) => {
-                                    const colorIdx = Math.min(idx, 3);
-                                    const insurancePct = insuranceConfig[r.carrier] ?? 0;
-                                    const baseCost = r.flete + r.iva + r.margen;
-                                    return (
-                                        <TableRow key={r.carrier} className={rankColors[colorIdx]}>
-                                            <TableCell>
-                                                <span className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-white text-[10px] font-bold ${rankBadgeColors[colorIdx]}`}>
-                                                    {idx + 1}
-                                                </span>
-                                            </TableCell>
-                                            <TableCell className="font-medium">
-                                                {r.carrier}
-                                                {idx === 0 && <span className="ml-2 text-xs text-green-600 font-semibold">★ más económico</span>}
-                                            </TableCell>
-                                            <TableCell className="text-right text-sm">{fmt(baseCost)}</TableCell>
-                                            <TableCell className="text-right text-sm">
-                                                {r.seguro > 0 ? fmt(r.seguro) : <span className="text-muted-foreground text-xs">—</span>}
-                                                {insurancePct > 0 && <span className="text-xs text-muted-foreground ml-1">({insurancePct}%)</span>}
-                                            </TableCell>
-                                            {isCOD && (
-                                                <TableCell className="text-right text-sm">
-                                                    {r.codFee > 0 ? fmt(r.codFee) : <span className="text-muted-foreground text-xs">—</span>}
+                                {(() => {
+                                    const minNormal = results.length > 0 ? Math.min(...results.filter(r => r.normalTotal > 0).map(r => r.normalTotal)) : Infinity;
+                                    const validCOD = results.filter(r => r.hasCODService && r.total > 0);
+                                    const minCOD = validCOD.length > 0 ? Math.min(...validCOD.map(r => r.total)) : Infinity;
+
+                                    return results.map((r, idx) => {
+                                        const colorIdx = Math.min(idx, 3);
+                                        const insurancePct = insuranceConfig[r.carrier] ?? 0;
+                                        const baseCost = r.flete + r.iva + r.margen;
+                                        const isNormalWinner = r.normalTotal === minNormal;
+                                        const isCODWinner = isCOD && r.hasCODService && r.total === minCOD;
+                                        const isCODUnavailable = isCOD && !r.hasCODService;
+
+                                        return (
+                                            <TableRow key={r.carrier} className={rankColors[colorIdx]}>
+                                                <TableCell>
+                                                    <span className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-white text-[10px] font-bold ${rankBadgeColors[colorIdx]}`}>
+                                                        {idx + 1}
+                                                    </span>
                                                 </TableCell>
-                                            )}
-                                            <TableCell className={`text-right text-sm font-bold ${rankTextColors[colorIdx]}`}>
-                                                {fmt(r.total)}
-                                            </TableCell>
-                                        </TableRow>
-                                    );
-                                })}
+                                                <TableCell className="font-medium">
+                                                    <div className="flex flex-col">
+                                                        <span className="flex items-center gap-2">
+                                                            {r.carrier}
+                                                            {isNormalWinner && <Badge variant="outline" className="text-[10px] text-blue-600 border-blue-200 bg-blue-50 px-1 py-0 h-4">Líder Envío</Badge>}
+                                                            {isCODWinner && <Badge variant="outline" className="text-[10px] text-green-600 border-green-200 bg-green-50 px-1 py-0 h-4">Líder COD</Badge>}
+                                                            {isCODUnavailable && <Badge variant="outline" className="text-[10px] text-red-400 border-red-200 bg-red-50/50 px-1 py-0 h-4">Sin COD</Badge>}
+                                                        </span>
+                                                    </div>
+                                                </TableCell>
+                                                <TableCell className="text-right text-xs">{fmt(baseCost)}</TableCell>
+                                                <TableCell className="text-right text-xs">
+                                                    <div className="flex flex-col items-end">
+                                                        <span>{r.seguro > 0 ? fmt(r.seguro) : '—'}</span>
+                                                        {insurancePct > 0 && <span className="text-[10px] text-muted-foreground">({insurancePct}%)</span>}
+                                                    </div>
+                                                </TableCell>
+                                                {isCOD && (
+                                                    <TableCell className="text-right text-xs">
+                                                        {isCODUnavailable ? (
+                                                            <span className="text-red-400 italic">No disponible</span>
+                                                        ) : (
+                                                            r.codFee > 0 ? fmt(r.codFee) : '—'
+                                                        )}
+                                                    </TableCell>
+                                                )}
+                                                <TableCell className={`text-right text-sm font-bold ${rankTextColors[colorIdx]} tabular-nums`}>
+                                                    {isCOD && !r.hasCODService ? '—' : fmt(r.total)}
+                                                </TableCell>
+                                            </TableRow>
+                                        );
+                                    });
+                                })()}
                             </TableBody>
                         </Table>
 
@@ -1074,12 +1107,14 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                                 .map(c => {
                                     const r = (allRates[c] || []).find(x => x.codigoMunicipio === code);
                                     if (!r) return null;
+                                    const hasCOD = isCODAvailable(c, codRules);
+                                    if (isSimulatingCOD && !hasCOD) return { c, r, effectiveTotal: Infinity, codFee: 0, noService: true };
                                     const codFee = isSimulatingCOD ? calculateCODFee(simVal, codRules[c]) : 0;
-                                    return { c, r, effectiveTotal: r.total + codFee, codFee };
+                                    return { c, r, effectiveTotal: r.total + codFee, codFee, noService: false };
                                 })
-                                .filter(x => x !== null) as { c: string; r: CarrierRateRow; effectiveTotal: number; codFee: number }[];
+                                .filter(x => x !== null) as { c: string; r: CarrierRateRow; effectiveTotal: number; codFee: number; noService: boolean }[];
 
-                            const sorted = [...withData].sort((a, b) => a.effectiveTotal - b.effectiveTotal);
+                            const sorted = [...withData].filter(x => !x.noService).sort((a, b) => a.effectiveTotal - b.effectiveTotal);
                             const rankMap = new Map<string, number>();
                             sorted.forEach(({ c }, idx) => rankMap.set(c, idx + 1));
 
@@ -1104,11 +1139,18 @@ const TabComparativo: React.FC<{ carriersMetadata: { carrier: string; lastUpdate
                                         const rank = rankMap.get(c);
                                         const style = rank ? rankStyle(rank) : { bg: '', text: '', badge: '' };
                                         const isExpanded = expandedCarriers.has(c);
+                                        const hasCOD = isCODAvailable(c, codRules);
 
                                         if (!data) {
                                             return isExpanded
                                                 ? <TableCell key={c} colSpan={isSimulatingCOD ? 5 : 4} className="text-center text-[10px] text-muted-foreground">—</TableCell>
                                                 : <TableCell key={c} className="text-center text-[10px] text-muted-foreground">—</TableCell>;
+                                        }
+
+                                        if (data.noService) {
+                                             return isExpanded
+                                                ? <TableCell key={c} colSpan={5} className="text-center text-[10px] text-red-400 bg-red-50/20 italic">Sin Servicio COD</TableCell>
+                                                : <TableCell key={c} className="text-center text-[10px] text-red-400 bg-red-50/20 italic">Sin COD</TableCell>;
                                         }
 
                                         const rankBadge = rank !== undefined && withData.length > 1 ? (
