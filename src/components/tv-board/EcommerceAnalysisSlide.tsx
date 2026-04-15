@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo } from 'react';
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LineChart, Line } from 'recharts';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LineChart, Line, LabelList } from 'recharts';
 import { EcommerceOrder } from '@/types';
 import { format, subDays, isAfter } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -87,7 +87,9 @@ export const EcommerceAnalysisSlide: React.FC<EcommerceAnalysisSlideProps> = ({ 
                   fill="#60a5fa" 
                   radius={[0, 10, 10, 0]} 
                   barSize={30}
-                />
+                >
+                  <LabelList dataKey="value" position="right" fill="#94a3b8" fontSize={14} offset={10} />
+                </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -116,7 +118,9 @@ export const EcommerceAnalysisSlide: React.FC<EcommerceAnalysisSlideProps> = ({ 
                     strokeWidth={5} 
                     dot={{ r: 8, fill: '#22d3ee', stroke: '#0f172a', strokeWidth: 3 }}
                     activeDot={{ r: 12, fill: '#fff' }}
-                />
+                >
+                    <LabelList dataKey="count" position="top" fill="#22d3ee" fontSize={14} offset={15} />
+                </Line>
               </LineChart>
             </ResponsiveContainer>
           </div>

@@ -225,15 +225,32 @@ export default function EcommerceTvBoard() {
       return Array.from(new Set(dynamic.map(s => s.toUpperCase()))).sort();
   }, [orders]);
 
+  const filteredOrders = useMemo(() => {
+    return orders.filter(o => {
+      const storeName = (o.tienda || 'OTROS').toUpperCase();
+      let bodegaNames: string[] = [];
+      if (Array.isArray(o.bodega)) bodegaNames = o.bodega.map(b => b.toUpperCase());
+      else if (o.bodega) bodegaNames = [o.bodega.toUpperCase()];
+      else bodegaNames = ['SIN BODEGA'];
+
+      // Store filter
+      if (selectedStores.length > 0 && !selectedStores.includes(storeName)) return false;
+      // Bodega filter
+      if (selectedBodegas.length > 0 && !bodegaNames.some(b => selectedBodegas.includes(b))) return false;
+      
+      return true;
+    });
+  }, [orders, selectedStores, selectedBodegas]);
+
   const slidesToPresent = useMemo(() => {
       const selectedStoresToDisplay = (selectedStores.length > 0 ? selectedStores : availableStores)
-           .filter(s => metrics.storeCounts[s] > 0); // Only loop funnels for stores with active pending packages
+           .filter(s => metrics.storeCounts[s] > 0); 
 
       return [
           <OverviewSlide key="summary" metrics={metrics} />,
-          <EcommerceAnalysisSlide key="analysis" orders={orders} />,
-          <EfficiencySlide key="efficiency" orders={orders} holidays={[]} />,
-          <DispatchSlide key="dispatch" shipments={shipments} />,
+          <EcommerceAnalysisSlide key="analysis" orders={filteredOrders} />,
+          <EfficiencySlide key="efficiency" orders={filteredOrders} holidays={[]} />,
+          <DispatchSlide key="dispatch" orders={filteredOrders} />,
           <BrandDistributionSlide key="brands" storeCounts={metrics.storeCounts} />,
           <HourlyTrendSlide key="trend" hourlyCounts={metrics.hourlyCounts} />,
           <DelayedByStoreSlide key="delayed" delayedByStore={metrics.delayedByStore} />,
@@ -243,7 +260,7 @@ export default function EcommerceTvBoard() {
           )),
           <TransporterPendingSlide key="transporter" transporterCounts={metrics.transportadoraPendiente} />
       ];
-  }, [metrics, selectedStores, availableStores]);
+  }, [metrics, selectedStores, availableStores, filteredOrders, shipments]);
 
   // Slides Carousel Timer
   useEffect(() => {

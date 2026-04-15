@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo } from 'react';
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell } from 'recharts';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell, LabelList } from 'recharts';
 import { EcommerceOrder } from '@/types';
 import { ShieldCheck, Timer, TrendingUp } from 'lucide-react';
 
@@ -128,6 +128,7 @@ export const EfficiencySlide: React.FC<EfficiencySlideProps> = ({ orders, holida
                   radius={[10, 10, 0, 0]} 
                   barSize={60}
                 >
+                  <LabelList dataKey="value" position="top" fill="#94a3b8" fontSize={14} offset={10} formatter={(val: number) => `${val.toFixed(1)}%`} />
                   {storeEfficiency.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={getEfficiencyColor(entry.value)} />
                   ))}
