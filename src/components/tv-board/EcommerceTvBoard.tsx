@@ -10,9 +10,14 @@ import { HourlyTrendSlide } from './HourlyTrendSlide';
 import { StatusFunnelSlide } from './StatusFunnelSlide';
 import { DelayedByStoreSlide } from './DelayedByStoreSlide';
 import { TransporterPendingSlide } from './TransporterPendingSlide';
+import { EcommerceAnalysisSlide } from './EcommerceAnalysisSlide';
+import { EfficiencySlide } from './EfficiencySlide';
+import { DispatchSlide } from './DispatchSlide';
 import { Clock, RefreshCw, Settings, X, Check } from 'lucide-react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
+import { getShipments } from '@/app/actions';
+import type { DispatchSessionInfo } from '@/types';
 
 const SLIDE_DURATION = 10000; // 10 seconds per slide
 const AUTO_SYNC_INTERVAL = 60 * 60 * 1000; // Sync automatically occasionally
@@ -25,6 +30,7 @@ export default function EcommerceTvBoard() {
   
   const [selectedStores, setSelectedStores] = useState<string[]>([]);
   const [selectedBodegas, setSelectedBodegas] = useState<string[]>([]);
+  const [shipments, setShipments] = useState<DispatchSessionInfo[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   useEffect(() => {
@@ -56,8 +62,14 @@ export default function EcommerceTvBoard() {
       const { data, error } = await loadEcommerceOrders();
       if (!error && data) {
         setOrders(data);
-        setLastSyncedAt(new Date());
       }
+      
+      const shipmentsResult = await getShipments();
+      if (shipmentsResult.success && shipmentsResult.data) {
+          setShipments(shipmentsResult.data);
+      }
+
+      setLastSyncedAt(new Date());
     } catch (e) {
       console.error("Error fetching orders for TV:", e);
     } finally {
@@ -219,6 +231,9 @@ export default function EcommerceTvBoard() {
 
       return [
           <OverviewSlide key="summary" metrics={metrics} />,
+          <EcommerceAnalysisSlide key="analysis" orders={orders} />,
+          <EfficiencySlide key="efficiency" orders={orders} holidays={[]} />,
+          <DispatchSlide key="dispatch" shipments={shipments} />,
           <BrandDistributionSlide key="brands" storeCounts={metrics.storeCounts} />,
           <HourlyTrendSlide key="trend" hourlyCounts={metrics.hourlyCounts} />,
           <DelayedByStoreSlide key="delayed" delayedByStore={metrics.delayedByStore} />,
@@ -292,12 +307,15 @@ export default function EcommerceTvBoard() {
                         </button>
                     </div>
                     <div className="p-8 flex-1 overflow-y-auto">
-                        <div className="mb-8">
-                            <h3 className="text-2xl font-bold text-slate-200 mb-4">Filtro por Tiendas</h3>
-                            <p className="text-lg text-slate-400 mb-4">
+                        <div className="mb-8 p-6 bg-slate-800/20 rounded-3xl border border-slate-800/50 shadow-inner">
+                            <h3 className="text-2xl font-bold text-slate-200 mb-4 flex items-center gap-3">
+                                <div className="w-2 h-8 bg-blue-500 rounded-full"></div>
+                                Filtro por Tiendas
+                            </h3>
+                            <p className="text-lg text-slate-400 mb-6 font-medium">
                                 Selecciona las tiendas que deseas incluir en el tablero. Si no seleccionas ninguna, se mostrarán todas por defecto.
                             </p>
-                            <div className="flex gap-4 overflow-x-auto pb-4 snap-x px-2 hide-scrollbar">
+                            <div className="flex gap-4 overflow-x-auto pb-4 pt-2 snap-x px-2 custom-scrollbar-horizontal mask-fade-right">
                                 {availableStores.map(store => {
                                     const isSelected = selectedStores.includes(store);
                                     return (
@@ -318,12 +336,15 @@ export default function EcommerceTvBoard() {
                             </div>
                         </div>
 
-                        <div>
-                            <h3 className="text-2xl font-bold text-slate-200 mb-4">Filtro por Bodegas</h3>
-                            <p className="text-lg text-slate-400 mb-4">
-                                Selecciona las bodegas que deseas incluir en el tablero. Si no seleccionas ninguna, se evaluarán los pedidos de de todas las bodegas.
+                        <div className="p-6 bg-slate-800/20 rounded-3xl border border-slate-800/50 shadow-inner">
+                            <h3 className="text-2xl font-bold text-slate-200 mb-4 flex items-center gap-3">
+                                <div className="w-2 h-8 bg-purple-500 rounded-full"></div>
+                                Filtro por Bodegas
+                            </h3>
+                            <p className="text-lg text-slate-400 mb-6 font-medium">
+                                Selecciona las bodegas que deseas incluir en el tablero. Si no seleccionas ninguna, se evaluarán los pedidos de todas las bodegas.
                             </p>
-                            <div className="flex gap-4 overflow-x-auto pb-4 snap-x px-2 hide-scrollbar">
+                            <div className="flex gap-4 overflow-x-auto pb-4 pt-2 snap-x px-2 custom-scrollbar-horizontal mask-fade-right">
                                 {availableBodegas.map(bodega => {
                                     const isSelected = selectedBodegas.includes(bodega);
                                     return (

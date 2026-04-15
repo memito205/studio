@@ -86,4 +86,30 @@ body {
     -ms-overflow-style: none;
     scrollbar-width: none;
   }
+
+  .custom-scrollbar-horizontal {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  }
+
+  .custom-scrollbar-horizontal::-webkit-scrollbar {
+    height: 6px;
+  }
+
+  .custom-scrollbar-horizontal::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .custom-scrollbar-horizontal::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.2);
+    border-radius: 20px;
+  }
+
+  .custom-scrollbar-horizontal::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(255, 255, 255, 0.4);
+  }
+
+  .mask-fade-right {
+    mask-image: linear-gradient(to right, black 85%, transparent 100%);
+  }
 }
