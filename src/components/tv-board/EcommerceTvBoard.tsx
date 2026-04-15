@@ -9,6 +9,7 @@ import { BrandDistributionSlide } from './BrandDistributionSlide';
 import { HourlyTrendSlide } from './HourlyTrendSlide';
 import { StatusFunnelSlide } from './StatusFunnelSlide';
 import { DelayedByStoreSlide } from './DelayedByStoreSlide';
+import { TransporterPendingSlide } from './TransporterPendingSlide';
 import { Clock, RefreshCw, Settings, X, Check } from 'lucide-react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -78,13 +79,8 @@ export default function EcommerceTvBoard() {
     };
   }, [fetchOrders]);
 
-  // Slides Carousel Timer
-  useEffect(() => {
-    const slideInterval = setInterval(() => {
-      setCurrentSlideIndex((prev) => (prev + 1) % 5); // 5 slides total now
-    }, SLIDE_DURATION);
-    return () => clearInterval(slideInterval);
-  }, []);
+  // Timer setup replaced effectively below
+  // We removed the static carousel timer to make it dynamic based on slides length
 
   // Basic Metrics Calculation based on `isCurrentlyDelayed` logic
   const metrics = useMemo(() => {
@@ -92,6 +88,7 @@ export default function EcommerceTvBoard() {
     let pending = 0;
     let dispatched = 0;
     let delayed = 0;
+    let pedidosHoy = 0;
     
     // Simplification for the TV representation
     const dispatchedStates = ['en transporte externo', 'en transporte interno', 'entregado', 'en tienda'];
@@ -101,6 +98,11 @@ export default function EcommerceTvBoard() {
     const storeCounts: Record<string, number> = {};
     const statusCounts: Record<string, number> = {};
     const delayedByStore: Record<string, number> = {};
+    
+    // NEW: grouped by store and status
+    const estadosPorTienda: Record<string, Record<string, number>> = {};
+    // NEW: transporter pending
+    const transportadoraPendiente: Record<string, number> = {};
     
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -119,6 +121,13 @@ export default function EcommerceTvBoard() {
 
       const estado = (o.estado || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, ' ');
       
+      if (o.fechaPedido) {
+          const creationTime = new Date(o.fechaPedido);
+          if (creationTime >= today) {
+              pedidosHoy++;
+          }
+      }
+
       if (dispatchedStates.includes(estado) || o.dispatchDate) {
         dispatched++;
         // Track dispatches per hour today
@@ -136,6 +145,13 @@ export default function EcommerceTvBoard() {
         const statusName = o.estado || 'SIN ESTADO';
         statusCounts[statusName] = (statusCounts[statusName] || 0) + 1;
         
+        if (!estadosPorTienda[storeName]) estadosPorTienda[storeName] = {};
+        estadosPorTienda[storeName][statusName] = (estadosPorTienda[storeName][statusName] || 0) + 1;
+        
+        if (o.transportadora) {
+            transportadoraPendiente[o.transportadora] = (transportadoraPendiente[o.transportadora] || 0) + 1;
+        }
+        
         // Determine if delayed (rough estimate > 48hrs if not holidays aware in this isolated logic)
         const orderDate = o.fechaPedido ? new Date(o.fechaPedido) : new Date();
         const diffHours = (new Date().getTime() - orderDate.getTime()) / (1000 * 60 * 60);
@@ -151,7 +167,7 @@ export default function EcommerceTvBoard() {
       }
     });
 
-    return { total, pending, dispatched, delayed, storeCounts, statusCounts, hourlyCounts, delayedByStore };
+    return { total, pending, dispatched, delayed, pedidosHoy, storeCounts, statusCounts, hourlyCounts, delayedByStore, estadosPorTienda, transportadoraPendiente };
   }, [orders, selectedStores]);
 
   const availableStores = useMemo(() => {
@@ -164,13 +180,31 @@ export default function EcommerceTvBoard() {
      return Array.from(new Set([...standardStores, ...dynamicStores].map(s => s.toUpperCase()))).sort();
   }, [orders]);
 
-  const slides = [
-      <OverviewSlide key="summary" metrics={metrics} />,
-      <BrandDistributionSlide key="brands" storeCounts={metrics.storeCounts} />,
-      <HourlyTrendSlide key="trend" hourlyCounts={metrics.hourlyCounts} />,
-      <DelayedByStoreSlide key="delayed" delayedByStore={metrics.delayedByStore} />,
-      <StatusFunnelSlide key="status" statusCounts={metrics.statusCounts} />
-  ];
+  const slidesToPresent = useMemo(() => {
+      const selectedStoresToDisplay = (selectedStores.length > 0 ? selectedStores : availableStores)
+           .filter(s => metrics.storeCounts[s] > 0); // Only loop funnels for stores with active pending packages
+
+      return [
+          <OverviewSlide key="summary" metrics={metrics} />,
+          <BrandDistributionSlide key="brands" storeCounts={metrics.storeCounts} />,
+          <HourlyTrendSlide key="trend" hourlyCounts={metrics.hourlyCounts} />,
+          <DelayedByStoreSlide key="delayed" delayedByStore={metrics.delayedByStore} />,
+          <StatusFunnelSlide key="status-general" statusCounts={metrics.statusCounts} />,
+          ...selectedStoresToDisplay.map(store => (
+              <StatusFunnelSlide key={`status-${store}`} store={store} statusCounts={metrics.estadosPorTienda[store] || {}} />
+          )),
+          <TransporterPendingSlide key="transporter" transporterCounts={metrics.transportadoraPendiente} />
+      ];
+  }, [metrics, selectedStores, availableStores]);
+
+  // Slides Carousel Timer
+  useEffect(() => {
+    const slideAmount = slidesToPresent.length || 1;
+    const slideInterval = setInterval(() => {
+      setCurrentSlideIndex((prev) => (prev + 1) % slideAmount);
+    }, SLIDE_DURATION);
+    return () => clearInterval(slideInterval);
+  }, [slidesToPresent.length]);
 
   return (
     <div className="flex flex-col h-screen w-full bg-slate-950 text-white overflow-hidden p-8 font-sans pb-16 relative">
@@ -245,7 +279,7 @@ export default function EcommerceTvBoard() {
         )}
 
         <main className="flex-1 w-full h-full relative overflow-hidden">
-            {slides.map((slide, idx) => (
+            {slidesToPresent.map((slide, idx) => (
                 <div
                     key={idx}
                     className={`absolute inset-0 w-full h-full flex flex-col justify-center items-center transition-all duration-1000 ease-in-out ${
@@ -260,7 +294,7 @@ export default function EcommerceTvBoard() {
         </main>
 
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex gap-4 bg-slate-900/50 p-3 rounded-full backdrop-blur-sm border border-slate-800">
-            {slides.map((_, idx) => (
+            {slidesToPresent.map((_, idx) => (
                 <div 
                     key={idx} 
                     className={`h-3 rounded-full transition-all duration-500 ease-out ${idx === currentSlideIndex ? 'bg-blue-500 w-16' : 'bg-slate-700 w-4'}`}

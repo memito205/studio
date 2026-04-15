@@ -2,6 +2,7 @@ import React from 'react';
 
 interface StatusFunnelSlideProps {
   statusCounts: Record<string, number>;
+  store?: string;
 }
 
 const statusColors: Record<string, string> = {
@@ -11,15 +12,15 @@ const statusColors: Record<string, string> = {
   'despachado': 'bg-green-500/20 text-green-400 border-green-500/50',
 };
 
-export const StatusFunnelSlide: React.FC<StatusFunnelSlideProps> = ({ statusCounts }) => {
-  const sortedStatuses = Object.entries(statusCounts)
+export const StatusFunnelSlide: React.FC<StatusFunnelSlideProps> = ({ statusCounts, store }) => {
+  const sortedStatuses = Object.entries(statusCounts || {})
     .sort((a, b) => b[1] - a[1])
     .slice(0, 6); // Top 6 statuses to fit the TV screen
 
   return (
     <div className="w-full h-full flex flex-col items-center justify-center p-12">
       <h2 className="text-6xl font-extrabold text-slate-100 mb-16 tracking-tight">
-        Cuellos de Botella / Estados
+        {store ? `Estados: ${store}` : 'Cuellos de Botella / Estados'}
       </h2>
       
       <div className="w-full max-w-6xl grid gap-8">

@@ -44,11 +44,11 @@ export const HourlyTrendSlide: React.FC<HourlyTrendSlideProps> = ({ hourlyCounts
               <LabelList 
                 dataKey="count" 
                 position="top" 
-                fill="#f1f5f9" 
-                fontSize={32} 
-                fontWeight="bold" 
+                fill="#ffffff" 
+                fontSize={40} 
+                fontWeight="black" 
                 formatter={(val: number) => val > 0 ? val : ''}
-                dy={-10}
+                dy={-15}
               />
             </Bar>
           </BarChart>
