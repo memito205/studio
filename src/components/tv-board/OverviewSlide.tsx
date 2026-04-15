@@ -24,7 +24,7 @@ export const OverviewSlide: React.FC<OverviewSlideProps> = ({ metrics }) => {
           <div className="bg-blue-500/20 p-6 rounded-full mb-6">
             <CalendarPlus className="w-20 h-20 text-blue-400" />
           </div>
-          <span className="text-3xl text-slate-400 font-bold uppercase tracking-widest mb-2">Ingresos del Día</span>
+          <span className="text-3xl text-slate-400 font-bold uppercase tracking-widest mb-2">Pedidos de Hoy</span>
           <span className="text-8xl font-black text-blue-400">{metrics.pedidosHoy}</span>
         </div>
 

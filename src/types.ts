@@ -5,7 +5,7 @@ export enum TransactionType {
 }
 
 // Types for interactive filtering
-export type FilterCategory = 'brand' | 'gender' | 'group' | 'returnReason' | 'pdv' | 'reference' | 'tienda' | 'transportadora' | 'date';
+export type FilterCategory = 'brand' | 'gender' | 'group' | 'returnReason' | 'pdv' | 'reference' | 'tienda' | 'transportadora' | 'date' | 'bodega' | 'status';
 export type Filters = Partial<Record<FilterCategory, string[]>>;
 
 export interface RawTransaction {
@@ -1272,6 +1272,7 @@ export interface EcommerceOrder {
   valorTotal: number; // PED_VALOR_TOTAL
   transportadora: string; // TRA_NOMBRE
   dispatchDate?: Date; // NEW
+  bodega?: string | string[]; // Added: Warehouse field
 
   // Other columns from image
   ped_cli_env?: string;
@@ -1285,7 +1286,7 @@ export interface EcommerceOrder {
   ped_factura?: string;
 
   // These are optional as they are not in the image
-  fechaPedido?: Date;
+  fechaPedido?: Date | null;
   estado?: string;
   sku?: string;
   cantidad?: number;

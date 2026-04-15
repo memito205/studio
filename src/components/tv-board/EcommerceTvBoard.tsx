@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { loadEcommerceOrders } from '@/app/actions';
 import type { EcommerceOrder } from '@/types';
-import { calculateSlaHours } from '@/lib/parsingUtils';
+import { calculateSlaHours, parseFlexibleDate } from '@/lib/parsingUtils';
 import { OverviewSlide } from './OverviewSlide';
 import { BrandDistributionSlide } from './BrandDistributionSlide';
 import { HourlyTrendSlide } from './HourlyTrendSlide';
@@ -24,6 +24,7 @@ export default function EcommerceTvBoard() {
   const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
   
   const [selectedStores, setSelectedStores] = useState<string[]>([]);
+  const [selectedBodegas, setSelectedBodegas] = useState<string[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   useEffect(() => {
@@ -31,12 +32,22 @@ export default function EcommerceTvBoard() {
      if (saved) {
          try { setSelectedStores(JSON.parse(saved)); } catch (e) {}
      }
+     const savedBodegas = localStorage.getItem('tvDashboardBodegas');
+     if (savedBodegas) {
+         try { setSelectedBodegas(JSON.parse(savedBodegas)); } catch (e) {}
+     }
   }, []);
 
   const toggleStore = (store: string) => {
       const updated = selectedStores.includes(store) ? selectedStores.filter(s => s !== store) : [...selectedStores, store];
       setSelectedStores(updated);
       localStorage.setItem('tvDashboardStores', JSON.stringify(updated));
+  };
+
+  const toggleBodega = (bodega: string) => {
+      const updated = selectedBodegas.includes(bodega) ? selectedBodegas.filter(s => s !== bodega) : [...selectedBodegas, bodega];
+      setSelectedBodegas(updated);
+      localStorage.setItem('tvDashboardBodegas', JSON.stringify(updated));
   };
 
   const fetchOrders = useCallback(async () => {
@@ -114,16 +125,26 @@ export default function EcommerceTvBoard() {
 
     orders.forEach((o) => {
       const storeName = o.tienda || 'OTROS';
+      let bodegaNames: string[] = [];
+      if (Array.isArray(o.bodega)) bodegaNames = o.bodega;
+      else if (o.bodega) bodegaNames = [o.bodega];
+      else bodegaNames = ['SIN BODEGA'];
+
       // If store filtering is active, skip non-selected stores
       if (selectedStores.length > 0 && !selectedStores.includes(storeName)) {
           return;
       }
 
+      // If bodega filtering is active, check if ANY of the order's bodegas match
+      if (selectedBodegas.length > 0 && !bodegaNames.some(b => selectedBodegas.includes(b))) {
+          return;
+      }
+
       const estado = (o.estado || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, ' ');
       
-      if (o.fechaPedido) {
-          const creationTime = new Date(o.fechaPedido);
-          if (creationTime >= today) {
+      const fechaPed = parseFlexibleDate(o.fechaPedido);
+      if (fechaPed) {
+          if (fechaPed >= today) {
               pedidosHoy++;
           }
       }
@@ -170,7 +191,7 @@ export default function EcommerceTvBoard() {
     });
 
     return { total, pending, dispatched, delayed, pedidosHoy, storeCounts, statusCounts, hourlyCounts, delayedByStore, estadosPorTienda, transportadoraPendiente };
-  }, [orders, selectedStores]);
+  }, [orders, selectedStores, selectedBodegas]);
 
   const availableStores = useMemo(() => {
      const standardStores = ['Addi', 'Branchos', 'Dafiti', 'Falabella', 'Mercado Libre'];
@@ -180,6 +201,16 @@ export default function EcommerceTvBoard() {
           return o.tienda;
      })));
      return Array.from(new Set([...standardStores, ...dynamicStores].map(s => s.toUpperCase()))).sort();
+  }, [orders]);
+
+  const availableBodegas = useMemo(() => {
+      let dynamic: string[] = [];
+      orders.forEach(o => {
+          if (Array.isArray(o.bodega)) dynamic.push(...o.bodega);
+          else if (o.bodega) dynamic.push(o.bodega);
+          else dynamic.push('SIN BODEGA');
+      });
+      return Array.from(new Set(dynamic.map(s => s.toUpperCase()))).sort();
   }, [orders]);
 
   const slidesToPresent = useMemo(() => {
@@ -209,13 +240,25 @@ export default function EcommerceTvBoard() {
   }, [slidesToPresent.length]);
 
   return (
-    <div className="flex flex-col h-screen w-full bg-slate-950 text-white overflow-hidden p-8 font-sans pb-16 relative">
+    <div className="flex flex-col h-full w-full overflow-hidden p-8 font-sans pb-16 relative">
         <header className="flex justify-between items-center mb-12">
             <div className="flex items-center gap-4">
                 <h1 className="text-5xl font-black tracking-tight text-blue-400 drop-shadow-lg">
                     ECOMMERCE<span className="text-white font-light ml-2">LIVE</span>
                 </h1>
                 {isLoading && <RefreshCw className="w-8 h-8 animate-spin text-blue-400" />}
+                <div className="flex gap-2 ml-4">
+                    {selectedStores.length > 0 && (
+                        <div className="bg-blue-500/20 px-3 py-1 rounded-lg border border-blue-500/30 text-blue-400 text-sm font-bold">
+                            {selectedStores.length} TIENDAS
+                        </div>
+                    )}
+                    {selectedBodegas.length > 0 && (
+                        <div className="bg-purple-500/20 px-3 py-1 rounded-lg border border-purple-500/30 text-purple-400 text-sm font-bold">
+                            {selectedBodegas.length} BODEGAS
+                        </div>
+                    )}
+                </div>
             </div>
 
             <div className="flex items-center gap-4">
@@ -231,9 +274,10 @@ export default function EcommerceTvBoard() {
                 
                 <button 
                     onClick={() => setIsSettingsOpen(true)}
-                    className="p-4 bg-slate-900/80 backdrop-blur-md rounded-full border border-slate-800 shadow-xl cursor-pointer hover:bg-slate-800 transition-colors"
+                    className="flex items-center gap-3 px-6 py-3 bg-slate-900/80 backdrop-blur-md rounded-full border border-slate-800 shadow-xl cursor-pointer hover:bg-slate-800 transition-colors group"
                 >
-                    <Settings className="w-6 h-6 text-slate-400" />
+                    <Settings className="w-6 h-6 text-slate-400 group-hover:rotate-90 transition-transform duration-500" />
+                    <span className="text-slate-300 font-bold tracking-wider">FILTROS</span>
                 </button>
             </div>
         </header>
@@ -248,27 +292,56 @@ export default function EcommerceTvBoard() {
                         </button>
                     </div>
                     <div className="p-8 flex-1 overflow-y-auto">
-                        <p className="text-xl text-slate-400 mb-8">
-                            Selecciona las tiendas que deseas incluir en el tablero. Si no seleccionas ninguna, se mostrarán todas por defecto.
-                        </p>
-                        <div className="grid grid-cols-2 gap-4">
-                            {availableStores.map(store => {
-                                const isSelected = selectedStores.includes(store);
-                                return (
-                                    <div 
-                                        key={store}
-                                        onClick={() => toggleStore(store)}
-                                        className={`p-6 rounded-2xl border-2 flex items-center justify-between cursor-pointer transition-all ${
-                                            isSelected ? 'border-blue-500 bg-blue-500/10' : 'border-slate-800 bg-slate-950 hover:border-slate-700'
-                                        }`}
-                                    >
-                                        <span className="text-2xl font-semibold text-slate-200">{store}</span>
-                                        <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center ${isSelected ? 'border-blue-500 bg-blue-500' : 'border-slate-600'}`}>
-                                            {isSelected && <Check className="w-5 h-5 text-white" />}
+                        <div className="mb-8">
+                            <h3 className="text-2xl font-bold text-slate-200 mb-4">Filtro por Tiendas</h3>
+                            <p className="text-lg text-slate-400 mb-4">
+                                Selecciona las tiendas que deseas incluir en el tablero. Si no seleccionas ninguna, se mostrarán todas por defecto.
+                            </p>
+                            <div className="flex gap-4 overflow-x-auto pb-4 snap-x px-2 hide-scrollbar">
+                                {availableStores.map(store => {
+                                    const isSelected = selectedStores.includes(store);
+                                    return (
+                                        <div 
+                                            key={store}
+                                            onClick={() => toggleStore(store)}
+                                            className={`min-w-[280px] snap-center shrink-0 p-6 rounded-2xl border-2 flex items-center justify-between cursor-pointer transition-all ${
+                                                isSelected ? 'border-blue-500 bg-blue-500/10' : 'border-slate-800 bg-slate-950 hover:border-slate-700'
+                                            }`}
+                                        >
+                                            <span className="text-2xl font-semibold text-slate-200">{store}</span>
+                                            <div className={`shrink-0 ml-4 w-8 h-8 rounded-full border-2 flex items-center justify-center ${isSelected ? 'border-blue-500 bg-blue-500' : 'border-slate-600'}`}>
+                                                {isSelected && <Check className="w-5 h-5 text-white" />}
+                                            </div>
                                         </div>
-                                    </div>
-                                )
-                            })}
+                                    )
+                                })}
+                            </div>
+                        </div>
+
+                        <div>
+                            <h3 className="text-2xl font-bold text-slate-200 mb-4">Filtro por Bodegas</h3>
+                            <p className="text-lg text-slate-400 mb-4">
+                                Selecciona las bodegas que deseas incluir en el tablero. Si no seleccionas ninguna, se evaluarán los pedidos de de todas las bodegas.
+                            </p>
+                            <div className="flex gap-4 overflow-x-auto pb-4 snap-x px-2 hide-scrollbar">
+                                {availableBodegas.map(bodega => {
+                                    const isSelected = selectedBodegas.includes(bodega);
+                                    return (
+                                        <div 
+                                            key={bodega}
+                                            onClick={() => toggleBodega(bodega)}
+                                            className={`min-w-[280px] snap-center shrink-0 p-6 rounded-2xl border-2 flex items-center justify-between cursor-pointer transition-all ${
+                                                isSelected ? 'border-blue-500 bg-blue-500/10' : 'border-slate-800 bg-slate-950 hover:border-slate-700'
+                                            }`}
+                                        >
+                                            <span className="text-2xl font-semibold text-slate-200">{bodega}</span>
+                                            <div className={`shrink-0 ml-4 w-8 h-8 rounded-full border-2 flex items-center justify-center ${isSelected ? 'border-blue-500 bg-blue-500' : 'border-slate-600'}`}>
+                                                {isSelected && <Check className="w-5 h-5 text-white" />}
+                                            </div>
+                                        </div>
+                                    )
+                                })}
+                            </div>
                         </div>
                     </div>
                     <div className="p-8 border-t border-slate-800 flex justify-end">
@@ -295,7 +368,7 @@ export default function EcommerceTvBoard() {
             ))}
         </main>
 
-        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex gap-4 bg-slate-900/50 p-3 rounded-full backdrop-blur-sm border border-slate-800">
+        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 max-w-[90vw] overflow-x-auto flex gap-4 bg-slate-900/50 p-3 rounded-full backdrop-blur-sm border border-slate-800">
             {slidesToPresent.map((_, idx) => (
                 <div 
                     key={idx} 

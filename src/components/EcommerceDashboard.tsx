@@ -89,7 +89,7 @@ const JustificationDialog: React.FC<{
             setOtherReasonText('');
             setBitrixTaskId('');
             const existingJustificationWithDate = log?.justifications?.slice().reverse().find(j => j.bitrixTaskCreationDate);
-            setBitrixTaskDate(existingJustificationWithDate ? new Date(existingJustificationWithDate.bitrixTaskCreationDate) : undefined);
+            setBitrixTaskDate(existingJustificationWithDate?.bitrixTaskCreationDate ? new Date(existingJustificationWithDate.bitrixTaskCreationDate) : undefined);
         }
     }, [isOpen, log]);
 
@@ -567,6 +567,7 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
             ped_telefono: String(findCaseInsensitiveKey(row, 'PED_TELEFONO') ? row[findCaseInsensitiveKey(row, 'PED_TELEFONO')!] : ''),
             ped_celular: String(findCaseInsensitiveKey(row, 'PED_CELULAR') ? row[findCaseInsensitiveKey(row, 'PED_CELULAR')!] : ''),
             ped_factura: String(findCaseInsensitiveKey(row, 'PED_FACTURA') ? row[findCaseInsensitiveKey(row, 'PED_FACTURA')!] : ''),
+            bodega: String(findCaseInsensitiveKey(row, 'BODEGA', 'ALMACEN', 'BODEGA_ORIGEN', 'AGENCIA') ? row[findCaseInsensitiveKey(row, 'BODEGA', 'ALMACEN', 'BODEGA_ORIGEN', 'AGENCIA')!] : ''),
         })).filter(o => o.id);
 
         const storedOrdersResult = await loadEcommerceOrders();
@@ -708,10 +709,8 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
         if (statusFilter && statusFilter.length > 0) {
             if (statusFilter.includes('delayed')) {
                 statusMatch = isCurrentlyDelayed(order, analysisDate);
-            } else if (statusFilter.includes('pending')) {
-                statusMatch = !nonPendingStates.includes(estado);
             } else {
-                statusMatch = statusFilter.some(s => estado.includes(s));
+                statusMatch = statusFilter.some((s: string) => estado.includes(s));
             }
         }
         if (!statusMatch) return false;
