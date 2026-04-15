@@ -21,8 +21,9 @@ export const HourlyTrendSlide: React.FC<HourlyTrendSlideProps> = ({ hourlyCounts
       
       <div className="w-full max-w-7xl h-[600px] bg-slate-900/50 rounded-3xl border border-slate-700/50 p-8 shadow-2xl pt-16">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+          <BarChart data={data} margin={{ top: 80, right: 30, left: 20, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+            <YAxis hide domain={[0, 'auto']} padding={{ top: 40 }} />
             <XAxis 
               dataKey="hour" 
               stroke="#94a3b8" 

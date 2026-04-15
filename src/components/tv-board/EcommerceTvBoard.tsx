@@ -128,17 +128,18 @@ export default function EcommerceTvBoard() {
           }
       }
 
-      if (dispatchedStates.includes(estado) || o.dispatchDate) {
-        dispatched++;
-        // Track dispatches per hour today
-        if (o.dispatchDate) {
-            const dispatchTime = new Date(o.dispatchDate);
-            if (dispatchTime >= today) {
-                const hour = dispatchTime.getHours();
-                hourlyCounts[`${hour}:00`] = (hourlyCounts[`${hour}:00`] || 0) + 1;
-            }
-        }
-      } else if (!nonPendingStates.includes(estado)) {
+      const isDispatchedAllTime = dispatchedStates.includes(estado) || o.dispatchDate;
+
+      if (o.dispatchDate) {
+          const dispatchTime = new Date(o.dispatchDate);
+          if (dispatchTime >= today) {
+              dispatched++; // Despachos Hoy
+              const hour = dispatchTime.getHours();
+              hourlyCounts[`${hour}:00`] = (hourlyCounts[`${hour}:00`] || 0) + 1;
+          }
+      }
+
+      if (!isDispatchedAllTime && !nonPendingStates.includes(estado)) {
         pending++;
         
         // Count statuses
@@ -148,8 +149,9 @@ export default function EcommerceTvBoard() {
         if (!estadosPorTienda[storeName]) estadosPorTienda[storeName] = {};
         estadosPorTienda[storeName][statusName] = (estadosPorTienda[storeName][statusName] || 0) + 1;
         
-        if (o.transportadora) {
-            transportadoraPendiente[o.transportadora] = (transportadoraPendiente[o.transportadora] || 0) + 1;
+        if (estado === 'pendiente transporte') {
+            const trans = String(o.transportadora || 'SIN ASIGNAR').replace('null', 'SIN ASIGNAR');
+            transportadoraPendiente[trans] = (transportadoraPendiente[trans] || 0) + 1;
         }
         
         // Determine if delayed (rough estimate > 48hrs if not holidays aware in this isolated logic)
