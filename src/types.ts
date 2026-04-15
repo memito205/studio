@@ -926,7 +926,7 @@ export interface BagValidationSession {
     createdByName?: string;
 }
 
-export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'control_piso';
+export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'control_piso' | 'external_labeling_portal';
 
 // Types for Merchandise Reception
 export interface ReceptionOperation {
@@ -1176,7 +1176,10 @@ export interface LabelingOperation {
   sizes: { [size: string]: number }; // e.g., { "S": 50, "M": 100 }
   totalUnits: number; // Total units for this specific task
   status: LabelingOperationStatus;
-  assignedOperatorId: string; // Single operator per task
+  assignedOperatorId: string; // Single operator per task (Internal)
+  assignedExternalVendorId?: string; // New: Link to an external company
+  assignedExternalOperatorName?: string; // New: Specific operator assigned (optional)
+  isExternal?: boolean; // New: Flag to distinguish between internal and external
   standard_units_per_hour?: number;
   createdAt: string;
   updatedAt: string;
@@ -1189,10 +1192,58 @@ export type LabelingActivityType = 'START' | 'PAUSE' | 'RESUME' | 'FINISH';
 export interface LabelingActivityLog {
   id?: string; // Firestore document ID
   labelingOperationId: string;
-  operatorId: string;
+  operatorId: string; // Internal UID or ExternalVendor ID
   type: LabelingActivityType;
   timestamp: string; // ISO 8601 string
   pauseReason?: string; // Only for PAUSE events
+  isExternal?: boolean; // New: Flag
+  externalOperatorName?: string; // New: Name of the individual operator
+  completedUnits?: number; // Optional: used in some log entries for incremental updates
+}
+
+export interface LabelingSummaryKPIs {
+    totalUnits: number;
+    internalUnits: number;
+    externalUnits: number;
+    efficiency: number;
+    totalActiveMinutes: number;
+    conversionRate: number; // units per active hour
+}
+
+export interface LabelingEmployeePerformance {
+    id: string;
+    name: string;
+    type: 'Interno' | 'Externo';
+    vendorName?: string;
+    totalUnits: number;
+    activeMinutes: number;
+    pausesCount: number;
+    efficiency: number;
+    lastActivity: string;
+}
+
+export interface LabelingDashboardData {
+    operations: LabelingOperation[];
+    logs: LabelingActivityLog[];
+    summary: LabelingSummaryKPIs;
+    employeePerformance: LabelingEmployeePerformance[];
+    hourlyData: { hour: string; units: number }[];
+    pauseReasons: { reason: string; count: number; totalMinutes: number }[];
+}
+
+export interface ExternalOperator {
+  name: string;
+  pin: string; // Individual 4-digit PIN
+}
+
+export interface ExternalVendor {
+  id: string;
+  name: string;
+  pin?: string; // Optional: Company-wide backup PIN
+  active: boolean;
+  operators: ExternalOperator[]; // List of authorized operators with their individual PINs
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Justification {

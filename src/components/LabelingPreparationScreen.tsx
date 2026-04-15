@@ -9,9 +9,10 @@ import { ArrowLeft, Loader2, Tag, Users } from 'lucide-react';
 import type { ReceptionOperation, ReceptionExpectedItem, AppUser, LabelingOperation } from '@/types';
 import { CreateLabelingTaskDialog } from './CreateLabelingTaskDialog';
 import { AssignOperatorsDialog } from './AssignOperatorsDialog';
-import { getAllUserProfiles, loadLabelingOperations } from '@/app/reception/actions';
+import { getAllUserProfiles, loadLabelingOperations, getExternalVendors } from '@/app/reception/actions';
 import { useToast } from '@/hooks/use-toast';
 import { Badge } from './ui/badge';
+import type { ExternalVendor } from '@/types';
 
 interface LabelingPreparationScreenProps {
   operation: ReceptionOperation;
@@ -31,15 +32,19 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
   const [isAssignDialogOpen, setIsAssignDialogOpen] = useState(false);
   const [selectedReference, setSelectedReference] = useState<GroupedItem | null>(null);
   const [operators, setOperators] = useState<AppUser[]>([]);
+  const [externalVendors, setExternalVendors] = useState<ExternalVendor[]>([]);
   const [loadingOperators, setLoadingOperators] = useState(true);
+  const [loadingVendors, setLoadingVendors] = useState(true);
   const [existingTasks, setExistingTasks] = useState<LabelingOperation[]>([]);
   const { toast } = useToast();
 
   const fetchDependencies = useCallback(async () => {
     setLoadingOperators(true);
-    const [tasksResult, usersResult] = await Promise.all([
+    setLoadingVendors(true);
+    const [tasksResult, usersResult, vendorsResult] = await Promise.all([
       loadLabelingOperations(),
-      getAllUserProfiles()
+      getAllUserProfiles(),
+      getExternalVendors()
     ]);
     
     if(tasksResult.data) {
@@ -51,6 +56,12 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
     } else {
         toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los operarios.' });
     }
+
+    if (vendorsResult.success && vendorsResult.data) {
+        setExternalVendors(vendorsResult.data);
+    }
+    
+    setLoadingVendors(false);
     setLoadingOperators(false);
   }, [operation.id, toast]);
 
@@ -116,7 +127,8 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
         onOpenChange={setIsCreateDialogOpen}
         referenceData={selectedReference}
         operators={operators}
-        isLoadingOperators={loadingOperators}
+        externalVendors={externalVendors}
+        isLoadingOperators={loadingOperators || loadingVendors}
         operationId={operation.id}
         rkIdentifier={operation.rk_identifier}
         supplier={operation.supplier}
@@ -127,9 +139,13 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
         onOpenChange={setIsAssignDialogOpen}
         itemsToAssign={availableItemsForBulkAssign}
         operators={operators}
-        isLoadingOperators={loadingOperators}
+        externalVendors={externalVendors}
+        isLoading={loadingOperators || loadingVendors}
         onTasksCreated={fetchDependencies}
         operationId={operation.id}
+        rkIdentifier={operation.rk_identifier}
+        supplier={operation.supplier}
+        onAssign={() => {}} // Not used for bulk
       />
       <Card>
         <CardHeader className="flex flex-row justify-between items-center">

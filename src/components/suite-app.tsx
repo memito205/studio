@@ -69,6 +69,8 @@ const TransfersModule = dynamic(() => import('./TransfersModule').then(mod => mo
 const PropuestaTransportadora = dynamic(() => import('./PropuestaTransportadora').then(mod => mod.PropuestaTransportadora), { loading: () => <LoadingSpinner /> });
 const DistributorModule = dynamic(() => import('@/components/distributor-module/DistributorModule').then(mod => mod.default), { loading: () => <LoadingSpinner /> });
 const ControlPiso = dynamic(() => import('@/components/ControlPiso').then(mod => mod.ControlPiso), { loading: () => <LoadingSpinner /> });
+const ExternalLabelingPortal = dynamic(() => import('@/components/ExternalLabelingPortal').then(mod => mod.ExternalLabelingPortal), { loading: () => <LoadingSpinner /> });
+const LabelingDashboard = dynamic(() => import('@/components/LabelingDashboard').then(mod => mod.LabelingDashboard), { loading: () => <LoadingSpinner /> });
 
 
 type Theme = 'light' | 'dark';
@@ -521,6 +523,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const handleNavigateToDashboardsEcommerceMenu = () => setAppStep('dashboards_ecommerce_menu');
   const handleNavigateToDashboardsBodegaMenu = () => setAppStep('dashboards_bodega');
   const handleNavigateToDashboardsRemision = () => setAppStep('dashboards_remision');
+  const handleNavigateToDashboardsLabeling = () => setAppStep('dashboards_labeling');
   const handleNavigateToDashboardsOperacion = () => setAppStep('dashboards');
   const handleNavigateToSampleControlModule = () => setAppStep('sample_control');
   const handleNavigateToTransfersModule = () => setAppStep('transfers');
@@ -528,6 +531,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const handleNavigateToDispatchManager = () => setAppStep('dispatch_manager');
   const handleNavigateToDistributorModule = () => setAppStep('distributor_module');
   const handleNavigateToControlPiso = () => setAppStep('control_piso');
+  const handleNavigateToExternalPortal = () => setAppStep('external_labeling_portal');
 
   const handleStartPacking = async (order: WholesaleOrder) => {
       if (!user) {
@@ -658,12 +662,14 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToDispatchManager={handleNavigateToDispatchManager}
                 onNavigateToDistributorModule={handleNavigateToDistributorModule}
                 onNavigateToControlPiso={handleNavigateToControlPiso}
+                onNavigateToExternalPortal={handleNavigateToExternalPortal}
             />;
           case 'upload': return <FileUpload onProcessFile={handleFileProcess} isLoading={isLoading} onGoToHistorical={handleGoToHistorical} onReturnToSuite={handleReturnToSuite} reportDate={reportDate} onDateChange={setReportDate} />;
           case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} />;
           case 'dashboard': return reportData && <Dashboard data={reportData} fileName={fileName} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} onGoToConfiguration={handleGoToConfiguration} onGoToPlantView={handleGoToPlantView} onGoToSupervisorView={handleGoToSupervisorView} onRequestAIInsight={handleRequestAIInsight} theme={theme} annotations={annotations} onAnnotationChange={handleAnnotationChange} />;
-          case 'dashboards_bodega': return <BodegaDashboardsMenu onNavigateRemision={handleNavigateToDashboardsRemision} onReturnToMain={handleNavigateToDashboardsMainMenu} />;
+          case 'dashboards_bodega': return <BodegaDashboardsMenu onNavigateRemision={handleNavigateToDashboardsRemision} onNavigateLabeling={handleNavigateToDashboardsLabeling} onReturnToMain={handleNavigateToDashboardsMainMenu} />;
           case 'dashboards_remision': return <HistoricalDashboard onReturnToMain={() => setAppStep('dashboards_bodega')} onConsolidate={consolidateDailyReports} theme={theme} />;
+          case 'dashboards_labeling': return <LabelingDashboard onReturn={() => setAppStep('dashboards_bodega')} />;
           case 'historical': return <HistoricalDashboard onReturnToMain={() => setAppStep('upload')} onConsolidate={consolidateDailyReports} theme={theme} />;
           case 'plant_view': return reportData && <PlantView data={reportData} onReturnToDashboard={handleReturnToDashboard} theme={theme} />;
           case 'supervisor_view': return reportData && <SupervisorView data={reportData} onReturnToDashboard={handleReturnToDashboard} />;
@@ -707,6 +713,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           case 'dispatch_manager': return <DispatchManager onReturnToSuite={handleReturnToSuite} />;
           case 'distributor_module': return <DistributorModule onReturnToSuite={handleReturnToSuite} />;
           case 'control_piso': return <ControlPiso onReturn={handleReturnToSuite} />;
+          case 'external_labeling_portal': return <ExternalLabelingPortal />;
           case 'packing':
             if (packingOrder && currentSession) {
               return <PackingScreen 
@@ -742,6 +749,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToDispatchManager={handleNavigateToDispatchManager}
                 onNavigateToDistributorModule={handleNavigateToDistributorModule}
                 onNavigateToControlPiso={handleNavigateToControlPiso}
+                onNavigateToExternalPortal={handleNavigateToExternalPortal}
             />;
       }
     }

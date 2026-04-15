@@ -240,12 +240,13 @@ const ReceptionOperationsTable: React.FC<ReceptionOperationsTableProps> = ({ ope
                               </Button>
                           </OperationDebugDialog>
                           
+                        {isPrivilegedUser && (
                           <ProductivityReportDialog operation={operation}>
                             <Button variant="ghost" size="icon" title="Ver Auditoría Completa (Productividad y Tiempos)">
                               <BarChartHorizontal className="h-4 w-4" />
                             </Button>
                           </ProductivityReportDialog>
-
+                        )}
                           <OperationDetailedReportDialog operation={operation}>
                              <Button variant="ghost" size="icon" title="Ver Reporte Detallado de Ítems (Costoso)">
                                <Eye className="h-4 w-4" />

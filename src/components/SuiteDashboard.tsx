@@ -3,7 +3,7 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square } from 'lucide-react';
+import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv } from 'lucide-react';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -57,6 +57,7 @@ interface SuiteDashboardProps {
     onNavigateToDispatchManager: () => void;
     onNavigateToDistributorModule: () => void;
     onNavigateToControlPiso: () => void;
+    onNavigateToExternalPortal: () => void;
 }
 
 export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({ 
@@ -75,7 +76,8 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToTransfersModule,
     onNavigateToDispatchManager,
     onNavigateToDistributorModule,
-    onNavigateToControlPiso
+    onNavigateToControlPiso,
+    onNavigateToExternalPortal
 }) => {
     const { role } = useAuth();
     const { isInRemision, punchInRemision, punchOut, loading: pulseLoading } = useSuitePulse();
@@ -224,6 +226,24 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Acceder",
             onAction: onNavigateToDistributorModule,
             roles: ['admin', 'office']
+        },
+        {
+            key: 'external_portal',
+            icon: Lock,
+            title: "Portal Etiquetado Externo",
+            description: "Acceso simplificado para personal externo mediante PIN de 4 dígitos para registro de productividad.",
+            actionText: "Entrar Portal",
+            onAction: onNavigateToExternalPortal,
+            roles: ['admin', 'supervisor', 'external_operator']
+        },
+        {
+            key: 'ecommerce_tv',
+            icon: Tv,
+            title: "Modo TV Ecommerce",
+            description: "Vista de Kiosko optimizada para pantallas grandes, actualizando automáticamente.",
+            actionText: "Abrir Modo TV",
+            onAction: () => window.open('/tv-ecommerce', '_blank'),
+            roles: ['admin', 'office', 'supervisor', 'operator']
         }
     ];
 
@@ -236,7 +256,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     return (
         <div className="flex flex-col items-center justify-center min-h-[80vh] text-center p-4">
             <h1 className="text-4xl font-bold text-foreground">
-                Bienvenido a la Suite Nexus Operativo
+                Bienvenido a la Suite Nexus Operativo (Sync)
             </h1>
             <p className="mt-4 max-w-2xl text-lg text-muted-foreground">
                 Su centro de control para la inteligencia logística. Seleccione un módulo para comenzar a optimizar sus operaciones.

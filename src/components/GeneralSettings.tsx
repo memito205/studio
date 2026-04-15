@@ -12,6 +12,7 @@ import { UserManagement } from './UserManagement';
 import { useAuth } from '@/hooks/use-auth-context';
 import { ProductivitySettings } from './ProductivitySettings';
 import { UserGoals } from './UserGoals';
+import { ExternalVendorManager } from './ExternalVendorManager';
 
 interface GeneralSettingsProps {
   onReturnToSuite: () => void;
@@ -68,7 +69,10 @@ export const GeneralSettings: React.FC<GeneralSettingsProps> = ({
       <UserGoals />
 
       {role === 'admin' && (
-        <UserManagement />
+        <div className="space-y-8">
+            <UserManagement />
+            <ExternalVendorManager />
+        </div>
       )}
 
     </div>

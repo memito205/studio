@@ -20,7 +20,7 @@ interface ReceptionSummaryProps {
   isOperationPaused: boolean;
   currentScannedProductDetails: ProductDatabaseItem | null;
   productivityGoal: number;
-  allScannedItemsForOperation: ScannedItem[];
+  currentReferenceStats: { totalScanned: number, uniquePackingUnitsCount: number } | null;
   expectedItems: ReceptionExpectedItem[];
   packingUnits: PackingUnit[];
 }
@@ -32,7 +32,7 @@ export const ReceptionSummary: React.FC<ReceptionSummaryProps> = ({
   isOperationPaused,
   currentScannedProductDetails,
   productivityGoal,
-  allScannedItemsForOperation,
+  currentReferenceStats,
   expectedItems,
   packingUnits
 }) => {
@@ -40,25 +40,15 @@ export const ReceptionSummary: React.FC<ReceptionSummaryProps> = ({
   const { timeSpentInMinutes, actualProductivity: userActualProductivity } = userProductivity;
 
   const { totalScannedForReference, uniquePackingUnitsForReference } = useMemo(() => {
-    const currentReference = currentScannedProductDetails?.referencia || currentScannedProductDetails?.reference;
-    if (!currentReference || !allScannedItemsForOperation) {
+    if (!currentReferenceStats) {
         return { totalScannedForReference: 0, uniquePackingUnitsForReference: 0 };
     }
     
-    const itemsForRef = allScannedItemsForOperation.filter(item => (item.reference || '').trim() === currentReference.trim());
-    
-    const totalForRef = itemsForRef.reduce((sum, item) => sum + item.quantity, 0);
-
-    const uniqueUnits = new Set(itemsForRef.map(item => item.packing_unit_id));
-    
-    const packingUnitIdMap = new Map(packingUnits.map(unit => [unit.firestoreId, unit.id]));
-    const uniqueSequentialIds = new Set(Array.from(uniqueUnits).map(firestoreId => packingUnitIdMap.get(firestoreId) || 'N/A'));
-
     return {
-        totalScannedForReference: totalForRef,
-        uniquePackingUnitsForReference: uniqueSequentialIds.size
+        totalScannedForReference: currentReferenceStats.totalScanned,
+        uniquePackingUnitsForReference: currentReferenceStats.uniquePackingUnitsCount
     };
-}, [allScannedItemsForOperation, currentScannedProductDetails, packingUnits]);
+}, [currentReferenceStats]);
 
 
  const { expectedQuantityForCurrentReference } = useMemo(() => {

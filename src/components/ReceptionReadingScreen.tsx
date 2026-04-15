@@ -41,7 +41,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
 
   const [operation, setOperation] = useState<ReceptionOperation | null>(null);
   const [userScannedItems, setUserScannedItems] = useState<ScannedItem[]>([]);
-  const [allScannedItemsForOperation, setAllScannedItemsForOperation] = useState<ScannedItem[]>([]);
+  const [currentReferenceStats, setCurrentReferenceStats] = useState<{ totalScanned: number, uniquePackingUnitsCount: number } | null>(null);
   const [allPauses, setAllPauses] = useState<OperationPause[]>([]);
   const [activePause, setActivePause] = useState<OperationPause | null>(null);
   const [expectedItems, setExpectedItems] = useState<ReceptionExpectedItem[]>([]);
@@ -142,13 +142,6 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
         setUserScannedItems(items);
     }, (err) => console.error("Error escuchando los items del usuario:", err));
     
-    // Listener for all scans in the operation for summary purposes
-    const qAllScans = query(collection(firestore, "scannedItems"), where("reception_id", "==", operationId));
-    const unsubscribeAllScans = onSnapshot(qAllScans, (querySnapshot) => {
-       const allItems: ScannedItem[] = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ScannedItem));
-       setAllScannedItemsForOperation(allItems);
-    }, (err) => console.error("Error escuchando todos los items:", err));
-    
     // Listener for operation document changes (like totalScannedQuantity)
     const opDocRef = doc(firestore, "receptionOperations", operationId);
     const unsubscribeOpDoc = onSnapshot(opDocRef, (docSnap) => {
@@ -158,13 +151,35 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
         }
     });
 
-
     return () => {
       unsubscribeUserScans();
-      unsubscribeAllScans();
       unsubscribeOpDoc();
     }
   }, [operationId, user?.uid]);
+  
+  // NEW: Real-time listener for just the current reference's totals!
+  useEffect(() => {
+      if (!operationId || !currentScannedProductDetails) {
+          setCurrentReferenceStats(null);
+          return;
+      }
+      const safeRefId = (currentScannedProductDetails.referencia || currentScannedProductDetails.reference || 'UNKNOWN').trim().replace(/\//g, '-');
+      const statsRef = doc(firestore, 'receptionOperations', operationId, 'referenceStats', safeRefId);
+      
+      const unsubscribeStats = onSnapshot(statsRef, (docSnap) => {
+          if (docSnap.exists()) {
+              const data = docSnap.data();
+              setCurrentReferenceStats({
+                  totalScanned: data.totalScanned || 0,
+                  uniquePackingUnitsCount: Array.isArray(data.packingUnits) ? data.packingUnits.length : 0
+              });
+          } else {
+              setCurrentReferenceStats({ totalScanned: 0, uniquePackingUnitsCount: 0 });
+          }
+      });
+      
+      return () => unsubscribeStats();
+  }, [operationId, currentScannedProductDetails]);
   
   // Real-time listener for PAUSES and PACKING UNITS
   useEffect(() => {
@@ -217,10 +232,18 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
               return;
           }
 
+          const parseDate = (val: any) => {
+              if (!val) return null;
+              if (val instanceof Date) return val.getTime();
+              if (typeof val?.toDate === 'function') return val.toDate().getTime();
+              const date = new Date(val);
+              return isNaN(date.getTime()) ? null : date.getTime();
+          };
+
           const activityTimes = [
-              ...userItems.map(i => new Date(i.scanned_at).getTime()),
-              ...userPauses.map(p => new Date(p.start_time).getTime())
-          ].filter(t => !isNaN(t));
+              ...userItems.map(i => parseDate(i.scanned_at)),
+              ...userPauses.map(p => parseDate(p.start_time))
+          ].filter((t): t is number => t !== null);
 
           if (activityTimes.length === 0) {
              setUserProductivity({ timeSpentInMinutes: 0, actualProductivity: 0 });
@@ -232,12 +255,13 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
           const now = new Date().getTime();
           let endTime = now;
           if (operation.status !== 'in_progress' && operation.status !== 'paused' && operation.end_time) {
-              endTime = new Date(operation.end_time).getTime();
+              const opEnd = parseDate(operation.end_time);
+              endTime = opEnd || now;
           } else if (operation.status !== 'in_progress' && operation.status !== 'paused') {
               const lastActivityTimes = [
-                ...userItems.map(i => new Date(i.scanned_at).getTime()),
-                ...userPauses.filter(p => p.end_time).map(p => new Date(p.end_time!).getTime()),
-             ].filter(t => !isNaN(t));
+                ...userItems.map(i => parseDate(i.scanned_at)),
+                ...userPauses.filter(p => p.end_time).map(p => parseDate(p.end_time)),
+             ].filter((t): t is number => t !== null);
               endTime = lastActivityTimes.length > 0 ? Math.max(...lastActivityTimes) : firstScanTime;
           }
 
@@ -246,8 +270,8 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
           // 1. Collect all pause intervals
           const activePulseFromContext = globalPulse || currentPulse;
           const rawIntervals = [
-            ...userPauses.map(p => ({ start: new Date(p.start_time).getTime(), end: p.end_time ? new Date(p.end_time).getTime() : now })),
-            ...allPulses.map(p => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : now }))
+            ...userPauses.map(p => ({ start: parseDate(p.start_time)!, end: p.end_time ? parseDate(p.end_time)! : now })),
+            ...allPulses.map(p => ({ start: parseDate(p.startTime)!, end: p.endTime ? parseDate(p.endTime)! : now }))
           ];
 
           // Explicitly add the current active pulse interval if we are paused
@@ -335,7 +359,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
     const productName = (product.item || product.name || '').trim();
 
     if (unitToUse) {
-        const itemsInActiveUnit = allScannedItemsForOperation.filter(item => item.packing_unit_id === unitToUse?.firestoreId);
+        const itemsInActiveUnit = userScannedItems.filter(item => item.packing_unit_id === unitToUse?.firestoreId);
         if (itemsInActiveUnit.length > 0) {
             const expectedReference = itemsInActiveUnit[0].reference.trim();
 
@@ -563,11 +587,11 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
     
     // Sum quantities of items directly associated with the currently active PackingUnit.
     // This requires iterating through all scanned items that belong to this unit.
-    return allScannedItemsForOperation
+    return userScannedItems
         .filter(item => item.packing_unit_id === activePackingUnit.firestoreId)
         .reduce((sum, item) => sum + item.quantity, 0);
 
-  }, [activePackingUnit, allScannedItemsForOperation]);
+  }, [activePackingUnit, userScannedItems]);
   
   const packingUnitIdMap = useMemo(() => new Map(packingUnits.map(unit => [unit.firestoreId, unit.id])), [packingUnits]);
 
@@ -651,7 +675,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
             isOperationPaused={!!activePause}
             currentScannedProductDetails={currentScannedProductDetails}
             productivityGoal={productivityGoal}
-            allScannedItemsForOperation={allScannedItemsForOperation}
+            currentReferenceStats={currentReferenceStats}
             expectedItems={expectedItems}
             packingUnits={packingUnits}
         />

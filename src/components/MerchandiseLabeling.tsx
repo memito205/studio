@@ -2,10 +2,14 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Loader2, MoreHorizontal, Users, Target, FileDown, Tag } from 'lucide-react';
+import { ArrowLeft, Loader2, MoreHorizontal, Users, Target, FileDown, Tag, Pause, Search } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -14,8 +18,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { LabelingOperation, LabelingOperationStatus, LabelingActivityLog, AppUser, ReceptionExpectedItem, OperationPulse } from '@/types';
-import { loadLabelingOperations, updateLabelingOperation, getExpectedItemsForLabeling, getAllUserProfiles, getLabelingActivityLog } from '@/app/reception/actions';
+import type { LabelingOperation, LabelingOperationStatus, LabelingActivityLog, AppUser, ReceptionExpectedItem, OperationPulse, ExternalVendor } from '@/types';
+import { loadLabelingOperations, updateLabelingOperation, getExpectedItemsForLabeling, getAllUserProfiles, getLabelingActivityLog, logLabelingActivity, finishLabelingTaskSession, getExternalVendors } from '@/app/reception/actions';
 import { getUserGoals, getProductivitySettings, getPulsesByDate } from '@/app/actions';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { AssignOperatorsDialog } from './AssignOperatorsDialog';
@@ -43,6 +47,59 @@ const getStatusVariant = (status: LabelingOperationStatus) => {
   }
 };
 
+interface AdminPauseDialogProps {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: (reason: string, startTime: string) => void;
+  operation: LabelingOperation | null;
+}
+
+const AdminPauseDialog: React.FC<AdminPauseDialogProps> = ({ isOpen, onOpenChange, onConfirm, operation }) => {
+  const [reason, setReason] = useState('Almuerzo');
+  const [pauseTime, setPauseTime] = useState(new Date().toISOString().slice(0, 16));
+  const reasons = ['Almuerzo', 'Baño', 'Ajuste de Puesto', 'Falla Técnica', 'Otro'];
+
+  useEffect(() => {
+     if (isOpen) setPauseTime(new Date().toISOString().slice(0, 16));
+  }, [isOpen]);
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Pausa Administrativa</DialogTitle>
+          <DialogDescription>
+            Registrar pausa manual para {operation?.reference}. Solo use esta opción si el operario olvidó registrarla.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-4">
+          <div className="space-y-2">
+            <Label>Motivo</Label>
+            <Select value={reason} onValueChange={setReason}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {reasons.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>Hora de Inicio (Referencia)</Label>
+            <Input 
+              type="datetime-local" 
+              value={pauseTime} 
+              onChange={(e) => setPauseTime(e.target.value)} 
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
+          <Button onClick={() => onConfirm(reason, new Date(pauseTime).toISOString())}>Registrar Pausa</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
 interface ProductivityMetrics {
     productiveTimeMinutes: number;
     unitsPerHour: number;
@@ -53,12 +110,15 @@ const AdminDashboard: React.FC<{
     operations: LabelingOperation[];
     productivityData: Map<string, ProductivityMetrics>;
     isSubmitting: boolean;
-    onOpenDialog: (operation: LabelingOperation, dialog: 'assign' | 'standard' | 'log') => void;
-    onGenerateExcel: (operation: LabelingOperation) => void;
+    onOpenDialog: (operation: LabelingOperation, dialog: 'assign' | 'standard' | 'log') => void | Promise<void>;
+    onGenerateExcel: (operation: LabelingOperation) => void | Promise<void>;
     users: AppUser[];
-}> = ({ operations, productivityData, isSubmitting, onOpenDialog, onGenerateExcel, users }) => {
+    vendors: ExternalVendor[];
+    onAdminPause: (operation: LabelingOperation) => void;
+}> = ({ operations, productivityData, isSubmitting, onOpenDialog, onGenerateExcel, users, vendors, onAdminPause }) => {
     
     const userMap = useMemo(() => new Map(users.map(u => [u.uid, u.displayName || u.email])), [users]);
+    const vendorMap = useMemo(() => new Map(vendors.map(v => [v.id, v.name])), [vendors]);
     
     return (
     <div className="border rounded-md">
@@ -79,14 +139,21 @@ const AdminDashboard: React.FC<{
             <TableBody>
                 {operations.map((op) => {
                     const metrics = productivityData.get(op.id);
-                    const assignedUserName = op.assignedOperatorId ? userMap.get(op.assignedOperatorId) : 'Ninguno';
+                    let displayOperator = 'Ninguno';
+                    
+                    if (op.isExternal) {
+                        const vendorName = op.assignedExternalVendorId ? vendorMap.get(op.assignedExternalVendorId) : 'Ext';
+                        displayOperator = `[EXT] ${vendorName}${op.assignedExternalOperatorName ? ` - ${op.assignedExternalOperatorName}` : ''}`;
+                    } else if (op.assignedOperatorId) {
+                        displayOperator = userMap.get(op.assignedOperatorId) || 'Interno';
+                    }
                     return (
                         <TableRow key={op.id}>
                             <TableCell>
                                 <div className="font-medium">{op.rk_identifier}</div>
                                 <div className="text-sm text-muted-foreground">{op.reference}</div>
                             </TableCell>
-                            <TableCell>{assignedUserName}</TableCell>
+                            <TableCell className="text-xs uppercase font-semibold">{displayOperator}</TableCell>
                             <TableCell>
                                 <Badge variant={getStatusVariant(op.status)}>{op.status}</Badge>
                             </TableCell>
@@ -119,6 +186,11 @@ const AdminDashboard: React.FC<{
                                         <DropdownMenuItem onClick={() => onGenerateExcel(op)} disabled={isSubmitting}>
                                             <FileDown className="mr-2 h-4 w-4" /> Generar Excel de Trabajo
                                         </DropdownMenuItem>
+                                        {op.status === 'En Progreso' && (
+                                            <DropdownMenuItem onClick={() => onAdminPause(op)} className="text-warning-foreground bg-warning/10">
+                                                <Pause className="mr-2 h-4 w-4" /> Pausar Tarea (Admin)
+                                            </DropdownMenuItem>
+                                        )}
                                     </DropdownMenuContent>
                                 </DropdownMenu>
                             </TableCell>
@@ -134,11 +206,20 @@ const AdminDashboard: React.FC<{
 export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onReturnToSuite }) => {
   const [operations, setOperations] = useState<LabelingOperation[]>([]);
   const [allUsers, setAllUsers] = useState<AppUser[]>([]);
+  const [isAdminPauseDialogOpen, setIsAdminPauseDialogOpen] = useState(false);
+  const [operationToPause, setOperationToPause] = useState<LabelingOperation | null>(null);
+  const [externalVendors, setExternalVendors] = useState<ExternalVendor[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadingVendors, setLoadingVendors] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [productivityData, setProductivityData] = useState<Map<string, ProductivityMetrics>>(new Map());
   const [externalPulses, setExternalPulses] = useState<OperationPulse[]>([]);
   
+  // Dashboard Filters
+  const [searchRK, setSearchRK] = useState('');
+  const [searchRef, setSearchRef] = useState('');
+  const [searchOp, setSearchOp] = useState('');
+
   const [isAssignDialogOpen, setIsAssignDialogOpen] = useState(false);
   const [isStandardDialogOpen, setIsStandardDialogOpen] = useState(false);
   const [isActivityLogOpen, setIsActivityLogOpen] = useState(false);
@@ -153,12 +234,11 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
 
   const calculateProductivity = (logs: LabelingActivityLog[], operation: LabelingOperation, allExternalPulses: OperationPulse[]): ProductivityMetrics | null => {
       const startLog = logs.find(l => l.type === 'START');
-      const finishLog = logs.find(l => l.type === 'FINISH');
-      
-      if (!startLog || !finishLog) return null;
+      if (!startLog) return null;
 
+      const finishLog = logs.find(l => l.type === 'FINISH');
       const startTime = new Date(startLog.timestamp).getTime();
-      const finishTime = new Date(finishLog.timestamp).getTime();
+      const finishTime = finishLog ? new Date(finishLog.timestamp).getTime() : Date.now();
       
       // 1. Collect all pause intervals
       const relevantPulses = allExternalPulses.filter(p => p.isGlobal || p.userId === operation.assignedOperatorId);
@@ -227,9 +307,11 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
 
   const fetchOperationsAndProductivity = useCallback(async () => {
     setIsLoading(true);
-    const [opsResult, usersResult] = await Promise.all([
+    setLoadingVendors(true);
+    const [opsResult, usersResult, vendorsResult] = await Promise.all([
       loadLabelingOperations(),
-      getAllUserProfiles()
+      getAllUserProfiles(),
+      getExternalVendors()
     ]);
     
     if (usersResult) {
@@ -238,16 +320,21 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
        toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los perfiles de usuario.' });
     }
 
+    if (vendorsResult.success && vendorsResult.data) {
+        setExternalVendors(vendorsResult.data);
+    }
+
     if (opsResult.success && opsResult.data) {
       const fetchedOps = opsResult.data;
       setOperations(fetchedOps);
 
       // Real-time pulses are now provided by useSuitePulse
 
-      const completedOps = fetchedOps.filter(op => op.status === 'Completada');
+      // Calculate productivity for ALL tasks that have been started
+      const activeOrCompletedOps = fetchedOps.filter((op: LabelingOperation) => op.status !== 'Pendiente' && op.status !== 'Asignada');
       const newProductivityData = new Map<string, ProductivityMetrics>();
 
-      for (const op of completedOps) {
+      for (const op of activeOrCompletedOps) {
           const logResult = await getLabelingActivityLog(op.id);
           if (logResult.success && logResult.data) {
               const metrics = calculateProductivity(logResult.data, op, allPulses);
@@ -262,7 +349,37 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
       toast({ variant: 'destructive', title: 'Error', description: opsResult.error });
     }
     setIsLoading(false);
+    setLoadingVendors(false);
   }, [toast]);
+
+  const handleAdminPauseConfirm = async (reason: string, startTime: string) => {
+    if (!operationToPause) return;
+    setIsSubmitting(true);
+    const result = await logLabelingActivity(
+        operationToPause.id,
+        operationToPause.isExternal ? operationToPause.assignedExternalVendorId! : (operationToPause.assignedOperatorId || 'system'),
+        'PAUSE',
+        reason,
+        false, // Logged by admin
+        undefined,
+        operationToPause.assignedExternalOperatorName, // Keep name if external
+        startTime
+    );
+    
+    if (result.success) {
+        toast({ title: 'Éxito', description: 'Pausa administrativa registrada correctamente.' });
+        fetchOperationsAndProductivity();
+    } else {
+        toast({ variant: 'destructive', title: 'Error', description: result.error });
+    }
+    setIsSubmitting(false);
+    setIsAdminPauseDialogOpen(false);
+  }
+
+  const handleAdminPauseClick = (op: LabelingOperation) => {
+      setOperationToPause(op);
+      setIsAdminPauseDialogOpen(true);
+  }
 
   useEffect(() => {
     fetchOperationsAndProductivity();
@@ -352,8 +469,9 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
         isOpen={isAssignDialogOpen}
         onOpenChange={setIsAssignDialogOpen}
         onAssign={handleAssignOperator}
-        isLoading={isSubmitting}
+        isLoading={isSubmitting || loadingVendors}
         operators={allUsers.filter(u => u.role === 'operator' || u.role === 'supervisor')}
+        externalVendors={externalVendors}
         initialAssignedIds={selectedOperation?.assignedOperatorId ? [selectedOperation.assignedOperatorId] : []}
         isSingleTaskReassign={true}
       />
@@ -370,9 +488,9 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
         logs={selectedLog}
         taskTitle={selectedOperation ? `${selectedOperation.rk_identifier} - ${selectedOperation.reference}` : ''}
        />
-      <div className="space-y-8 max-w-7xl mx-auto">
+      <div className="space-y-6 max-w-7xl mx-auto">
         <Card>
-          <CardHeader className="flex flex-row justify-between items-center">
+          <CardHeader className="flex flex-row justify-between items-center pb-2">
             <div>
               <CardTitle>Módulo de Etiquetado de Mercancía</CardTitle>
               <CardDescription>Gestione y supervise el progreso de las operaciones de etiquetado.</CardDescription>
@@ -382,6 +500,58 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
               Volver a la Suite
             </Button>
           </CardHeader>
+          
+          {isManager && (
+            <div className="px-6 pb-4">
+              <div className="flex flex-wrap gap-4 items-end bg-muted/30 p-4 rounded-lg border">
+                <div className="flex-1 min-w-[200px] space-y-1.5">
+                  <Label htmlFor="searchRK" className="text-xs font-semibold uppercase text-muted-foreground">RK / Identificador</Label>
+                  <div className="relative">
+                    <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      id="searchRK"
+                      placeholder="Ej: RK-001..."
+                      className="pl-9 bg-background"
+                      value={searchRK}
+                      onChange={(e) => setSearchRK(e.target.value)}
+                    />
+                  </div>
+                </div>
+                
+                <div className="flex-1 min-w-[200px] space-y-1.5">
+                  <Label htmlFor="searchRef" className="text-xs font-semibold uppercase text-muted-foreground">Referencia</Label>
+                  <Input
+                    id="searchRef"
+                    placeholder="Filtrar por referencia..."
+                    className="bg-background"
+                    value={searchRef}
+                    onChange={(e) => setSearchRef(e.target.value)}
+                  />
+                </div>
+
+                <div className="flex-1 min-w-[200px] space-y-1.5">
+                  <Label htmlFor="searchOp" className="text-xs font-semibold uppercase text-muted-foreground">Operario / Proveedor</Label>
+                  <Input
+                    id="searchOp"
+                    placeholder="Buscar nombre..."
+                    className="bg-background"
+                    value={searchOp}
+                    onChange={(e) => setSearchOp(e.target.value)}
+                  />
+                </div>
+
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={() => { setSearchRK(''); setSearchRef(''); setSearchOp(''); }}
+                  className="h-10 px-3"
+                >
+                  Limpiar
+                </Button>
+              </div>
+            </div>
+          )}
+
           <CardContent>
             {isLoading ? (
               <div className="flex justify-center items-center h-64">
@@ -392,12 +562,28 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
                  <p className="text-center text-muted-foreground py-8">No hay operaciones de etiquetado. Envíe una desde el módulo de recepción.</p>
                ) : (
                 <AdminDashboard 
-                    operations={operations}
+                    operations={operations.filter(op => {
+                      const matchRK = op.rk_identifier.toLowerCase().includes(searchRK.toLowerCase());
+                      const matchRef = op.reference.toLowerCase().includes(searchRef.toLowerCase());
+                      
+                      let opName = 'Ninguno';
+                      if (op.isExternal) {
+                          const vendorName = externalVendors.find(v => v.id === op.assignedExternalVendorId)?.name || 'Ext';
+                          opName = `[EXT] ${vendorName}${op.assignedExternalOperatorName ? ` - ${op.assignedExternalOperatorName}` : ''}`;
+                      } else if (op.assignedOperatorId) {
+                          opName = allUsers.find(u => u.uid === op.assignedOperatorId)?.displayName || 'Interno';
+                      }
+                      const matchOp = opName.toLowerCase().includes(searchOp.toLowerCase());
+                      
+                      return matchRK && matchRef && matchOp;
+                    })}
                     productivityData={productivityData}
                     isSubmitting={isSubmitting}
                     onOpenDialog={handleOpenDialog}
                     onGenerateExcel={handleGenerateExcel}
                     users={allUsers}
+                    vendors={externalVendors}
+                    onAdminPause={handleAdminPauseClick}
                 />
                )
             ) : (
@@ -405,6 +591,12 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
             )}
           </CardContent>
         </Card>
+        <AdminPauseDialog 
+            isOpen={isAdminPauseDialogOpen}
+            onOpenChange={setIsAdminPauseDialogOpen}
+            onConfirm={handleAdminPauseConfirm}
+            operation={operationToPause}
+        />
       </div>
     </>
   );

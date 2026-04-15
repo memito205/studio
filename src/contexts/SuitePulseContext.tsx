@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
 import { firestore } from '@/services/firebase';
-import { collection, query, where, onSnapshot, limit, Timestamp } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, limit, Timestamp, getDocs } from 'firebase/firestore';
 import { createPulse } from '@/app/actions';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
@@ -90,8 +90,8 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
         return () => unsubscribe();
     }, [user?.uid]);
 
-    // 3. Listen to ALL pulses of the day for real-time productivity
-    useEffect(() => {
+    // 3. Get ALL past pulses of the day for real-time productivity (One time fetch)
+    const fetchPulsesOfDay = useCallback(async () => {
         if (!user?.uid) return;
         
         const startOfToday = new Date();
@@ -109,43 +109,39 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
             where('startTime', '>=', startOfToday)
         );
 
-        let globalPulses: OperationPulse[] = [];
-        let userPulses: OperationPulse[] = [];
+        try {
+            // Utilizamos then() estático en lugar de onSnapshot para ahorrar lecturas.
+            // Si quieres que se actualice cada vez que cambie tu propio estado activo, puedes llamarlo.
+            const [globalSnap, userSnap] = await Promise.all([getDocs(qGlobal), getDocs(qUser)]);
+            
+            const globalPulses = globalSnap.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data(),
+                startTime: doc.data().startTime?.toDate(),
+                endTime: doc.data().endTime?.toDate() || null
+            } as OperationPulse));
 
-        const updateAll = () => {
+            const userPulses = userSnap.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data(),
+                startTime: doc.data().startTime?.toDate(),
+                endTime: doc.data().endTime?.toDate() || null
+            } as OperationPulse));
+
              const combined = [...globalPulses, ...userPulses];
              const unique = combined.filter((p, index, self) => 
                 index === self.findIndex((t) => t.id === p.id)
              ).sort((a,b) => a.startTime.getTime() - b.startTime.getTime());
              
              setAllPulsesDay(unique);
-        };
-
-        const unsubGlobal = onSnapshot(qGlobal, (snapshot) => {
-            globalPulses = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data(),
-                startTime: doc.data().startTime?.toDate(),
-                endTime: doc.data().endTime?.toDate() || null
-            } as OperationPulse));
-            updateAll();
-        });
-
-        const unsubUser = onSnapshot(qUser, (snapshot) => {
-            userPulses = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data(),
-                startTime: doc.data().startTime?.toDate(),
-                endTime: doc.data().endTime?.toDate() || null
-            } as OperationPulse));
-            updateAll();
-        });
-
-        return () => {
-            unsubGlobal();
-            unsubUser();
-        };
+        } catch (error) {
+            console.error("Error fetching historical pulses:", error);
+        }
     }, [user?.uid]);
+
+    useEffect(() => {
+        fetchPulsesOfDay();
+    }, [fetchPulsesOfDay]);
 
     const changeStatus = useCallback(async (status: UserStatus, type: 'activity' | 'pause' | 'status_change', reason?: PulseReason) => {
         if (!user) return;

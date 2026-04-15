@@ -8,7 +8,7 @@ import { parseISO } from 'date-fns';
 import { startOfDay, endOfDay, isWithinInterval } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { normalizeHeader, parseFlexibleDate, excelSerialDateToJSDate, findCaseInsensitiveKey } from '@/lib/parsingUtils';
-import type { ReceptionOperation, ScannedItem, ItemNovelty, PackingUnit, Location, CsvRow, ReceptionExpectedItem, ReceptionProduct, AlternateBarcodeUploadRow, AppUser, OperationPause, ProductivitySettings, UserGoal, PackedItem, ProductDatabaseItem, DiscardedRecord, LabelingOperation, LabelingActivityLog, LabelingActivityType, LabelingOperationStatus, PackingScanResult } from '@/types';
+import type { ReceptionOperation, ScannedItem, ItemNovelty, PackingUnit, Location, CsvRow, ReceptionExpectedItem, ReceptionProduct, AlternateBarcodeUploadRow, AppUser, OperationPause, ProductivitySettings, UserGoal, PackedItem, ProductDatabaseItem, DiscardedRecord, LabelingOperation, LabelingActivityLog, LabelingActivityType, LabelingOperationStatus, PackingScanResult, ExternalVendor, LabelingDashboardData, LabelingSummaryKPIs, LabelingEmployeePerformance } from '@/types';
 
 
 // Helper function to convert Dates back to Timestamps FOR WRITING to Firestore
@@ -381,7 +381,7 @@ export async function updateReceptionOperation(operationId: string, updates: Par
 export async function loadReceptionOperations(options?: {
     limit?: number,
     startAfterDoc?: QueryDocumentSnapshot<DocumentData>,
-    statusFilter?: Array<'pending' | 'in_progress' | 'completed' | 'cancelled'>
+    statusFilter?: Array<'pending' | 'in_progress' | 'completed' | 'cancelled' | 'paused'>
 }): Promise<{ success: boolean; data?: { operations: ReceptionOperation[], lastVisible?: QueryDocumentSnapshot<DocumentData> }; error?: string }> {
     try {
         const opsRef = collection(firestore, 'receptionOperations');
@@ -688,7 +688,7 @@ export async function getPackingUnitDetails(operationId: string, sequentialUnitI
         const productsResult = await getProductsByBarcodes(barcodes);
         const productMap = new Map(productsResult.data?.map(p => [p.codigoBarras, p]));
 
-        const packedItems: PackedItem[] = scannedItems.map(scannedItem => {
+        const packedItems: any[] = scannedItems.map(scannedItem => {
             const productDetails = productMap.get(scannedItem.barcode);
             return {
                 scannedItemId: scannedItem.id, // ID of the ScannedItem document
@@ -703,7 +703,7 @@ export async function getPackingUnitDetails(operationId: string, sequentialUnitI
             };
         });
 
-        return { success: true, data: { unit: unitData, items: packedItems } };
+        return { success: true, data: { unit: unitData, items: packedItems as any[] } };
 
     } catch (error: any) {
         console.error("Error fetching packing unit details:", error);
@@ -1080,6 +1080,15 @@ export async function addScannedItem(itemData: Omit<ScannedItem, 'id' | 'quantit
             };
             transaction.set(newItemRef, convertDatesToTimestamps(newItem));
             transaction.update(receptionRef, { totalScannedQuantity: increment(1) });
+            
+            // --- PATRON CONTADOR: Firebase Optimization ---
+            const safeRefId = (itemData.reference || 'UNKNOWN').trim().replace(/\//g, '-');
+            const statsRef = doc(firestore, 'receptionOperations', itemData.reception_id, 'referenceStats', safeRefId);
+            transaction.set(statsRef, {
+                reference: safeRefId,
+                totalScanned: increment(1),
+                packingUnits: arrayUnion(itemData.packing_unit_id)
+            }, { merge: true });
         });
 
         return { success: true };
@@ -1107,6 +1116,13 @@ export async function updateScannedItem(itemId: string, updates: Partial<Scanned
             const receptionRef = doc(firestore, 'receptionOperations', oldData.reception_id);
             // This operation is atomic and safe
             transaction.update(receptionRef, { totalScannedQuantity: increment(quantityDifference) });
+            
+            // --- PATRON CONTADOR: Firebase Optimization ---
+            const safeRefId = (oldData.reference || 'UNKNOWN').trim().replace(/\//g, '-');
+            const statsRef = doc(firestore, 'receptionOperations', oldData.reception_id, 'referenceStats', safeRefId);
+            transaction.set(statsRef, {
+                totalScanned: increment(quantityDifference)
+            }, { merge: true });
         }
   
         // Update the scanned item document
@@ -1133,6 +1149,13 @@ export async function deleteScannedItem(itemId: string): Promise<{ success: bool
             
             transaction.delete(itemRef);
             transaction.update(receptionRef, { totalScannedQuantity: increment(-itemData.quantity) });
+            
+            // --- PATRON CONTADOR: Firebase Optimization ---
+            const safeRefId = (itemData.reference || 'UNKNOWN').trim().replace(/\//g, '-');
+            const statsRef = doc(firestore, 'receptionOperations', itemData.reception_id, 'referenceStats', safeRefId);
+            transaction.set(statsRef, {
+                totalScanned: increment(-itemData.quantity)
+            }, { merge: true });
         });
         return { success: true };
     } catch (error: any) {
@@ -1149,15 +1172,34 @@ export async function bulkDeleteScannedItems(itemIds: string[]): Promise<{ succe
         let totalQuantityRemoved = 0;
         let receptionId: string | null = null;
         
+        const diffMap = new Map<string, number>();
+        let currentReceptionId: string | null = null;
         for (const itemId of chunk) {
             const itemRef = doc(firestore, 'scannedItems', itemId);
             const itemDoc = await getDoc(itemRef);
             if (itemDoc.exists()) {
-                if (!receptionId) receptionId = itemDoc.data().reception_id;
-                totalQuantityRemoved += itemDoc.data().quantity;
+                const data = itemDoc.data();
+                if (!receptionId) receptionId = data.reception_id;
+                currentReceptionId = data.reception_id;
+                totalQuantityRemoved += data.quantity;
+                
+                const safeRefId = (data.reference || 'UNKNOWN').trim().replace(/\//g, '-');
+                diffMap.set(safeRefId, (diffMap.get(safeRefId) || 0) + data.quantity);
+
                 batch.delete(itemRef);
             }
         }
+        
+        // --- PATRON CONTADOR: Firebase Optimization ---
+        if (currentReceptionId) {
+            diffMap.forEach((qty, safeRefId) => {
+                const statsRef = doc(firestore, 'receptionOperations', currentReceptionId!, 'referenceStats', safeRefId);
+                batch.set(statsRef, {
+                    totalScanned: increment(-qty)
+                }, { merge: true });
+            });
+        }
+
         await batch.commit();
 
         if (receptionId && totalQuantityRemoved > 0) {
@@ -1347,7 +1389,7 @@ export async function createLabelingTask(taskData: Omit<LabelingOperation, 'id' 
   try {
     const newTask: Omit<LabelingOperation, 'id'> = {
       ...taskData,
-      status: taskData.assignedOperatorId ? 'Asignada' : 'Pendiente',
+      status: (taskData.assignedOperatorId || taskData.assignedExternalVendorId) ? 'Asignada' : 'Pendiente',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -1378,7 +1420,7 @@ export async function bulkCreateLabelingTasks(
                 const newDocRef = doc(labelingOpsCollection); // Automatically generate a new ID
                 const newTask: Omit<LabelingOperation, 'id'> = {
                     ...taskData,
-                    status: taskData.assignedOperatorId ? 'Asignada' : 'Pendiente',
+                    status: (taskData.assignedOperatorId || taskData.assignedExternalVendorId) ? 'Asignada' : 'Pendiente',
                     createdAt: new Date().toISOString(),
                     updatedAt: new Date().toISOString(),
                 };
@@ -1444,19 +1486,48 @@ export async function getExpectedItemsForLabeling(receptionId: string): Promise<
 }
 
 export async function logLabelingActivity(
-  operationId: string,
-  operatorId: string,
-  type: LabelingActivityType,
-  pauseReason?: string
+    operationId: string, 
+    operatorId: string, 
+    type: LabelingActivityType, 
+    pauseReason?: string, 
+    isExternal: boolean = false,
+    providedPin?: string,
+    externalOperatorName?: string,
+    customTimestamp?: string
 ): Promise<{ success: boolean; error?: string }> {
-  try {
-    const logEntry: Omit<LabelingActivityLog, 'id'> = {
-      labelingOperationId: operationId,
-      operatorId: operatorId,
-      type: type,
-      timestamp: new Date().toISOString(),
-      ...(pauseReason && { pauseReason }),
-    };
+    try {
+        if (isExternal && !providedPin) {
+            return { success: false, error: "Validación de PIN requerida para esta acción." };
+        }
+
+        if (isExternal && providedPin) {
+            const vendorRef = doc(firestore, 'externalVendors', operatorId);
+            const vendorSnap = await getDoc(vendorRef);
+            if (!vendorSnap.exists()) {
+                return { success: false, error: "Proveedor no encontrado." };
+            }
+            
+            const vendorData = vendorSnap.data();
+            const operator = (vendorData.operators as any[] || []).find(o => o.name === externalOperatorName);
+            
+            if (!operator) {
+                return { success: false, error: "Operario no autorizado por la empresa." };
+            }
+            
+            if (operator.pin !== providedPin) {
+                return { success: false, error: "PIN de operario incorrecto. Acción rechazada." };
+            }
+        }
+
+        const logEntry: Omit<LabelingActivityLog, 'id'> = {
+            labelingOperationId: operationId,
+            operatorId: operatorId,
+            type: type,
+            timestamp: customTimestamp || new Date().toISOString(),
+            ...(pauseReason && { pauseReason }),
+            isExternal: !!isExternal,
+            ...(externalOperatorName && { externalOperatorName }),
+        };
     
     let newStatus: LabelingOperationStatus;
     switch(type) {
@@ -1515,7 +1586,10 @@ export async function getLabelingActivityLog(operationId: string): Promise<{ suc
 
 export async function finishLabelingTaskSession(
   operationId: string,
-  completedUnits: number
+  completedUnits: number,
+  isExternal: boolean = false,
+  providedPin?: string,
+  externalOperatorName?: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
     await runTransaction(firestore, async (transaction) => {
@@ -1526,6 +1600,23 @@ export async function finishLabelingTaskSession(
       }
 
       const operationData = operationDoc.data() as LabelingOperation;
+
+      // PIN validation for external workers
+      if (isExternal) {
+          if (!providedPin || !externalOperatorName) {
+              throw new Error("Validación de PIN requerida para finalizar.");
+          }
+          const vendorRef = doc(firestore, 'externalVendors', operationData.assignedExternalVendorId!);
+          const vendorSnap = await transaction.get(vendorRef);
+          if (!vendorSnap.exists()) throw new Error("Proveedor no encontrado.");
+          
+          const vendorData = vendorSnap.data();
+          const operator = (vendorData.operators as any[] || []).find(o => o.name === externalOperatorName);
+          if (!operator || operator.pin !== providedPin) {
+              throw new Error("PIN de operario incorrecto.");
+          }
+      }
+
       if (completedUnits > operationData.totalUnits) {
         throw new Error("La cantidad completada no puede ser mayor a la cantidad total de la tarea.");
       }
@@ -1542,9 +1633,11 @@ export async function finishLabelingTaskSession(
       const newLogDocRef = doc(logCollectionRef);
       const logEntry: Omit<LabelingActivityLog, 'id'> = {
           labelingOperationId: operationId,
-          operatorId: operationData.assignedOperatorId,
+          operatorId: isExternal ? operationData.assignedExternalVendorId! : (operationData.assignedOperatorId || 'system'),
           type: 'FINISH',
           timestamp: new Date().toISOString(),
+          isExternal: !!isExternal,
+          ...(externalOperatorName && { externalOperatorName })
       };
       transaction.set(newLogDocRef, convertDatesToTimestamps(logEntry));
 
@@ -1651,6 +1744,239 @@ export async function getTraceabilityForReference(reference: string): Promise<{ 
 
     } catch (error: any) {
         console.error("Error in getTraceabilityForReference:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+// --- External Vendor Actions ---
+
+export async function getExternalVendors(): Promise<{ success: boolean; data?: ExternalVendor[]; error?: string }> {
+    try {
+        const q = query(collection(firestore, 'externalVendors'));
+        const querySnapshot = await getDocs(q);
+        const vendors = querySnapshot.docs
+            .map(doc => ({
+                id: doc.id,
+                ...convertTimestampsToDates(doc.data())
+            } as ExternalVendor))
+            .filter(v => v.active !== false) // Filter by active (default true)
+            .sort((a, b) => a.name.localeCompare(b.name)); // Sort by name
+        
+        return { success: true, data: vendors };
+    } catch (error: any) {
+        console.error("Error loading external vendors:", error);
+        return { success: false, error: `Failed to load external vendors: ${error.message}` };
+    }
+}
+
+export async function validateExternalVendorPin(vendorId: string, pin: string, operatorName?: string): Promise<{ success: boolean; vendor?: ExternalVendor; error?: string }> {
+    try {
+        const vendorRef = doc(firestore, 'externalVendors', vendorId);
+        const docSnap = await getDoc(vendorRef);
+        
+        if (!docSnap.exists()) {
+            return { success: false, error: "Proveedor no encontrado." };
+        }
+        
+        const data = docSnap.data();
+        const vendorData = { id: docSnap.id, ...convertTimestampsToDates(data) } as ExternalVendor;
+        
+        if (operatorName) {
+            const operator = vendorData.operators?.find(o => o.name === operatorName);
+            if (operator && operator.pin === pin) {
+                return { success: true, vendor: vendorData };
+            }
+            return { success: false, error: "PIN de operario incorrecto." };
+        }
+
+        // Company-level PIN fallback
+        if (vendorData.pin === pin) {
+            return { success: true, vendor: vendorData };
+        }
+        
+        return { success: false, error: "PIN incorrecto." };
+    } catch (error: any) {
+        return { success: false, error: `Error al validar PIN: ${error.message}` };
+    }
+}
+
+export async function saveExternalVendor(vendor: Partial<ExternalVendor>): Promise<{ success: boolean; data?: ExternalVendor; error?: string }> {
+    try {
+        const id = vendor.id || doc(collection(firestore, 'externalVendors')).id;
+        const now = new Date().toISOString();
+        
+        const vendorData = {
+            ...vendor,
+            id,
+            active: vendor.active ?? true,
+            operators: vendor.operators || [],
+            updatedAt: now,
+            ...(vendor.id ? {} : { createdAt: now })
+        };
+
+        await setDoc(doc(firestore, 'externalVendors', id), vendorData, { merge: true });
+        return { success: true, data: vendorData as ExternalVendor };
+    } catch (error: any) {
+        console.error("Error in saveExternalVendor:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function deleteExternalVendor(vendorId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        await deleteDoc(doc(firestore, 'externalVendors', vendorId));
+        return { success: true };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+export async function getLabelingOperationsForExternal(vendorId: string, operatorName?: string): Promise<{ success: boolean; data?: LabelingOperation[]; error?: string }> {
+    try {
+        const q = query(
+            collection(firestore, 'labelingOperations'), 
+            where('assignedExternalVendorId', '==', vendorId)
+            // Removed orderBy to avoid missing index error
+        );
+        const querySnapshot = await getDocs(q);
+        let operations = querySnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...convertTimestampsToDates(doc.data())
+        } as LabelingOperation))
+        .filter(op => op.status !== 'Completada')
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); // Sort by createdAt desc
+        
+        if (operatorName) {
+            operations = operations.filter(op => op.assignedExternalOperatorName === operatorName);
+        }
+        
+    
+        return { success: true, data: operations };
+    } catch (error: any) {
+        console.error("Error loading labeling operations for external vendor:", error);
+        return { success: false, error: `Failed to load operations: ${error.message}` };
+    }
+}
+
+export async function getLabelingHistoricalData(dateRange?: { from: Date; to?: Date | null }): Promise<{ success: boolean; data?: LabelingDashboardData; error?: string }> {
+    try {
+        const fromDate = dateRange?.from ? startOfDay(dateRange.from) : startOfDay(new Date());
+        const toDate = dateRange?.to ? endOfDay(dateRange.to) : endOfDay(fromDate);
+
+        // 1. Fetch all labeling operations
+        const opsResult = await loadLabelingOperations();
+        if (!opsResult.success || !opsResult.data) throw new Error(opsResult.error || "Failed to load operations");
+
+        // Filter operations that were created OR updated within the range
+        const filteredOps = opsResult.data.filter(op => {
+            const created = new Date(op.createdAt);
+            const updated = new Date(op.updatedAt);
+            return isWithinInterval(created, { start: fromDate, end: toDate }) || 
+                   isWithinInterval(updated, { start: fromDate, end: toDate });
+        });
+
+        const logs: LabelingActivityLog[] = [];
+        const employeeMap = new Map<string, LabelingEmployeePerformance>();
+        const hourlyMap = new Map<string, number>();
+        const pauseReasonMap = new Map<string, { count: number; totalMinutes: number }>();
+
+        // 2. Fetch logs for each filtered operation
+        for (const op of filteredOps) {
+            const logResult = await getLabelingActivityLog(op.id);
+            if (logResult.success && logResult.data) {
+                logs.push(...logResult.data);
+            }
+        }
+
+        // 3. Process metrics
+        let totalUnits = 0;
+        let internalUnits = 0;
+        let externalUnits = 0;
+        let totalActiveMinutes = 0;
+
+        // Group logs by operator to calculate performance
+        const logsByOperator = new Map<string, LabelingActivityLog[]>();
+        logs.forEach(log => {
+            const key = log.isExternal ? log.externalOperatorName || log.operatorId : log.operatorId;
+            if (!logsByOperator.has(key)) logsByOperator.set(key, []);
+            logsByOperator.get(key)!.push(log);
+        });
+
+        for (const [opId, opLogs] of logsByOperator.entries()) {
+            const sortedLogs = opLogs.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+            let opActiveMinutes = 0;
+            let opUnits = 0;
+            let opPauses = 0;
+            let lastStart: Date | null = null;
+            let isExt = false;
+            let extName = "";
+
+            sortedLogs.forEach(log => {
+                const ts = new Date(log.timestamp);
+                if (log.isExternal) isExt = true;
+                if (log.externalOperatorName) extName = log.externalOperatorName;
+
+                if (log.type === 'START' || log.type === 'RESUME') {
+                    lastStart = ts;
+                } else if ((log.type === 'PAUSE' || log.type === 'FINISH') && lastStart) {
+                    const diff = (ts.getTime() - lastStart.getTime()) / 60000;
+                    opActiveMinutes += diff;
+                    lastStart = null;
+                    if (log.type === 'PAUSE') {
+                        opPauses++;
+                        const reason = log.pauseReason || "No especificado";
+                        const current = pauseReasonMap.get(reason) || { count: 0, totalMinutes: 0 };
+                        pauseReasonMap.set(reason, { count: current.count + 1, totalMinutes: current.totalMinutes + diff });
+                    }
+                }
+                
+                if (log.type === 'FINISH' && log.completedUnits) {
+                    opUnits += log.completedUnits;
+                }
+            });
+
+            const performance: LabelingEmployeePerformance = {
+                id: opId,
+                name: extName || opId,
+                type: isExt ? 'Externo' : 'Interno',
+                totalUnits: opUnits,
+                activeMinutes: Math.round(opActiveMinutes),
+                pausesCount: opPauses,
+                efficiency: opActiveMinutes > 0 ? (opUnits / (opActiveMinutes / 60)) : 0,
+                lastActivity: sortedLogs[sortedLogs.length - 1]?.timestamp || new Date().toISOString()
+            };
+            employeeMap.set(opId, performance);
+            
+            totalUnits += opUnits;
+            if (isExt) externalUnits += opUnits;
+            else internalUnits += opUnits;
+            totalActiveMinutes += opActiveMinutes;
+
+            sortedLogs.filter(l => l.type === 'FINISH').forEach(l => {
+                const hour = new Date(l.timestamp).getHours().toString().padStart(2, '0') + ':00';
+                hourlyMap.set(hour, (hourlyMap.get(hour) || 0) + (l.completedUnits || 0));
+            });
+        }
+
+        const dashboardData: LabelingDashboardData = {
+            operations: filteredOps,
+            logs: logs,
+            summary: {
+                totalUnits,
+                internalUnits,
+                externalUnits,
+                totalActiveMinutes: Math.round(totalActiveMinutes),
+                efficiency: totalActiveMinutes > 0 ? (totalUnits / (totalActiveMinutes / 60)) : 0,
+                conversionRate: totalActiveMinutes > 0 ? (totalUnits / (totalActiveMinutes / 60)) : 0
+            },
+            employeePerformance: Array.from(employeeMap.values()),
+            hourlyData: Array.from(hourlyMap.entries()).map(([hour, units]) => ({ hour, units })).sort((a,b) => a.hour.localeCompare(b.hour)),
+            pauseReasons: Array.from(pauseReasonMap.entries()).map(([reason, stats]) => ({ reason, ...stats }))
+        };
+
+        return { success: true, data: dashboardData };
+    } catch (error: any) {
+        console.error("Error in getLabelingHistoricalData:", error);
         return { success: false, error: error.message };
     }
 }
