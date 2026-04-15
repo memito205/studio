@@ -154,7 +154,15 @@ export default function EcommerceTvBoard() {
     return { total, pending, dispatched, delayed, storeCounts, statusCounts, hourlyCounts, delayedByStore };
   }, [orders, selectedStores]);
 
-  const availableStores = useMemo(() => Array.from(new Set(orders.map(o => o.tienda || 'OTROS'))).sort(), [orders]);
+  const availableStores = useMemo(() => {
+     const standardStores = ['Addi', 'Branchos', 'Dafiti', 'Falabella', 'Mercado Libre'];
+     const dynamicStores = Array.from(new Set(orders.map(o => {
+          if (!o.tienda) return 'OTROS';
+          // Capitalize standard to match the database normally
+          return o.tienda;
+     })));
+     return Array.from(new Set([...standardStores, ...dynamicStores].map(s => s.toUpperCase()))).sort();
+  }, [orders]);
 
   const slides = [
       <OverviewSlide key="summary" metrics={metrics} />,
