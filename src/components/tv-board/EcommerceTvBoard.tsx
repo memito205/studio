@@ -292,8 +292,8 @@ export default function EcommerceTvBoard() {
   }, [slidesToPresent.length]);
 
   return (
-    <div className="flex flex-col h-full w-full overflow-hidden p-8 font-sans pb-16 relative">
-        <header className="flex justify-between items-center mb-12">
+    <div className="flex flex-col h-screen w-full overflow-hidden p-12 lg:p-16 font-sans pb-24 relative bg-slate-950 text-slate-100">
+        <header className="flex justify-between items-center mb-16 px-4">
             <div className="flex items-center gap-4">
                 <h1 className="text-5xl font-black tracking-tight text-blue-400 drop-shadow-lg text-nowrap">
                     ECOMMERCE<span className="text-white font-light ml-2">LIVE</span>

@@ -66,7 +66,7 @@ export const EfficiencySlide: React.FC<EfficiencySlideProps> = ({ orders, holida
   };
 
   return (
-    <div className="flex flex-col h-full w-full gap-8 animate-in fade-in slide-in-from-bottom-12 duration-1000 p-8">
+    <div className="flex flex-col h-full w-full gap-8 animate-in fade-in slide-in-from-bottom-12 duration-1000 p-4 lg:p-8">
       {/* Top Stats */}
       <div className="grid grid-cols-3 gap-8">
         <div className="bg-slate-900/40 backdrop-blur-md rounded-[2.5rem] border border-slate-800/50 p-8 flex items-center gap-8 shadow-2xl">
@@ -112,23 +112,23 @@ export const EfficiencySlide: React.FC<EfficiencySlideProps> = ({ orders, holida
                 <XAxis 
                     dataKey="name" 
                     stroke="#94a3b8" 
-                    fontSize={14} 
+                    fontSize={22} 
                     tickLine={false} 
                     axisLine={false}
-                    angle={-25}
-                    textAnchor="end"
+                    interval={0}
+                    height={60}
                 />
-                <YAxis unit="%" stroke="#94a3b8" fontSize={14} tickLine={false} axisLine={false} />
+                <YAxis unit="%" stroke="#94a3b8" fontSize={20} tickLine={false} axisLine={false} />
                 <Tooltip 
                   contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '12px' }}
                   formatter={(val: number) => [`${val.toFixed(1)}%`, 'Eficiencia']}
                 />
                 <Bar 
                   dataKey="value" 
-                  radius={[10, 10, 0, 0]} 
-                  barSize={50}
+                  radius={[12, 12, 0, 0]} 
+                  barSize={120}
                 >
-                  <LabelList dataKey="value" position="top" fill="#fff" fontSize={16} fontWeight="bold" offset={15} formatter={(val: number) => `${val.toFixed(1)}%`} />
+                  <LabelList dataKey="value" position="top" fill="#fff" fontSize={24} fontWeight="black" offset={20} formatter={(val: number) => `${val.toFixed(1)}%`} />
                   {storeEfficiency.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={getEfficiencyColor(entry.value)} />
                   ))}

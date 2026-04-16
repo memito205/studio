@@ -75,8 +75,8 @@ export const WeeklyDispatchSummarySlide: React.FC<WeeklyDispatchSummarySlideProp
   }, [orders, holidays]);
 
   return (
-    <div className="flex flex-col h-full w-full gap-8 animate-in fade-in zoom-in duration-700 p-8">
-      <div className="bg-slate-900/40 backdrop-blur-md rounded-[2.5rem] border border-slate-800/50 p-10 flex flex-col shadow-2xl h-full">
+    <div className="flex flex-col h-full w-full gap-8 animate-in fade-in zoom-in duration-700 p-4 lg:p-12">
+      <div className="bg-slate-900/40 backdrop-blur-md rounded-[3rem] border border-slate-800/50 p-12 lg:p-16 flex flex-col shadow-2xl h-full">
         <div className="flex items-center justify-between mb-10">
           <h3 className="text-4xl font-black text-slate-100 uppercase tracking-tighter flex items-center gap-6">
             <div className="p-4 bg-blue-500/20 rounded-2xl border border-blue-500/30">
