@@ -239,7 +239,7 @@ export default function EcommerceTvBoard() {
     ];
 
     // Dynamic Delayed Orders Slides
-    const pageSize = 8;
+    const pageSize = 4;
     const totalDelayed = delayedOrdersList.length;
     for (let i = 0; i < totalDelayed; i += pageSize) {
       const chunk = delayedOrdersList.slice(i, i + pageSize);
