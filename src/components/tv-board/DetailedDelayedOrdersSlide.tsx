@@ -20,7 +20,7 @@ export const DetailedDelayedOrdersSlide: React.FC<DetailedDelayedOrdersSlideProp
     
     // 2. Map with logs
     const logMap = new Map(logs.map(l => [l.id, l]));
-    const sixtyDaysAgo = subDays(today, 60);
+    const thirtyDaysAgo = subDays(today, 30);
 
     return pendingOrders
       .map(o => {
@@ -33,11 +33,16 @@ export const DetailedDelayedOrdersSlide: React.FC<DetailedDelayedOrdersSlideProp
             ? [...log.justifications].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0]
             : null;
 
-          return { ...o, daysDelayed, lastJustification };
+          // Robust Order Number Selection
+          // @ts-ignore - nroPedido might not be in the base interface but it's often in the data
+          const nroPed = o.nroPedido || o.ped_factura || o.id || 'S/N';
+          const cleanNroPed = String(nroPed).toLowerCase() === 'null' ? (o.id || 'S/N') : nroPed;
+
+          return { ...o, daysDelayed, lastJustification, cleanNroPed };
       })
-      .filter(o => o.daysDelayed >= 2 && isAfter(new Date(o.fechaPedido!), sixtyDaysAgo)) // Only show delayed orders (2+ days) and recent (last 60d)
+      .filter(o => o.daysDelayed >= 2 && isAfter(new Date(o.fechaPedido!), thirtyDaysAgo)) 
       .sort((a, b) => b.daysDelayed - a.daysDelayed)
-      .slice(0, 8); // Reduced to 8 for better fit in 16:9
+      .slice(0, 8); 
   }, [orders, logs]);
 
   if (delayedOrdersWithJustification.length === 0) return null;
@@ -75,7 +80,7 @@ export const DetailedDelayedOrdersSlide: React.FC<DetailedDelayedOrdersSlideProp
                   className="bg-slate-800/20 hover:bg-slate-800/40 transition-all group"
                 >
                   <td className="py-2 pl-8 rounded-l-3xl text-2xl font-black text-white group-hover:text-blue-400 tracking-tight">
-                    {(o.ped_factura && o.ped_factura !== 'null' && o.ped_factura !== '') ? o.ped_factura : (o.id || 'S/N')}
+                    {o.cleanNroPed}
                   </td>
                   <td className="py-6">
                     <span className="text-2xl font-bold text-slate-300">
