@@ -2,7 +2,7 @@
 
 import React, { useMemo } from 'react';
 import { EcommerceOrder, DelayedOrderLog } from '@/types';
-import { differenceInDays, format } from 'date-fns';
+import { differenceInDays, format, subDays, isAfter } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { Clock, Calendar, Hash, Store, MessageSquare } from 'lucide-react';
 
@@ -20,6 +20,7 @@ export const DetailedDelayedOrdersSlide: React.FC<DetailedDelayedOrdersSlideProp
     
     // 2. Map with logs
     const logMap = new Map(logs.map(l => [l.id, l]));
+    const sixtyDaysAgo = subDays(today, 60);
 
     return pendingOrders
       .map(o => {
@@ -29,14 +30,14 @@ export const DetailedDelayedOrdersSlide: React.FC<DetailedDelayedOrdersSlideProp
           
           // Get most recent justification
           const lastJustification = log?.justifications && log.justifications.length > 0
-            ? log.justifications.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0]
+            ? [...log.justifications].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0]
             : null;
 
           return { ...o, daysDelayed, lastJustification };
       })
-      .filter(o => o.daysDelayed >= 2) // Only show delayed orders (2+ days)
+      .filter(o => o.daysDelayed >= 2 && isAfter(new Date(o.fechaPedido!), sixtyDaysAgo)) // Only show delayed orders (2+ days) and recent (last 60d)
       .sort((a, b) => b.daysDelayed - a.daysDelayed)
-      .slice(0, 10); // Show top 10 oldest for readability
+      .slice(0, 8); // Reduced to 8 for better fit in 16:9
   }, [orders, logs]);
 
   if (delayedOrdersWithJustification.length === 0) return null;
@@ -73,8 +74,8 @@ export const DetailedDelayedOrdersSlide: React.FC<DetailedDelayedOrdersSlideProp
                   key={o.id || idx} 
                   className="bg-slate-800/20 hover:bg-slate-800/40 transition-all group"
                 >
-                  <td className="py-6 pl-8 rounded-l-3xl text-2xl font-black text-white group-hover:text-blue-400 tracking-tight">
-                    {o.ped_factura || o.id || 'S/N'}
+                  <td className="py-2 pl-8 rounded-l-3xl text-2xl font-black text-white group-hover:text-blue-400 tracking-tight">
+                    {(o.ped_factura && o.ped_factura !== 'null' && o.ped_factura !== '') ? o.ped_factura : (o.id || 'S/N')}
                   </td>
                   <td className="py-6">
                     <span className="text-2xl font-bold text-slate-300">

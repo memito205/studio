@@ -126,9 +126,9 @@ export const EfficiencySlide: React.FC<EfficiencySlideProps> = ({ orders, holida
                 <Bar 
                   dataKey="value" 
                   radius={[10, 10, 0, 0]} 
-                  barSize={60}
+                  barSize={50}
                 >
-                  <LabelList dataKey="value" position="top" fill="#94a3b8" fontSize={14} offset={10} formatter={(val: number) => `${val.toFixed(1)}%`} />
+                  <LabelList dataKey="value" position="top" fill="#fff" fontSize={16} fontWeight="bold" offset={15} formatter={(val: number) => `${val.toFixed(1)}%`} />
                   {storeEfficiency.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={getEfficiencyColor(entry.value)} />
                   ))}

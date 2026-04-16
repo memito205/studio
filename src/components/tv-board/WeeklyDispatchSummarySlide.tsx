@@ -71,7 +71,7 @@ export const WeeklyDispatchSummarySlide: React.FC<WeeklyDispatchSummarySlideProp
         };
       })
       .sort((a, b) => b.weekKey.localeCompare(a.weekKey))
-      .slice(0, 5); // Show last 5 weeks
+      .slice(0, 4); // Show last 4 weeks for better 16:9 fit
   }, [orders, holidays]);
 
   return (
@@ -110,40 +110,40 @@ export const WeeklyDispatchSummarySlide: React.FC<WeeklyDispatchSummarySlideProp
                   key={week.weekKey} 
                   className="bg-slate-800/20 hover:bg-slate-800/40 transition-all group"
                 >
-                  <td className="py-6 pl-8 rounded-l-3xl text-2xl font-bold text-slate-100 group-hover:text-blue-400">
+                  <td className="py-4 pl-8 rounded-l-3xl text-2xl font-bold text-slate-100 group-hover:text-blue-400">
                     {week.weekLabel}
                   </td>
-                  <td className="py-6 text-center text-3xl font-black text-white">
+                  <td className="py-4 text-center text-3xl font-black text-white">
                     {week.total}
                   </td>
-                  <td className="py-6 text-center">
+                  <td className="py-4 text-center">
                     <div className="flex flex-col items-center">
                         <span className="text-3xl font-black text-blue-400">{week.averageDispatchDays.toFixed(1)}</span>
-                        <span className="text-sm font-bold text-slate-500">DÍAS</span>
+                        <span className="text-xs font-bold text-slate-500 uppercase">Días</span>
                     </div>
                   </td>
-                  <td className="py-6 text-center bg-green-500/5">
+                  <td className="py-4 text-center bg-green-500/5">
                     <div className="flex flex-col items-center">
                         <span className="text-2xl font-bold text-green-400">{week['0-1 Días']}</span>
-                        <span className="text-sm font-medium text-green-500/50">{week['0_1_Perc'].toFixed(0)}%</span>
+                        <span className="text-xs font-medium text-green-500/50">{week['0_1_Perc'].toFixed(0)}%</span>
                     </div>
                   </td>
-                  <td className="py-6 text-center bg-blue-500/5">
+                  <td className="py-4 text-center bg-blue-500/5">
                     <div className="flex flex-col items-center">
                         <span className="text-2xl font-bold text-blue-400">{week['1-2 Días']}</span>
-                        <span className="text-sm font-medium text-blue-500/50">{week['1_2_Perc'].toFixed(0)}%</span>
+                        <span className="text-xs font-medium text-blue-500/50">{week['1_2_Perc'].toFixed(0)}%</span>
                     </div>
                   </td>
-                  <td className="py-6 text-center bg-orange-500/5">
+                  <td className="py-4 text-center bg-orange-500/5">
                     <div className="flex flex-col items-center">
                         <span className="text-2xl font-bold text-orange-400">{week['2-3 Días']}</span>
-                        <span className="text-sm font-medium text-orange-500/50">{week['2_3_Perc'].toFixed(0)}%</span>
+                        <span className="text-xs font-medium text-orange-500/50">{week['2_3_Perc'].toFixed(0)}%</span>
                     </div>
                   </td>
-                  <td className="py-6 text-center pr-8 rounded-r-3xl bg-red-500/5">
+                  <td className="py-4 text-center pr-8 rounded-r-3xl bg-red-500/5">
                     <div className="flex flex-col items-center">
                         <span className="text-2xl font-bold text-red-500">{week['>3 Días']}</span>
-                        <span className="text-sm font-medium text-red-500/50">{week['gt3_Perc'].toFixed(0)}%</span>
+                        <span className="text-xs font-medium text-red-500/50">{week['gt3_Perc'].toFixed(0)}%</span>
                     </div>
                   </td>
                 </tr>

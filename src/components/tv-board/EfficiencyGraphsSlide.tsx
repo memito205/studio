@@ -142,7 +142,7 @@ export const EfficiencyGraphsSlide: React.FC<EfficiencyGraphsSlideProps> = ({ or
                   strokeWidth={6} 
                   dot={{ r: 8, fill: '#a855f7', stroke: '#0f172a', strokeWidth: 3 }}
                 >
-                  <LabelList dataKey="Efectividad" position="top" offset={20} fill="#d8b4fe" fontSize={16} fontWeight="900" formatter={(val: number) => `${val.toFixed(1)}%`} />
+                  <LabelList dataKey="Efectividad" position="top" offset={25} fill="#fff" fontSize={18} fontWeight="900" formatter={(val: number) => `${val.toFixed(1)}%`} />
                 </Line>
               </LineChart>
             </ResponsiveContainer>
