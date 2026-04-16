@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { loadEcommerceOrders } from '@/app/actions';
 import type { EcommerceOrder } from '@/types';
-import { calculateSlaHours, parseFlexibleDate } from '@/lib/parsingUtils';
+import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { OverviewSlide } from './OverviewSlide';
 import { BrandDistributionSlide } from './BrandDistributionSlide';
 import { HourlyTrendSlide } from './HourlyTrendSlide';
@@ -13,13 +13,11 @@ import { TransporterPendingSlide } from './TransporterPendingSlide';
 import { EcommerceAnalysisSlide } from './EcommerceAnalysisSlide';
 import { EfficiencySlide } from './EfficiencySlide';
 import { DispatchSlide } from './DispatchSlide';
-import { DelayedOrdersDetailSlide } from './DelayedOrdersDetailSlide';
-import { DelayedOrdersSlide } from './DelayedOrdersSlide';
 import { WeeklyDispatchSummarySlide } from './WeeklyDispatchSummarySlide';
 import { DetailedDelayedOrdersSlide } from './DetailedDelayedOrdersSlide';
 import { EfficiencyGraphsSlide } from './EfficiencyGraphsSlide';
 import { Clock, RefreshCw, Settings, X, Check } from 'lucide-react';
-import { format } from 'date-fns';
+import { format, differenceInDays } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { getShipments, getDelayedOrderLogs } from '@/app/actions';
 import type { DispatchSessionInfo, DelayedOrderLog } from '@/types';
@@ -88,24 +86,14 @@ export default function EcommerceTvBoard() {
     }
   }, []);
 
-  // Sync Timer
   useEffect(() => {
     fetchOrders();
-
-    const fetchInterval = setInterval(() => {
-      fetchOrders();
-    }, AUTO_SYNC_INTERVAL);
-
-    // Also set up a mechanism to sync exactly at HH:05
-    const syncAtHourFive = () => {
-        const now = new Date();
-        if (now.getMinutes() === 5) {
-            fetchOrders();
-        }
-    };
+    const fetchInterval = setInterval(fetchOrders, AUTO_SYNC_INTERVAL);
     
-    // Check every minute if we are at HH:05
-    const minuteSyncCheck = setInterval(syncAtHourFive, 60000);
+    // Sync at minute 5 of every hour
+    const minuteSyncCheck = setInterval(() => {
+        if (new Date().getMinutes() === 5) fetchOrders();
+    }, 60000);
 
     return () => {
       clearInterval(fetchInterval);
@@ -113,117 +101,11 @@ export default function EcommerceTvBoard() {
     };
   }, [fetchOrders]);
 
-  // Timer setup replaced effectively below
-  // We removed the static carousel timer to make it dynamic based on slides length
-
-  // Basic Metrics Calculation based on `isCurrentlyDelayed` logic
-  const metrics = useMemo(() => {
-    const total = orders.length;
-    let pending = 0;
-    let dispatched = 0;
-    let delayed = 0;
-    let pedidosHoy = 0;
-    
-    // Simplification for the TV representation
-    const dispatchedStates = ['en transporte externo', 'en transporte interno', 'entregado', 'en tienda'];
-    const cancelledStates = ['cancelado', 'pendiente cancelar'];
-    const nonPendingStates = [...dispatchedStates, ...cancelledStates, 'pendiente pago'];
-
-    const storeCounts: Record<string, number> = {};
-    const statusCounts: Record<string, number> = {};
-    const delayedByStore: Record<string, number> = {};
-    
-    // NEW: grouped by store and status
-    const estadosPorTienda: Record<string, Record<string, number>> = {};
-    // NEW: transporter pending
-    const transportadoraPendiente: Record<string, number> = {};
-    
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const hourlyCounts: Record<string, number> = {};
-    for (let i = 6; i <= 20; i++) {
-        hourlyCounts[`${i}:00`] = 0;
-    }
-
-    orders.forEach((o) => {
-      const storeName = o.tienda || 'OTROS';
-      let bodegaNames: string[] = [];
-      if (Array.isArray(o.bodega)) bodegaNames = o.bodega;
-      else if (o.bodega) bodegaNames = [o.bodega];
-      else bodegaNames = ['SIN BODEGA'];
-
-      // If store filtering is active, skip non-selected stores
-      if (selectedStores.length > 0 && !selectedStores.includes(storeName)) {
-          return;
-      }
-
-      // If bodega filtering is active, check if ANY of the order's bodegas match
-      if (selectedBodegas.length > 0 && !bodegaNames.some(b => selectedBodegas.includes(b))) {
-          return;
-      }
-
-      const estado = (o.estado || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, ' ');
-      
-      const fechaPed = parseFlexibleDate(o.fechaPedido);
-      if (fechaPed) {
-          if (fechaPed >= today) {
-              pedidosHoy++;
-          }
-      }
-
-      const isDispatchedAllTime = dispatchedStates.includes(estado) || o.dispatchDate;
-
-      if (o.dispatchDate) {
-          const dispatchTime = new Date(o.dispatchDate);
-          if (dispatchTime >= today) {
-              dispatched++; // Despachos Hoy
-              const hour = dispatchTime.getHours();
-              hourlyCounts[`${hour}:00`] = (hourlyCounts[`${hour}:00`] || 0) + 1;
-          }
-      }
-
-      if (!isDispatchedAllTime && !nonPendingStates.includes(estado)) {
-        pending++;
-        
-        // Count statuses
-        const statusName = o.estado || 'SIN ESTADO';
-        statusCounts[statusName] = (statusCounts[statusName] || 0) + 1;
-        
-        if (!estadosPorTienda[storeName]) estadosPorTienda[storeName] = {};
-        estadosPorTienda[storeName][statusName] = (estadosPorTienda[storeName][statusName] || 0) + 1;
-        
-        if (estado === 'pendiente transporte') {
-            const trans = String(o.transportadora || 'SIN ASIGNAR').replace('null', 'SIN ASIGNAR');
-            transportadoraPendiente[trans] = (transportadoraPendiente[trans] || 0) + 1;
-        }
-        
-        // Determine if delayed (rough estimate > 48hrs if not holidays aware in this isolated logic)
-        const orderDate = o.fechaPedido ? new Date(o.fechaPedido) : new Date();
-        const diffHours = (new Date().getTime() - orderDate.getTime()) / (1000 * 60 * 60);
-        if (diffHours > 48) {
-           delayed++;
-           delayedByStore[storeName] = (delayedByStore[storeName] || 0) + 1;
-        }
-      }
-
-      // Store Distribution for all pending
-      if (!nonPendingStates.includes(estado) && !o.dispatchDate) {
-         storeCounts[storeName] = (storeCounts[storeName] || 0) + 1;
-      }
-    });
-
-    return { total, pending, dispatched, delayed, pedidosHoy, storeCounts, statusCounts, hourlyCounts, delayedByStore, estadosPorTienda, transportadoraPendiente };
-  }, [orders, selectedStores, selectedBodegas]);
-
+  // 1. Available filters
   const availableStores = useMemo(() => {
      const standardStores = ['Addi', 'Branchos', 'Dafiti', 'Falabella', 'Mercado Libre'];
-     const dynamicStores = Array.from(new Set(orders.map(o => {
-          if (!o.tienda) return 'OTROS';
-          // Capitalize standard to match the database normally
-          return o.tienda;
-     })));
-     return Array.from(new Set([...standardStores, ...dynamicStores].map(s => s.toUpperCase()))).sort();
+     const dynamicStores = orders.map(o => (o.tienda || 'OTROS').toUpperCase());
+     return Array.from(new Set([...standardStores.map(s => s.toUpperCase()), ...dynamicStores])).sort();
   }, [orders]);
 
   const availableBodegas = useMemo(() => {
@@ -236,6 +118,7 @@ export default function EcommerceTvBoard() {
       return Array.from(new Set(dynamic.map(s => s.toUpperCase()))).sort();
   }, [orders]);
 
+  // 2. Filtered subset
   const filteredOrders = useMemo(() => {
     return orders.filter(o => {
       const storeName = (o.tienda || 'OTROS').toUpperCase();
@@ -244,43 +127,152 @@ export default function EcommerceTvBoard() {
       else if (o.bodega) bodegaNames = [o.bodega.toUpperCase()];
       else bodegaNames = ['SIN BODEGA'];
 
-      // Store filter
       if (selectedStores.length > 0 && !selectedStores.includes(storeName)) return false;
-      // Bodega filter
       if (selectedBodegas.length > 0 && !bodegaNames.some(b => selectedBodegas.includes(b))) return false;
-      
       return true;
     });
   }, [orders, selectedStores, selectedBodegas]);
 
+  // 3. Centralized Delayed Orders Logic
+  const delayedOrdersList = useMemo(() => {
+    const today = new Date();
+    const dispatchedStates = ['en transporte externo', 'en transporte interno', 'entregado', 'en tienda'];
+    const cancelledStates = ['cancelado', 'pendiente cancelar'];
+    const nonPendingStates = [...dispatchedStates, ...cancelledStates, 'pendiente pago'];
 
+    return filteredOrders
+      .map(o => {
+        const orderDate = o.fechaPedido ? new Date(o.fechaPedido) : new Date();
+        const diffHours = (today.getTime() - orderDate.getTime()) / (1000 * 60 * 60);
+        const daysDelayed = Math.floor(diffHours / 24);
+        
+        const estado = (o.estado || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, ' ');
+        const isDispatchedAllTime = dispatchedStates.includes(estado) || o.dispatchDate;
+        const isPending = !isDispatchedAllTime && !nonPendingStates.includes(estado);
+        const isDelayed = diffHours > 48;
+
+        const nroPed = (o as any).nroPedido || o.ped_factura || o.id || 'S/N';
+        const cleanNroPed = String(nroPed).toLowerCase() === 'null' ? (o.id || 'S/N') : nroPed;
+
+        return { ...o, daysDelayed, isPending, isDelayed, cleanNroPed };
+      })
+      .filter(o => o.isPending && o.isDelayed)
+      .sort((a, b) => b.daysDelayed - a.daysDelayed);
+  }, [filteredOrders]);
+
+  // 4. Metrics Calculation
+  const metrics = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let pending = 0;
+    let dispatched = 0;
+    let pedidosHoy = 0;
+    
+    const dispatchedStates = ['en transporte externo', 'en transporte interno', 'entregado', 'en tienda'];
+    const storeCounts: Record<string, number> = {};
+    const statusCounts: Record<string, number> = {};
+    const delayedByStore: Record<string, number> = {};
+    const estadosPorTienda: Record<string, Record<string, number>> = {};
+    const transportadoraPendiente: Record<string, number> = {};
+    const hourlyCounts: Record<string, number> = {};
+    for (let i = 6; i <= 20; i++) hourlyCounts[`${i}:00`] = 0;
+
+    // We use the full filteredOrders for consistency
+    filteredOrders.forEach((o) => {
+      const storeName = (o.tienda || 'OTROS').toUpperCase();
+      const estado = (o.estado || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, ' ');
+      const fechaPed = parseFlexibleDate(o.fechaPedido);
+      
+      if (fechaPed && fechaPed >= today) pedidosHoy++;
+
+      const isDispatchedAllTime = dispatchedStates.includes(estado) || o.dispatchDate;
+
+      if (o.dispatchDate) {
+          const dispatchTime = new Date(o.dispatchDate);
+          if (dispatchTime >= today) {
+              dispatched++;
+              const hour = dispatchTime.getHours();
+              if (hour >= 6 && hour <= 20) hourlyCounts[`${hour}:00`]++;
+          }
+      }
+
+      if (!isDispatchedAllTime && !estado.includes('cancelado') && !estado.includes('pago')) {
+        pending++;
+        const rawStatus = o.estado || 'SIN ESTADO';
+        statusCounts[rawStatus] = (statusCounts[rawStatus] || 0) + 1;
+        if (!estadosPorTienda[storeName]) estadosPorTienda[storeName] = {};
+        estadosPorTienda[storeName][rawStatus] = (estadosPorTienda[storeName][rawStatus] || 0) + 1;
+        
+        if (estado === 'pendiente transporte') {
+            const trans = String(o.transportadora || 'SIN ASIGNAR').replace('null', 'SIN ASIGNAR');
+            transportadoraPendiente[trans] = (transportadoraPendiente[trans] || 0) + 1;
+        }
+
+        storeCounts[storeName] = (storeCounts[storeName] || 0) + 1;
+      }
+    });
+
+    // Populate delayedByStore from centralized list
+    delayedOrdersList.forEach(o => {
+        const storeName = (o.tienda || 'OTROS').toUpperCase();
+        delayedByStore[storeName] = (delayedByStore[storeName] || 0) + 1;
+    });
+
+    return { 
+      total: orders.length, 
+      pending, dispatched, 
+      delayed: delayedOrdersList.length, 
+      pedidosHoy, 
+      storeCounts, statusCounts, hourlyCounts, delayedByStore, estadosPorTienda, transportadoraPendiente 
+    };
+  }, [orders.length, filteredOrders, delayedOrdersList]);
+
+  // 5. Slides Assembly
   const slidesToPresent = useMemo(() => {
-    // 1. Identify which stores to show (based on selection or availability)
-    const storesToShow = (selectedStores.length > 0 ? selectedStores : availableStores)
-      .filter(s => metrics.storeCounts[s] > 0 || (orders.some(o => (o.tienda || 'OTROS').toUpperCase() === s && o.dispatchDate)));
+    const storesWithPresence = (availableStores).filter(s => metrics.storeCounts[s] > 0 || metrics.delayedByStore[s] > 0);
+    const storesToShow = selectedStores.length > 0 ? selectedStores : storesWithPresence;
 
-    // 2. Build the list of base overview slides
-      const currentBaseSlides = [
-        <OverviewSlide key="ov-summary" metrics={metrics} />,
-        <WeeklyDispatchSummarySlide key="ov-weekly-summary" orders={filteredOrders} holidays={[]} />,
-        <DetailedDelayedOrdersSlide key="ov-detailed-delayed" orders={filteredOrders} logs={delayedOrderLogs} />,
-        <EfficiencyGraphsSlide key="ov-eff-graphs" orders={filteredOrders} holidays={[]} />,
-        <EcommerceAnalysisSlide key="ov-analysis" orders={filteredOrders} />,
-        <EfficiencySlide key="ov-efficiency" orders={filteredOrders} holidays={[]} />,
-        <DispatchSlide key="ov-dispatch" orders={filteredOrders} />,
-        <BrandDistributionSlide key="ov-brands" storeCounts={metrics.storeCounts} />,
-        <HourlyTrendSlide key="ov-trend" hourlyCounts={metrics.hourlyCounts} />,
-        <DelayedByStoreSlide key="ov-delayed" delayedByStore={metrics.delayedByStore} />,
-        <StatusFunnelSlide key="ov-status" statusCounts={metrics.statusCounts} />,
-        <TransporterPendingSlide key="ov-transporter" transporterCounts={metrics.transportadoraPendiente} />
-      ];
+    const baseSlides = [
+      <OverviewSlide key="ov-summary" metrics={metrics} />,
+      <WeeklyDispatchSummarySlide key="ov-weekly-summary" orders={filteredOrders} holidays={[]} />,
+    ];
 
-    // 3. Build per-store sequences
-    const currentPerStoreSlides: React.ReactNode[] = [];
+    // Dynamic Delayed Orders Slides
+    const pageSize = 8;
+    const totalDelayed = delayedOrdersList.length;
+    for (let i = 0; i < totalDelayed; i += pageSize) {
+      const chunk = delayedOrdersList.slice(i, i + pageSize);
+      const pageNum = Math.floor(i / pageSize) + 1;
+      const totalPages = Math.ceil(totalDelayed / pageSize);
+      baseSlides.push(
+        <DetailedDelayedOrdersSlide 
+          key={`ov-detailed-delayed-${pageNum}`} 
+          orders={chunk} 
+          logs={delayedOrderLogs} 
+          pageTitle={totalPages > 1 ? `Página ${pageNum} de ${totalPages}` : undefined}
+          totalCritical={totalDelayed}
+        />
+      );
+    }
+
+    baseSlides.push(
+      <EfficiencyGraphsSlide key="ov-eff-graphs" orders={filteredOrders} holidays={[]} />,
+      <EcommerceAnalysisSlide key="ov-analysis" orders={filteredOrders} />,
+      <EfficiencySlide key="ov-efficiency" orders={filteredOrders} holidays={[]} />,
+      <DispatchSlide key="ov-dispatch" orders={filteredOrders} />,
+      <BrandDistributionSlide key="ov-brands" storeCounts={metrics.storeCounts} />,
+      <HourlyTrendSlide key="ov-trend" hourlyCounts={metrics.hourlyCounts} />,
+      <DelayedByStoreSlide key="ov-delayed" delayedByStore={metrics.delayedByStore} />,
+      <StatusFunnelSlide key="ov-status" statusCounts={metrics.statusCounts} />,
+      <TransporterPendingSlide key="ov-transporter" transporterCounts={metrics.transportadoraPendiente} />
+    );
+
+    const perStoreSlides: React.ReactNode[] = [];
     storesToShow.forEach(store => {
       const storeOrders = orders.filter(o => (o.tienda || 'OTROS').toUpperCase() === store);
-      if (storeOrders.length > 0) {
-        currentPerStoreSlides.push(
+      if (storeOrders.length > 0 && (metrics.storeCounts[store] > 0 || metrics.delayedByStore[store] > 0)) {
+        perStoreSlides.push(
           <EfficiencySlide key={`store-eff-${store}`} orders={storeOrders} holidays={[]} />,
           <DispatchSlide key={`store-disp-${store}`} orders={storeOrders} />,
           <StatusFunnelSlide key={`store-stat-${store}`} store={store} statusCounts={metrics.estadosPorTienda[store] || {}} />
@@ -288,10 +280,9 @@ export default function EcommerceTvBoard() {
       }
     });
 
-    return [...currentBaseSlides, ...currentPerStoreSlides];
-  }, [metrics, selectedStores, availableStores, filteredOrders, orders]);
+    return [...baseSlides, ...perStoreSlides];
+  }, [metrics, selectedStores, availableStores, filteredOrders, orders, delayedOrdersList, delayedOrderLogs]);
 
-  // Slides Carousel Timer
   useEffect(() => {
     const slideAmount = slidesToPresent.length || 1;
     const slideInterval = setInterval(() => {
@@ -304,7 +295,7 @@ export default function EcommerceTvBoard() {
     <div className="flex flex-col h-full w-full overflow-hidden p-8 font-sans pb-16 relative">
         <header className="flex justify-between items-center mb-12">
             <div className="flex items-center gap-4">
-                <h1 className="text-5xl font-black tracking-tight text-blue-400 drop-shadow-lg">
+                <h1 className="text-5xl font-black tracking-tight text-blue-400 drop-shadow-lg text-nowrap">
                     ECOMMERCE<span className="text-white font-light ml-2">LIVE</span>
                 </h1>
                 {isLoading && <RefreshCw className="w-8 h-8 animate-spin text-blue-400" />}
@@ -325,10 +316,10 @@ export default function EcommerceTvBoard() {
             <div className="flex items-center gap-4">
                 <div className="flex items-center bg-slate-900/80 backdrop-blur-md px-6 py-3 rounded-full border border-slate-800 shadow-xl cursor-pointer" onClick={fetchOrders}>
                     <Clock className="w-6 h-6 text-slate-400 mr-3" />
-                    <span className="text-xl font-medium text-slate-300">
+                    <span className="text-xl font-medium text-nowrap text-slate-300">
                         Corte: {lastSyncedAt ? format(lastSyncedAt, "hh:mm a", { locale: es }) : '---'}
                     </span>
-                    <span className="ml-4 pl-4 border-l border-slate-700 text-sm font-bold text-blue-400 uppercase tracking-widest hover:text-blue-300">
+                    <span className="ml-4 pl-4 border-l border-slate-700 text-sm font-bold text-blue-400 uppercase tracking-widest hover:text-blue-300 text-nowrap">
                         Sincronizar
                     </span>
                 </div>
@@ -358,17 +349,14 @@ export default function EcommerceTvBoard() {
                                 <div className="w-2 h-8 bg-blue-500 rounded-full"></div>
                                 Filtro por Tiendas
                             </h3>
-                            <p className="text-lg text-slate-400 mb-6 font-medium">
-                                Selecciona las tiendas que deseas incluir en el tablero. Si no seleccionas ninguna, se mostrarán todas por defecto.
-                            </p>
-                            <div className="flex gap-4 overflow-x-auto pb-4 pt-2 snap-x px-2 custom-scrollbar-horizontal mask-fade-right">
+                            <div className="flex gap-4 overflow-x-auto pb-4 pt-2 px-2 custom-scrollbar-horizontal">
                                 {availableStores.map(store => {
                                     const isSelected = selectedStores.includes(store);
                                     return (
                                         <div 
                                             key={store}
                                             onClick={() => toggleStore(store)}
-                                            className={`min-w-[280px] snap-center shrink-0 p-6 rounded-2xl border-2 flex items-center justify-between cursor-pointer transition-all ${
+                                            className={`min-w-[280px] p-6 rounded-2xl border-2 flex items-center justify-between cursor-pointer transition-all ${
                                                 isSelected ? 'border-blue-500 bg-blue-500/10' : 'border-slate-800 bg-slate-950 hover:border-slate-700'
                                             }`}
                                         >
@@ -387,17 +375,14 @@ export default function EcommerceTvBoard() {
                                 <div className="w-2 h-8 bg-purple-500 rounded-full"></div>
                                 Filtro por Bodegas
                             </h3>
-                            <p className="text-lg text-slate-400 mb-6 font-medium">
-                                Selecciona las bodegas que deseas incluir en el tablero. Si no seleccionas ninguna, se evaluarán los pedidos de todas las bodegas.
-                            </p>
-                            <div className="flex gap-4 overflow-x-auto pb-4 pt-2 snap-x px-2 custom-scrollbar-horizontal mask-fade-right">
+                            <div className="flex gap-4 overflow-x-auto pb-4 pt-2 px-2 custom-scrollbar-horizontal">
                                 {availableBodegas.map(bodega => {
                                     const isSelected = selectedBodegas.includes(bodega);
                                     return (
                                         <div 
                                             key={bodega}
                                             onClick={() => toggleBodega(bodega)}
-                                            className={`min-w-[280px] snap-center shrink-0 p-6 rounded-2xl border-2 flex items-center justify-between cursor-pointer transition-all ${
+                                            className={`min-w-[280px] p-6 rounded-2xl border-2 flex items-center justify-between cursor-pointer transition-all ${
                                                 isSelected ? 'border-blue-500 bg-blue-500/10' : 'border-slate-800 bg-slate-950 hover:border-slate-700'
                                             }`}
                                         >
@@ -438,7 +423,7 @@ export default function EcommerceTvBoard() {
             })}
         </main>
 
-        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 max-w-[90vw] overflow-x-auto flex gap-4 bg-slate-900/50 p-3 rounded-full backdrop-blur-sm border border-slate-800">
+        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 max-w-[90vw] overflow-x-auto flex gap-4 bg-slate-900/50 p-3 rounded-full backdrop-blur-sm border border-slate-800 no-scrollbar">
             {slidesToPresent.map((slide, idx) => {
                 const slideKey = (slide as React.ReactElement).key || `dot-${idx}`;
                 return (
