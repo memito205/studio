@@ -5,10 +5,11 @@ import React, { useState, useEffect, useCallback, useRef, useMemo, ChangeEvent }
 import * as XLSX from 'xlsx';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Loader2, Truck, GaugeCircle, CheckCircle, AlertCircle, FileDown, Filter, Calendar as CalendarIcon, ShieldCheck, Timer, Package, TimerOff, PackageCheck, ClipboardEdit, History, BarChart2, Search, Edit } from 'lucide-react';
+import { ArrowLeft, Loader2, Truck, GaugeCircle, CheckCircle, AlertCircle, FileDown, Filter, Calendar as CalendarIcon, ShieldCheck, Timer, Package, TimerOff, PackageCheck, ClipboardEdit, History, BarChart2, Search, Edit, Database } from 'lucide-react';
 import { SubModuleCard } from './SubModuleCard';
 import dynamic from 'next/dynamic';
-import type { EcommerceOrder, DelayedOrderLog, DateRange, Filters, FilterCategory } from '@/types';
+import type { EcommerceOrder, DelayedOrderLog, Filters, FilterCategory } from '@/types';
+import { DateRange } from 'react-day-picker';
 import { useToast } from '@/hooks/use-toast';
 import { loadEcommerceOrders, getDelayedOrderLogs, updateEcommerceOrderDispatchDate, batchUpdateEcommerceOrderDispatchDates, saveHolidays, loadHolidays } from '@/app/actions';
 import { calculateSlaHours } from '@/lib/parsingUtils';
@@ -594,7 +595,7 @@ const DailyDispatchDashboard: React.FC<DailyDispatchDashboardProps> = ({ onRetur
         if (foundOrders.length !== idsToSearch.length) {
             const foundIds = new Set(foundOrders.map(o => o.id));
             const notFoundIds = idsToSearch.filter(id => !foundIds.has(id));
-            toast({ variant: 'warning', title: 'Algunos pedidos no encontrados', description: `No se encontraron pedidos con los siguientes IDs: ${notFoundIds.join(', ')}.`});
+            toast({ variant: 'destructive', title: 'Algunos pedidos no encontrados', description: `No se encontraron pedidos con los siguientes IDs: ${notFoundIds.join(', ')}.`});
         }
     } else {
         setFoundOrdersForCorrection([]);
@@ -1473,11 +1474,10 @@ const EfficiencyDashboard: React.FC<EfficiencyDashboardProps> = ({ orders, logs,
             <div className="pdf-section-efficiency-stats grid grid-cols-1 md:grid-cols-4 gap-8">
                 <StatCard
                     title="Eficiencia Histórica de Despacho"
-                    description="De todos los despachos en el rango, % que salió a tiempo (lógica estricta por hora)."
+                    subtitle="De todos los despachos en el rango, % que salió a tiempo (lógica estricta por hora)."
                     value={`${historicalOnTimeRate.toFixed(1)}%`}
                     icon={<ShieldCheck />}
                     color={getComplianceColor(historicalOnTimeRate)}
-                    subtitle="Basado en el SLA estricto por hora"
                 />
                  <StatCard 
                     title="Promedio Días Despacho" 
@@ -1623,11 +1623,12 @@ export const DashboardsModule: React.FC<DashboardsModuleProps> = ({ onReturnToSu
   // State for global filters
   const [globalDateRange, setGlobalDateRange] = useState<DateRange | undefined>();
   const [globalStoreFilter, setGlobalStoreFilter] = useState<string[]>([]);
+  const [isFullHistoryLoaded, setIsFullHistoryLoaded] = useState(false);
 
   const fetchAllData = useCallback(async () => {
     setIsLoading(true);
     const [ordersResult, logsResult, holidaysResult] = await Promise.all([
-      loadEcommerceOrders(),
+      loadEcommerceOrders(isFullHistoryLoaded),
       getDelayedOrderLogs(),
       loadHolidays()
     ]);
@@ -1650,7 +1651,7 @@ export const DashboardsModule: React.FC<DashboardsModuleProps> = ({ onReturnToSu
     }
 
     setIsLoading(false);
-  }, [toast]);
+  }, [toast, isFullHistoryLoaded]);
   
   useEffect(() => {
     fetchAllData();
@@ -1664,6 +1665,38 @@ export const DashboardsModule: React.FC<DashboardsModuleProps> = ({ onReturnToSu
 
   return (
     <div className="space-y-8">
+        <div className="flex justify-between items-center bg-slate-50 dark:bg-slate-900/50 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+            <div className="flex items-center gap-4">
+                <Button variant="outline" onClick={onReturnToSuite} size="sm" className="bg-white dark:bg-slate-950">
+                    <ArrowLeft className="mr-2 h-4 w-4" /> Volver
+                </Button>
+                <div>
+                    <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100 uppercase tracking-tight">Consola de Control Ecommerce</h1>
+                    <p className="text-xs text-muted-foreground font-medium">Gestión operativa y análisis de cumplimiento</p>
+                </div>
+            </div>
+            <div className="flex items-center gap-3 bg-white dark:bg-slate-950 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-800 shadow-inner">
+                <div className={cn("p-1.5 rounded-md", isFullHistoryLoaded ? "bg-amber-100 text-amber-600" : "bg-blue-100 text-blue-600")}>
+                    <Database className="w-4 h-4" />
+                </div>
+                <div className="flex flex-col">
+                    <span className="text-[10px] uppercase font-bold text-muted-foreground leading-none mb-1">Modo de Carga</span>
+                    <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                        {isFullHistoryLoaded ? 'Historial Completo' : 'Últimos 60 días'}
+                    </span>
+                </div>
+                <div className="h-8 w-px bg-slate-200 dark:bg-slate-800 mx-2" />
+                <Button 
+                    variant={isFullHistoryLoaded ? "secondary" : "default"}
+                    size="sm" 
+                    className="h-9 px-3 text-xs font-bold"
+                    onClick={() => setIsFullHistoryLoaded(!isFullHistoryLoaded)}
+                >
+                    {isFullHistoryLoaded ? 'Cambiar a Recientes' : 'Cargar Todo'}
+                </Button>
+            </div>
+        </div>
+
          <Tabs defaultValue="ecommerce" className="w-full">
             <TabsList className="grid w-full grid-cols-3 print-hide">
                 <TabsTrigger value="ecommerce">Análisis de Pedidos Ecommerce</TabsTrigger>

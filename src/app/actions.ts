@@ -2035,9 +2035,19 @@ export async function saveEcommerceOrders(orders: EcommerceOrder[]): Promise<{ s
   }
 }
 
-export async function loadEcommerceOrders(): Promise<{ success: boolean; data?: EcommerceOrder[]; error?: string }> {
+export async function loadEcommerceOrders(fullHistory = false): Promise<{ success: boolean; data?: EcommerceOrder[]; error?: string }> {
     try {
-        const querySnapshot = await getDocs(collection(firestore, "ecommerceOrders"));
+        let q = query(collection(firestore, "ecommerceOrders"));
+        
+        if (!fullHistory) {
+            // Optimization: Only load the last 60 days of orders. 
+            // This covers active operational needs and recent trends while avoiding thousands of dead historical reads.
+            const sixtyDaysAgo = new Date();
+            sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
+            q = query(q, where("fechaPedido", ">=", Timestamp.fromDate(sixtyDaysAgo)));
+        }
+
+        const querySnapshot = await getDocs(q);
         const orders = querySnapshot.docs.map(doc => {
             return convertTimestampsToDates({ id: doc.id, ...doc.data() }) as EcommerceOrder;
         });

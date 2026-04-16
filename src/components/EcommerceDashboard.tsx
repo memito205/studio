@@ -579,33 +579,48 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
         const dispatchedStates = ['en transporte externo', 'en transporte interno', 'entregado', 'en tienda'];
         const cancelledStatesForFilter = ['cancelado', 'pendiente cancelar'];
 
-        const ordersToSave = parsedOrders.map(newOrder => {
+        const allProcessedOrders = parsedOrders.map(newOrder => {
             const storedOrder = storedOrdersMap.get(newOrder.id);
             const newOrderState = (newOrder.estado || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, ' ');
             
+            let finalOrder = { ...newOrder };
+
             if (!storedOrder) {
                 if (dispatchedStates.includes(newOrderState)) {
-                    return { ...newOrder, dispatchDate: new Date() };
+                    finalOrder.dispatchDate = new Date();
                 }
-                return newOrder;
-            }
-            
-            const storedOrderState = (storedOrder.estado || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, ' ');
-            
-            const isNewDispatch = 
-                !dispatchedStates.includes(storedOrderState) &&
-                !cancelledStatesForFilter.includes(storedOrderState) &&
-                dispatchedStates.includes(newOrderState); 
+            } else {
+                const storedOrderState = (storedOrder.estado || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, ' ');
+                
+                const isNewDispatch = 
+                    !dispatchedStates.includes(storedOrderState) &&
+                    !cancelledStatesForFilter.includes(storedOrderState) &&
+                    dispatchedStates.includes(newOrderState); 
 
-            if (isNewDispatch) {
-                return { ...newOrder, dispatchDate: new Date() };
-            }
-
-            if (storedOrder.dispatchDate) {
-                return { ...newOrder, dispatchDate: storedOrder.dispatchDate };
+                if (isNewDispatch) {
+                    finalOrder.dispatchDate = new Date();
+                } else if (storedOrder.dispatchDate) {
+                    finalOrder.dispatchDate = storedOrder.dispatchDate;
+                }
             }
             
-            return newOrder;
+            return finalOrder;
+        });
+
+        // Optimization: DIFFING (Only save if something changed)
+        const ordersToSave = allProcessedOrders.filter(o => {
+            const stored = storedOrdersMap.get(o.id);
+            if (!stored) return true; // It's a new order
+
+            // Compare relevant fields to detect changes
+            const hasStatusChanged = (o.estado || '') !== (stored.estado || '');
+            const hasTiendaChanged = (o.tienda || '') !== (stored.tienda || '');
+            const hasBodegaChanged = (o.bodega || '') !== (stored.bodega || '');
+            const hasValorChanged = o.valorTotal !== stored.valorTotal;
+            const hasDispatchDateChanged = o.dispatchDate?.getTime() !== stored.dispatchDate?.getTime();
+            const hasTransporterChanged = (o.transportadora || '') !== (stored.transportadora || '');
+
+            return hasStatusChanged || hasTiendaChanged || hasBodegaChanged || hasValorChanged || hasDispatchDateChanged || hasTransporterChanged;
         });
 
         let totalProcessed = 0;
