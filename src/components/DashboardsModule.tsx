@@ -1617,7 +1617,7 @@ export const DashboardsModule: React.FC<DashboardsModuleProps> = ({ onReturnToSu
   
   const [allOrders, setAllOrders] = useState<EcommerceOrder[]>([]);
   const [delayedLogs, setDelayedLogs] = useState<DelayedOrderLog[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
   
   // State for global filters
@@ -1654,8 +1654,16 @@ export const DashboardsModule: React.FC<DashboardsModuleProps> = ({ onReturnToSu
   }, [toast, isFullHistoryLoaded]);
   
   useEffect(() => {
-    fetchAllData();
-  }, [fetchAllData]);
+    // We only load holidays on mount. Orders/Logs are now manual via "Generar Análisis"
+    // to save Firebase reads as requested by user.
+    const loadInitialMeta = async () => {
+        const holidaysResult = await loadHolidays();
+        if (holidaysResult.success && holidaysResult.data) {
+            setHolidays(holidaysResult.data);
+        }
+    };
+    loadInitialMeta();
+  }, []);
   
   const handleHolidaysChange = useCallback(async (dates: Date[] | undefined) => {
     const safeDates = dates || [];

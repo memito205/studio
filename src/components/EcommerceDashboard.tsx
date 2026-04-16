@@ -5,7 +5,7 @@ import React, { useState, useCallback, useRef, useMemo, useEffect, ChangeEvent }
 import * as XLSX from 'xlsx';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Loader2, UploadCloud, Package, CheckCircle, Clock, AlertTriangle, PackageCheck, XCircle, ChevronsUpDown, Calendar as CalendarIcon, Send, ClipboardEdit, History, TimerOff, ShieldCheck, Download, FileDown, Timer, BarChart2 } from 'lucide-react';
+import { ArrowLeft, Loader2, UploadCloud, Package, CheckCircle, Clock, AlertTriangle, PackageCheck, XCircle, ChevronsUpDown, Calendar as CalendarIcon, Send, ClipboardEdit, History, TimerOff, ShieldCheck, Download, FileDown, Timer, BarChart2, GaugeCircle, RefreshCw } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
 import { saveEcommerceOrders, loadEcommerceOrders, getDelayedOrderLogs, upsertDelayedOrderLog, addJustificationToLog, resolveDelayedOrderLog, batchResolveDelayedOrderLogs, batchUpsertDelayedOrderLogs } from '@/app/actions';
@@ -431,6 +431,8 @@ export const EcommerceDashboard: React.FC<EcommerceDashboardProps> = ({ onReturn
     return `${year}-${month}-${day}T${hours}:${minutes}`;
   };
 
+  const [isManualAnalysisTriggered, setIsManualAnalysisTriggered] = useState(false);
+
   const isCurrentlyDelayed = useCallback((order: EcommerceOrder, referenceDate: Date): boolean => {
     // Define states that are considered "final" or not at risk of being delayed.
     const excludedStates = [
@@ -467,7 +469,9 @@ export const EcommerceDashboard: React.FC<EcommerceDashboardProps> = ({ onReturn
     return timeDiffHours > limitHours;
   }, [holidays]);
   
- const generateDashboard = useCallback(async (referenceDate: Date = new Date()) => {
+  const generateDashboard = useCallback(async (referenceDate: Date = new Date(), forceManual = false) => {
+    if (!isManualAnalysisTriggered && !forceManual) return;
+    
     setIsUploading(true);
     try {
         const { data: allOrders, error: ordersError } = await loadEcommerceOrders();
@@ -570,7 +574,7 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
             bodega: String(findCaseInsensitiveKey(row, 'BODEGA', 'ALMACEN', 'BODEGA_ORIGEN', 'AGENCIA') ? row[findCaseInsensitiveKey(row, 'BODEGA', 'ALMACEN', 'BODEGA_ORIGEN', 'AGENCIA')!] : ''),
         })).filter(o => o.id);
 
-        const storedOrdersResult = await loadEcommerceOrders();
+        const storedOrdersResult = await loadEcommerceOrders(true); // Load EVERYTHING only for sync diffing to avoid redundant writes
         if (!storedOrdersResult.success || !storedOrdersResult.data) {
             throw new Error("No se pudo cargar el estado actual de los pedidos desde la base de datos.");
         }
@@ -1119,48 +1123,56 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
             </Card>
 
             {!isOfficeUser && (
-                <>
-                    <Card className="print-hide">
-                        <CardHeader>
-                            <CardTitle>Paso 1: Cargar y Sincronizar Pedidos (Opcional)</CardTitle>
-                            <CardDescription>
-                                Suba el archivo Excel si necesita actualizar la base de datos con nuevos pedidos. Si no, vaya al Paso 2.
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} accept=".xlsx, .xls" />
-                            <Button onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
-                                {isUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UploadCloud className="mr-2 h-4 w-4" />}
-                                {isUploading ? 'Procesando...' : 'Cargar Archivo de Pedidos'}
-                            </Button>
-                        </CardContent>
-                    </Card>
+                <Card className="print-hide">
+                    <CardHeader>
+                        <CardTitle>Sincronización y Análisis</CardTitle>
+                        <CardDescription>
+                            Sincronice sus pedidos para actualizar la base de datos y genere el análisis para visualizar métricas.
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent className="flex flex-wrap gap-4 items-end">
+                        <div className="flex flex-col gap-2">
+                            <Label htmlFor="analysis-date">Corte de Análisis</Label>
+                            <Input
+                                id="analysis-date"
+                                type="datetime-local"
+                                value={formatDateForInput(analysisDate)}
+                                onChange={(e) => setAnalysisDate(new Date(e.target.value))}
+                                className="w-[260px]"
+                            />
+                        </div>
+                        
+                        <Button
+                            onClick={() => {
+                                setIsManualAnalysisTriggered(true);
+                                generateDashboard(analysisDate, true);
+                            }}
+                            className="bg-blue-600 hover:bg-blue-500 text-white font-bold"
+                            disabled={isUploading || isDataLoading}
+                        >
+                            {isUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <GaugeCircle className="mr-2 h-4 w-4" />}
+                            GENERAR ANÁLISIS
+                        </Button>
 
-                    <Card className="print-hide">
-                        <CardHeader>
-                            <CardTitle>Paso 2: Generar Análisis de Atrasos</CardTitle>
-                            <CardDescription>
-                                Seleccione la fecha y hora de corte para el análisis. El sistema identificará los pedidos atrasados como si hoy fuera ese momento.
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent className="flex flex-wrap gap-4 items-end">
-                            <div>
-                                <Label htmlFor="analysis-date">Fecha y Hora de Análisis</Label>
-                                <Input
-                                    id="analysis-date"
-                                    type="datetime-local"
-                                    value={formatDateForInput(analysisDate)}
-                                    onChange={(e) => setAnalysisDate(new Date(e.target.value))}
-                                    className="w-[260px] mt-1"
-                                />
-                            </div>
-                            <Button onClick={() => generateDashboard(analysisDate)} disabled={isDataLoading}>
-                                {isDataLoading && isGenerated ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
-                                {isDataLoading && isGenerated ? "Actualizando..." : "Generar/Actualizar Análisis"}
-                            </Button>
-                        </CardContent>
-                    </Card>
-                </>
+                        <div className="flex h-10 border-l border-slate-700 mx-2" />
+
+                        <input
+                            type="file"
+                            accept=".xlsx, .xls"
+                            onChange={handleFileUpload}
+                            className="hidden"
+                            ref={fileInputRef}
+                        />
+                        <Button 
+                            onClick={() => fileInputRef.current?.click()} 
+                            variant="outline" 
+                            disabled={isUploading}
+                        >
+                            <RefreshCw className={`mr-2 h-4 w-4 ${isUploading ? 'animate-spin' : ''}`} />
+                            SINCRONIZAR EXCEL
+                        </Button>
+                    </CardContent>
+                </Card>
             )}
 
             {isDataLoading && !isGenerated && (
