@@ -13,11 +13,16 @@ import { TransporterPendingSlide } from './TransporterPendingSlide';
 import { EcommerceAnalysisSlide } from './EcommerceAnalysisSlide';
 import { EfficiencySlide } from './EfficiencySlide';
 import { DispatchSlide } from './DispatchSlide';
+import { DelayedOrdersDetailSlide } from './DelayedOrdersDetailSlide';
+import { DelayedOrdersSlide } from './DelayedOrdersSlide';
+import { WeeklyDispatchSummarySlide } from './WeeklyDispatchSummarySlide';
+import { DetailedDelayedOrdersSlide } from './DetailedDelayedOrdersSlide';
+import { EfficiencyGraphsSlide } from './EfficiencyGraphsSlide';
 import { Clock, RefreshCw, Settings, X, Check } from 'lucide-react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
-import { getShipments } from '@/app/actions';
-import type { DispatchSessionInfo } from '@/types';
+import { getShipments, getDelayedOrderLogs } from '@/app/actions';
+import type { DispatchSessionInfo, DelayedOrderLog } from '@/types';
 
 const SLIDE_DURATION = 10000; // 10 seconds per slide
 const AUTO_SYNC_INTERVAL = 60 * 60 * 1000; // Sync automatically occasionally
@@ -32,6 +37,7 @@ export default function EcommerceTvBoard() {
   const [selectedBodegas, setSelectedBodegas] = useState<string[]>([]);
   const [shipments, setShipments] = useState<DispatchSessionInfo[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [delayedOrderLogs, setDelayedOrderLogs] = useState<DelayedOrderLog[]>([]);
 
   useEffect(() => {
      const saved = localStorage.getItem('tvDashboardStores');
@@ -67,6 +73,11 @@ export default function EcommerceTvBoard() {
       const shipmentsResult = await getShipments();
       if (shipmentsResult.success && shipmentsResult.data) {
           setShipments(shipmentsResult.data);
+      }
+
+      const logsResult = await getDelayedOrderLogs();
+      if (logsResult.success && logsResult.data) {
+          setDelayedOrderLogs(logsResult.data);
       }
 
       setLastSyncedAt(new Date());
@@ -242,25 +253,43 @@ export default function EcommerceTvBoard() {
     });
   }, [orders, selectedStores, selectedBodegas]);
 
-  const slidesToPresent = useMemo(() => {
-      const selectedStoresToDisplay = (selectedStores.length > 0 ? selectedStores : availableStores)
-           .filter(s => metrics.storeCounts[s] > 0); 
 
-      return [
-          <OverviewSlide key="summary" metrics={metrics} />,
-          <EcommerceAnalysisSlide key="analysis" orders={filteredOrders} />,
-          <EfficiencySlide key="efficiency" orders={filteredOrders} holidays={[]} />,
-          <DispatchSlide key="dispatch" orders={filteredOrders} />,
-          <BrandDistributionSlide key="brands" storeCounts={metrics.storeCounts} />,
-          <HourlyTrendSlide key="trend" hourlyCounts={metrics.hourlyCounts} />,
-          <DelayedByStoreSlide key="delayed" delayedByStore={metrics.delayedByStore} />,
-          <StatusFunnelSlide key="status-general" statusCounts={metrics.statusCounts} />,
-          ...selectedStoresToDisplay.map(store => (
-              <StatusFunnelSlide key={`status-${store}`} store={store} statusCounts={metrics.estadosPorTienda[store] || {}} />
-          )),
-          <TransporterPendingSlide key="transporter" transporterCounts={metrics.transportadoraPendiente} />
+  const slidesToPresent = useMemo(() => {
+    // 1. Identify which stores to show (based on selection or availability)
+    const storesToShow = (selectedStores.length > 0 ? selectedStores : availableStores)
+      .filter(s => metrics.storeCounts[s] > 0 || (orders.some(o => (o.tienda || 'OTROS').toUpperCase() === s && o.dispatchDate)));
+
+    // 2. Build the list of base overview slides
+      const currentBaseSlides = [
+        <OverviewSlide key="ov-summary" metrics={metrics} />,
+        <WeeklyDispatchSummarySlide key="ov-weekly-summary" orders={filteredOrders} holidays={[]} />,
+        <DetailedDelayedOrdersSlide key="ov-detailed-delayed" orders={filteredOrders} logs={delayedOrderLogs} />,
+        <EfficiencyGraphsSlide key="ov-eff-graphs" orders={filteredOrders} holidays={[]} />,
+        <EcommerceAnalysisSlide key="ov-analysis" orders={filteredOrders} />,
+        <EfficiencySlide key="ov-efficiency" orders={filteredOrders} holidays={[]} />,
+        <DispatchSlide key="ov-dispatch" orders={filteredOrders} />,
+        <BrandDistributionSlide key="ov-brands" storeCounts={metrics.storeCounts} />,
+        <HourlyTrendSlide key="ov-trend" hourlyCounts={metrics.hourlyCounts} />,
+        <DelayedByStoreSlide key="ov-delayed" delayedByStore={metrics.delayedByStore} />,
+        <StatusFunnelSlide key="ov-status" statusCounts={metrics.statusCounts} />,
+        <TransporterPendingSlide key="ov-transporter" transporterCounts={metrics.transportadoraPendiente} />
       ];
-  }, [metrics, selectedStores, availableStores, filteredOrders, shipments]);
+
+    // 3. Build per-store sequences
+    const currentPerStoreSlides: React.ReactNode[] = [];
+    storesToShow.forEach(store => {
+      const storeOrders = orders.filter(o => (o.tienda || 'OTROS').toUpperCase() === store);
+      if (storeOrders.length > 0) {
+        currentPerStoreSlides.push(
+          <EfficiencySlide key={`store-eff-${store}`} orders={storeOrders} holidays={[]} />,
+          <DispatchSlide key={`store-disp-${store}`} orders={storeOrders} />,
+          <StatusFunnelSlide key={`store-stat-${store}`} store={store} statusCounts={metrics.estadosPorTienda[store] || {}} />
+        );
+      }
+    });
+
+    return [...currentBaseSlides, ...currentPerStoreSlides];
+  }, [metrics, selectedStores, availableStores, filteredOrders, orders]);
 
   // Slides Carousel Timer
   useEffect(() => {
@@ -392,27 +421,33 @@ export default function EcommerceTvBoard() {
         )}
 
         <main className="flex-1 w-full h-full relative overflow-hidden">
-            {slidesToPresent.map((slide, idx) => (
-                <div
-                    key={idx}
-                    className={`absolute inset-0 w-full h-full flex flex-col justify-center items-center transition-all duration-1000 ease-in-out ${
-                        idx === currentSlideIndex 
-                            ? 'opacity-100 translate-x-0 scale-100 z-10' 
-                            : 'opacity-0 translate-x-8 scale-95 z-0 pointer-events-none'
-                    }`}
-                >
-                    {slide}
-                </div>
-            ))}
+            {slidesToPresent.map((slide, idx) => {
+                const slideKey = (slide as React.ReactElement).key || `slide-${idx}`;
+                return (
+                    <div
+                        key={slideKey}
+                        className={`absolute inset-0 w-full h-full flex flex-col justify-center items-center transition-all duration-1000 ease-in-out ${
+                            idx === currentSlideIndex 
+                                ? 'opacity-100 translate-x-0 scale-100 z-10' 
+                                : 'opacity-0 translate-x-8 scale-95 z-0 pointer-events-none'
+                        }`}
+                    >
+                        {slide}
+                    </div>
+                );
+            })}
         </main>
 
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 max-w-[90vw] overflow-x-auto flex gap-4 bg-slate-900/50 p-3 rounded-full backdrop-blur-sm border border-slate-800">
-            {slidesToPresent.map((_, idx) => (
-                <div 
-                    key={idx} 
-                    className={`h-3 rounded-full transition-all duration-500 ease-out ${idx === currentSlideIndex ? 'bg-blue-500 w-16' : 'bg-slate-700 w-4'}`}
-                />
-            ))}
+            {slidesToPresent.map((slide, idx) => {
+                const slideKey = (slide as React.ReactElement).key || `dot-${idx}`;
+                return (
+                    <div 
+                        key={slideKey} 
+                        className={`h-3 rounded-full transition-all duration-500 ease-out ${idx === currentSlideIndex ? 'bg-blue-500 w-16' : 'bg-slate-700 w-4'}`}
+                    />
+                );
+            })}
         </div>
     </div>
   );
