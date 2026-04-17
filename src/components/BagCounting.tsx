@@ -46,7 +46,7 @@ interface BagCountingProps {
 }
 
 export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
-  const { user } = useAuth();
+  const { user, role } = useAuth();
   const { toast } = useToast();
   const [operations, setOperations] = useState<BagOperation[]>([]);
   const [activeOperation, setActiveOperation] = useState<BagOperation | null>(null);
@@ -241,7 +241,7 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
 
   const handleResetBag = async (barcode: string) => {
       if (!activeOperation || !user) return;
-      if (user.role !== 'admin') {
+      if (role !== 'admin') {
           toast({ variant: 'destructive', title: "Permiso denegado", description: "Solo administradores pueden resetear bolsas." });
           return;
       }
@@ -603,7 +603,7 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
                                             )}
                                             title={bag.id}
                                         >
-                                            {isProcessed && user?.role === 'admin' && (
+                                            {isProcessed && role === 'admin' && (
                                                 <button 
                                                     onClick={(e) => { e.stopPropagation(); handleResetBag(bag.id); }}
                                                     className="absolute -top-1 -right-1 bg-red-600 text-white p-1 rounded-full shadow-lg opacity-0 group-hover/item:opacity-100 transition-opacity hover:bg-red-700 z-10"
