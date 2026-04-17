@@ -142,23 +142,33 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
 
   const handleScan = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!activeOperation || !scanInput) return;
+    if (!activeOperation || !scanInput || isProcessing) return;
     
-    const barcode = scanInput.trim().toUpperCase();
-    setScanInput(''); // Clear immediately
+    // Normalización de caracteres por compatibilidad de escáneres
+    let barcode = scanInput.trim().toUpperCase().replace(/['"\/\\|]/g, '-');
+    setScanInput(''); // Limpiar inmediatamente para el siguiente escaneo
 
+    setIsProcessing(true);
     const result = await processBagScan(activeOperation.id, barcode, activeOperation.status as 'cargue' | 'descargue');
+    setIsProcessing(false);
     
     if (result.success) {
-      const isAlready = !!result.alreadyProcessed;
-      setLastScanned({ 
-          code: barcode, 
-          success: true, 
-          message: isAlready ? "CÓDIGO YA PROCESADO" : "Registrado con éxito",
-          errorType: isAlready ? 'DUPLICATE' : undefined
-      });
-      
-      if (!isAlready) {
+      if (result.alreadyProcessed) {
+          // Tratar duplicado como evento de alta visibilidad (Alerta Naranja)
+          setLastScanned({ 
+            code: barcode, 
+            success: false, // Success false dispara el overlay grande
+            message: "CÓDIGO YA PROCESADO", 
+            errorType: 'DUPLICATE' 
+          });
+      } else {
+          setLastScanned({ 
+            code: barcode, 
+            success: true, 
+            message: "Registrado con éxito" 
+          });
+          
+          // Actualización optimista del estado local
           setActiveOperation(prev => {
               if (!prev) return null;
               const statusField = prev.status === 'cargue' ? 'loaded' : 'discharged';
@@ -179,10 +189,13 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
       setLastScanned({ 
         code: barcode, 
         success: false, 
-        message: result.error || "Ocurrió un error",
+        message: result.error || "CÓDIGO INVÁLIDO",
         errorType: result.errorType
       });
     }
+
+    // Asegurar que el cursor siempre regrese al input
+    setTimeout(() => { scanInputRef.current?.focus(); }, 150);
   };
 
   const handleFinishPhase = async () => {
