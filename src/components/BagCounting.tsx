@@ -273,7 +273,9 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
           'Código de Bolsa': bag.id,
           'Referencia': bag.id.split('-').pop(),
           'Cargado': bag.loaded ? 'SÍ' : 'NO',
+          'Fecha Cargue': bag.loadedAt ? (bag.loadedAt instanceof Date ? bag.loadedAt.toLocaleString() : 'N/A') : '-',
           'Descargado': bag.discharged ? 'SÍ' : 'NO',
+          'Fecha Descargue': bag.dischargedAt ? (bag.dischargedAt instanceof Date ? bag.dischargedAt.toLocaleString() : 'N/A') : '-',
           'Lote': activeOperation.name,
           'ID Operación': activeOperation.id
       }));
@@ -323,6 +325,7 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
       const rows = bags.map(bag => [
           bag.id,
           bag.loaded ? 'CARGADO' : 'PENDIENTE',
+          bag.loadedAt ? (bag.loadedAt instanceof Date ? bag.loadedAt.toLocaleString() : 'S/D') : '-',
           bag.discharged ? 'DESCARGADO' : 'PENDIENTE',
           bag.dischargedAt ? (bag.dischargedAt instanceof Date ? bag.dischargedAt.toLocaleString() : 'S/D') : '-'
       ]);
@@ -332,7 +335,7 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
 
       autoTable(doc, {
           startY: finalY + 5,
-          head: [['Código de Bolsa', 'Cargue', 'Descargue', 'Fecha Descargue']],
+          head: [['Código de Bolsa', 'Cargue', 'Fecha Cargue', 'Descargue', 'Fecha Descargue']],
           body: rows,
           theme: 'grid',
           headStyles: { fillColor: [100, 100, 100] },
