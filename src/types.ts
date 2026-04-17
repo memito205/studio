@@ -915,13 +915,21 @@ export interface GeneralLabel {
     usedAt?: Date;
     usedBy?: string;
 }
-export interface BagValidationSession {
+export interface BagItem {
+    id: string; // OPID-001
+    loaded: boolean;
+    discharged: boolean;
+    loadedAt?: Date;
+    dischargedAt?: Date;
+}
+
+export interface BagOperation {
     id: string;
     name: string;
     totalBags: number;
-    validatedBags: number[];
+    bags: Record<string, BagItem>;
     createdAt: Date;
-    status: 'active' | 'completed';
+    status: 'cargue' | 'descargue' | 'completed';
     createdBy?: string;
     createdByName?: string;
 }

@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import type { ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, BagValidationSession } from "@/types";
+import type { ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, BagOperation, BagItem } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -2897,85 +2897,136 @@ export async function loadHolidays(): Promise<{success: boolean; data?: Date[]; 
 }
 
 // BAG COUNTING ACTIONS
-export async function createBagValidationSession(name: string, totalBags: number, userId: string, userName: string): Promise<{ success: boolean; data?: BagValidationSession; error?: string }> {
+export async function createBagOperation(name: string, totalBags: number, userId: string, userName: string): Promise<{ success: boolean; data?: BagOperation; error?: string }> {
     try {
-        const id = `bag-count-${Date.now()}`;
-        const newSession: BagValidationSession = {
-            id,
+        const opId = `BAG-${Date.now().toString().slice(-6)}`;
+        const bags: Record<string, BagItem> = {};
+        
+        for (let i = 1; i <= totalBags; i++) {
+            const bagId = `${opId}-B${i.toString().padStart(3, '0')}`;
+            bags[bagId] = { id: bagId, loaded: false, discharged: false };
+        }
+
+        const newOperation: BagOperation = {
+            id: opId,
             name,
             totalBags,
-            validatedBags: [],
+            bags,
             createdAt: new Date(),
-            status: 'active',
+            status: 'cargue',
             createdBy: userId,
             createdByName: userName
         };
 
-        await setDoc(doc(firestore, "bagValidationSessions", id), convertDatesToTimestamps(newSession));
-        return { success: true, data: newSession };
+        await setDoc(doc(firestore, "bagOperations", opId), convertDatesToTimestamps(newOperation));
+        return { success: true, data: newOperation };
     } catch (error: any) {
-        console.error("Error creating bag validation session:", error);
+        console.error("Error creating bag operation:", error);
         return { success: false, error: error.message };
     }
 }
 
-export async function getBagValidationSessions(): Promise<{ success: boolean; data?: BagValidationSession[]; error?: string }> {
+export async function addBagsToOperation(opId: string, extraQuantity: number): Promise<{ success: boolean; error?: string }> {
     try {
-        const q = query(collection(firestore, "bagValidationSessions"), orderBy("createdAt", "desc"));
+        const opRef = doc(firestore, "bagOperations", opId);
+        await runTransaction(firestore, async (transaction) => {
+            const opDoc = await transaction.get(opRef);
+            if (!opDoc.exists()) throw new Error("La operación no existe");
+
+            const data = opDoc.data() as BagOperation;
+            const currentTotal = data.totalBags;
+            const newTotal = currentTotal + extraQuantity;
+            const newBags = { ...data.bags };
+
+            for (let i = currentTotal + 1; i <= newTotal; i++) {
+                const bagId = `${opId}-B${i.toString().padStart(3, '0')}`;
+                newBags[bagId] = { id: bagId, loaded: false, discharged: false };
+            }
+
+            transaction.update(opRef, { 
+                totalBags: newTotal,
+                bags: newBags
+            });
+        });
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error adding bags to operation:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function getBagOperations(): Promise<{ success: boolean; data?: BagOperation[]; error?: string }> {
+    try {
+        const q = query(collection(firestore, "bagOperations"), orderBy("createdAt", "desc"));
         const querySnapshot = await getDocs(q);
-        const sessions = querySnapshot.docs.map(doc => convertTimestampsToDates(doc.data()) as BagValidationSession);
-        return { success: true, data: sessions };
+        const ops = querySnapshot.docs.map(doc => convertTimestampsToDates(doc.data()) as BagOperation);
+        return { success: true, data: ops };
     } catch (error: any) {
-        console.error("Error getting bag validation sessions:", error);
+        console.error("Error getting bag operations:", error);
         return { success: false, error: error.message };
     }
 }
 
-export async function validateBagInSession(sessionId: string, bagNumber: number): Promise<{ success: boolean; error?: string; alreadyValidated?: boolean }> {
+export async function processBagScan(opId: string, barcode: string, phase: 'cargue' | 'descargue'): Promise<{ success: boolean; error?: string; alreadyProcessed?: boolean; invalidCode?: boolean; errorType?: 'NOT_FOUND' | 'DUPLICATE' | 'INVALID_PHASE' }> {
     try {
-        const sessionRef = doc(firestore, "bagValidationSessions", sessionId);
+        const opRef = doc(firestore, "bagOperations", opId);
         const result = await runTransaction(firestore, async (transaction) => {
-            const sessionDoc = await transaction.get(sessionRef);
-            if (!sessionDoc.exists()) throw new Error("La sesión no existe");
+            const opDoc = await transaction.get(opRef);
+            if (!opDoc.exists()) throw new Error("La operación no existe");
 
-            const data = sessionDoc.data() as BagValidationSession;
-            const validatedBags = data.validatedBags || [];
-
-            if (validatedBags.includes(bagNumber)) {
-                return { success: true, alreadyValidated: true };
+            const data = opDoc.data() as BagOperation;
+            const bags = data.bags || {};
+            
+            if (!bags[barcode]) {
+                return { success: false, invalidCode: true, errorType: 'NOT_FOUND', error: `El código ${barcode} no pertenece a esta operación.` };
             }
 
-            if (bagNumber < 1 || bagNumber > data.totalBags) {
-                throw new Error(`Número de bolsa fuera de rango (1-${data.totalBags})`);
+            const bag = bags[barcode];
+            const timestampField = phase === 'cargue' ? 'loadedAt' : 'dischargedAt';
+            const statusField = phase === 'cargue' ? 'loaded' : 'discharged';
+
+            if (bag[statusField]) {
+                return { success: true, alreadyProcessed: true, errorType: 'DUPLICATE' };
             }
 
-            const updatedBags = [...validatedBags, bagNumber].sort((a, b) => a - b);
-            transaction.update(sessionRef, { validatedBags: updatedBags });
+            if (phase === 'descargue' && !bag.loaded) {
+                return { success: false, error: "Esta bolsa no fue registrada en el cargue.", errorType: 'INVALID_PHASE' };
+            }
+
+            const updatedBag = {
+                ...bag,
+                [statusField]: true,
+                [timestampField]: Timestamp.now()
+            };
+
+            const updatedBags = { ...bags, [barcode]: updatedBag };
+            transaction.update(opRef, { bags: updatedBags });
+            
             return { success: true };
         });
-        return result;
+        return result as any;
     } catch (error: any) {
-        console.error("Error validating bag:", error);
+        console.error("Error processing bag scan:", error);
         return { success: false, error: error.message };
     }
 }
 
-export async function deleteBagValidationSession(sessionId: string): Promise<{ success: boolean; error?: string }> {
+export async function updateBagOperationStatus(opId: string, status: 'cargue' | 'descargue' | 'completed'): Promise<{ success: boolean; error?: string }> {
     try {
-        await deleteDoc(doc(firestore, "bagValidationSessions", sessionId));
+        await updateDoc(doc(firestore, "bagOperations", opId), { status });
         return { success: true };
     } catch (error: any) {
-        console.error("Error deleting bag validation session:", error);
+        console.error("Error updating operation status:", error);
         return { success: false, error: error.message };
     }
 }
 
-export async function updateBagValidationSessionStatus(sessionId: string, status: 'active' | 'completed'): Promise<{ success: boolean; error?: string }> {
+export async function deleteBagOperation(opId: string): Promise<{ success: boolean; error?: string }> {
     try {
-        await updateDoc(doc(firestore, "bagValidationSessions", sessionId), { status });
+        await deleteDoc(doc(firestore, "bagOperations", opId));
         return { success: true };
     } catch (error: any) {
-        console.error("Error updating bag validation session status:", error);
+        console.error("Error deleting operation:", error);
         return { success: false, error: error.message };
     }
 }
