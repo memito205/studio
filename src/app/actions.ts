@@ -2899,27 +2899,44 @@ export async function loadHolidays(): Promise<{success: boolean; data?: Date[]; 
 // BAG COUNTING ACTIONS
 export async function createBagOperation(name: string, totalBags: number, userId: string, userName: string): Promise<{ success: boolean; data?: BagOperation; error?: string }> {
     try {
-        const opId = `BAG-${Date.now().toString().slice(-6)}`;
-        const bags: Record<string, BagItem> = {};
+        const counterRef = doc(firestore, "metadata", "bagOperations");
         
-        for (let i = 1; i <= totalBags; i++) {
-            const bagId = `${opId}-B${i.toString().padStart(3, '0')}`;
-            bags[bagId] = { id: bagId, loaded: false, discharged: false };
-        }
+        const result = await runTransaction(firestore, async (transaction) => {
+            const counterDoc = await transaction.get(counterRef);
+            let nextCount = 1;
+            
+            if (counterDoc.exists()) {
+                nextCount = (counterDoc.data().count || 0) + 1;
+            }
+            
+            transaction.set(counterRef, { count: nextCount }, { merge: true });
 
-        const newOperation: BagOperation = {
-            id: opId,
-            name,
-            totalBags,
-            bags,
-            createdAt: new Date(),
-            status: 'cargue',
-            createdBy: userId,
-            createdByName: userName
-        };
+            const opId = `BAG-OP${nextCount}`;
+            const bags: Record<string, BagItem> = {};
+            
+            for (let i = 1; i <= totalBags; i++) {
+                const bagId = `${opId}-B${i.toString().padStart(3, '0')}`;
+                bags[bagId] = { id: bagId, loaded: false, discharged: false };
+            }
 
-        await setDoc(doc(firestore, "bagOperations", opId), convertDatesToTimestamps(newOperation));
-        return { success: true, data: newOperation };
+            const newOperation: BagOperation = {
+                id: opId,
+                name,
+                totalBags,
+                bags,
+                createdAt: new Date(),
+                status: 'cargue',
+                createdBy: userId,
+                createdByName: userName
+            };
+
+            const opRef = doc(firestore, "bagOperations", opId);
+            transaction.set(opRef, convertDatesToTimestamps(newOperation));
+            
+            return newOperation;
+        });
+
+        return { success: true, data: result };
     } catch (error: any) {
         console.error("Error creating bag operation:", error);
         return { success: false, error: error.message };
