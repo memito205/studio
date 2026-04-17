@@ -187,12 +187,24 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
 
   const handleFinishPhase = async () => {
       if (!activeOperation) return;
+      
+      const bags = Object.values(activeOperation.bags);
+      const phaseField = activeOperation.status === 'cargue' ? 'loaded' : 'discharged';
+      const processedCount = bags.filter(b => b[phaseField]).length;
+      const pendingCount = activeOperation.totalBags - processedCount;
       const currentStatus = activeOperation.status;
       const nextStatus = currentStatus === 'cargue' ? 'descargue' : 'completed';
       
-      const confirmMsg = currentStatus === 'cargue' 
-        ? "¿Finalizar fase de CARGUE? Se habilitará automáticamente la fase de DESCARGUE."
-        : "¿Finalizar esta operación por completo?";
+      let confirmMsg = "";
+      if (currentStatus === 'cargue') {
+          confirmMsg = pendingCount > 0 
+            ? `⚠️ ¡ATENCIÓN! Faltan ${pendingCount} bolsas por CARGAR. Si cierra ahora, estas bolsas no podrán completarse en la siguiente fase. ¿Continuar?`
+            : "¿Desea finalizar la fase de CARGUE? Se habilitará el Descargue.";
+      } else {
+          confirmMsg = pendingCount > 0
+            ? `⚠️ ¡AVISO! Hay ${pendingCount} bolsas sin DESCARGAR. ¿Desea cerrar la operación con faltantes?`
+            : "¿Desea finalizar esta operación por completo?";
+      }
 
       if (!confirm(confirmMsg)) return;
       
@@ -470,17 +482,25 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
                             </div>
                         </div>
 
-                        {activeOperation.status !== 'completed' && progress === 100 && (
-                            <Button 
-                                className={cn(
-                                    "w-full h-12 text-lg font-bold shadow-lg animate-pulse",
-                                    activeOperation.status === 'cargue' ? "bg-amber-600 hover:bg-amber-700 text-white" : "bg-green-600 hover:bg-green-700"
-                                )} 
-                                onClick={handleFinishPhase}
-                            >
-                                <CheckCircle2 className="mr-2 h-5 w-5" /> 
-                                {activeOperation.status === 'cargue' ? "Finalizar Cargue" : "Finalizar Todo"}
-                            </Button>
+                        {activeOperation.status !== 'completed' && (
+                            <div className="space-y-3">
+                                {progress < 100 && (
+                                    <p className="text-[10px] font-bold text-amber-600 bg-amber-50 p-2 rounded border border-amber-100 flex items-center gap-2">
+                                        <AlertTriangle className="h-3 w-3" /> Faltan {activeOperation.totalBags - processedCount} bolsas por procesar.
+                                    </p>
+                                )}
+                                <Button 
+                                    className={cn(
+                                        "w-full h-12 text-lg font-bold shadow-lg transition-all",
+                                        progress === 100 ? "animate-pulse" : "opacity-80 hover:opacity-100",
+                                        activeOperation.status === 'cargue' ? "bg-amber-600 hover:bg-amber-700 text-white" : "bg-green-600 hover:bg-green-700"
+                                    )} 
+                                    onClick={handleFinishPhase}
+                                >
+                                    <CheckCircle2 className="mr-2 h-5 w-5" /> 
+                                    {activeOperation.status === 'cargue' ? "Finalizar Cargue" : "Finalizar Todo"}
+                                </Button>
+                            </div>
                         )}
 
                         <div className="pt-6 border-t grid grid-cols-2 gap-4">
