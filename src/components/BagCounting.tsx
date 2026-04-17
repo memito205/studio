@@ -214,74 +214,79 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
   }
 
   const handleDownloadExcel = () => {
-      if (!activeSession) return;
+      if (!activeOperation) return;
       
-      const validatedSet = new Set(activeSession.validatedBags || []);
-      const rows = Array.from({ length: activeSession.totalBags }, (_, i) => i + 1).map(num => ({
-          'Número de Bolsa': num,
-          'Estado': validatedSet.has(num) ? 'VALIDADA' : 'PENDIENTE',
-          'Lote': activeSession.name,
-          'ID Sesión': activeSession.id
+      const rows = Object.values(activeOperation.bags).sort((a,b) => a.id.localeCompare(b.id)).map(bag => ({
+          'Código de Bolsa': bag.id,
+          'Referencia': bag.id.split('-').pop(),
+          'Cargado': bag.loaded ? 'SÍ' : 'NO',
+          'Descargado': bag.discharged ? 'SÍ' : 'NO',
+          'Lote': activeOperation.name,
+          'ID Operación': activeOperation.id
       }));
 
       const wb = XLSX.utils.book_new();
       const ws = XLSX.utils.json_to_sheet(rows);
-      XLSX.utils.book_append_sheet(wb, ws, "Validación");
-      XLSX.writeFile(wb, `Reporte_Bolsas_${activeSession.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.xlsx`);
-      toast({ title: "Excel Generado" });
+      XLSX.utils.book_append_sheet(wb, ws, "Etiquetas");
+      XLSX.writeFile(wb, `Etiquetas_Bolsas_${activeOperation.id}_${activeOperation.name.replace(/\s+/g, '_')}.xlsx`);
+      toast({ title: "Excel Generado", description: "Use este archivo para impresión de etiquetas." });
   };
 
   const handleDownloadPDF = () => {
-      if (!activeSession) return;
+      if (!activeOperation) return;
       
       const doc = new jsPDF();
-      const validatedSet = new Set(activeSession.validatedBags || []);
-      const progress = Math.round((validatedSet.size / activeSession.totalBags) * 100);
+      const bags = Object.values(activeOperation.bags).sort((a,b) => a.id.localeCompare(b.id));
+      const loadedCount = bags.filter(b => b.loaded).length;
+      const dischargedCount = bags.filter(b => b.discharged).length;
+      const progress = Math.round((dischargedCount / activeOperation.totalBags) * 100);
       
       // Header
       doc.setFontSize(20);
       doc.setTextColor(40, 40, 40);
-      doc.text("REPORTE DE VALIDACIÓN DE BOLSAS", 105, 20, { align: 'center' });
+      doc.text("REPORTE OPERACIÓN DE BOLSAS", 105, 20, { align: 'center' });
       
-      doc.setFontSize(12);
+      doc.setFontSize(10);
       doc.setTextColor(100, 100, 100);
-      doc.text(`Lote: ${activeSession.name}`, 20, 35);
-      doc.text(`ID Sesión: ${activeSession.id}`, 20, 42);
-      doc.text(`Fecha: ${activeSession.createdAt.toLocaleDateString()}`, 20, 49);
-      doc.text(`Estado: ${activeSession.status === 'active' ? 'EN PROCESO' : 'COMPLETADO'}`, 20, 56);
+      doc.text(`Lote: ${activeOperation.name}`, 20, 35);
+      doc.text(`ID Operación: ${activeOperation.id}`, 20, 40);
+      doc.text(`Creado por: ${activeOperation.createdByName}`, 20, 45);
+      doc.text(`Fecha Generación: ${new Date().toLocaleString()}`, 20, 50);
 
       // Summary Table
       autoTable(doc, {
-          startY: 65,
-          head: [['Concepto', 'Cantidad', 'Porcentaje']],
+          startY: 60,
+          head: [['Concepto', 'Cantidad', 'Avance %']],
           body: [
-              ['Total Bolsas', activeSession.totalBags.toString(), '100%'],
-              ['Validadas', validatedSet.size.toString(), `${progress}%`],
-              ['Pendientes', (activeSession.totalBags - validatedSet.size).toString(), `${100 - progress}%`]
+              ['Total Bolsas', activeOperation.totalBags.toString(), '100%'],
+              ['Cargadas (Origen)', loadedCount.toString(), `${Math.round((loadedCount/activeOperation.totalBags)*100)}%`],
+              ['Descargadas (Destino)', dischargedCount.toString(), `${progress}%`]
           ],
           theme: 'striped',
-          headStyles: { fillColor: [79, 70, 229] } // Primary color
+          headStyles: { fillColor: [79, 70, 229] }
       });
 
       // Detailed List
-      const rows = Array.from({ length: activeSession.totalBags }, (_, i) => i + 1).map(num => [
-          num.toString(),
-          validatedSet.has(num) ? 'VALIDADA' : 'PENDIENTE'
+      const rows = bags.map(bag => [
+          bag.id,
+          bag.loaded ? 'CARGADO' : 'PENDIENTE',
+          bag.discharged ? 'DESCARGADO' : 'PENDIENTE',
+          bag.dischargedAt ? (bag.dischargedAt instanceof Date ? bag.dischargedAt.toLocaleString() : 'S/D') : '-'
       ]);
 
       const finalY = (doc as any).lastAutoTable.finalY + 10;
-      doc.text("Detalle de Validación:", 20, finalY);
+      doc.text("Detalle de Seguimiento:", 20, finalY);
 
       autoTable(doc, {
           startY: finalY + 5,
-          head: [['Número de Bolsa', 'Estado']],
+          head: [['Código de Bolsa', 'Cargue', 'Descargue', 'Fecha Descargue']],
           body: rows,
           theme: 'grid',
           headStyles: { fillColor: [100, 100, 100] },
           margin: { top: 10 }
       });
 
-      doc.save(`Reporte_Bolsas_${activeSession.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`);
+      doc.save(`Reporte_Operacion_${activeOperation.id}.pdf`);
       toast({ title: "PDF Generado", description: "El reporte se ha descargado correctamente." });
   };
 
