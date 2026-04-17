@@ -3031,6 +3031,42 @@ export async function deleteBagOperation(opId: string): Promise<{ success: boole
     }
 }
 
+export async function resetBagState(opId: string, barcode: string, type: 'loaded' | 'discharged' | 'both'): Promise<{ success: boolean; error?: string }> {
+    try {
+        const opRef = doc(firestore, "bagOperations", opId);
+        await runTransaction(firestore, async (transaction) => {
+            const opDoc = await transaction.get(opRef);
+            if (!opDoc.exists()) throw new Error("La operación no existe");
+
+            const data = opDoc.data() as BagOperation;
+            const bags = data.bags || {};
+            
+            if (!bags[barcode]) {
+                throw new Error(`El código ${barcode} no existe en esta operación.`);
+            }
+
+            const bag = bags[barcode];
+            const updatedBag = { ...bag };
+
+            if (type === 'loaded' || type === 'both') {
+                updatedBag.loaded = false;
+                delete updatedBag.loadedAt;
+            }
+            if (type === 'discharged' || type === 'both') {
+                updatedBag.discharged = false;
+                delete updatedBag.dischargedAt;
+            }
+
+            const updatedBags = { ...bags, [barcode]: updatedBag };
+            transaction.update(opRef, { bags: updatedBags });
+        });
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error resetting bag state:", error);
+        return { success: false, error: error.message };
+    }
+}
+
 // ============================================================
 // PROPUESTA TRANSPORTADORA — Actions
 // ============================================================

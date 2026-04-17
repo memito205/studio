@@ -29,7 +29,8 @@ import {
   processBagScan, 
   deleteBagOperation,
   updateBagOperationStatus,
-  addBagsToOperation
+  addBagsToOperation,
+  resetBagState
 } from '@/app/actions';
 import { useAuth } from '@/hooks/use-auth-context';
 import type { BagOperation, BagItem } from '@/types';
@@ -234,6 +235,33 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
           } else {
             toast({ title: "Fase de Cargue Cerrada", description: "Inicie el proceso de Descargue." });
           }
+      }
+      setIsProcessing(false);
+  }
+
+  const handleResetBag = async (barcode: string) => {
+      if (!activeOperation || !user) return;
+      if (user.role !== 'admin') {
+          toast({ variant: 'destructive', title: "Permiso denegado", description: "Solo administradores pueden resetear bolsas." });
+          return;
+      }
+
+      if (!confirm(`¿Desea resetear el estado de la bolsa ${barcode}? Se borrará el registro de cargue y descargue.`)) return;
+
+      setIsProcessing(true);
+      const result = await resetBagState(activeOperation.id, barcode, 'both');
+      if (result.success) {
+          setActiveOperation(prev => {
+              if (!prev) return null;
+              const updatedBags = { ...prev.bags };
+              updatedBags[barcode] = { ...updatedBags[barcode], loaded: false, discharged: false };
+              delete updatedBags[barcode].loadedAt;
+              delete updatedBags[barcode].dischargedAt;
+              return { ...prev, bags: updatedBags };
+          });
+          toast({ title: "Bolsa Reseteada", description: `El código ${barcode} ahora está disponible para volver a procesar.` });
+      } else {
+          toast({ variant: 'destructive', title: "Error", description: result.error });
       }
       setIsProcessing(false);
   }
@@ -566,15 +594,24 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
                                         <div 
                                             key={bag.id}
                                             className={cn(
-                                                "aspect-square rounded-xl flex flex-col items-center justify-center text-xs font-black transition-all duration-300 border-2 overflow-hidden shadow-sm",
+                                                "aspect-square rounded-xl flex flex-col items-center justify-center text-xs font-black transition-all duration-300 border-2 overflow-hidden shadow-sm relative group/item",
                                                 isProcessed 
                                                     ? (activeOperation.status === 'cargue' 
-                                                        ? "bg-amber-500 border-amber-600 text-white scale-105" 
-                                                        : "bg-blue-600 border-blue-700 text-white scale-105")
+                                                        ? "bg-amber-500 border-amber-600 text-white scale-105 shadow-amber-200" 
+                                                        : "bg-blue-600 border-blue-700 text-white scale-105 shadow-blue-200")
                                                     : "bg-slate-50 border-slate-200 text-slate-300"
                                             )}
                                             title={bag.id}
                                         >
+                                            {isProcessed && user?.role === 'admin' && (
+                                                <button 
+                                                    onClick={(e) => { e.stopPropagation(); handleResetBag(bag.id); }}
+                                                    className="absolute -top-1 -right-1 bg-red-600 text-white p-1 rounded-full shadow-lg opacity-0 group-hover/item:opacity-100 transition-opacity hover:bg-red-700 z-10"
+                                                    title="Resetear bolsa"
+                                                >
+                                                    <Trash2 className="h-3 w-3" />
+                                                </button>
+                                            )}
                                             <span className="text-[8px] opacity-70 mb-1">B{String(i + 1).padStart(3, '0')}</span>
                                             <span className="text-sm font-black tracking-tighter">
                                                 {isProcessed ? <CheckCircle className="h-4 w-4" /> : i + 1}
