@@ -21,8 +21,11 @@ import {
   Printer,
   Download,
   CheckCircle,
-  FileText
+  FileText,
+  Camera,
+  X
 } from 'lucide-react';
+import { Html5QrcodeScanner, Html5Qrcode } from 'html5-qrcode';
 import { 
   createBagOperation, 
   getBagOperations, 
@@ -64,6 +67,8 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
   const [scanInput, setScanInput] = useState('');
   const [lastScanned, setLastScanned] = useState<{ code: string; success: boolean; message?: string; errorType?: 'NOT_FOUND' | 'DUPLICATE' | 'INVALID_PHASE' } | null>(null);
   const scanInputRef = useRef<HTMLInputElement>(null);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const scannerRef = useRef<Html5QrcodeScanner | null>(null);
 
   useEffect(() => {
     fetchOperations();
@@ -197,6 +202,40 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
 
     // Asegurar que el cursor siempre regrese al input
     setTimeout(() => { scanInputRef.current?.focus(); }, 150);
+  };
+
+  const startCamera = () => {
+    setIsCameraOpen(true);
+    setTimeout(() => {
+        if (!scannerRef.current) {
+            const scanner = new Html5QrcodeScanner(
+                "reader",
+                { fps: 10, qrbox: { width: 250, height: 250 } },
+                false
+            );
+            
+            scanner.render(
+                (decodedText) => {
+                    setScanInput(decodedText);
+                    scanner.clear();
+                    setIsCameraOpen(false);
+                    // Trigger manual scan with the decoded text
+                    const fakeEvent = { preventDefault: () => {} } as React.FormEvent;
+                    setTimeout(() => handleScan(fakeEvent), 100);
+                },
+                (error) => { /* quiet fail for frame errors */ }
+            );
+            scannerRef.current = scanner;
+        }
+    }, 300);
+  };
+
+  const stopCamera = () => {
+    if (scannerRef.current) {
+        scannerRef.current.clear().catch(err => console.error(err));
+        scannerRef.current = null;
+    }
+    setIsCameraOpen(false);
   };
 
   const handleFinishPhase = async () => {
@@ -382,72 +421,103 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
             </div>
         )}
 
-        <div className="flex justify-between items-center bg-card p-6 rounded-xl border shadow-sm">
-            <div>
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-card p-4 sm:p-6 rounded-xl border shadow-sm gap-4">
+            <div className="w-full sm:w-auto">
                 <div className="flex items-center gap-3">
-                    <h2 className="text-3xl font-black text-primary">{activeOperation.name}</h2>
-                    <Badge variant="outline" className="text-xs font-black bg-primary/5">ID: {activeOperation.id}</Badge>
+                    <h2 className="text-2xl sm:text-3xl font-black text-primary">{activeOperation.name}</h2>
+                    <Badge variant="outline" className="text-[10px] font-black bg-primary/5">ID: {activeOperation.id}</Badge>
                 </div>
                 <div className="flex gap-2 items-center mt-2">
                     <Badge variant={activeOperation.status === 'completed' ? 'secondary' : 'default'} className={cn(
-                        "px-3 py-1 text-xs font-black uppercase tracking-wider",
+                        "px-2 py-0.5 text-[10px] sm:text-xs font-black uppercase tracking-wider",
                         activeOperation.status === 'cargue' ? "bg-amber-500 hover:bg-amber-600" : 
                         activeOperation.status === 'descargue' ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-500"
                     )}>
-                        {activeOperation.status === 'cargue' ? '🚢 EN CARGUE (ORIGEN)' : 
-                         activeOperation.status === 'descargue' ? '🎯 EN DESCARGUE (DESTINO)' : '🏁 COMPLETADO'}
+                        {activeOperation.status === 'cargue' ? '🚢 CARGUE' : 
+                         activeOperation.status === 'descargue' ? '🎯 DESCARGUE' : '🏁 FIN'}
                     </Badge>
                 </div>
             </div>
-            <div className="flex gap-2">
-                <Button variant="outline" onClick={handleDownloadExcel} title="Descargar códigos para etiquetas">
-                    <Download className="mr-2 h-4 w-4" /> Etiquetas
+            <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+                <Button variant="outline" size="sm" className="flex-1 sm:flex-none text-[10px] h-9" onClick={handleDownloadExcel} title="Descargar códigos para etiquetas">
+                    <Download className="mr-1 h-3 w-3" /> Etiquetas
                 </Button>
-                <Button variant="outline" onClick={handleDownloadPDF} title="Generar PDF">
-                    <Printer className="mr-2 h-4 w-4" /> Reporte
+                <Button variant="outline" size="sm" className="flex-1 sm:flex-none text-[10px] h-9" onClick={handleDownloadPDF} title="Generar PDF">
+                    <Printer className="mr-1 h-3 w-3" /> Reporte
                 </Button>
-                <Button variant="outline" onClick={() => setActiveOperation(null)}>
-                    <ArrowLeft className="mr-2 h-4 w-4" /> Salir
+                <Button variant="outline" size="sm" className="flex-1 sm:flex-none text-[10px] h-9" onClick={() => setActiveOperation(null)}>
+                    <ArrowLeft className="mr-1 h-3 w-3" /> Salir
                 </Button>
             </div>
         </div>
 
+        {/* CAMERA MODAL */}
+        {isCameraOpen && (
+            <div className="fixed inset-0 z-[60] bg-black flex flex-col items-center justify-center p-4">
+                <div className="w-full max-w-md bg-white rounded-2xl overflow-hidden relative">
+                    <Button 
+                        variant="destructive" 
+                        size="icon" 
+                        className="absolute top-2 right-2 z-10 rounded-full" 
+                        onClick={stopCamera}
+                    >
+                        <X className="h-6 w-6" />
+                    </Button>
+                    <div id="reader" className="w-full"></div>
+                    <div className="p-4 bg-slate-900 text-white text-center">
+                        <p className="font-black uppercase tracking-tighter text-sm">Encuadre el código de barras</p>
+                    </div>
+                </div>
+            </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
             {/* LEFT: Scanner & Summary */}
-            <div className="lg:col-span-1 space-y-6">
+            <div className="lg:col-span-1 space-y-6 order-1 lg:order-none">
                 <Card className={cn(
                     "border-4 shadow-xl overflow-hidden transition-colors duration-300",
                     activeOperation.status === 'cargue' ? "border-amber-500/20" : "border-blue-600/20"
                 )}>
                     <CardHeader className={cn(
-                        "pb-4",
+                        "pb-4 px-4 sm:px-6",
                         activeOperation.status === 'cargue' ? "bg-amber-500/5" : "bg-blue-600/5"
                     )}>
-                        <CardTitle className="text-lg">Escáner de Fase: {activeOperation.status.toUpperCase()}</CardTitle>
-                        <CardDescription>Escanee el código de barras de la bolsa</CardDescription>
+                        <CardTitle className="text-base sm:text-lg">Escáner de Fase: {activeOperation.status.toUpperCase()}</CardTitle>
+                        <CardDescription className="text-xs">Escanee el código de barras</CardDescription>
                     </CardHeader>
-                    <CardContent className="pt-6 space-y-4">
-                        <form onSubmit={handleScan} className="space-y-4">
+                    <CardContent className="pt-4 sm:pt-6 space-y-4 px-4 sm:px-6">
+                        <form onSubmit={handleScan} className="space-y-4 relative">
                             <Input 
                                 ref={scanInputRef}
                                 type="text"
                                 placeholder="..."
-                                className="text-4xl h-24 text-center font-black focus-visible:ring-primary border-4 rounded-2xl tracking-widest"
+                                className="text-3xl sm:text-4xl h-20 sm:h-24 text-center font-black focus-visible:ring-primary border-4 rounded-2xl tracking-widest"
                                 value={scanInput}
                                 onChange={(e) => setScanInput(e.target.value)}
                                 autoFocus
-                                disabled={activeOperation.status === 'completed'}
+                                disabled={activeOperation.status === 'completed' || isCameraOpen}
                             />
-                            <Button 
-                                className={cn(
-                                    "w-full h-14 text-xl font-black uppercase tracking-wider",
-                                    activeOperation.status === 'cargue' ? "bg-amber-500 hover:bg-amber-600" : "bg-blue-600 hover:bg-blue-700"
-                                )} 
-                                type="submit"
-                                disabled={activeOperation.status === 'completed'}
-                            >
-                                <CheckCircle2 className="mr-2 h-6 w-6" /> Procesar Bolsa
-                            </Button>
+                            <div className="flex gap-2">
+                                <Button 
+                                    className={cn(
+                                        "flex-[3] h-12 sm:h-14 text-sm sm:text-xl font-black uppercase tracking-wider",
+                                        activeOperation.status === 'cargue' ? "bg-amber-500 hover:bg-amber-600" : "bg-blue-600 hover:bg-blue-700"
+                                    )} 
+                                    type="submit"
+                                    disabled={activeOperation.status === 'completed'}
+                                >
+                                    <CheckCircle2 className="mr-2 h-5 w-5 sm:h-6 sm:w-6" /> Procesar
+                                </Button>
+                                <Button 
+                                    variant="outline"
+                                    className="flex-1 h-12 sm:h-14 border-2"
+                                    onClick={startCamera}
+                                    type="button"
+                                    title="Escanear con Cámara"
+                                >
+                                    <Camera className="h-6 w-6" />
+                                </Button>
+                            </div>
                         </form>
 
                         {lastScanned && lastScanned.success && (
@@ -632,20 +702,19 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
     );
   }
 
-  // View: Main List
   return (
-    <div className="space-y-8 animate-in fade-in duration-500">
-      <div className="flex justify-between items-center bg-card p-8 rounded-2xl border border-border shadow-md">
+    <div className="space-y-4 sm:space-y-8 animate-in fade-in duration-500 pb-10">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-card p-4 sm:p-8 rounded-2xl border border-border shadow-md gap-4">
         <div>
-          <h1 className="text-4xl font-black tracking-tighter text-primary">Conteo de Bolsas</h1>
-          <p className="text-muted-foreground font-medium">Sistema de validación por lotes para control logístico.</p>
+          <h1 className="text-3xl sm:text-4xl font-black tracking-tighter text-primary">Conteo de Bolsas</h1>
+          <p className="text-xs sm:text-base text-muted-foreground font-medium">Sistema de validación por lotes.</p>
         </div>
-        <div className="flex gap-3">
-            <Button variant="outline" onClick={onReturn} className="h-12 px-6 font-bold">
-                <ArrowLeft className="mr-2 h-5 w-5" /> Volver
+        <div className="flex gap-2 w-full sm:w-auto">
+            <Button variant="outline" onClick={onReturn} className="flex-1 sm:flex-none h-10 sm:h-12 px-4 sm:px-6 font-bold text-xs sm:text-sm">
+                <ArrowLeft className="mr-2 h-4 w-4 sm:h-5 sm:w-5" /> Volver
             </Button>
-            <Button onClick={() => setIsCreating(!isCreating)} className="h-12 px-6 font-black bg-primary hover:bg-primary/90 shadow-lg">
-                <Plus className="mr-2 h-5 w-5" /> Iniciar Sesión
+            <Button onClick={() => setIsCreating(!isCreating)} className="flex-[2] sm:flex-none h-10 sm:h-12 px-4 sm:px-6 font-black bg-primary hover:bg-primary/90 shadow-lg text-xs sm:text-sm text-white">
+                <Plus className="mr-2 h-4 w-4 sm:h-5 sm:w-5 text-white" /> Iniciar Sesión
             </Button>
         </div>
       </div>
@@ -653,38 +722,37 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
       {isCreating && (
         <Card className="animate-in slide-in-from-top-4 duration-500 border-4 border-primary/10 shadow-2xl overflow-hidden">
             <div className="bg-primary/5 p-4 border-b">
-                <CardTitle className="text-xl font-black">Configuración de Nuevo Lote</CardTitle>
-                <CardDescription className="font-bold text-xs uppercase tracking-widest opacity-60">Complete los parámetros de validación</CardDescription>
+                <CardTitle className="text-lg sm:text-xl font-black">Nuevo Lote</CardTitle>
             </div>
-            <CardContent className="pt-8">
-                <form onSubmit={handleCreate} className="grid grid-cols-1 md:grid-cols-3 gap-8 items-end max-w-5xl mx-auto pb-4">
-                    <div className="space-y-3">
-                        <label className="text-xs font-black uppercase tracking-widest opacity-70">📍 Nombre del Lote</label>
+            <CardContent className="pt-4 sm:pt-8 px-4 sm:px-6">
+                <form onSubmit={handleCreate} className="flex flex-col sm:grid sm:grid-cols-3 gap-4 sm:gap-8 items-end max-w-5xl mx-auto pb-4">
+                    <div className="w-full space-y-2 sm:space-y-3">
+                        <label className="text-[10px] sm:text-xs font-black uppercase tracking-widest opacity-70">📍 Nombre del Lote</label>
                         <Input 
-                            placeholder="Ej: Despacho 001 - Cali" 
-                            className="h-14 text-lg font-bold border-2 focus-visible:ring-primary"
+                            placeholder="Ej: Despacho 001" 
+                            className="h-12 sm:h-14 text-base sm:text-lg font-bold border-2 focus-visible:ring-primary"
                             value={newName} 
                             onChange={(e) => setNewName(e.target.value)}
                             required
                         />
                     </div>
-                    <div className="space-y-3">
-                        <label className="text-xs font-black uppercase tracking-widest opacity-70">🔢 Cantidad de Bolsas</label>
+                    <div className="w-full space-y-2 sm:space-y-3">
+                        <label className="text-[10px] sm:text-xs font-black uppercase tracking-widest opacity-70">🔢 Cantidad</label>
                         <Input 
                             type="number" 
                             min={1} 
                             max={5000}
-                            className="h-14 text-lg font-bold border-2 focus-visible:ring-primary"
+                            className="h-12 sm:h-14 text-base sm:text-lg font-bold border-2 focus-visible:ring-primary"
                             value={newTotal} 
                             onChange={(e) => setNewTotal(parseInt(e.target.value))}
                             required
                         />
                     </div>
-                    <div className="flex gap-3 pb-1">
-                        <Button type="submit" className="flex-1 h-14 text-lg font-black uppercase tracking-wider shadow-xl" disabled={isProcessing}>
-                            {isProcessing ? <Loader2 className="h-6 w-6 animate-spin" /> : "Crear Sesión"}
+                    <div className="flex gap-2 w-full pb-1">
+                        <Button type="submit" className="flex-[2] h-12 sm:h-14 text-sm sm:text-lg font-black uppercase tracking-wider shadow-xl" disabled={isProcessing}>
+                            {isProcessing ? <Loader2 className="h-5 w-5 animate-spin" /> : "Crear"}
                         </Button>
-                        <Button type="button" variant="ghost" className="h-14 px-6 font-bold" onClick={() => setIsCreating(false)}>Cancelar</Button>
+                        <Button type="button" variant="ghost" className="flex-1 h-12 sm:h-14 px-3 sm:px-6 font-bold text-xs" onClick={() => setIsCreating(false)}>X</Button>
                     </div>
                 </form>
             </CardContent>
@@ -740,19 +808,19 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
                             const percent = phase === 'cargue' ? Math.round((loaded/total)*100) : Math.round((discharged/total)*100);
                             
                             return (
-                                <TableRow key={op.id} className="group hover:bg-primary/5 transition-all duration-200">
-                                    <TableCell className="py-6 pl-6">
-                                        <div className="font-black text-xl text-primary">{op.name}</div>
-                                        <div className="text-[10px] font-bold opacity-40 font-mono">{op.id}</div>
+                                <TableRow key={op.id} className="group hover:bg-primary/5 transition-all duration-200 cursor-pointer" onClick={() => setActiveOperation(op)}>
+                                    <TableCell className="py-4 sm:py-6 pl-4 sm:pl-6 min-w-[150px]">
+                                        <div className="font-black text-sm sm:text-xl text-primary truncate max-w-[120px] sm:max-w-none">{op.name}</div>
+                                        <div className="text-[8px] sm:text-[10px] font-bold opacity-40 font-mono">{op.id}</div>
                                     </TableCell>
-                                    <TableCell className="font-bold text-muted-foreground">
-                                        {op.createdAt.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })}
+                                    <TableCell className="font-bold text-muted-foreground text-[10px] sm:text-sm hidden sm:table-cell">
+                                        {op.createdAt.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}
                                     </TableCell>
                                     <TableCell>
                                         <Badge 
                                             variant={op.status === 'completed' ? 'secondary' : 'default'}
                                             className={cn(
-                                                "font-black uppercase tracking-tighter px-3 py-1",
+                                                "font-black uppercase tracking-tighter px-2 py-0.5 text-[9px] sm:text-xs",
                                                 op.status === 'cargue' ? "bg-amber-500" : 
                                                 op.status === 'descargue' ? "bg-blue-600" : "bg-slate-200 text-slate-600"
                                             )}
@@ -761,8 +829,8 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
                                              op.status === 'descargue' ? '🎯 Descargue' : '🏁 Cerrado'}
                                         </Badge>
                                     </TableCell>
-                                    <TableCell>
-                                        <div className="flex flex-col gap-2 min-w-[240px]">
+                                    <TableCell className="hidden md:table-cell">
+                                        <div className="flex flex-col gap-2 min-w-[200px]">
                                             <div className="flex justify-between items-baseline">
                                                 <span className="text-[10px] font-black uppercase tracking-widest opacity-40">
                                                     Progreso {phase.toUpperCase()}
