@@ -146,12 +146,13 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
     }
   };
 
-  const handleScan = async (e?: React.FormEvent) => {
+  const handleScan = async (e?: React.FormEvent, manualCode?: string) => {
     if (e) e.preventDefault();
-    if (!activeOperation || !scanInput || isProcessing) return;
+    const targetCode = manualCode || scanInput;
+    if (!activeOperation || !targetCode || isProcessing) return;
     
     // Normalización de caracteres por compatibilidad de escáneres
-    let barcode = scanInput.trim().toUpperCase().replace(/['"\/\\|]/g, '-');
+    let barcode = targetCode.trim().toUpperCase().replace(/['"\/\\|]/g, '-');
     setScanInput(''); // Limpiar inmediatamente para el siguiente escaneo
 
     setIsProcessing(true);
@@ -216,12 +217,10 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
             
             scanner.render(
                 (decodedText) => {
-                    setScanInput(decodedText);
                     scanner.clear();
                     setIsCameraOpen(false);
-                    // Trigger manual scan with the decoded text
-                    const fakeEvent = { preventDefault: () => {} } as React.FormEvent;
-                    setTimeout(() => handleScan(fakeEvent), 100);
+                    // Pass directly to handleScan to avoid state delay
+                    handleScan(undefined, decodedText);
                 },
                 (error) => { /* quiet fail for frame errors */ }
             );
@@ -406,17 +405,17 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
                 )}
                 onClick={() => setLastScanned(null)}
             >
-                <XCircle className="h-64 w-64 text-white mb-8 animate-bounce" />
-                <h2 className="text-8xl font-black text-white text-center mb-4 uppercase tracking-tighter">
+                <XCircle className="h-32 w-32 sm:h-64 sm:w-64 text-white mb-6 sm:mb-8 animate-bounce" />
+                <h2 className="text-4xl sm:text-8xl font-black text-white text-center mb-4 uppercase tracking-tighter leading-none px-4">
                     {lastScanned.message}
                 </h2>
-                <p className="text-4xl font-bold text-white/80 uppercase">Código: {lastScanned.code}</p>
+                <p className="text-xl sm:text-4xl font-bold text-white/80 uppercase break-all px-6 text-center">Código: {lastScanned.code}</p>
                 <Button 
                     variant="outline" 
-                    className="mt-12 h-20 px-12 text-2xl font-black border-4 border-white text-white hover:bg-white hover:text-orange-600 rounded-full"
+                    className="mt-8 sm:mt-12 h-16 sm:h-20 px-8 sm:px-12 text-lg sm:text-2xl font-black border-4 border-white text-white hover:bg-white hover:text-orange-600 rounded-full"
                     onClick={() => setLastScanned(null)}
                 >
-                    ENTENDIDO / CONTINUAR
+                    ENTENDIDO
                 </Button>
             </div>
         )}
