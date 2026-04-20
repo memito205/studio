@@ -3,15 +3,21 @@
 import React from 'react';
 import { Card, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, PackageSearch } from 'lucide-react';
+import { ArrowLeft, PackageSearch, FileBarChart } from 'lucide-react';
 
 interface Props {
     onNavigateRemision: () => void;
     onNavigateLabeling: () => void;
+    onNavigateLogisticsPlatform: () => void;
     onReturnToMain: () => void;
 }
 
-export const BodegaDashboardsMenu: React.FC<Props> = ({ onNavigateRemision, onNavigateLabeling, onReturnToMain }) => {
+export const BodegaDashboardsMenu: React.FC<Props> = ({ 
+    onNavigateRemision, 
+    onNavigateLabeling, 
+    onNavigateLogisticsPlatform,
+    onReturnToMain 
+}) => {
     return (
         <div className="space-y-6 max-w-5xl mx-auto p-4 md:p-8 animate-in fade-in zoom-in-95 duration-300">
             <div className="flex items-center justify-between bg-card p-6 rounded-xl shadow-sm border">
@@ -46,6 +52,17 @@ export const BodegaDashboardsMenu: React.FC<Props> = ({ onNavigateRemision, onNa
                         <div>
                             <CardTitle className="text-xl">Tablero Etiquetado</CardTitle>
                             <CardDescription className="mt-2 text-base">Eficiencia de operarios, producción por hora y pausas.</CardDescription>
+                        </div>
+                    </CardHeader>
+                </Card>
+                <Card className="hover:border-primary hover:shadow-md cursor-pointer transition-all duration-300 transform hover:-translate-y-1" onClick={onNavigateLogisticsPlatform}>
+                    <CardHeader className="flex flex-col items-center gap-4 space-y-2 text-center pt-8 pb-8">
+                        <div className="p-4 bg-blue-500/10 rounded-full">
+                            <FileBarChart className="h-12 w-12 text-blue-600" />
+                        </div>
+                        <div>
+                            <CardTitle className="text-xl">Plataforma Logística</CardTitle>
+                            <CardDescription className="mt-2 text-base">Indicadores de bodega, procesos, descansos y rutas.</CardDescription>
                         </div>
                     </CardHeader>
                 </Card>

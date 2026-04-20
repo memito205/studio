@@ -1,0 +1,917 @@
+"use client";
+
+import React from 'react';
+import Header from './components/Header';
+import FileUpload from './components/FileUpload';
+import ReportTable from './components/ReportTable';
+import Loader from './components/Loader';
+import FilterPanel from './components/FilterPanel';
+import KPI from './components/KPI';
+import AnalysisDashboard from './components/AnalysisDashboard';
+import DailyIndicatorChart from './components/DailyIndicatorChart';
+import SlaAnalysisTable from './components/SlaAnalysisTable';
+import PendingDocsAnalysisTable from './components/PendingDocsAnalysisTable';
+import BreakdownDashboard from './components/BreakdownDashboard';
+import RutasModule from './components/RutasModule';
+import WarehouseProcessesModule from './components/WarehouseProcessesModule';
+import NovedadesModule from './components/NovedadesModule';
+import { useReportData } from './hooks/useReportData';
+import { findHeader, normalizeDate, formatDate, parseDateString, generatePendingSummaryPdf, getWeekStartDate } from './utils/helpers';
+import type { ExcelDataRow, BreaksReportData, ProcessedBreak, EmployeeDailyAnalysis, DailyAnalysis, WeeklyTrend, EmployeePerformance } from './types';
+import { FileIcon, PackageIcon, TruckIcon, ChartIcon, CheckCircleIcon, TableIcon, UserCheckIcon, PdfFileIcon } from './components/icons';
+
+
+declare const XLSX: any;
+
+
+// --- MODULE 1: Warehouse Analyzer ---
+const WarehouseAnalyzer: React.FC = () => {
+  // --- CORE STATES ---
+  const [baseData, setBaseData] = React.useState<ExcelDataRow[]>([]);
+  const [columnMap, setColumnMap] = React.useState<{ [key: string]: string | undefined }>({});
+  const [rawHeaders, setRawHeaders] = React.useState<string[]>([]);
+  const [debugMapping, setDebugMapping] = React.useState<{ expected: string; found: string }[]>([]);
+  const [availableWarehouses, setAvailableWarehouses] = React.useState<string[]>([]);
+  const [mainFileName, setMainFileName] = React.useState<string | null>(null);
+
+  // --- ROUTE FILE STATES ---
+  const [routeData, setRouteData] = React.useState<Map<string, string>>(new Map());
+  const [routeFileName, setRouteFileName] = React.useState<string | null>(null);
+  const [isRouteLoading, setIsRouteLoading] = React.useState(false);
+  const [routeError, setRouteError] = React.useState<string | null>(null);
+  const [routeDebugMapping, setRouteDebugMapping] = React.useState<{ expected: string; found: string; isFallback: boolean }[]>([]);
+  const [rawRouteHeaders, setRawRouteHeaders] = React.useState<string[]>([]);
+
+  // --- UI CONTROL STATES ---
+  const [isLoading, setIsLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [infoMessage, setInfoMessage] = React.useState<string | null>(null);
+  
+  // --- FILTER STATES ---
+  const [selectedWarehouse, setSelectedWarehouse] = React.useState<string>('all');
+  const [startDate, setStartDate] = React.useState<string>('');
+  const [endDate, setEndDate] = React.useState<string>('');
+  const [documentNumberFilter, setDocumentNumberFilter] = React.useState('');
+
+  const handleClearFilters = () => {
+    setSelectedWarehouse('all');
+    setStartDate('');
+    setEndDate('');
+    setDocumentNumberFilter('');
+  };
+  
+  const processData = React.useCallback((data: ExcelDataRow[]) => {
+    if (data.length === 0) {
+        setError("El archivo de Excel está vacío o no tiene datos.");
+        setBaseData([]);
+        setColumnMap({});
+        return;
+    }
+
+    const headers = Object.keys(data[0]);
+    setRawHeaders(headers);
+    
+    // --- Definición de columnas ---
+    const FECHA_COL_NAMES = ['Fecha'];
+    const WAREHOUSE_COL_NAMES = ['Bod. entrada', 'Bodega entrada', 'Bodega', 'Destino', 'Centro', 'Almacén', 'Almacen', 'Bodega Destino', 'BOD. DESTINO'];
+    const WAREHOUSE_OUT_COL_NAMES = ['Bod. salida', 'Bodega salida', 'BOD SALIDA'];
+    const DOC_COL_NAMES = ['Nro documento.2', 'Nro documento.', 'Nro Documento'];
+    const QTY_COL_NAMES = ['CANTIDAD', 'Cantidad'];
+    const IMAGE_LINK_COL_NAMES = ['LINK IMAGENES.1.1.1', 'LINK_IMAGENES.1.1.1', 'LINK IMAGENES', 'Link Imagenes', 'linkimagenes', 'Imagenes', 'Evidencias'];
+    const ESTADO_PLATAFORMA_COL_NAMES = ['ESTADO PLATAFORMA', 'Estado_Plataforma', 'Estado Plataforma', 'estadoplataforma'];
+    const FECHA_FINALIZADO_PLATAFORMA_COL_NAMES = ['FECHA FINALIZADO PLATAFORMA', 'Fecha_Finalizado_Plataforma', 'Fecha Finalizado Plataforma', 'FECHA FINALIZADO', 'Fecha Finalizado', 'FECHA FINALIZACION', 'Fecha Finalizacion', 'FECHA FINALIZADO PALTAFORMA', 'FECHA FINALIZADO PLATAFORM'];
+    const NOVEDAD_COL_NAMES = ['NOVEDAD', 'Novedad', 'Novedades'];
+    const MARCA_COL_NAMES = ['MARCA', 'Marca'];
+    const GRUPO_COL_NAMES = ['GRUPO', 'Grupo'];
+    const ESTADO_GENERAL_COL_NAMES = ['ESTADO', 'Estado'];
+    const HOY_RUTA_COL_NAMES = ['HOY RUTA.Personalizado', 'Hoy Ruta Personalizado', 'Hoy Ruta', 'HOY RUTA'];
+
+
+    const newColumnMap = {
+        fecha: findHeader(headers, FECHA_COL_NAMES),
+        warehouse: findHeader(headers, WAREHOUSE_COL_NAMES),
+        warehouseOut: findHeader(headers, WAREHOUSE_OUT_COL_NAMES),
+        doc: findHeader(headers, DOC_COL_NAMES),
+        qty: findHeader(headers, QTY_COL_NAMES),
+        image: findHeader(headers, IMAGE_LINK_COL_NAMES),
+        estadoPlataforma: findHeader(headers, ESTADO_PLATAFORMA_COL_NAMES),
+        novedad: findHeader(headers, NOVEDAD_COL_NAMES),
+        fechaFinalizado: findHeader(headers, FECHA_FINALIZADO_PLATAFORMA_COL_NAMES),
+        marca: findHeader(headers, MARCA_COL_NAMES),
+        grupo: findHeader(headers, GRUPO_COL_NAMES),
+        estadoGeneral: findHeader(headers, ESTADO_GENERAL_COL_NAMES),
+        hoyRuta: findHeader(headers, HOY_RUTA_COL_NAMES),
+    };
+    
+    // Set up debug mapping for UI
+    const debugMapForDisplay = [
+        { expected: 'FECHA', found: newColumnMap.fecha || 'No encontrado' },
+        { expected: 'BOD. ENTRADA', found: newColumnMap.warehouse || 'No encontrado' },
+        { expected: 'BOD. SALIDA', found: newColumnMap.warehouseOut || 'No encontrado (Opcional)' },
+        { expected: 'NRO DOCUMENTO.2', found: newColumnMap.doc || 'No encontrado' },
+        { expected: 'CANTIDAD', found: newColumnMap.qty || 'No encontrado' },
+        { expected: 'ESTADO PLATAFORMA', found: newColumnMap.estadoPlataforma || 'No encontrado (Opcional)' },
+        { expected: 'NOVEDAD', found: newColumnMap.novedad || 'No encontrado (Opcional)' },
+        { expected: 'LINK IMAGENES.1.1.1', found: newColumnMap.image || 'No encontrado (Opcional)' },
+        { expected: 'FECHA FINALIZADO PLATAFORMA', found: newColumnMap.fechaFinalizado || 'No encontrado (Opcional)' },
+        { expected: 'MARCA', found: newColumnMap.marca || 'No encontrado (Opcional)' },
+        { expected: 'GRUPO', found: newColumnMap.grupo || 'No encontrado (Opcional)' },
+        { expected: 'HOY RUTA.Personalizado', found: newColumnMap.hoyRuta || 'No encontrado (Opcional)' },
+    ];
+    setDebugMapping(debugMapForDisplay);
+
+    const missingCols: string[] = [];
+    if (!newColumnMap.fecha) missingCols.push(`'${FECHA_COL_NAMES[0]}'`);
+    if (!newColumnMap.warehouse) missingCols.push(`'${WAREHOUSE_COL_NAMES[0]}'`);
+    if (!newColumnMap.doc) missingCols.push(`'${DOC_COL_NAMES[0]}'`);
+    if (!newColumnMap.qty) missingCols.push(`'${QTY_COL_NAMES[0]}'`);
+
+    if (missingCols.length > 0) {
+      setError(`El archivo de Excel no contiene las columnas requeridas. Faltan: ${missingCols.join(', ')}. Revisa la tabla de validación de columnas para más detalles.`);
+      setBaseData([]);
+      setColumnMap({});
+      return;
+    }
+    setColumnMap(newColumnMap);
+
+    // --- CORRECCIÓN DE INCONSISTENCIAS LÓGICAS ---
+    let inconsistenciesFound = 0;
+    const correctedData = data.map(row => {
+        const estadoCol = newColumnMap.estadoPlataforma;
+        const fechaCol = newColumnMap.fecha;
+        const fechaFinalizadoCol = newColumnMap.fechaFinalizado;
+
+        if (estadoCol && fechaCol && fechaFinalizadoCol) {
+            const estado = String(row[estadoCol] || '').trim().toLowerCase();
+            if (estado === 'finalizado') {
+                const docDate = normalizeDate(row[fechaCol]);
+                const finalizedDate = normalizeDate(row[fechaFinalizadoCol]);
+
+                if (docDate && finalizedDate && finalizedDate.getTime() < docDate.getTime()) {
+                    inconsistenciesFound++;
+                    const newRow = { ...row };
+                    newRow[estadoCol] = '';
+                    return newRow;
+                }
+            }
+        }
+        return row;
+    });
+
+    // --- DE-DUPLICACIÓN Y AGREGACIÓN AVANZADA ---
+    const aggregatedRecords = new Map<string, ExcelDataRow>();
+    correctedData.forEach(row => {
+        const docValue = row[newColumnMap.doc!];
+        const warehouseValue = row[newColumnMap.warehouse!];
+
+        if (!docValue || !warehouseValue) return;
+
+        // The aggregation key must include Marca and Grupo to prevent merging
+        // different products within the same document.
+        const marcaValue = newColumnMap.marca ? String(row[newColumnMap.marca] || 'N/A') : 'N/A';
+        const grupoValue = newColumnMap.grupo ? String(row[newColumnMap.grupo] || 'N/A') : 'N/A';
+        const key = `${docValue}-${warehouseValue}-${marcaValue}-${grupoValue}`;
+
+        const existingRecord = aggregatedRecords.get(key);
+
+        if (!existingRecord) {
+            // First time seeing this unique combination, add it.
+            const newRow = { ...row };
+            newRow[newColumnMap.qty!] = Number(newRow[newColumnMap.qty!] || 0);
+            aggregatedRecords.set(key, newRow);
+            return;
+        }
+
+        // Record exists, so we aggregate quantity and update the record if the new one is more recent.
+        const qtyCol = newColumnMap.qty!;
+        const newTotalQty = Number(existingRecord[qtyCol] || 0) + Number(row[qtyCol] || 0);
+
+        const fechaCol = newColumnMap.fecha!;
+        const existingDate = normalizeDate(existingRecord[fechaCol]);
+        const currentDate = normalizeDate(row[fechaCol]);
+
+        // If the current row is more recent, use its data but with the aggregated quantity.
+        if (currentDate && (!existingDate || currentDate.getTime() > existingDate.getTime())) {
+            const updatedRecord = { ...row };
+            updatedRecord[qtyCol] = newTotalQty;
+            aggregatedRecords.set(key, updatedRecord);
+        } else {
+            // Otherwise, just update the quantity of the existing (more recent) record.
+            existingRecord[qtyCol] = newTotalQty;
+            aggregatedRecords.set(key, existingRecord);
+        }
+    });
+
+    const dedupedData = Array.from(aggregatedRecords.values());
+
+
+    // --- FILTRAR BODEGAS EXCLUIDAS DEL CONJUNTO DE DATOS PRINCIPAL ---
+    const excludedWarehouses = new Set(['BDTRA', 'BDIST', 'TRYNO', 'IMPOR', 'BGDOT', 'NONOS', 'BODFT', 'BREPA', 'SUCIO']);
+    const filteredBaseData = dedupedData.filter(row => {
+        const warehouseName = String(row[newColumnMap.warehouse!]);
+        if (!warehouseName) {
+            return false; // Excluir filas sin bodega
+        }
+        const upperWarehouse = warehouseName.toUpperCase();
+        return !upperWarehouse.endsWith('IN') && !excludedWarehouses.has(upperWarehouse);
+    });
+
+    setBaseData(filteredBaseData);
+    
+    // Derivar las bodegas disponibles del conjunto de datos ya filtrado
+    const warehouses = [...new Set(filteredBaseData.map(row => String(row[newColumnMap.warehouse!])).filter(Boolean))]
+        .sort();
+    setAvailableWarehouses(warehouses);
+
+    setError(null);
+    if (inconsistenciesFound > 0) {
+      setInfoMessage(`${inconsistenciesFound} registro(s) con fechas de finalización inconsistentes fueron corregidos (el estado se marcó como no finalizado).`);
+    } else {
+      setInfoMessage(null);
+    }
+    
+  }, []);
+
+  const handleMainFileProcess = (file: File) => {
+    setIsLoading(true);
+    setError(null);
+    setInfoMessage(null);
+    setBaseData([]);
+    setRouteData(new Map());
+    setRouteFileName(null);
+    setRouteError(null);
+    setMainFileName(file.name);
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target!.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true, codepage: 65001 });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const jsonData: ExcelDataRow[] = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+        
+        processData(jsonData);
+      } catch (err) {
+        console.error(err);
+        setError('Error al procesar el archivo. Asegúrate de que es un archivo Excel válido y no está corrupto.');
+        setBaseData([]);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+  
+  const handleRouteFileProcess = (file: File) => {
+    setIsRouteLoading(true);
+    setRouteError(null);
+    setRouteFileName(file.name);
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target!.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const jsonData: ExcelDataRow[] = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+
+        if (jsonData.length === 0) {
+          setRouteError("El archivo de rutas está vacío.");
+          setIsRouteLoading(false);
+          return;
+        }
+        
+        const headers = Object.keys(jsonData[0] || {});
+        setRawRouteHeaders(headers);
+        
+        const TF_HEADER_NAMES = ['Número TF', 'TF'];
+        const TIPO_HEADER_NAMES = ['TIPO'];
+        const CONTENIDO_HEADER_NAMES = ['CONTENIDO', 'Contenido'];
+        const ESTADO_HEADER_NAMES = ['ESTADO', 'Estado'];
+
+        let primaryDocIdHeader = findHeader(headers, TF_HEADER_NAMES) || findHeader(headers, TIPO_HEADER_NAMES);
+        let contentHeader = findHeader(headers, CONTENIDO_HEADER_NAMES);
+
+        const ESTADO_HEADER = findHeader(headers, ESTADO_HEADER_NAMES);
+
+        setRouteDebugMapping([
+            { expected: 'Número TF / TIPO (Identificador Principal)', found: primaryDocIdHeader || 'No encontrado', isFallback: false },
+            { expected: 'CONTENIDO (Identificador Alternativo)', found: contentHeader || 'No encontrado', isFallback: true },
+            { expected: 'ESTADO (Opcional)', found: ESTADO_HEADER || 'No encontrado', isFallback: false },
+        ]);
+
+        if (!primaryDocIdHeader && !contentHeader) {
+            setRouteError("El archivo de rutas no contiene ninguna de las columnas de identificación requeridas: 'Número TF', 'TIPO' o 'CONTENIDO'.");
+            setIsRouteLoading(false);
+            return;
+        }
+
+        const routeStatusMap = new Map<string, string>();
+        jsonData.forEach(row => {
+            let docId: string | number | Date | null = null;
+            
+            // Try extracting from CONTENIDO first, as it may contain 'TFT 12345'
+            if (contentHeader && row[contentHeader]) {
+                const contentValue = String(row[contentHeader]);
+                const match = contentValue.match(/(\d+)/);
+                if (match) {
+                    docId = match[1];
+                }
+            }
+
+            // If not found in CONTENIDO, try the primary header
+            if (!docId && primaryDocIdHeader && row[primaryDocIdHeader]) {
+                docId = row[primaryDocIdHeader];
+            }
+          
+            if (docId === null || docId === undefined || String(docId).trim() === '') return;
+
+            // Robustly clean the document ID to handle potential leading zeros and non-numeric characters.
+            const digitsOnly = String(docId).replace(/\D/g, '');
+            if (!digitsOnly) return;
+            
+            const cleanDocId = String(Number(digitsOnly)); // Normalizes by removing leading zeros.
+
+            if (ESTADO_HEADER) {
+                const status = String(row[ESTADO_HEADER] || '').trim().toLowerCase();
+                if (status === 'en tte') {
+                    routeStatusMap.set(cleanDocId, 'ESTA EN RUTA');
+                } else if (status === 'pte envio') {
+                    routeStatusMap.set(cleanDocId, 'ESTA EN BODEGA PPAL');
+                } else if (status === 'recibida') {
+                    routeStatusMap.set(cleanDocId, 'FUE ENTREGADA');
+                } else if (status === 'en cargue') {
+                    routeStatusMap.set(cleanDocId, 'EN CARGUE');
+                }
+            } else {
+                routeStatusMap.set(cleanDocId, 'ESTA EN RUTA');
+            }
+        });
+
+        setRouteData(routeStatusMap);
+        setRouteError(null);
+      } catch (err) {
+        console.error("Error processing route file:", err);
+        setRouteError('Ocurrió un error al procesar el archivo de rutas.');
+      } finally {
+        setIsRouteLoading(false);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const { kpiData, analysisData, dailyChartData, slaAnalysisData, pendingDocsAnalysisData, generalReport, deliveredDocsReport, brandReport, brandSummaryByWarehouse, deliveredDocsByWarehouse, pendingRows } = useReportData(
+    baseData,
+    columnMap,
+    selectedWarehouse,
+    startDate,
+    endDate,
+    documentNumberFilter,
+    routeData
+  );
+
+  const handleGenerateSpecialPdf = React.useCallback(() => {
+    const { 
+        fecha: FECHA_COL, 
+        warehouse: WAREHOUSE_COL,
+        warehouseOut: WAREHOUSE_OUT_COL,
+        doc: DOC_COL,
+        marca: MARCA_COL,
+        qty: QTY_COL,
+        grupo: GRUPO_COL
+    } = columnMap;
+
+    if (!WAREHOUSE_OUT_COL) { 
+        alert("La columna 'Bod. salida' es necesaria para generar este PDF y no se encontró en el archivo.");
+        return;
+    }
+    
+    // Ahora es obligatorio cargar el archivo de rutas para este reporte específico.
+    if (routeData.size === 0) {
+        alert("Para generar este reporte, es necesario cargar el 'Archivo de Rutas' que contiene el estado de los envíos.");
+        return;
+    }
+
+    const filteredForPdf = pendingRows.filter(row => {
+        const docNumber = String(row[DOC_COL!]);
+        const digitsOnly = docNumber.replace(/\D/g, '');
+        const cleanDocNumber = digitsOnly ? String(Number(digitsOnly)) : null;
+
+        const routeStatus = cleanDocNumber ? routeData.get(cleanDocNumber) : undefined;
+        // El PDF debe incluir documentos que están pendientes de envío ('pte envio' -> 'ESTA EN BODEGA PPAL') 
+        // o que se están cargando actualmente ('en cargue').
+        return routeStatus === 'ESTA EN BODEGA PPAL' || routeStatus === 'EN CARGUE';
+    });
+
+    if (filteredForPdf.length === 0) {
+        alert("No se encontraron documentos pendientes con estado 'Pte Envío' o 'En Cargue' en el archivo de rutas cargado.");
+        return;
+    }
+
+    const exportData = filteredForPdf.map(row => ({
+        'FECHA': formatDate(normalizeDate(row[FECHA_COL!])),
+        'BOD. SALIDA': String(row[WAREHOUSE_OUT_COL]),
+        'BOD. ENTRADA': String(row[WAREHOUSE_COL!]),
+        'NRO DOCUMENTO.2': DOC_COL ? String(row[DOC_COL]) : 'N/A',
+        'MARCA': MARCA_COL ? String(row[MARCA_COL]) : 'N/A',
+        'GRUPO': GRUPO_COL ? String(row[GRUPO_COL]) : 'N/A',
+        'CANTIDAD': Number(row[QTY_COL!])
+    }));
+    
+    generatePendingSummaryPdf(exportData);
+    }, [pendingRows, columnMap, routeData]);
+
+  const hasData = baseData.length > 0;
+  
+  return (
+    <div className="space-y-8">
+      <section className="bg-white rounded-lg shadow-lg p-6">
+          <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 1: Cargar Reporte Principal</h2>
+          <FileUpload 
+              onFileProcess={handleMainFileProcess} 
+              isLoading={isLoading}
+              fileName={mainFileName}
+              mainText="Arrastra o selecciona el archivo del reporte de bodega"
+              subText="Solo archivos .xlsx o .xls"
+              loadedSubText="Archivo cargado. Para cambiar, selecciona otro."
+          />
+          {isLoading && <Loader />}
+          {error && <div className="mt-4 text-center text-red-600 bg-red-100 p-3 rounded-md">{error}</div>}
+          {infoMessage && <div className="mt-4 text-center text-blue-600 bg-blue-100 p-3 rounded-md">{infoMessage}</div>}
+          
+          {hasData && (
+              <div className="mt-6">
+                <h3 className="font-semibold text-lg text-gray-700 mb-2">Validación de Columnas (Reporte Principal)</h3>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm border-collapse border border-slate-300">
+                      <thead className="bg-slate-50">
+                          <tr>
+                              <th className="border border-slate-300 p-2 text-left font-semibold text-gray-600">Columna Esperada</th>
+                              <th className="border border-slate-300 p-2 text-left font-semibold text-gray-600">Columna Encontrada en el Archivo</th>
+                          </tr>
+                      </thead>
+                      <tbody>
+                          {debugMapping.map(({ expected, found }) => (
+                              <tr key={expected}>
+                                  <td className="border border-slate-300 p-2">{expected}</td>
+                                  <td className={`border border-slate-300 p-2 font-mono ${found.includes('No encontrado') ? 'text-red-600' : 'text-green-700'}`}>{found}</td>
+                              </tr>
+                          ))}
+                      </tbody>
+                  </table>
+                </div>
+              </div>
+          )}
+      </section>
+      
+      {hasData && (
+        <>
+          <section className="bg-white rounded-lg shadow-lg p-6">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 2: Cargar Archivo de Rutas (Opcional)</h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Sube un archivo de Excel para marcar automáticamente los documentos que están "En Ruta". La aplicación buscará una columna llamada 'Número TF', 'TIPO' o 'CONTENIDO'.
+            </p>
+            <FileUpload
+              onFileProcess={handleRouteFileProcess}
+              isLoading={isRouteLoading}
+              fileName={routeFileName}
+              mainText="Arrastra o selecciona el archivo de rutas"
+              subText="Solo archivos .xlsx o .xls"
+              loadedSubText="Archivo de rutas cargado."
+            />
+            {isRouteLoading && <Loader />}
+            {routeError && <div className="mt-4 text-center text-red-600 bg-red-100 p-3 rounded-md">{routeError}</div>}
+            {routeFileName && !routeError && (
+              <div className="mt-6">
+                <h3 className="font-semibold text-lg text-gray-700 mb-2">Validación de Columnas (Archivo de Rutas)</h3>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm border-collapse border border-slate-300">
+                      <thead className="bg-slate-50">
+                          <tr>
+                              <th className="border border-slate-300 p-2 text-left font-semibold text-gray-600">Columna de Búsqueda</th>
+                              <th className="border border-slate-300 p-2 text-left font-semibold text-gray-600">Columna Encontrada</th>
+                          </tr>
+                      </thead>
+                      <tbody>
+                          {routeDebugMapping.map(({ expected, found }) => (
+                              <tr key={expected}>
+                                  <td className="border border-slate-300 p-2">{expected}</td>
+                                  <td className={`border border-slate-300 p-2 font-mono ${found.includes('No encontrado') ? 'text-orange-600' : 'text-green-700'}`}>{found}</td>
+                              </tr>
+                          ))}
+                      </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </section>
+          
+          <FilterPanel
+            availableWarehouses={availableWarehouses}
+            filters={{
+              warehouse: selectedWarehouse,
+              startDate: startDate,
+              endDate: endDate,
+              documentNumber: documentNumberFilter
+            }}
+            onWarehouseChange={setSelectedWarehouse}
+            onStartDateChange={setStartDate}
+            onEndDateChange={setEndDate}
+            onDocumentNumberChange={setDocumentNumberFilter}
+            onClearFilters={handleClearFilters}
+          />
+          
+          <section>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
+                  <KPI title="Total Documentos" value={kpiData.totalDocs} icon={<FileIcon/>} />
+                  <KPI title="Cantidad Total" value={kpiData.totalQty} icon={<PackageIcon/>} />
+                  <KPI title="Total Bodegas" value={kpiData.totalWarehouses} icon={<TruckIcon/>} />
+                  <KPI title="Docs / Bodega" value={kpiData.avgDocsPerWarehouse} icon={<ChartIcon/>} />
+                  <KPI title="Cumplimiento General" value={kpiData.compliancePercentage} icon={<CheckCircleIcon/>} />
+                  <KPI title="Docs. Entregados" value={kpiData.deliveredCount} icon={<CheckCircleIcon className="text-blue-600"/>} />
+              </div>
+          </section>
+
+          {deliveredDocsReport.data.length > 0 && (
+            <ReportTable
+                title="Reporte de Documentos Entregados"
+                data={deliveredDocsReport.data}
+                headers={deliveredDocsReport.headers}
+                exportData={deliveredDocsReport.exportData}
+                icon={<CheckCircleIcon className="h-6 w-6 text-green-600 mr-3"/>}
+            />
+          )}
+
+          {brandReport.data.length > 0 && (
+              <ReportTable
+                  title="Reporte General por Marca"
+                  data={brandReport.data}
+                  headers={brandReport.headers}
+                  exportData={brandReport.exportData}
+                  icon={<PackageIcon className="h-6 w-6 text-green-600 mr-3"/>}
+              />
+          )}
+
+          <ReportTable
+              title="Reporte General de Datos"
+              data={generalReport.data}
+              headers={generalReport.headers}
+              exportData={generalReport.exportData}
+              icon={<TableIcon className="h-6 w-6 text-green-600 mr-3"/>}
+          />
+
+          <SlaAnalysisTable data={slaAnalysisData} />
+
+          <PendingDocsAnalysisTable 
+            reportData={{ kpiData, analysisData, dailyChartData, slaAnalysisData, pendingDocsAnalysisData, generalReport, deliveredDocsReport, brandReport, brandSummaryByWarehouse, deliveredDocsByWarehouse, pendingRows }} 
+            onGenerateSpecialPdf={handleGenerateSpecialPdf}
+            hasPendingRows={pendingRows.length > 0}
+          />
+
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+              <AnalysisDashboard data={analysisData} />
+              <DailyIndicatorChart data={dailyChartData} />
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+
+// --- MODULE 2: Descansos Report ---
+const DescansosReport: React.FC = () => {
+    const [fileName, setFileName] = React.useState<string | null>(null);
+    const [isLoading, setIsLoading] = React.useState(false);
+    const [error, setError] = React.useState<string | null>(null);
+    const [reportData, setReportData] = React.useState<BreaksReportData | null>(null);
+    
+    const COLS_TO_KEEP = {
+        employeeName: ['Empleado', 'EMPLEADO'],
+        mealType: ['Tipo Comida', 'TIPO COMIDA'],
+        startTime: ['Hora de inicio', 'HORA DE INICIO'],
+        endTime: ['Hora de finalización', 'HORA DE FINALIZACION', 'Hora de finalizacion'],
+        evento: ['Evento', 'EVENTO'],
+    };
+
+    const handleFileProcess = (file: File) => {
+        setIsLoading(true);
+        setError(null);
+        setReportData(null);
+        setFileName(file.name);
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const data = new Uint8Array(e.target!.result as ArrayBuffer);
+                const workbook = XLSX.read(data, { type: 'array', cellDates: true, codepage: 65001 });
+                const sheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[sheetName];
+                const jsonData: ExcelDataRow[] = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+
+                if (jsonData.length === 0) {
+                    throw new Error("El archivo de Excel está vacío o no tiene datos.");
+                }
+
+                const fileHeaders = Object.keys(jsonData[0] || {});
+                
+                const colMap = {
+                    employeeName: findHeader(fileHeaders, COLS_TO_KEEP.employeeName),
+                    mealType: findHeader(fileHeaders, COLS_TO_KEEP.mealType),
+                    startTime: findHeader(fileHeaders, COLS_TO_KEEP.startTime),
+                    endTime: findHeader(fileHeaders, COLS_TO_KEEP.endTime),
+                    evento: findHeader(fileHeaders, COLS_TO_KEEP.evento),
+                };
+                
+                const missingCols = Object.entries(colMap)
+                    .filter(([, value]) => !value)
+                    .map(([key]) => `'${COLS_TO_KEEP[key as keyof typeof COLS_TO_KEEP][0]}'`);
+
+                if (missingCols.length > 0) {
+                    throw new Error(`El archivo no contiene las columnas requeridas: ${missingCols.join(', ')}.`);
+                }
+                
+                const parseTime = (timeValue: any): Date | null => {
+                    if (timeValue instanceof Date && !isNaN(timeValue.getTime())) {
+                        return timeValue;
+                    }
+                    if (typeof timeValue === 'number' && timeValue > 0) {
+                        const excelEpochDiff = 25569;
+                        const msPerDay = 86400000;
+                        const timestamp = (timeValue - excelEpochDiff) * msPerDay;
+                        const jsDate = new Date(timestamp);
+                        const timezoneOffsetInMs = jsDate.getTimezoneOffset() * 60 * 1000;
+                        return new Date(jsDate.getTime() + timezoneOffsetInMs);
+                    }
+                    return null;
+                };
+
+                // --- NEW LOGIC: Pairing Entrada/Salida events ---
+                const eventPairs = new Map<string, { entrada?: Date, salida?: Date }>();
+
+                jsonData.forEach(row => {
+                    const employee = String(row[colMap.employeeName!] || 'Desconocido').trim();
+                    const meal = String(row[colMap.mealType!] || 'Desconocido').toLowerCase().trim();
+                    const eventType = String(row[colMap.evento!] || '').toLowerCase().trim();
+
+                    if (!employee || !meal || !eventType) return;
+
+                    let eventTime: Date | null = null;
+                    let dateForRecord: Date | null = null;
+
+                    if (eventType === 'entrada') {
+                        eventTime = parseTime(row[colMap.startTime!]);
+                        dateForRecord = eventTime;
+                    } else if (eventType === 'salida') {
+                        eventTime = parseTime(row[colMap.endTime!]);
+                        dateForRecord = eventTime;
+                    }
+                    
+                    if (!eventTime || !dateForRecord) return;
+
+                    const dateStr = formatDate(dateForRecord);
+                    const key = `${employee}|${dateStr}|${meal}`;
+
+                    if (!eventPairs.has(key)) {
+                        eventPairs.set(key, {});
+                    }
+                    const pair = eventPairs.get(key)!;
+
+                    if (eventType === 'entrada') {
+                        if (!pair.entrada || eventTime < pair.entrada) {
+                            pair.entrada = eventTime;
+                        }
+                    } else if (eventType === 'salida') {
+                        if (!pair.salida || eventTime > pair.salida) {
+                            pair.salida = eventTime;
+                        }
+                    }
+                });
+                
+                const allBreaks: (ProcessedBreak & { employeeName: string; date: string })[] = [];
+                eventPairs.forEach((pair, key) => {
+                    const [employeeName, date, mealType] = key.split('|');
+                    
+                    const startTime = pair.entrada;
+                    const endTime = pair.salida;
+                    
+                    const isPartial = !startTime || !endTime;
+                    const isLogicalError = startTime && endTime && endTime.getTime() < startTime.getTime();
+                    const duration = (isPartial || isLogicalError) ? 0 : Math.round((endTime!.getTime() - startTime!.getTime()) / (1000 * 60));
+
+                    allBreaks.push({
+                        employeeName,
+                        date,
+                        mealType,
+                        duration,
+                        startTime: startTime || new Date(0),
+                        endTime: endTime || new Date(0),
+                        isPartial: isPartial || !!isLogicalError,
+                    });
+                });
+
+                // --- 2. Group breaks by employee and then by date ---
+                const breaksByEmployeeByDate: Map<string, Map<string, ProcessedBreak[]>> = new Map();
+                allBreaks.forEach(breakItem => {
+                    const { employeeName, date } = breakItem;
+                    if (!breaksByEmployeeByDate.has(employeeName)) {
+                        breaksByEmployeeByDate.set(employeeName, new Map());
+                    }
+                    const employeeMap = breaksByEmployeeByDate.get(employeeName)!;
+                    if (!employeeMap.has(date)) {
+                        employeeMap.set(date, []);
+                    }
+                    employeeMap.get(date)!.push(breakItem);
+                });
+
+                // --- 3. Process each employee's day ---
+                const allEmployeeDailyAnalyses: (EmployeeDailyAnalysis & { date: string })[] = [];
+                const MEAL_TYPES = ['desayuno', 'almuerzo', 'refrigerio'];
+
+                breaksByEmployeeByDate.forEach((recordsByDate, employeeName) => {
+                    recordsByDate.forEach((completedBreaks, date) => {
+                        const partialMarkingsCount = completedBreaks.filter(b => b.isPartial).length;
+                        const totalMinutes = completedBreaks.reduce((sum, b) => sum + b.duration, 0);
+
+                        const completedMealTypes = new Set(completedBreaks.map(b => b.mealType));
+                        const missedBreaks = MEAL_TYPES.filter(m => !completedMealTypes.has(m));
+
+                        const isCompliant = missedBreaks.length === 0 && partialMarkingsCount === 0 && totalMinutes <= 60;
+
+                        allEmployeeDailyAnalyses.push({
+                            employeeName,
+                            date,
+                            totalMinutes,
+                            completedBreaks,
+                            missedBreaks,
+                            partialMarkingsCount,
+                            exceededTotalTime: totalMinutes > 60,
+                            isCompliant,
+                        });
+                    });
+                });
+
+                // --- 4. Aggregate daily analyses ---
+                const dailyAnalysesMap = new Map<string, DailyAnalysis>();
+                allEmployeeDailyAnalyses.forEach(analysis => {
+                    if (!dailyAnalysesMap.has(analysis.date)) {
+                        dailyAnalysesMap.set(analysis.date, { date: analysis.date, employeesAnalysis: [], stats: { totalEmployees: 0, employeesExceedingTime: 0, employeesWithMissedBreaks: 0, employeesWithPartialRegs: 0 } });
+                    }
+                    const day = dailyAnalysesMap.get(analysis.date)!;
+                    day.employeesAnalysis.push(analysis);
+                });
+
+                dailyAnalysesMap.forEach(day => {
+                    day.stats.totalEmployees = day.employeesAnalysis.length;
+                    day.stats.employeesExceedingTime = day.employeesAnalysis.filter(e => e.exceededTotalTime).length;
+                    day.stats.employeesWithMissedBreaks = day.employeesAnalysis.filter(e => e.missedBreaks.length > 0).length;
+                    day.stats.employeesWithPartialRegs = day.employeesAnalysis.filter(e => e.partialMarkingsCount > 0).length;
+                });
+                
+                const dailyAnalyses = Array.from(dailyAnalysesMap.values()).sort((a,b) => (parseDateString(b.date)?.getTime() ?? 0) - (parseDateString(a.date)?.getTime() ?? 0));
+
+                // --- 5. Calculate KPIs, Trends, and Performances ---
+                const totalEmployeeDays = allEmployeeDailyAnalyses.length;
+                const compliantDays = allEmployeeDailyAnalyses.filter(a => a.isCompliant).length;
+                const exceededDays = allEmployeeDailyAnalyses.filter(a => a.exceededTotalTime).length;
+                const partialDays = allEmployeeDailyAnalyses.filter(a => a.partialMarkingsCount > 0).length;
+                const totalBreakTime = allEmployeeDailyAnalyses.reduce((sum, a) => sum + a.totalMinutes, 0);
+                const totalEmployeesWithBreaks = new Set(allEmployeeDailyAnalyses.map(a => a.employeeName)).size;
+
+                const kpis = {
+                    complianceRate: totalEmployeeDays > 0 ? (compliantDays / totalEmployeeDays) * 100 : 0,
+                    exceededRate: totalEmployeeDays > 0 ? (exceededDays / totalEmployeeDays) * 100 : 0,
+                    avgBreakTime: totalEmployeeDays > 0 ? totalBreakTime / totalEmployeeDays : 0,
+                    totalEmployeesWithBreaks,
+                    partialMarkingRate: totalEmployeeDays > 0 ? (partialDays / totalEmployeeDays) * 100 : 0,
+                };
+                
+                const employeePerformances = Array.from(new Set(allBreaks.map(b => b.employeeName))).map(name => {
+                    const employeeDays = allEmployeeDailyAnalyses.filter(a => a.employeeName === name);
+                    const totalDays = employeeDays.length;
+                    if (totalDays === 0) {
+                      return {
+                        employeeName: name,
+                        avgTime: 0,
+                        totalExceededDays: 0,
+                        totalPartialDays: 0,
+                        totalMissedDays: 0,
+                        complianceRate: 0,
+                      };
+                    }
+                    const totalExceeded = employeeDays.filter(d => d.exceededTotalTime).length;
+                    const totalPartial = employeeDays.filter(d => d.partialMarkingsCount > 0).length;
+                    const totalMissed = employeeDays.filter(d => d.missedBreaks.length > 0).length;
+                    const avgTime = employeeDays.reduce((sum, d) => sum + d.totalMinutes, 0) / totalDays;
+
+                    return {
+                        employeeName: name,
+                        avgTime: avgTime || 0,
+                        totalExceededDays: totalExceeded,
+                        totalPartialDays: totalPartial,
+                        totalMissedDays: totalMissed,
+                        complianceRate: (employeeDays.filter(d => d.isCompliant).length / totalDays) * 100,
+                    };
+                }).sort((a, b) => b.complianceRate - a.complianceRate);
+
+                // --- 6. Calculate Weekly Trends ---
+                const weeklyTrendsMap = new Map<string, EmployeeDailyAnalysis[]>();
+                allEmployeeDailyAnalyses.forEach(analysis => {
+                    const date = parseDateString(analysis.date);
+                    if (!date) return;
+
+                    const weekStartDate = getWeekStartDate(date);
+                    const weekKey = weekStartDate.toISOString().split('T')[0]; // YYYY-MM-DD
+
+                    if (!weeklyTrendsMap.has(weekKey)) {
+                        weeklyTrendsMap.set(weekKey, []);
+                    }
+                    weeklyTrendsMap.get(weekKey)!.push(analysis);
+                });
+
+                const weeklyTrends: WeeklyTrend[] = Array.from(weeklyTrendsMap.entries())
+                    .map(([weekKey, analyses]) => {
+                        const totalEmployeeDays = analyses.length;
+                        if (totalEmployeeDays === 0) return null;
+
+                        const compliantDays = analyses.filter(a => a.isCompliant).length;
+                        const exceededDays = analyses.filter(a => a.exceededTotalTime).length;
+                        const totalBreakTime = analyses.reduce((sum, a) => sum + a.totalMinutes, 0);
+
+                        const weekStartDateObj = parseDateString(weekKey);
+
+                        return {
+                            week: weekStartDateObj ? `Semana del ${formatDate(weekStartDateObj)}` : weekKey,
+                            avgBreakTime: totalBreakTime / totalEmployeeDays,
+                            complianceRate: (compliantDays / totalEmployeeDays) * 100,
+                            exceededRate: (exceededDays / totalEmployeeDays) * 100,
+                        };
+                    })
+                    .filter((trend): trend is WeeklyTrend => trend !== null)
+                    .sort((a, b) => {
+                        const dateA = parseDateString(a.week.replace("Semana del ", ""));
+                        const dateB = parseDateString(b.week.replace("Semana del ", ""));
+                        return (dateA?.getTime() || 0) - (dateB?.getTime() || 0);
+                    });
+
+                setReportData({ kpis, weeklyTrends, employeePerformances, dailyAnalyses });
+
+            } catch (err: any) {
+                setError(err.message || 'Ocurrió un error desconocido al procesar el archivo.');
+                setReportData(null);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    };
+
+    return (
+        <div className="space-y-8">
+            <section className="bg-white rounded-lg shadow-lg p-6">
+                <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Cargar Reporte de Descansos</h2>
+                <FileUpload
+                    onFileProcess={handleFileProcess}
+                    isLoading={isLoading}
+                    fileName={fileName}
+                    mainText="Arrastra o selecciona el archivo de descansos"
+                    subText="Solo archivos .xlsx o .xls"
+                    loadedSubText="Archivo cargado. Para analizar uno nuevo, selecciona otro."
+                />
+                {isLoading && <Loader />}
+                {error && <div className="mt-4 text-center text-red-600 bg-red-100 p-3 rounded-md">{error}</div>}
+            </section>
+            
+            {reportData && (
+                <BreakdownDashboard data={reportData} />
+            )}
+        </div>
+    );
+}
+
+
+interface LogisticsPlatformProps {
+    onReturn: () => void;
+}
+
+// --- Main App Component ---
+const LogisticsPlatform: React.FC<LogisticsPlatformProps> = ({ onReturn }) => {
+    const [activeView, setActiveView] = React.useState<'bodega' | 'descansos' | 'rutas' | 'procesos' | 'novedades'>('bodega');
+
+    return (
+        <div className="min-h-screen bg-slate-100">
+            <Header activeView={activeView} setActiveView={setActiveView} onReturn={onReturn} />
+            <main className="container mx-auto p-4 sm:p-6 lg:p-8">
+                {activeView === 'bodega' && <WarehouseAnalyzer />}
+                {activeView === 'procesos' && <WarehouseProcessesModule />}
+                {activeView === 'descansos' && <DescansosReport />}
+                {activeView === 'rutas' && <RutasModule />}
+                {activeView === 'novedades' && <NovedadesModule />}
+            </main>
+        </div>
+    );
+};
+
+export default LogisticsPlatform;

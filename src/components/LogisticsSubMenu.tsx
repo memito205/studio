@@ -3,7 +3,7 @@
 
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, ClipboardSearch, Clock, Truck, FileCog, BarChartHorizontal, Send } from 'lucide-react';
+import { ArrowLeft, Search, Clock, Truck, FileCog, BarChartHorizontal, Send, FileBarChart } from 'lucide-react';
 import { SubModuleCard } from './SubModuleCard';
 import Validator99Minutos from './Validator99Minutos';
 import ValidatorLogicuartas from './ValidatorLogicuartas';
@@ -13,11 +13,12 @@ import ValidatorEnvia from './ValidatorEnvia';
 
 interface LogisticsSubMenuProps {
   onReturnToSuite: () => void;
+  onNavigateLogisticsPlatform: () => void;
 }
 
 type LogisticsView = 'main' | '99minutos' | 'logicuartas' | 'envia';
 
-export const LogisticsSubMenu: React.FC<LogisticsSubMenuProps> = ({ onReturnToSuite }) => {
+export const LogisticsSubMenu: React.FC<LogisticsSubMenuProps> = ({ onReturnToSuite, onNavigateLogisticsPlatform }) => {
   const [view, setView] = useState<LogisticsView>('main');
 
   const handleNavigate = (targetView: LogisticsView) => {
@@ -52,7 +53,6 @@ export const LogisticsSubMenu: React.FC<LogisticsSubMenuProps> = ({ onReturnToSu
       </Card>
 
       <div className="space-y-12">
-        <div className="space-y-4">
             <h2 className="text-2xl font-semibold tracking-tight">Conciliación de Transportadoras</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                 <SubModuleCard
@@ -78,7 +78,19 @@ export const LogisticsSubMenu: React.FC<LogisticsSubMenuProps> = ({ onReturnToSu
                 />
             </div>
         </div>
+
+        <div className="space-y-6">
+            <h2 className="text-2xl font-semibold tracking-tight">Análisis y Gestión</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                <SubModuleCard
+                    iconName="FileBarChart"
+                    title="Plataforma Logística"
+                    description="Analice y gestione indicadores de bodega, procesos, descansos y rutas."
+                    actionText="Acceder"
+                    onAction={onNavigateLogisticsPlatform}
+                />
+            </div>
+        </div>
       </div>
-    </div>
   );
 };

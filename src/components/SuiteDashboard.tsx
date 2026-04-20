@@ -58,6 +58,7 @@ interface SuiteDashboardProps {
     onNavigateToDistributorModule: () => void;
     onNavigateToControlPiso: () => void;
     onNavigateToExternalPortal: () => void;
+    onNavigateToLogisticsPlatform: () => void;
 }
 
 export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({ 
@@ -77,7 +78,8 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToDispatchManager,
     onNavigateToDistributorModule,
     onNavigateToControlPiso,
-    onNavigateToExternalPortal
+    onNavigateToExternalPortal,
+    onNavigateToLogisticsPlatform
 }) => {
     const { role } = useAuth();
     const { isInRemision, punchInRemision, punchOut, loading: pulseLoading } = useSuitePulse();
@@ -199,6 +201,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Acceder",
             onAction: onNavigateToLogisticsModule,
             roles: ['admin']
+        },
+        {
+            key: 'logistics_platform',
+            icon: FileBarChart,
+            title: "Plataforma Logística",
+            description: "Analice y gestione indicadores de bodega, procesos, descansos y rutas de forma centralizada.",
+            actionText: "Acceder",
+            onAction: onNavigateToLogisticsPlatform,
+            roles: ['admin', 'office', 'supervisor']
         },
         {
             key: 'other_features',
