@@ -33,7 +33,8 @@ import {
   deleteBagOperation,
   updateBagOperationStatus,
   addBagsToOperation,
-  resetBagState
+  resetBagState,
+  resetAllBags
 } from '@/app/actions';
 import { useAuth } from '@/hooks/use-auth-context';
 import type { BagOperation, BagItem } from '@/types';
@@ -263,7 +264,7 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
       setIsProcessing(true);
       const result = await updateBagOperationStatus(activeOperation.id, nextStatus);
       if (result.success) {
-          const updated = { ...activeOperation, status: nextStatus };
+          const updated: BagOperation = { ...activeOperation, status: nextStatus as 'cargue' | 'descargue' | 'completed' };
           setActiveOperation(updated);
           setOperations(operations.map(o => o.id === activeOperation.id ? updated : o));
           
@@ -298,6 +299,39 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
               return { ...prev, bags: updatedBags };
           });
           toast({ title: "Bolsa Reseteada", description: `El código ${barcode} ahora está disponible para volver a procesar.` });
+      } else {
+          toast({ variant: 'destructive', title: "Error", description: result.error });
+      }
+      setIsProcessing(false);
+  }
+
+  const handleResetAll = async () => {
+      if (!activeOperation || !user) return;
+      if (role !== 'admin') {
+          toast({ variant: 'destructive', title: "Permiso denegado", description: "Solo administradores pueden resetear el lote completo." });
+          return;
+      }
+
+      const confirmMsg = `⚠️ ADVERTENCIA CRÍTICA: ¿Estás seguro de que deseas resetear TODAS las bolsas de este lote (${activeOperation.totalBags} unidades)?
+      
+Esto borrará todos los registros de cargue y descargue del lote actual. Esta acción no se puede deshacer.`;
+
+      if (!confirm(confirmMsg)) return;
+
+      setIsProcessing(true);
+      const result = await resetAllBags(activeOperation.id);
+      if (result.success) {
+          setActiveOperation(prev => {
+              if (!prev) return null;
+              const updatedBags = { ...prev.bags };
+              for (const id in updatedBags) {
+                  updatedBags[id] = { ...updatedBags[id], loaded: false, discharged: false };
+                  delete updatedBags[id].loadedAt;
+                  delete updatedBags[id].dischargedAt;
+              }
+              return { ...prev, bags: updatedBags };
+          });
+          toast({ title: "Lote Reseteado", description: "Todas las bolsas han vuelto al estado pendiente." });
       } else {
           toast({ variant: 'destructive', title: "Error", description: result.error });
       }
@@ -642,19 +676,33 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
             {/* RIGHT: Visual Grid */}
             <div className="lg:col-span-3">
                 <Card className="h-full shadow-lg border-2">
-                    <CardHeader className="flex flex-row items-center justify-between border-b bg-muted/10">
+                    <CardHeader className="flex flex-row items-center justify-between border-b bg-muted/10 py-3 sm:py-6">
                         <div>
-                            <CardTitle className="text-xl font-black">Grilla Operativa</CardTitle>
-                            <CardDescription className="font-medium text-xs uppercase tracking-tight">Estado individual por bolsa</CardDescription>
+                            <CardTitle className="text-lg sm:text-xl font-black">Grilla Operativa</CardTitle>
+                            <CardDescription className="font-medium text-[10px] sm:text-xs uppercase tracking-tight">Estado individual por bolsa</CardDescription>
                         </div>
-                        <div className="flex gap-4 text-[10px] font-black uppercase tracking-widest">
-                            <div className="flex items-center gap-2">
-                                <div className={cn(
-                                    "w-4 h-4 rounded shadow-md border",
-                                    activeOperation.status === 'cargue' ? "bg-amber-500 border-amber-600" : "bg-blue-600 border-blue-700"
-                                )}></div> Procesada
+                        <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2 sm:gap-4">
+                            {role === 'admin' && activeOperation.status !== 'completed' && (
+                                <Button 
+                                    variant="destructive" 
+                                    size="sm" 
+                                    className="h-7 sm:h-8 px-2 sm:px-3 text-[10px] font-black uppercase tracking-tighter"
+                                    onClick={handleResetAll}
+                                >
+                                    <Trash2 className="mr-1 h-3 w-3" /> Resetear Todo
+                                </Button>
+                            )}
+                            <div className="flex gap-3 text-[9px] sm:text-[10px] font-black uppercase tracking-widest">
+                                <div className="flex items-center gap-1.5 sm:gap-2">
+                                    <div className={cn(
+                                        "w-3 h-3 sm:w-4 sm:h-4 rounded shadow-md border",
+                                        activeOperation.status === 'cargue' ? "bg-amber-500 border-amber-600" : "bg-blue-600 border-blue-700"
+                                    )}></div> <span className="hidden sm:inline">Procesada</span>
+                                </div>
+                                <div className="flex items-center gap-1.5 sm:gap-2">
+                                    <div className="w-3 h-3 sm:w-4 sm:h-4 bg-slate-200 rounded border"></div> <span className="hidden sm:inline">Pendiente</span>
+                                </div>
                             </div>
-                            <div className="flex items-center gap-2"><div className="w-4 h-4 bg-slate-200 rounded border"></div> Pendiente</div>
                         </div>
                     </CardHeader>
                     <CardContent className="p-6">

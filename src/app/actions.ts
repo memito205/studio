@@ -3084,6 +3084,36 @@ export async function resetBagState(opId: string, barcode: string, type: 'loaded
     }
 }
 
+export async function resetAllBags(opId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        const opRef = doc(firestore, "bagOperations", opId);
+        await runTransaction(firestore, async (transaction) => {
+            const opDoc = await transaction.get(opRef);
+            if (!opDoc.exists()) throw new Error("La operación no existe");
+
+            const data = opDoc.data() as BagOperation;
+            const bags = data.bags || {};
+            
+            const updatedBags: Record<string, BagItem> = {};
+            for (const barcode in bags) {
+                updatedBags[barcode] = {
+                    ...bags[barcode],
+                    loaded: false,
+                    discharged: false
+                };
+                delete updatedBags[barcode].loadedAt;
+                delete updatedBags[barcode].dischargedAt;
+            }
+
+            transaction.update(opRef, { bags: updatedBags });
+        });
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error resetting all bags:", error);
+        return { success: false, error: error.message };
+    }
+}
+
 // ============================================================
 // PROPUESTA TRANSPORTADORA — Actions
 // ============================================================
