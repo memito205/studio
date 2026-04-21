@@ -1786,7 +1786,7 @@ const CollectionTabView: React.FC<{
             const sorted = [...result.data].sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
             setTransfers(sorted);
         } else {
-            toast({ variant: 'destructive', title: 'Error', description: result.error });
+            toast({ variant: 'destructive', title: 'Error', description: result.error || 'Failed to load transfers' });
         }
         setIsLoading(false);
     }, [toast]);
@@ -2006,10 +2006,12 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
     const fetchData = useCallback(async () => {
         setIsLoading(true);
         // Only load users and logs initially. Transfers load ONLY by search or specific status tabs.
-        const [usersResult, collectionLogsResult, pendingTransfersResult] = await Promise.all([
+        const [usersResult, collectionLogsResult, recollectionRes, validatedRes, receivedRes] = await Promise.all([
           getAllUserProfiles(),
           getCollectionLogs(),
-          getTransfersByStatus('Recolectado en Ruta')
+          getTransfersByStatus('Recolectado en Ruta'),
+          getTransfersByStatus('Validado Supervisor'),
+          getTransfersByStatus('Recibido en Bodega')
         ]);
         
         if (usersResult) {
@@ -2024,10 +2026,17 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             toast({ variant: 'destructive', title: 'Error al cargar historial de recolecciones', description: collectionLogsResult.error });
         }
 
-        if (pendingTransfersResult.data) {
-            setAllTransfers(pendingTransfersResult.data);
-        } else if (pendingTransfersResult.error) {
-            toast({ variant: 'destructive', title: 'Error al cargar transferencias pendientes', description: pendingTransfersResult.error });
+        const combinedTransfers = [
+            ...(recollectionRes.data || []),
+            ...(validatedRes.data || []),
+            ...(receivedRes.data || [])
+        ];
+
+        if (combinedTransfers.length > 0) {
+            const sorted = combinedTransfers.sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
+            setAllTransfers(sorted);
+        } else if (recollectionRes.error || validatedRes.error || receivedRes.error) {
+            toast({ variant: 'destructive', title: 'Error al cargar transferencias', description: 'Algunas listas no pudieron cargarse correctamente.' });
         }
 
         setIsLoading(false);
