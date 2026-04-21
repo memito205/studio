@@ -3,14 +3,13 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv } from 'lucide-react';
+import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw } from 'lucide-react';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth-context';
 import { VersionChecker } from './VersionChecker';
 import { updateAppVersion, CURRENT_APP_VERSION } from '@/app/actions';
-import { Loader2, RefreshCcw } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 interface ModuleCardProps {
@@ -339,4 +338,4 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             <VersionChecker />
         </div>
     );
-}
+};
