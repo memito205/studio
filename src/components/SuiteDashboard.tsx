@@ -9,6 +9,9 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth-context';
 import { VersionChecker } from './VersionChecker';
+import { updateAppVersion, CURRENT_APP_VERSION } from '@/app/actions';
+import { Loader2, RefreshCcw } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
 
 interface ModuleCardProps {
   icon: React.ElementType;
@@ -83,7 +86,21 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToLogisticsPlatform
 }) => {
     const { role } = useAuth();
+    const { toast } = useToast();
+    const [isUpdatingVersion, setIsUpdatingVersion] = React.useState(false);
     const { isInRemision, punchInRemision, punchOut, loading: pulseLoading } = useSuitePulse();
+
+    const handleUpdateSystemVersion = async () => {
+        if (!confirm(`¿Está seguro de que desea forzar una RECARGA GLOBAL para todos los usuarios a la versión ${CURRENT_APP_VERSION}? Use esto después de un despliegue en GitHub.`)) return;
+        setIsUpdatingVersion(true);
+        const result = await updateAppVersion(CURRENT_APP_VERSION);
+        if (result.success) {
+            toast({ title: 'Versión Global Actualizada', description: 'Todos los usuarios verán un aviso de actualización en sus pantallas.' });
+        } else {
+            toast({ variant: 'destructive', title: 'Error', description: result.error });
+        }
+        setIsUpdatingVersion(false);
+    };
 
     const modules = [
         {
@@ -273,6 +290,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             <p className="mt-4 max-w-2xl text-lg text-muted-foreground">
                 Su centro de control para la inteligencia logística. Seleccione un módulo para comenzar a optimizar sus operaciones.
             </p>
+
+            {role === 'admin' && (
+                <div className="mt-6">
+                    <Button variant="outline" size="sm" onClick={handleUpdateSystemVersion} disabled={isUpdatingVersion} className="border-amber-500 text-amber-700 hover:bg-amber-50">
+                        {isUpdatingVersion ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCcw className="mr-2 h-4 w-4"/>}
+                        Sincronizar Nueva Versión (GitHub)
+                    </Button>
+                </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-8 mt-12 w-full max-w-screen-2xl">
                  {visibleModules.map(module => (
                      <ModuleCard 

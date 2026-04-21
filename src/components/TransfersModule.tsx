@@ -5,14 +5,14 @@
 import React, { useState, useMemo, ChangeEvent, useRef, useCallback, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, UploadCloud, Truck, FileSignature, Search, Download, Trash2, Plus, File, Package, X, Check, Save, History, Eye, Printer, PackageCheck, Loader2, ScanLine, CircleDot, FileDown, MoreHorizontal, ChevronsUpDown } from 'lucide-react';
+import { ArrowLeft, UploadCloud, Truck, FileSignature, Search, Download, Trash2, Plus, File, Package, X, Check, Save, History, Eye, Printer, PackageCheck, Loader2, ScanLine, CircleDot, FileDown, MoreHorizontal, ChevronsUpDown, Database } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/card';
 import { Input } from './ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { TransferEntry, TransferStatus, DeliveryManifest, UserRole, CollectionLog, AppUser, RouteEntry } from '@/types';
-import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, updateAppVersion, CURRENT_APP_VERSION } from '@/app/actions';
+import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery } from '@/app/actions';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -868,7 +868,6 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoad
     const [isManifestDetailsOpen, setIsManifestDetailsOpen] = useState(false);
     const [selectedCollectionLog, setSelectedCollectionLog] = useState<CollectionLog | null>(null);
     const [isMigrating, setIsMigrating] = useState(false);
-    const [isUpdatingVersion, setIsUpdatingVersion] = useState(false);
     
     // State for manifest creation tab
     const [manifestFilters, setManifestFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' });
@@ -956,18 +955,6 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoad
         return map;
     }, [collectionLogs]);
 
-
-    const handleUpdateSystemVersion = async () => {
-        if (!confirm(`¿Está seguro de que desea forzar una recarga para todos los usuarios a la versión ${CURRENT_APP_VERSION}?`)) return;
-        setIsUpdatingVersion(true);
-        const result = await updateAppVersion(CURRENT_APP_VERSION);
-        if (result.success) {
-            toast({ title: 'Versión Actualizada', description: 'Todos los usuarios verán un aviso de actualización en los próximos minutos.' });
-        } else {
-            toast({ variant: 'destructive', title: 'Error', description: result.error });
-        }
-        setIsUpdatingVersion(false);
-    };
 
     const handleMigrationClick = async () => {
         setIsMigrating(true);
@@ -1269,11 +1256,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoad
                             <CardDescription>Visualice y gestione todas las transferencias de mercancía.</CardDescription>
                         </div>
                         <div className="flex gap-2">
-                            <input type="file" ref={fileInputRef} onChange={onFileChange} className="hidden" accept=".xlsx, .xls" />
-                            <Button variant="outline" size="sm" onClick={handleUpdateSystemVersion} disabled={isUpdatingVersion}>
-                                {isUpdatingVersion ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCcw className="mr-2 h-4 w-4"/>}
-                                Forzar Actualización App
-                            </Button>
+                             <input type="file" ref={fileInputRef} onChange={onFileChange} className="hidden" accept=".xlsx, .xls" />
                             <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
                                 {isUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <UploadCloud className="mr-2 h-4 w-4"/>}
                                 Actualizar Base
