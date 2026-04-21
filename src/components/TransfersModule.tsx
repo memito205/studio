@@ -1783,7 +1783,8 @@ const CollectionTabView: React.FC<{
         setIsLoading(true);
         const result = await getTransfersByStatus('En Tránsito');
         if (result.data) {
-            setTransfers(result.data);
+            const sorted = [...result.data].sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
+            setTransfers(sorted);
         } else {
             toast({ variant: 'destructive', title: 'Error', description: result.error });
         }
@@ -2026,10 +2027,10 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
     }, [toast]);
 
     const handleSearch = useCallback(async () => {
-        const { numeroTF, bodegaOrigen, bodegaDestino } = filters;
+        const { numeroTF, bodegaOrigen, bodegaDestino, status } = filters;
         
-        if (!numeroTF && !bodegaOrigen && !bodegaDestino) {
-            toast({ title: "Filtros vacíos", description: "Por favor ingrese al menos un criterio de búsqueda (TF, Origen o Destino)." });
+        if (!numeroTF && !bodegaOrigen && !bodegaDestino && status === 'all') {
+            toast({ title: "Filtros vacíos", description: "Por favor ingrese al menos un criterio de búsqueda (TF, Origen, Destino o Estado)." });
             return;
         }
 
@@ -2039,15 +2040,19 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             result = await getTransfersByQuery(numeroTF, 'number');
         } else if (bodegaOrigen) {
             result = await getTransfersByQuery(bodegaOrigen, 'origin');
-        } else {
+        } else if (bodegaDestino) {
             result = await getTransfersByQuery(bodegaDestino, 'destination');
+        } else {
+            // Status only search
+            result = await getTransfersByStatus(status as TransferStatus);
         }
 
         if (result.error) {
             toast({ variant: 'destructive', title: 'Error en búsqueda', description: result.error });
         } else {
-            setAllTransfers(result.data || []);
-            if ((result.data || []).length === 0) {
+            const sorted = (result.data || []).sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
+            setAllTransfers(sorted);
+            if (sorted.length === 0) {
                 toast({ title: 'Sin resultados', description: 'No se encontraron transferencias con esos criterios.' });
             }
         }

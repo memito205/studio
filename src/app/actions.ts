@@ -2429,7 +2429,7 @@ export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'statu
 
 export async function getTransfersByStatus(status: TransferStatus): Promise<{ data?: TransferEntry[]; error?: string }> {
     try {
-        const q = query(collection(firestore, "transfers"), where("status", "==", status), orderBy("fecha", "desc"), limit(500));
+        const q = query(collection(firestore, "transfers"), where("status", "==", status), limit(500));
         const querySnapshot = await getDocs(q);
         const transfers = querySnapshot.docs.map(doc => ({
             id: doc.id,
@@ -2451,7 +2451,6 @@ export async function getTransfersByQuery(searchQuery: string, type: 'number' | 
         const q = query(
             collection(firestore, "transfers"), 
             where(field, "==", searchQuery.toUpperCase().trim()),
-            orderBy("fecha", "desc"),
             limit(100)
         );
         
