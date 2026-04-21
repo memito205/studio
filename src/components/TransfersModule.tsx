@@ -12,7 +12,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { TransferEntry, TransferStatus, DeliveryManifest, UserRole, CollectionLog, AppUser, RouteEntry } from '@/types';
-import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus } from '@/app/actions';
+import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery } from '@/app/actions';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -585,10 +585,9 @@ const ManifestDetailsDialog: React.FC<{
   );
 };
 const WarehouseReceptionView: React.FC<{
-  transfers: TransferEntry[];
   collectionLogs: CollectionLog[];
   onRefresh: () => void;
-}> = ({ transfers, collectionLogs, onRefresh }) => {
+}> = ({ collectionLogs, onRefresh }) => {
     const { toast } = useToast();
     const [isLoading, setIsLoading] = useState(false);
     const [searchPlate, setSearchPlate] = useState('');
@@ -602,7 +601,7 @@ const WarehouseReceptionView: React.FC<{
     const [transferForLabel, setTransferForLabel] = useState<TransferEntry | null>(null);
 
 
-    const handleSearchByPlate = () => {
+    const handleSearchByPlate = async () => {
         setIsLoading(true);
         const plate = searchPlate.trim().toUpperCase();
         if (!plate) {
@@ -614,16 +613,27 @@ const WarehouseReceptionView: React.FC<{
         const relevantLogs = collectionLogs.filter(log => log.placa === plate);
         const transferIdsFromLogs = new Set(relevantLogs.flatMap(log => log.transferIds));
 
-        const transfersForPlate = transfers.filter(t => 
-            transferIdsFromLogs.has(t.id) && t.status === 'Validado Supervisor'
-        );
+        if (transferIdsFromLogs.size === 0) {
+            toast({ title: 'Sin Resultados', description: `No se encontraron registros de recolección para la placa ${plate}.` });
+            setFoundTransfers([]);
+            setIsLoading(false);
+            return;
+        }
 
-        setFoundTransfers(transfersForPlate);
+        // Fetch the actual transfers from Firebase to ensure we have the latest status
+        const transfersResult = await getTransfersByStatus('Validado Supervisor');
+        if (transfersResult.data) {
+            const transfersForPlate = transfersResult.data.filter(t => transferIdsFromLogs.has(t.id));
+            setFoundTransfers(transfersForPlate);
+            if (transfersForPlate.length === 0) {
+                toast({ title: 'Sin Resultados', description: `No se encontraron TFs validadas por supervisor para la placa ${plate}.` });
+            }
+        } else {
+            toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar las transferencias validadas.' });
+        }
+
         setSelectedTransfers(new Set()); // Reset selection
         setIsLoading(false);
-        if (transfersForPlate.length === 0) {
-            toast({ title: 'Sin Resultados', description: `No se encontraron TFs validadas por supervisor para la placa ${plate}.` });
-        }
     };
     
     const handleSelectTransfer = (id: string, checked: boolean) => {
@@ -834,7 +844,10 @@ interface AdminViewProps {
     transfers: TransferEntry[];
     collectionLogs: CollectionLog[];
     isLoading: boolean;
+    filters: { numeroTF: string, bodegaOrigen: string, bodegaDestino: string, placa: string, status: string };
+    setFilters: React.Dispatch<React.SetStateAction<{ numeroTF: string, bodegaOrigen: string, bodegaDestino: string, placa: string, status: string }>>;
     onRefresh: () => void;
+    onSearch: () => void;
     role: UserRole;
     users: AppUser[];
     isUploading: boolean;
@@ -843,7 +856,7 @@ interface AdminViewProps {
     setIsManualEntryOpen: (isOpen: boolean) => void;
 }
 
-const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoading, onRefresh, role, users, isUploading, onFileChange, fileInputRef, setIsManualEntryOpen }) => {
+const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoading, filters, setFilters, onRefresh, onSearch, role, users, isUploading, onFileChange, fileInputRef, setIsManualEntryOpen }) => {
     const { toast } = useToast();
     const [manifests, setManifests] = useState<DeliveryManifest[]>([]);
     const [isLoadingManifests, setIsLoadingManifests] = useState(false);
@@ -859,7 +872,6 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoad
     // State for manifest creation tab
     const [manifestFilters, setManifestFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' });
     const [scanInput, setScanInput] = useState('');
-    const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all' });
     
     const [statusChangeState, setStatusChangeState] = useState<{ isOpen: boolean; transfer: TransferEntry | null }>({ isOpen: false, transfer: null });
     const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
@@ -1188,7 +1200,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoad
                 <TabsTrigger value="history_collection">Historial de Recolecciones</TabsTrigger>
             </TabsList>
             <TabsContent value="reception" className="mt-6">
-                 <WarehouseReceptionView onRefresh={onRefresh} collectionLogs={collectionLogs} transfers={transfers}/>
+                 <WarehouseReceptionView onRefresh={onRefresh} collectionLogs={collectionLogs} />
             </TabsContent>
              <TabsContent value="validation" className="mt-6">
                 <Card>
@@ -1277,22 +1289,38 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoad
                     </div>
                   </CardHeader>
                   <CardContent>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                        <Input placeholder="Filtrar por # TF..." value={filters.numeroTF} onChange={e => setFilters(prev => ({...prev, numeroTF: e.target.value}))} />
-                        <Input placeholder="Filtrar por Origen..." value={filters.bodegaOrigen} onChange={e => setFilters(prev => ({...prev, bodegaOrigen: e.target.value}))} />
-                        <Input placeholder="Filtrar por Destino..." value={filters.bodegaDestino} onChange={e => setFilters(prev => ({...prev, bodegaDestino: e.target.value}))} />
-                         <Select value={filters.status} onValueChange={val => setFilters(prev => ({...prev, status: val}))}>
-                            <SelectTrigger><SelectValue placeholder="Filtrar por estado..." /></SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="all">Todos los Estados</SelectItem>
-                                <SelectItem value="En Tránsito">En Tránsito</SelectItem>
-                                <SelectItem value="Recolectado en Ruta">Recolectado en Ruta</SelectItem>
-                                <SelectItem value="Entregado en Ruta">Entregado en Ruta</SelectItem>
-                                <SelectItem value="Validado Supervisor">Validado Supervisor</SelectItem>
-                                <SelectItem value="Recibido en Bodega">Recibido en Bodega</SelectItem>
-                                <SelectItem value="Enviado a Destino">Enviado a Destino</SelectItem>
-                            </SelectContent>
-                        </Select>
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4 items-end">
+                        <div className="space-y-1">
+                            <Label className="text-xs">Número TF</Label>
+                            <Input placeholder="TF-..." value={filters.numeroTF} onChange={e => setFilters(prev => ({...prev, numeroTF: e.target.value}))} />
+                        </div>
+                        <div className="space-y-1">
+                            <Label className="text-xs">Origen</Label>
+                            <Input placeholder="Bodega..." value={filters.bodegaOrigen} onChange={e => setFilters(prev => ({...prev, bodegaOrigen: e.target.value}))} />
+                        </div>
+                        <div className="space-y-1">
+                            <Label className="text-xs">Destino</Label>
+                            <Input placeholder="Tienda..." value={filters.bodegaDestino} onChange={e => setFilters(prev => ({...prev, bodegaDestino: e.target.value}))} />
+                        </div>
+                        <div className="space-y-1">
+                            <Label className="text-xs">Estado</Label>
+                            <Select value={filters.status} onValueChange={val => setFilters(prev => ({...prev, status: val}))}>
+                                <SelectTrigger><SelectValue placeholder="Estado..." /></SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="all">Todos</SelectItem>
+                                    <SelectItem value="En Tránsito">En Tránsito</SelectItem>
+                                    <SelectItem value="Recolectado en Ruta">Recolectado en Ruta</SelectItem>
+                                    <SelectItem value="Entregado en Ruta">Entregado en Ruta</SelectItem>
+                                    <SelectItem value="Validado Supervisor">Validado Supervisor</SelectItem>
+                                    <SelectItem value="Recibido en Bodega">Recibido en Bodega</SelectItem>
+                                    <SelectItem value="Enviado a Destino">Enviado a Destino</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <Button onClick={onSearch} disabled={isLoading} className="w-full">
+                            {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Search className="mr-2 h-4 w-4"/>}
+                            Buscar
+                        </Button>
                     </div>
                     <div className="border rounded-md max-h-[60vh] overflow-y-auto">
                         <Table>
@@ -1385,7 +1413,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoad
                 </Card>
             </TabsContent>
             <TabsContent value="collection" className="mt-6">
-                <CollectionTabView transfers={transfers} onRefresh={onRefresh} onOpenManualEntry={() => setIsManualEntryOpen(true)} />
+                <CollectionTabView onRefresh={onRefresh} onOpenManualEntry={() => setIsManualEntryOpen(true)} />
             </TabsContent>
             <TabsContent value="manifest" className="mt-6">
                 <Card>
@@ -1739,21 +1767,37 @@ const OperatorView: React.FC<{
 };
 
 const CollectionTabView: React.FC<{
-  transfers: TransferEntry[];
   onRefresh: () => void;
   onOpenManualEntry?: () => void;
-}> = ({ transfers, onRefresh, onOpenManualEntry }) => {
+}> = ({ onRefresh, onOpenManualEntry }) => {
     const { user } = useAuth();
     const { toast } = useToast();
     const [isLoading, setIsLoading] = useState(false);
+    const [transfers, setTransfers] = useState<TransferEntry[]>([]);
     const [selectedPlate, setSelectedPlate] = useState('');
     const [selectedTransfers, setSelectedTransfers] = useState(new Set<string>());
     const [debouncedFilters, setDebouncedFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' });
     const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' });
+
+    const fetchTransfers = useCallback(async () => {
+        setIsLoading(true);
+        const result = await getTransfersByStatus('En Tránsito');
+        if (result.data) {
+            setTransfers(result.data);
+        } else {
+            toast({ variant: 'destructive', title: 'Error', description: result.error });
+        }
+        setIsLoading(false);
+    }, [toast]);
+
+    useEffect(() => {
+        fetchTransfers();
+    }, [fetchTransfers]);
+
     useEffect(() => {
         const handler = setTimeout(() => {
             setDebouncedFilters(filters);
-        }, 300); // Wait 300ms after user stops typing
+        }, 300); 
         return () => clearTimeout(handler);
     }, [filters]);
 
@@ -1779,7 +1823,8 @@ const CollectionTabView: React.FC<{
         const result = await createCollectionLog(selectedPlate, Array.from(selectedTransfers), user.uid);
         if (result.success) {
             toast({ title: 'Éxito', description: `${selectedTransfers.size} transferencias marcadas como recolectadas.` });
-            onRefresh();
+            fetchTransfers(); // Refresh local list
+            onRefresh(); // Refresh parent if needed
             setSelectedTransfers(new Set());
         } else {
             toast({ variant: 'destructive', title: 'Error', description: result.error });
@@ -1948,7 +1993,8 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
     const [allTransfers, setAllTransfers] = useState<TransferEntry[]>([]);
     const [allUsers, setAllUsers] = useState<AppUser[]>([]);
     const [collectionLogs, setCollectionLogs] = useState<CollectionLog[]>([]);
-    const [isLoading, setIsLoading] = useState(true);
+    const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all' });
+    const [isLoading, setIsLoading] = useState(false);
     const { toast } = useToast();
     const { role } = useAuth();
     const isAdminOrSupervisor = role === 'admin' || role === 'supervisor';
@@ -1958,18 +2004,12 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
 
     const fetchData = useCallback(async () => {
         setIsLoading(true);
-        const [transfersResult, usersResult, collectionLogsResult] = await Promise.all([
-          loadAllTransfers(),
+        // Only load users and logs initially. Transfers load ONLY by search or specific status tabs.
+        const [usersResult, collectionLogsResult] = await Promise.all([
           getAllUserProfiles(),
           getCollectionLogs()
         ]);
         
-        if (transfersResult.error) {
-            toast({ variant: 'destructive', title: 'Error al cargar transferencias', description: transfersResult.error });
-        } else {
-            setAllTransfers(transfersResult.data || []);
-        }
-
         if (usersResult) {
             setAllUsers(usersResult);
         } else {
@@ -1984,6 +2024,35 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
 
         setIsLoading(false);
     }, [toast]);
+
+    const handleSearch = useCallback(async () => {
+        const { numeroTF, bodegaOrigen, bodegaDestino } = filters;
+        
+        if (!numeroTF && !bodegaOrigen && !bodegaDestino) {
+            toast({ title: "Filtros vacíos", description: "Por favor ingrese al menos un criterio de búsqueda (TF, Origen o Destino)." });
+            return;
+        }
+
+        setIsLoading(true);
+        let result;
+        if (numeroTF) {
+            result = await getTransfersByQuery(numeroTF, 'number');
+        } else if (bodegaOrigen) {
+            result = await getTransfersByQuery(bodegaOrigen, 'origin');
+        } else {
+            result = await getTransfersByQuery(bodegaDestino, 'destination');
+        }
+
+        if (result.error) {
+            toast({ variant: 'destructive', title: 'Error en búsqueda', description: result.error });
+        } else {
+            setAllTransfers(result.data || []);
+            if ((result.data || []).length === 0) {
+                toast({ title: 'Sin resultados', description: 'No se encontraron transferencias con esos criterios.' });
+            }
+        }
+        setIsLoading(false);
+    }, [filters, toast]);
     
     const handleManualEntryConfirm = async (data: { numeroTF: string; bodegaDestino: string; origen?: string; status?: TransferStatus }) => {
       setIsSavingManualEntry(true);
@@ -2022,7 +2091,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
                   bodegaOrigen: String(row['Bodega Origen'] || 'N/A'),
                   bodegaDestino: String(row['Bodega Destino'] || 'N/A'),
                   cantidad: Number(row['Cantidad'] || 1),
-              };
+              } as Omit<TransferEntry, 'id' | 'status'>;
           }).filter((r): r is Omit<TransferEntry, 'id' | 'status'> => r !== null);
           
           if(newRoutes.length === 0) {
@@ -2032,7 +2101,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
           const result = await saveTransfers(newRoutes);
   
           if(result.summary) {
-              toast({ title: "Base de Datos Actualizada", description: `Se añadieron ${result.summary.added} TFs nuevas y se eliminaron ${result.summary.removed} TFs antiguas (no protegidas).` });
+              toast({ title: "Base de Datos Actualizada", description: `Se añadieron ${result.summary.added} TFs nuevas, se eliminaron ${result.summary.removed} y se omitieron ${result.summary.skipped} por estar protegidos.` });
               fetchData();
           } else if (result.error) {
                throw new Error(result.error);
@@ -2078,7 +2147,10 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             transfers={allTransfers}
             collectionLogs={collectionLogs}
             isLoading={isLoading}
+            filters={filters}
+            setFilters={setFilters}
             onRefresh={fetchData}
+            onSearch={handleSearch}
             role={role}
             users={allUsers}
             isUploading={isLoading}
@@ -2088,7 +2160,6 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
           />
       ) : role === 'conductor' ? (
         <CollectionTabView
-            transfers={allTransfers}
             onRefresh={fetchData}
         />
       ) : (

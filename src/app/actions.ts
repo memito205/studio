@@ -2351,42 +2351,117 @@ export async function loadSampleVerifications(): Promise<{ success: boolean; dat
 
 
 // --- Transfers Module Actions ---
-export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'status'>[]): Promise<{ success: boolean; error?: string; summary?: { added: number, removed: number } }> {
+export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'status'>[]): Promise<{ success: boolean; error?: string; summary?: { added: number, removed: number, skipped: number } }> {
     const transfersCollection = collection(firestore, 'transfers');
     const protectedStatuses: TransferStatus[] = ['Recibido en Bodega', 'Enviado a Destino', 'Recolectado en Ruta', 'Entregado en Ruta', 'Validado Supervisor'];
     
     try {
-        const batch = writeBatch(firestore);
-
-        const existingSnapshot = await getDocs(query(transfersCollection));
-        const preservedTFs = new Map<string, TransferEntry>();
-        let removed = 0;
-
+        // 1. Get current "En Tránsito" transfers to compare
+        const q = query(transfersCollection, where("status", "==", "En Tránsito"));
+        const existingSnapshot = await getDocs(q);
+        
+        const existingTransfers = new Map<string, { id: string, data: TransferEntry }>();
         existingSnapshot.forEach(doc => {
             const data = doc.data() as TransferEntry;
-            if (data.status && protectedStatuses.includes(data.status)) {
-                preservedTFs.set(data.numeroTF, data);
-            } else {
-                batch.delete(doc.ref);
-                removed++;
-            }
+            existingTransfers.set(data.numeroTF, { id: doc.id, data });
         });
 
+        const batch = writeBatch(firestore);
         let added = 0;
-        for (const newTransfer of transfers) {
-            if (!preservedTFs.has(newTransfer.numeroTF)) {
-                const docRef = doc(transfersCollection); // Auto-generate ID
-                batch.set(docRef, { ...convertDatesToTimestamps(newTransfer), status: 'En Tránsito' });
-                added++;
+        let removed = 0;
+        let skipped = 0;
+
+        const incomingTFs = new Set(transfers.map(t => t.numeroTF));
+
+        // 2. Identify what to DELETE: In Firebase (En Tránsito) but NOT in Excel
+        for (const [numeroTF, existing] of existingTransfers.entries()) {
+            if (!incomingTFs.has(numeroTF)) {
+                batch.delete(doc(transfersCollection, existing.id));
+                removed++;
             }
+        }
+
+        // 3. Identify what to ADD or SKIP: In Excel but check existence
+        for (const newTransfer of transfers) {
+            const existing = existingTransfers.get(newTransfer.numeroTF);
+            
+            if (existing) {
+                // If it already exists as "En Tránsito", we skip it to save writes
+                // unless we wanted to update metadata, but user said "if it appears again, do not change"
+                skipped++;
+                continue;
+            }
+
+            // Before adding, we MUST check if it exists in a PROTECTED state
+            // This is a safety check because existingSnapshot only had "En Tránsito"
+            const protectedQuery = query(transfersCollection, where("numeroTF", "==", newTransfer.numeroTF));
+            const protectedSnapshot = await getDocs(protectedQuery);
+            
+            let isProtected = false;
+            protectedSnapshot.forEach(doc => {
+                const data = doc.data() as TransferEntry;
+                if (data.status && protectedStatuses.includes(data.status)) {
+                    isProtected = true;
+                }
+            });
+
+            if (isProtected) {
+                skipped++;
+                continue;
+            }
+
+            // It's truly new or was previously deleted
+            const docRef = doc(transfersCollection); 
+            batch.set(docRef, { ...convertDatesToTimestamps(newTransfer), status: 'En Tránsito' });
+            added++;
         }
         
         await batch.commit();
-        return { success: true, summary: { added, removed } };
+        return { success: true, summary: { added, removed, skipped } };
 
     } catch (error: any) {
-        console.error("Error guardando transferencias:", error);
+        console.error("Error guardando transferencias (Delta Sync):", error);
         return { success: false, error: `No se pudieron guardar las transferencias: ${error.message}` };
+    }
+}
+
+export async function getTransfersByStatus(status: TransferStatus): Promise<{ data?: TransferEntry[]; error?: string }> {
+    try {
+        const q = query(collection(firestore, "transfers"), where("status", "==", status), orderBy("fecha", "desc"), limit(500));
+        const querySnapshot = await getDocs(q);
+        const transfers = querySnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...convertTimestampsToDates(doc.data())
+        })) as TransferEntry[];
+        return { data: transfers };
+    } catch (error: any) {
+        console.error(`Error loading transfers by status ${status}:`, error);
+        return { error: `Failed to load transfers: ${error.message}` };
+    }
+}
+
+export async function getTransfersByQuery(searchQuery: string, type: 'number' | 'origin' | 'destination'): Promise<{ data?: TransferEntry[]; error?: string }> {
+    try {
+        let field = 'numeroTF';
+        if (type === 'origin') field = 'bodegaOrigen';
+        if (type === 'destination') field = 'bodegaDestino';
+
+        const q = query(
+            collection(firestore, "transfers"), 
+            where(field, "==", searchQuery.toUpperCase().trim()),
+            orderBy("fecha", "desc"),
+            limit(100)
+        );
+        
+        const querySnapshot = await getDocs(q);
+        const transfers = querySnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...convertTimestampsToDates(doc.data())
+        })) as TransferEntry[];
+        return { data: transfers };
+    } catch (error: any) {
+        console.error("Error searching transfers:", error);
+        return { error: `Search failed: ${error.message}` };
     }
 }
 
@@ -2515,7 +2590,7 @@ export async function createDeliveryManifest(manifestData: Omit<DeliveryManifest
 
 export async function getDeliveryManifests(): Promise<{ success: boolean; data?: DeliveryManifest[]; error?: string }> {
     try {
-        const q = query(collection(firestore, "deliveryManifests"), orderBy("manifestId", "desc"));
+        const q = query(collection(firestore, "deliveryManifests"), orderBy("manifestId", "desc"), limit(100));
         const querySnapshot = await getDocs(q);
         const manifests = querySnapshot.docs.map(doc => convertTimestampsToDates({ id: doc.id, ...doc.data() }) as DeliveryManifest);
         return { success: true, data: manifests };
@@ -2795,7 +2870,7 @@ export async function createCollectionLog(placa: string, transferIds: string[], 
 
 export async function getCollectionLogs(): Promise<{ success: boolean; data?: CollectionLog[]; error?: string }> {
     try {
-        const q = query(collection(firestore, "collectionLogs"), orderBy("createdAt", "desc"));
+        const q = query(collection(firestore, "collectionLogs"), orderBy("createdAt", "desc"), limit(100));
         const querySnapshot = await getDocs(q);
         const logs = querySnapshot.docs.map(doc => convertTimestampsToDates({ id: doc.id, ...doc.data() }) as CollectionLog);
         return { success: true, data: logs };

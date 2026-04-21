@@ -362,6 +362,7 @@ export interface RouteEntry {
 }
 
 // Types for Transfers Module
+export type UserRole = 'admin' | 'supervisor' | 'operator' | 'office' | 'conductor';
 export type TransferStatus = 'En Tránsito' | 'Recolectado en Ruta' | 'Entregado en Ruta' | 'Recibido en Bodega' | 'Validado Supervisor' | 'Enviado a Destino';
 
 
@@ -894,7 +895,7 @@ export type LabelValidationResult = {
   message: string;
 };
 
-import type { UserRole } from '@/hooks/use-auth-context';
+
 
 export interface AppUser {
     uid: string;

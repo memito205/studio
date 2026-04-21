@@ -3,8 +3,7 @@
 import { createContext, useContext } from 'react';
 import type { User } from 'firebase/auth';
 
-// Define the possible roles
-export type UserRole = 'admin' | 'supervisor' | 'operator' | 'office' | 'conductor';
+import type { UserRole } from '@/types';
 
 interface AuthContextType {
     user: User | null;
