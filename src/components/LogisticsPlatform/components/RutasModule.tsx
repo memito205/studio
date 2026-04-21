@@ -788,8 +788,8 @@ const RutasModule: React.FC = () => {
                     const headers = Object.keys(jsonData[0] || {});
                     const vehCol = findHeader(headers, ['VEHICULO', 'VEHIVULO', 'VEHICULO ASIGNADO', 'PLACA', 'CONDUCTOR', 'MENSAJERO', 'RECURSO', 'MOVIL', 'MOTO', 'RUTA', 'NORTE', 'MENS NORTE', 'RUTA NORTE', 'VEHICULO NORTE', 'ZONA', 'TIPO RECURSO', 'RECURSO ASIGNADO', 'VEH', 'COND', 'PLACA VEHICULO', 'CONDUCTOR ASIGNADO', 'VEHICUL', 'VEHIVUL']);
                     const norteColFallback = findHeader(headers, ['NORTE', 'ES NORTE', 'NORTE?', 'ES_NORTE', 'ZONA NORTE', 'NORT', 'MENS NORTE', 'RUTA NORTE']);
-                    const tfCol = findHeader(headers, ['NUMERO TF', 'TF', 'NRO TF', 'NRO DOCUMENTO.2', 'NRO DOCUMENTO.', 'DOCUMENTO', 'PEDIDO', 'REMISION', 'ORDEN', 'TF#', 'NUMERO', 'DOC', 'NRO DOC']);
-                    const valCol = findHeader(headers, ['Valor', 'VALOR', 'Ubicacion', 'UBICACIÓN', 'DESTINO', 'BODEGA', 'TIENDA', 'CLIENTE', 'NOMBRE CLIENTE', 'PUNTO', 'DESTINATARIO', 'LUGAR', 'DIRECCION', 'BOD', 'HACIA', 'PARA']);
+                    const tfCol = findHeader(headers, ['NUMERO TF', 'TF', 'NRO TF', 'NRO DOCUMENTO.2', 'NRO DOCUMENTO.', 'DOCUMENTO', 'PEDIDO', 'REMISION', 'ORDEN', 'TF#', 'NUMERO', 'DOC', 'NRO DOC', 'GUIA', 'GUÍA']);
+                    const valCol = findHeader(headers, ['Valor', 'VALOR', 'Ubicacion', 'UBICACIÓN', 'DESTINO', 'BODEGA', 'TIENDA', 'CLIENTE', 'NOMBRE CLIENTE', 'PUNTO', 'DESTINATARIO', 'LUGAR', 'DIRECCIÓN', 'DIRECCION', 'BOD', 'HACIA', 'PARA', 'CIUDAD', 'TELÉFONO', 'TELEFONO']);
                     let typeCol = findHeader(headers, ['Atributo', 'TIPO', 'TIPO SERVICIO', 'MOVIMIENTO', 'ACCION', 'TIPO DE SERVICIO', 'TIPO DOCUMENTO', 'OPERACION', 'TIPO_MOVIMIENTO', 'RECOGER', 'ENTREGAR']);
                     
                     // Fallback: Si no se encuentra por nombre, buscar por contenido en la primera fila
@@ -806,7 +806,8 @@ const RutasModule: React.FC = () => {
                     const obsCol = findHeader(headers, ['OBSERVACIONES', 'Observación', 'NOTAS', 'DETALLE', 'OBS']);
                     const codeCol = findHeader(headers, ['CÓDIGO', 'CODIGO', 'ID', 'REF', 'SKU']);
 
-                    if (!tfCol || !valCol) throw new Error("Faltan columnas críticas (TF o Ubicación/Valor).");
+                    if (!tfCol) throw new Error("No se encontró la columna de documento (TF, Guía, etc.). Revise el archivo.");
+                    if (!valCol) throw new Error("No se encontró la columna de ubicación o destinatario. Revise el archivo.");
                     resolve(jsonData.map((row, i) => {
                         const obsValue = obsCol ? String(row[obsCol!] || '').trim() : '';
                         const codeValue = codeCol ? String(row[codeCol!] || '').trim() : '';
@@ -982,13 +983,33 @@ const RutasModule: React.FC = () => {
                     <h2 className="text-2xl font-bold text-gray-800 mb-6 border-b pb-4">Cargar Archivos de Ruta</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                         <div className="flex flex-col space-y-2">
-                            <FileUpload onFileProcess={f => { setIsMainLoading(true); setMainFileName(f.name); processFile(f, true).then(tasks => { setMainTasks(tasks); setIsMainLoading(false); }).catch(() => setIsMainLoading(false)); }} isLoading={isMainLoading} fileName={mainFileName} mainText="Reporte Principal" subText=".xlsx, .xls" loadedSubText="Cargado." />
+                            <FileUpload onFileProcess={f => { 
+                                setIsMainLoading(true); 
+                                setMainFileName(f.name); 
+                                processFile(f, true)
+                                    .then(tasks => { setMainTasks(tasks); setIsMainLoading(false); })
+                                    .catch((err) => { 
+                                        alert("Error en Reporte Principal: " + (err.message || err));
+                                        setIsMainLoading(false); 
+                                        setMainFileName(null);
+                                    }); 
+                            }} isLoading={isMainLoading} fileName={mainFileName} mainText="Reporte Principal" subText=".xlsx, .xls" loadedSubText="Cargado." />
                             <button onClick={generateMainRouteTemplate} className="text-xs text-blue-600 hover:text-blue-800 flex items-center justify-center gap-1 py-1 transition-colors">
                                 <DownloadIcon className="h-3 w-3" /> Descargar Plantilla Principal (.xlsx)
                             </button>
                         </div>
                         <div className="flex flex-col space-y-2">
-                            <FileUpload onFilesProcess={fs => { setIsAdditionalLoading(true); setAdditionalFileNames(fs.map(f => f.name)); Promise.all(fs.map(f => processFile(f, false))).then(res => { setAdditionalTasks(res.flat()); setIsAdditionalLoading(false); }).catch(() => setIsAdditionalLoading(false)); }} isLoading={isAdditionalLoading} fileNames={additionalFileNames} multiple={true} mainText="Entregas Adicionales" subText="Múltiples archivos" loadedSubText="Cargados." />
+                            <FileUpload onFilesProcess={fs => { 
+                                setIsAdditionalLoading(true); 
+                                setAdditionalFileNames(fs.map(f => f.name)); 
+                                Promise.all(fs.map(f => processFile(f, false)))
+                                    .then(res => { setAdditionalTasks(res.flat()); setIsAdditionalLoading(false); })
+                                    .catch((err) => { 
+                                        alert("Error en Entregas Adicionales: " + (err.message || err));
+                                        setIsAdditionalLoading(false); 
+                                        setAdditionalFileNames([]);
+                                    }); 
+                            }} isLoading={isAdditionalLoading} fileNames={additionalFileNames} multiple={true} mainText="Entregas Adicionales" subText="Múltiples archivos" loadedSubText="Cargados." />
                             <button onClick={generateAdditionalRouteTemplate} className="text-xs text-blue-600 hover:text-blue-800 flex items-center justify-center gap-1 py-1 transition-colors">
                                 <DownloadIcon className="h-3 w-3" /> Descargar Plantilla Adicionales (.xlsx)
                             </button>

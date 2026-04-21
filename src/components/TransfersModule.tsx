@@ -1085,7 +1085,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
       const tfToFind = (codeParts.length > 1 ? codeParts.slice(1).join('-') : normalizedCode).trim();
       const destinoScanned = (codeParts.length > 1 ? codeParts[0] : null);
 
-      const transfer = filteredTransfersForManifest.find(t => t.numeroTF.trim().toUpperCase() === tfToFind);
+      const transfer = transfersForManifest.find(t => t.numeroTF.trim().toUpperCase() === tfToFind);
 
       if (transfer) {
           if (destinoScanned && transfer.bodegaDestino.toUpperCase() !== destinoScanned) {
@@ -1112,7 +1112,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         if (selectedForManifest.size === 0) {
             return { totalTFs: 0, totalItems: 0, destinations: {} };
         }
-        const selectedTFs = transfers.filter(t => selectedForManifest.has(t.id));
+        const selectedTFs = operationalTransfers.filter(t => selectedForManifest.has(t.id));
         
         const totalTFs = selectedTFs.length; // Count of TF documents
         const totalItems = selectedTFs.reduce((sum, t) => sum + (t.cantidad || 1), 0); // Sum of quantities
