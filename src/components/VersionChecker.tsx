@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { getAppVersion, CURRENT_APP_VERSION } from '@/app/actions';
+import { getAppVersion } from '@/app/actions';
+import { CURRENT_APP_VERSION } from '@/app/version';
 import { 
   Dialog, 
   DialogContent, 

@@ -9,7 +9,8 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth-context';
 import { VersionChecker } from './VersionChecker';
-import { updateAppVersion, CURRENT_APP_VERSION } from '@/app/actions';
+import { updateAppVersion } from '@/app/actions';
+import { CURRENT_APP_VERSION } from '@/app/version';
 import { useToast } from '@/hooks/use-toast';
 
 interface ModuleCardProps {

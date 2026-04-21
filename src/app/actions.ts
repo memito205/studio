@@ -12,10 +12,10 @@ import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch
 import { parseISO } from 'date-fns';
 import { startOfDay, endOfDay, isWithinInterval } from 'date-fns';
 import * as XLSX from 'xlsx';
+import { CURRENT_APP_VERSION } from './version';
 import { normalizeHeader, parseFlexibleDate, excelSerialDateToJSDate, findCaseInsensitiveKey, extractLocalDateString } from '@/lib/parsingUtils';
 import { processReport } from '@/services/reportProcessor';
 
-export const CURRENT_APP_VERSION = "1.1.2"; // Increment this with each significant deploy
 
 
 // Helper function to convert Dates back to Timestamps FOR WRITING to Firestore
