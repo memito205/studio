@@ -2006,9 +2006,10 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
     const fetchData = useCallback(async () => {
         setIsLoading(true);
         // Only load users and logs initially. Transfers load ONLY by search or specific status tabs.
-        const [usersResult, collectionLogsResult] = await Promise.all([
+        const [usersResult, collectionLogsResult, pendingTransfersResult] = await Promise.all([
           getAllUserProfiles(),
-          getCollectionLogs()
+          getCollectionLogs(),
+          getTransfersByStatus('Recolectado en Ruta')
         ]);
         
         if (usersResult) {
@@ -2021,6 +2022,12 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             setCollectionLogs(collectionLogsResult.data);
         } else {
             toast({ variant: 'destructive', title: 'Error al cargar historial de recolecciones', description: collectionLogsResult.error });
+        }
+
+        if (pendingTransfersResult.data) {
+            setAllTransfers(pendingTransfersResult.data);
+        } else if (pendingTransfersResult.error) {
+            toast({ variant: 'destructive', title: 'Error al cargar transferencias pendientes', description: pendingTransfersResult.error });
         }
 
         setIsLoading(false);
