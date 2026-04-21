@@ -842,6 +842,7 @@ const WarehouseReceptionView: React.FC<{
 };
 interface AdminViewProps {
     transfers: TransferEntry[];
+    operationalTransfers: TransferEntry[];
     collectionLogs: CollectionLog[];
     isLoading: boolean;
     filters: { numeroTF: string, bodegaOrigen: string, bodegaDestino: string, placa: string, status: string };
@@ -853,10 +854,10 @@ interface AdminViewProps {
     isUploading: boolean;
     onFileChange: (e: ChangeEvent<HTMLInputElement>) => void;
     fileInputRef: React.RefObject<HTMLInputElement>;
-    setIsManualEntryOpen: (isOpen: boolean) => void;
+    setIsManualEntryOpen: (open: boolean) => void;
 }
 
-const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoading, filters, setFilters, onRefresh, onSearch, role, users, isUploading, onFileChange, fileInputRef, setIsManualEntryOpen }) => {
+const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, collectionLogs, isLoading, filters, setFilters, onRefresh, onSearch, role, users, isUploading, onFileChange, fileInputRef, setIsManualEntryOpen }) => {
     const { toast } = useToast();
     const [manifests, setManifests] = useState<DeliveryManifest[]>([]);
     const [isLoadingManifests, setIsLoadingManifests] = useState(false);
@@ -989,19 +990,19 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoad
     }, [transfers, filters]);
     
     const supervisorValidationTransfers = useMemo(() => {
-        const filtered = transfers.filter(t => t.status === 'Recolectado en Ruta');
+        const filtered = operationalTransfers.filter(t => t.status === 'Recolectado en Ruta');
         return filtered.filter(t => 
             (filters.numeroTF ? t.numeroTF.toLowerCase().includes(filters.numeroTF.toLowerCase()) : true) &&
             (filters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(filters.bodegaOrigen.toLowerCase()) : true) &&
             (filters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(filters.bodegaDestino.toLowerCase()) : true) &&
             (filters.placa ? (transferIdToPlacaMap.get(t.id) || '').toLowerCase().includes(filters.placa.toLowerCase()) : true)
         );
-    }, [transfers, filters, transferIdToPlacaMap]);
+    }, [operationalTransfers, filters, transferIdToPlacaMap]);
 
 
     const transfersForManifest = useMemo(() => {
-        return transfers.filter(t => t.status === 'Recibido en Bodega' || t.status === 'Validado Supervisor');
-    }, [transfers]);
+        return operationalTransfers.filter(t => t.status === 'Recibido en Bodega' || t.status === 'Validado Supervisor');
+    }, [operationalTransfers]);
     
     const filteredTransfersForManifest = useMemo(() => {
         return transfersForManifest.filter(t =>
@@ -1207,11 +1208,12 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoad
                     <CardHeader>
                         <CardTitle>Validación de Recolecciones en Ruta</CardTitle>
                         <CardDescription>Confirme la llegada a bodega de las TFs o márquelas como entregadas directamente en ruta.</CardDescription>
-                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 pt-4">
+                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4 pt-4 items-end">
                             <Input placeholder="Filtrar por # TF..." value={filters.numeroTF} onChange={e => setFilters(prev => ({...prev, numeroTF: e.target.value}))} />
                             <Input placeholder="Filtrar por Origen..." value={filters.bodegaOrigen} onChange={e => setFilters(prev => ({...prev, bodegaOrigen: e.target.value}))} />
                             <Input placeholder="Filtrar por Destino..." value={filters.bodegaDestino} onChange={e => setFilters(prev => ({...prev, bodegaDestino: e.target.value}))} />
                             <Input placeholder="Filtrar por Placa..." value={filters.placa} onChange={e => setFilters(prev => ({...prev, placa: e.target.value}))} />
+                            <Button variant="outline" onClick={() => setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all' })}>Limpiar Filtros</Button>
                          </div>
                     </CardHeader>
                     <CardContent>
@@ -1317,10 +1319,15 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, collectionLogs, isLoad
                                 </SelectContent>
                             </Select>
                         </div>
-                        <Button onClick={onSearch} disabled={isLoading} className="w-full">
-                            {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Search className="mr-2 h-4 w-4"/>}
-                            Buscar
-                        </Button>
+                        <div className="flex gap-2">
+                            <Button onClick={onSearch} disabled={isLoading} className="flex-1">
+                                {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Search className="mr-2 h-4 w-4"/>}
+                                Buscar
+                            </Button>
+                            <Button variant="outline" size="icon" onClick={() => setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all' })} title="Limpiar Filtros">
+                                <X className="h-4 w-4" />
+                            </Button>
+                        </div>
                     </div>
                     <div className="border rounded-md max-h-[60vh] overflow-y-auto">
                         <Table>
@@ -1991,7 +1998,8 @@ const ManualEntryDialog: React.FC<{
 
 // Main Component
 export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ onReturnToSuite }) => {
-    const [allTransfers, setAllTransfers] = useState<TransferEntry[]>([]);
+    const [allTransfers, setAllTransfers] = useState<TransferEntry[]>([]); // Pooled operational data
+    const [searchResults, setSearchResults] = useState<TransferEntry[] | null>(null); // Results from search tab
     const [allUsers, setAllUsers] = useState<AppUser[]>([]);
     const [collectionLogs, setCollectionLogs] = useState<CollectionLog[]>([]);
     const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all' });
@@ -2032,10 +2040,10 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             ...(receivedRes.data || [])
         ];
 
-        if (combinedTransfers.length > 0) {
-            const sorted = combinedTransfers.sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
-            setAllTransfers(sorted);
-        } else if (recollectionRes.error || validatedRes.error || receivedRes.error) {
+        const sorted = combinedTransfers.sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
+        setAllTransfers(sorted);
+
+        if (recollectionRes.error || validatedRes.error || receivedRes.error) {
             toast({ variant: 'destructive', title: 'Error al cargar transferencias', description: 'Algunas listas no pudieron cargarse correctamente.' });
         }
 
@@ -2067,7 +2075,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             toast({ variant: 'destructive', title: 'Error en búsqueda', description: result.error });
         } else {
             const sorted = (result.data || []).sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
-            setAllTransfers(sorted);
+            setSearchResults(sorted);
             if (sorted.length === 0) {
                 toast({ title: 'Sin resultados', description: 'No se encontraron transferencias con esos criterios.' });
             }
@@ -2165,7 +2173,8 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
       
       {isAdminOrSupervisor ? (
           <AdminView 
-            transfers={allTransfers}
+            transfers={searchResults || []} 
+            operationalTransfers={allTransfers}
             collectionLogs={collectionLogs}
             isLoading={isLoading}
             filters={filters}
