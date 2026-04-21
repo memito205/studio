@@ -1787,20 +1787,37 @@ const CollectionTabView: React.FC<{
     const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' });
 
     const fetchTransfers = useCallback(async () => {
+        const { numeroTF, bodegaOrigen, bodegaDestino } = filters;
         setIsLoading(true);
-        const result = await getTransfersByStatus('En Tránsito');
+        
+        let result;
+        if (numeroTF) {
+            result = await getTransfersByQuery(numeroTF, 'number');
+        } else if (bodegaOrigen) {
+            result = await getTransfersByQuery(bodegaOrigen, 'origin');
+        } else if (bodegaDestino) {
+            result = await getTransfersByQuery(bodegaDestino, 'destination');
+        } else {
+            result = await getTransfersByStatus('En Tránsito');
+        }
+
         if (result.data) {
-            const sorted = [...result.data].sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
+            // Filter only 'En Tránsito' records from the query result
+            const collected = result.data.filter(t => t.status === 'En Tránsito');
+            const sorted = [...collected].sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
             setTransfers(sorted);
+            if (sorted.length === 0) {
+                toast({ title: 'Sin resultados', description: 'No se encontraron transferencias En Tránsito con esos criterios.' });
+            }
         } else {
             toast({ variant: 'destructive', title: 'Error', description: result.error || 'Failed to load transfers' });
         }
         setIsLoading(false);
-    }, [toast]);
+    }, [filters, toast]);
 
     useEffect(() => {
-        fetchTransfers();
-    }, [fetchTransfers]);
+        // No longer loading automatically on mount to save reads.
+    }, []);
 
     useEffect(() => {
         const handler = setTimeout(() => {
@@ -1871,11 +1888,15 @@ const CollectionTabView: React.FC<{
                         Confirmar Recolección de ({selectedTransfers.size}) TFs
                     </Button>
                 </div>
-                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 p-4 border rounded-lg bg-muted/50">
+                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4 p-4 border rounded-lg bg-muted/50 items-end">
                     <Input placeholder="Filtrar por # TF..." value={filters.numeroTF} onChange={e => setFilters(prev => ({...prev, numeroTF: e.target.value}))} />
                     <Input placeholder="Filtrar por Origen..." value={filters.bodegaOrigen} onChange={e => setFilters(prev => ({...prev, bodegaOrigen: e.target.value}))} />
                     <Input placeholder="Filtrar por Destino..." value={filters.bodegaDestino} onChange={e => setFilters(prev => ({...prev, bodegaDestino: e.target.value}))} />
-                    <Button variant="ghost" onClick={() => setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' })}>Limpiar Filtros</Button>
+                    <Button onClick={fetchTransfers} disabled={isLoading}>
+                        {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Search className="mr-2 h-4 w-4" />}
+                        Buscar
+                    </Button>
+                    <Button variant="ghost" onClick={() => { setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' }); setTransfers([]); }}>Limpiar</Button>
                 </div>
                  <div className="border rounded-md max-h-[60vh] overflow-y-auto">
                     <Table>
