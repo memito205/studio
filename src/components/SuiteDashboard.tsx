@@ -8,6 +8,7 @@ import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth-context';
+import { VersionChecker } from './VersionChecker';
 
 interface ModuleCardProps {
   icon: React.ElementType;
@@ -309,6 +310,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
                     </Button>
                 </div>
             )}
+            <VersionChecker />
         </div>
     );
 }

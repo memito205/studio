@@ -15,6 +15,8 @@ import * as XLSX from 'xlsx';
 import { normalizeHeader, parseFlexibleDate, excelSerialDateToJSDate, findCaseInsensitiveKey, extractLocalDateString } from '@/lib/parsingUtils';
 import { processReport } from '@/services/reportProcessor';
 
+export const CURRENT_APP_VERSION = "1.1.0"; // Increment this with each significant deploy
+
 
 // Helper function to convert Dates back to Timestamps FOR WRITING to Firestore
 const convertDatesToTimestamps = (data: any): any => {
@@ -3456,6 +3458,31 @@ export async function getCarrierCODConfig(): Promise<{ success: boolean; data?: 
         const snap = await getDoc(doc(firestore, 'carrierConfig', 'cod'));
         if (!snap.exists()) return { success: true, data: {} };
         return { success: true, data: (snap.data().rules as Record<string, CODRule>) || {} };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+export async function getAppVersion(): Promise<{ version: string | null; error?: string }> {
+    try {
+        const docRef = doc(firestore, 'app_metadata', 'current_version');
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+            return { version: docSnap.data().version };
+        }
+        return { version: null };
+    } catch (error: any) {
+        return { version: null, error: error.message };
+    }
+}
+
+export async function updateAppVersion(newVersion: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        await setDoc(doc(firestore, 'app_metadata', 'current_version'), {
+            version: newVersion,
+            updatedAt: Timestamp.now()
+        });
+        return { success: true };
     } catch (error: any) {
         return { success: false, error: error.message };
     }
