@@ -591,7 +591,7 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
 
             if (!storedOrder) {
                 if (dispatchedStates.includes(newOrderState)) {
-                    finalOrder.dispatchDate = new Date();
+                    finalOrder.dispatchDate = analysisDate;
                 }
             } else {
                 const storedOrderState = (storedOrder.estado || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, ' ');
@@ -602,7 +602,7 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
                     dispatchedStates.includes(newOrderState); 
 
                 if (isNewDispatch) {
-                    finalOrder.dispatchDate = new Date();
+                    finalOrder.dispatchDate = analysisDate;
                 } else if (storedOrder.dispatchDate) {
                     finalOrder.dispatchDate = storedOrder.dispatchDate;
                 }
