@@ -107,7 +107,7 @@ const WarehouseAnalyzer: React.FC = () => {
     const FECHA_COL_NAMES = ['Fecha'];
     const WAREHOUSE_COL_NAMES = ['Bod. entrada', 'Bodega entrada', 'Bodega', 'Destino', 'Centro', 'Almacén', 'Almacen', 'Bodega Destino', 'BOD. DESTINO'];
     const WAREHOUSE_OUT_COL_NAMES = ['Bod. salida', 'Bodega salida', 'BOD SALIDA', 'Bodega Origen', 'BODEGA ORIGEN'];
-    const DOC_COL_NAMES = ['Nro documento.2', 'Nro documento.', 'Nro Documento'];
+    const DOC_COL_NAMES = ['Nro documento.2', 'Nro documento.', 'Nro Documento', 'Numero TF', 'numeroTF'];
     const QTY_COL_NAMES = ['CANTIDAD', 'Cantidad'];
     const IMAGE_LINK_COL_NAMES = ['LINK IMAGENES.1.1.1', 'LINK_IMAGENES.1.1.1', 'LINK IMAGENES', 'Link Imagenes', 'linkimagenes', 'Imagenes', 'Evidencias'];
     const ESTADO_PLATAFORMA_COL_NAMES = ['ESTADO PLATAFORMA', 'Estado_Plataforma', 'Estado Plataforma', 'estadoplataforma'];
