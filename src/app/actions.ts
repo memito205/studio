@@ -2421,6 +2421,97 @@ export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'statu
     }
 }
 
+/**
+ * Perform a differential sync of raw JSON records from the uploaded Excel
+ * specifically for the Warehouse Analyzer collection.
+ * It clears records that are not in the new file and updates/adds the rest.
+ */
+export async function syncAnalysisRecords(rawJson: any[]): Promise<{ success: boolean; error?: string; count?: number }> {
+    const analysisCollection = collection(firestore, 'transfers_analysis');
+    
+    try {
+        // 1. Get all current records to identify what to delete
+        const snapshot = await getDocs(analysisCollection);
+        const existingDocs = new Map<string, string>(); // Key -> docId
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            // Use same composite key logic
+            const key = `${data.numeroTF}-${(data.marca || '').trim().toUpperCase()}-${(data.grupo || '').trim().toUpperCase()}`;
+            existingDocs.set(key, doc.id);
+        });
+
+        const batch = writeBatch(firestore);
+        
+        // 2. Identify incoming records and their keys
+        const incomingDocs = new Map<string, any>();
+        rawJson.forEach(row => {
+            const numeroTF = String(row['Numero TF'] || 'N/A');
+            const marca = String(row['Marca'] || '').trim().toUpperCase();
+            const grupo = String(row['Grupo'] || '').trim().toUpperCase();
+            const key = `${numeroTF}-${marca}-${grupo}`;
+            
+            // Add or overwrite if duplicate keys in same file? Usually we keep all lines but composite key implies 1 per combination
+            incomingDocs.set(key, row);
+        });
+
+        // 3. Delete records NOT in the incoming map
+        existingDocs.forEach((docId, key) => {
+            if (!incomingDocs.has(key)) {
+                batch.delete(doc(analysisCollection, docId));
+            }
+        });
+
+        // 4. Update or Add incoming records
+        incomingDocs.forEach((row, key) => {
+            const existingId = existingDocs.get(key);
+            const docRef = existingId ? doc(analysisCollection, existingId) : doc(analysisCollection);
+            
+            // We save the raw row but normalized for query/sync
+            const dataToSave = {
+                ...row,
+                // Normalized fields for consistent identification
+                numeroTF: String(row['Numero TF'] || 'N/A'),
+                marca: String(row['Marca'] || ''),
+                grupo: String(row['Grupo'] || ''),
+                bodegaOrigen: String(row['Bodega Origen'] || 'N/A'),
+                bodegaDestino: String(row['Bodega Destino'] || 'N/A'),
+                fecha: row['Fecha'] ? convertDatesToTimestamps({ f: parseFlexibleDate(row['Fecha']) }).f : null,
+                cantidad: Number(row['Cantidad'] || 1),
+                lastSync: new Date()
+            };
+            
+            if (existingId) {
+                batch.update(docRef, dataToSave);
+            } else {
+                batch.set(docRef, dataToSave);
+            }
+        });
+
+        await batch.commit();
+        return { success: true, count: incomingDocs.size };
+
+    } catch (error: any) {
+        console.error("Error syncing analysis records:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function loadAnalysisRecords(): Promise<{ data?: any[]; error?: string }> {
+    try {
+        const analysisCollection = collection(firestore, 'transfers_analysis');
+        const snapshot = await getDocs(analysisCollection);
+        const data = snapshot.docs.map(doc => {
+            const raw = doc.data();
+            // Convert any timestamps back to dates for the UI analyzer
+            return convertTimestampsToDates(raw);
+        });
+        return { data };
+    } catch (error: any) {
+        console.error("Error loading analysis records:", error);
+        return { error: error.message };
+    }
+}
+
 export async function getTransfersByStatus(status: TransferStatus): Promise<{ data?: TransferEntry[]; error?: string }> {
     try {
         const q = query(collection(firestore, "transfers"), where("status", "==", status), limit(500));

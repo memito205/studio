@@ -12,7 +12,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { TransferEntry, TransferStatus, DeliveryManifest, UserRole, CollectionLog, AppUser, RouteEntry } from '@/types';
-import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery } from '@/app/actions';
+import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, syncAnalysisRecords, loadAnalysisRecords } from '@/app/actions';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -2221,6 +2221,9 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
           const worksheet = workbook.Sheets[sheetName];
           const json: any[] = XLSX.utils.sheet_to_json(worksheet);
   
+          // --- DUAL SYNC ---
+          const analysisResult = await syncAnalysisRecords(json);
+
           const newRoutes: Omit<TransferEntry, 'id' | 'status'>[] = json.map((row, index) => {
               const fecha = parseFlexibleDate(row['Fecha']);
               if (!fecha) {
@@ -2239,15 +2242,15 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
           }).filter((r): r is Omit<TransferEntry, 'id' | 'status'> => r !== null);
           
           if(newRoutes.length === 0) {
-            throw new Error("No se encontraron transferencias válidas en el archivo.");
+            throw new Error("No se encontraron transferencias válidas para operación en el archivo.");
           }
           
           const result = await saveTransfers(newRoutes);
   
           if(result.summary) {
               toast({ 
-                  title: "Base de Datos Actualizada", 
-                  description: `Se añadieron ${result.summary.added} TFs nuevas, se actualizaron ${result.summary.updated} y se eliminaron ${result.summary.removed} de 'En Tránsito'.` 
+                  title: "Sincronización Completa", 
+                  description: `Análisis: ${analysisResult.count || 0} registros. Operación: ${result.summary.added} nuevas / ${result.summary.updated} actualizadas.` 
               });
               fetchData();
           } else if (result.error) {

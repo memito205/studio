@@ -19,7 +19,7 @@ import { useReportData } from './hooks/useReportData';
 import { findHeader, normalizeDate, formatDate, parseDateString, generatePendingSummaryPdf, getWeekStartDate } from './utils/helpers';
 import type { ExcelDataRow, BreaksReportData, ProcessedBreak, EmployeeDailyAnalysis, DailyAnalysis, WeeklyTrend, EmployeePerformance } from './types';
 import type { TransferEntry } from '@/types';
-import { loadAllTransfers } from '@/app/actions';
+import { loadAnalysisRecords } from '@/app/actions';
 import { FileIcon, PackageIcon, TruckIcon, ChartIcon, CheckCircleIcon, TableIcon, UserCheckIcon, PdfFileIcon } from './components/icons';
 import { Button } from '@/components/ui/button';
 import { RefreshCw, Database } from 'lucide-react';
@@ -63,26 +63,16 @@ const WarehouseAnalyzer: React.FC = () => {
     setIsLoading(true);
     setError(null);
     try {
-        const result = await loadAllTransfers();
+        const result = await loadAnalysisRecords();
         if (result.error) {
             throw new Error(result.error);
         }
         
         if (result.data) {
-            const mappedData: ExcelDataRow[] = result.data.map(t => ({
-                'Fecha': t.fecha,
-                'Nro Documento': t.numeroTF,
-                'Bodega Origen': t.bodegaOrigen,
-                'Bodega Destino': t.bodegaDestino,
-                'Cantidad': t.cantidad || 1,
-                'Marca': t.marca || 'N/A',
-                'Grupo': t.grupo || 'N/A',
-                'Estado': t.status,
-            }));
-            
-            processData(mappedData);
-            setDataCount(mappedData.length);
-            setMainFileName("Base de Datos (Firestore)");
+            // No need to map manually here, processData handles column detection
+            processData(result.data);
+            setDataCount(result.data.length);
+            setMainFileName("Base de Datos (Análisis Raw)");
         }
     } catch (err: any) {
         setError(`Error al cargar datos desde la base de datos: ${err.message}`);
