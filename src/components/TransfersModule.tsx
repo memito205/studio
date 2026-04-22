@@ -42,6 +42,45 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from './ui/collap
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { TransferLogDialog } from './TransferLogDialog';
 
+interface GroupedTransfer extends TransferEntry {
+    allIds: string[];
+}
+
+const groupTransfersByTF = (transfers: TransferEntry[], placaMap?: Map<string, string>): GroupedTransfer[] => {
+    const groups = new Map<string, GroupedTransfer>();
+    
+    transfers.forEach(t => {
+        const placa = placaMap ? (placaMap.get(t.id) || '') : '';
+        const key = `${t.numeroTF}-${t.bodegaOrigen}-${t.bodegaDestino}-${t.status}-${placa}`;
+        const existing = groups.get(key);
+        
+        if (existing) {
+            existing.allIds.push(t.id);
+            existing.cantidad = Number(existing.cantidad || 0) + Number(t.cantidad || 0);
+            
+            // Handle multiple brands/groups
+            if (t.marca && t.marca !== existing.marca) {
+                if (!existing.marca?.split(', ').includes(t.marca)) {
+                    existing.marca = existing.marca && existing.marca !== 'N/A' ? `${existing.marca}, ${t.marca}` : t.marca;
+                }
+            }
+            if (t.grupo && t.grupo !== existing.grupo) {
+               if (!existing.grupo?.split(', ').includes(t.grupo)) {
+                    existing.grupo = existing.grupo && existing.grupo !== 'N/A' ? `${existing.grupo}, ${t.grupo}` : t.grupo;
+                }
+            }
+        } else {
+            groups.set(key, {
+                ...t,
+                allIds: [t.id],
+                cantidad: Number(t.cantidad || 0)
+            });
+        }
+    });
+    
+    return Array.from(groups.values());
+};
+
 
 const getStatusBadge = (status: TransferStatus) => {
     switch (status) {
@@ -816,10 +855,17 @@ const WarehouseReceptionView: React.FC<{
                             <TableBody>
                                 {isLoading ? (
                                     <TableRow><TableCell colSpan={5} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
-                                ) : foundTransfers.length > 0 ? foundTransfers.map(t => (
+                                ) : foundTransfers.length > 0 ? groupTransfersByTF(foundTransfers).map(t => (
                                     <TableRow key={t.id} data-state={selectedTransfers.has(t.id) ? "selected" : ""}>
-                                        <TableCell><Checkbox checked={selectedTransfers.has(t.id)} onCheckedChange={(checked) => handleSelectTransfer(t.id, !!checked)} /></TableCell>
-                                        <TableCell>{t.numeroTF}</TableCell>
+                                        <TableCell>
+                                            <Checkbox 
+                                                checked={t.allIds.every(id => selectedTransfers.has(id))} 
+                                                onCheckedChange={(checked) => {
+                                                    t.allIds.forEach(id => handleSelectTransfer(id, !!checked));
+                                                }} 
+                                            />
+                                        </TableCell>
+                                        <TableCell className="font-medium">{t.numeroTF}</TableCell>
                                         <TableCell>{t.bodegaOrigen}</TableCell>
                                         <TableCell>{t.bodegaDestino}</TableCell>
                                         <TableCell>{getStatusBadge(t.status)}</TableCell>
@@ -889,11 +935,12 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         setIsLogOpen(true);
     };
 
-    const handleConfirmPrintAndReceive = useCallback(async (transfer: TransferEntry) => {
+    const handleConfirmPrintAndReceive = useCallback(async (transfer: GroupedTransfer | TransferEntry) => {
         if (!transfer) return;
         setIsPrinting(true);
         try {
-            const result = await updateTransferStatus(transfer.id, 'Recibido en Bodega');
+            const ids = 'allIds' in transfer ? transfer.allIds : [transfer.id];
+            const result = await updateTransferStatus(ids, 'Recibido en Bodega');
             if (result.success) {
                 toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
                 onRefresh();
@@ -930,7 +977,9 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         if (!statusChangeState.transfer) return;
         setIsUpdatingStatus(true);
         try {
-            const result = await updateTransferStatus(statusChangeState.transfer.id, newStatus, justification);
+            const transfer = statusChangeState.transfer as GroupedTransfer | TransferEntry;
+            const ids = 'allIds' in transfer ? transfer.allIds : [transfer.id];
+            const result = await updateTransferStatus(ids, newStatus, justification);
             if (result.success) {
                 toast({ title: 'Éxito', description: 'El estado de la transferencia ha sido actualizado.' });
                 onRefresh();
@@ -1012,10 +1061,11 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         );
     }, [transfersForManifest, manifestFilters]);
     
-    const handleUpdateStatus = async (transfer: TransferEntry, newStatus: TransferStatus) => {
-        const result = await updateTransferStatus(transfer.id, newStatus);
+    const handleUpdateStatus = async (transfer: GroupedTransfer | TransferEntry, newStatus: TransferStatus) => {
+        const ids = 'allIds' in transfer ? transfer.allIds : [transfer.id];
+        const result = await updateTransferStatus(ids, newStatus);
         if (result.success) {
-            toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como '${newStatus}'.`});
+            toast({ title: 'Estado Actualizado', description: `Se marcaron ${ids.length} línea(s) como '${newStatus}'.`});
             onRefresh();
         } else {
             toast({ variant: 'destructive', title: 'Error al Actualizar', description: result.error });
@@ -1085,21 +1135,25 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
       const tfToFind = (codeParts.length > 1 ? codeParts.slice(1).join('-') : normalizedCode).trim();
       const destinoScanned = (codeParts.length > 1 ? codeParts[0] : null);
 
-      const transfer = transfersForManifest.find(t => t.numeroTF.trim().toUpperCase() === tfToFind);
+      const matchingTransfers = transfersForManifest.filter(t => t.numeroTF.trim().toUpperCase() === tfToFind);
 
-      if (transfer) {
-          if (destinoScanned && transfer.bodegaDestino.toUpperCase() !== destinoScanned) {
+      if (matchingTransfers.length > 0) {
+          const firstTransfer = matchingTransfers[0];
+          if (destinoScanned && firstTransfer.bodegaDestino.toUpperCase() !== destinoScanned) {
               toast({
                   variant: 'destructive',
                   title: 'Destino Incorrecto',
-                  description: `La TF '${tfToFind}' fue encontrada, pero su destino es '${transfer.bodegaDestino}', no '${destinoScanned}'.`
+                  description: `La TF '${tfToFind}' fue encontrada, pero su destino es '${firstTransfer.bodegaDestino}', no '${destinoScanned}'.`
               });
           } else {
-              if (selectedForManifest.has(transfer.id)) {
-                  toast({ variant: 'default', title: 'Ya Seleccionado', description: `La TF '${transfer.numeroTF}' ya está en la lista.` });
+              const allMatchingIds = matchingTransfers.map(t => t.id);
+              const alreadySelected = allMatchingIds.every(id => selectedForManifest.has(id));
+              
+              if (alreadySelected) {
+                  toast({ variant: 'default', title: 'Ya Seleccionado', description: `La TF '${tfToFind}' ya está en la lista.` });
               } else {
-                  handleSelectForManifest(transfer.id, true);
-                  toast({ title: 'TF Agregada', description: `Se añadió '${transfer.numeroTF}' al manifiesto.` });
+                  allMatchingIds.forEach(id => handleSelectForManifest(id, true));
+                  toast({ title: 'TF Agregada', description: `Se añadió '${tfToFind}' (${matchingTransfers.length} líneas) al manifiesto.` });
               }
           }
       } else {
@@ -1112,27 +1166,40 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         if (selectedForManifest.size === 0) {
             return { totalTFs: 0, totalItems: 0, destinations: {} };
         }
-        const selectedTFs = operationalTransfers.filter(t => selectedForManifest.has(t.id));
+        const selectedLines = operationalTransfers.filter(t => selectedForManifest.has(t.id));
         
-        const totalTFs = selectedTFs.length; // Count of TF documents
-        const totalItems = selectedTFs.reduce((sum, t) => sum + (t.cantidad || 1), 0); // Sum of quantities
+        // Sum total quantities
+        const totalItems = selectedLines.reduce((sum, t) => sum + (t.cantidad || 0), 0);
 
-        const destinations = selectedTFs.reduce((acc, t) => {
+        // Group by TF + Route to count "Documents" and get destination summary
+        const uniqueTFs = new Set(selectedLines.map(t => `${t.numeroTF}-${t.bodegaOrigen}-${t.bodegaDestino}`));
+        const totalTFs = uniqueTFs.size;
+
+        const destinations = selectedLines.reduce((acc, t) => {
             const dest = t.bodegaDestino || 'N/A';
             if (!acc[dest]) {
-                acc[dest] = { tfCount: 0, itemCount: 0 };
+                acc[dest] = { tfCountSet: new Set<string>(), itemCount: 0 };
             }
-            acc[dest].tfCount += 1;
-            acc[dest].itemCount += (t.cantidad || 1);
+            acc[dest].tfCountSet.add(`${t.numeroTF}-${t.bodegaOrigen}`);
+            acc[dest].itemCount += (t.cantidad || 0);
             return acc;
-        }, {} as Record<string, { tfCount: number, itemCount: number }>);
+        }, {} as Record<string, { tfCountSet: Set<string>, itemCount: number }>);
+        
+        // Transform destinations for display
+        const displayDestinations: Record<string, { tfCount: number, itemCount: number }> = {};
+        Object.entries(destinations).forEach(([key, val]) => {
+            displayDestinations[key] = {
+                tfCount: val.tfCountSet.size,
+                itemCount: val.itemCount
+            };
+        });
         
         return {
             totalTFs,
             totalItems,
-            destinations
+            destinations: displayDestinations
         };
-    }, [selectedForManifest, transfers]);
+    }, [selectedForManifest, operationalTransfers]);
 
 
     return (
@@ -1229,19 +1296,20 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                     </TableRow>
                                 </TableHeader>
                                 <TableBody>
-                                    {supervisorValidationTransfers.length > 0 ? supervisorValidationTransfers.map(t => (
+                                    {supervisorValidationTransfers.length > 0 ? groupTransfersByTF(supervisorValidationTransfers, transferIdToPlacaMap).map(t => (
                                         <TableRow key={t.id}>
                                             <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
-                                            <TableCell>{transferIdToPlacaMap.get(t.id) || 'N/A'}</TableCell>
-                                            <TableCell>{t.numeroTF}</TableCell>
+                                            <TableCell className="font-mono">{transferIdToPlacaMap.get(t.id) || 'N/A'}</TableCell>
+                                            <TableCell className="font-medium">{t.numeroTF}</TableCell>
                                             <TableCell>{t.bodegaDestino}</TableCell>
+                                            <TableCell className="text-center font-bold">{t.cantidad}</TableCell>
                                             <TableCell className="text-right space-x-2">
                                                 <Button size="sm" variant="outline" onClick={() => handleUpdateStatus(t, 'Entregado en Ruta')}>Entregado en Ruta</Button>
                                                 <Button size="sm" onClick={() => handleUpdateStatus(t, 'Validado Supervisor')}>Validar en Bodega</Button>
                                             </TableCell>
                                         </TableRow>
                                     )) : (
-                                        <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground">No hay transferencias pendientes de validación.</TableCell></TableRow>
+                                        <TableRow><TableCell colSpan={6} className="h-24 text-center text-muted-foreground">No hay transferencias pendientes de validación.</TableCell></TableRow>
                                     )}
                                 </TableBody>
                             </Table>
@@ -1349,24 +1417,24 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                             </TableHeader>
                             <TableBody>
                                 {isLoading ? (
-                                    <TableRow><TableCell colSpan={10} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
+                                    <TableRow><TableCell colSpan={11} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
                                 ) : filteredTransfers.length > 0 ? (
-                                    filteredTransfers.map(t => {
+                                    groupTransfersByTF(filteredTransfers, transferIdToPlacaMap).map((t) => {
                                         const placa = transferIdToPlacaMap.get(t.id) || 'N/A';
                                         return (
-                                         <TableRow key={t.id}>
+                                        <TableRow key={t.id}>
                                             <TableCell>{t.fecha.toLocaleDateString('es-CO')}</TableCell>
                                             <TableCell className="font-medium">{t.numeroTF}</TableCell>
                                             <TableCell>{t.bodegaOrigen}</TableCell>
                                             <TableCell>{t.bodegaDestino}</TableCell>
-                                            <TableCell>{t.marca || '-'}</TableCell>
-                                            <TableCell>{t.grupo || '-'}</TableCell>
-                                            <TableCell>{t.cantidad || 1}</TableCell>
+                                            <TableCell className="max-w-[150px] truncate" title={t.marca}>{t.marca || '-'}</TableCell>
+                                            <TableCell className="max-w-[150px] truncate" title={t.grupo}>{t.grupo || '-'}</TableCell>
+                                            <TableCell className="text-center font-bold">{t.cantidad}</TableCell>
                                             <TableCell>{getStatusBadge(t.status)}</TableCell>
-                                            <TableCell>{placa}</TableCell>
+                                            <TableCell className="font-mono">{placa}</TableCell>
                                             <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
                                             <TableCell>{t.enviadoAt ? format(t.enviadoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
-                                            <TableCell className="text-right space-x-1">
+                                            <TableCell className="text-right">
                                                 <DropdownMenu>
                                                     <DropdownMenuTrigger asChild>
                                                         <Button variant="ghost" size="icon">
@@ -1397,12 +1465,16 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                                                             <AlertDialogHeader>
                                                                                 <AlertDialogTitle>¿Está seguro?</AlertDialogTitle>
                                                                                 <AlertDialogDescription>
-                                                                                    Esta acción eliminará permanentemente el registro del TF: {t.numeroTF}.
+                                                                                    Esta acción eliminará todos los registros del TF: {t.numeroTF} ({t.allIds.length} líneas).
                                                                                 </AlertDialogDescription>
                                                                             </AlertDialogHeader>
                                                                             <AlertDialogFooter>
                                                                                 <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                                                                                <AlertDialogAction onClick={() => handleDeleteTransfer(t.id)}>Eliminar</AlertDialogAction>
+                                                                                <AlertDialogAction onClick={async () => {
+                                                                                    for (const id of t.allIds) {
+                                                                                        await handleDeleteTransfer(id);
+                                                                                    }
+                                                                                }}>Eliminar Todo</AlertDialogAction>
                                                                             </AlertDialogFooter>
                                                                         </AlertDialogContent>
                                                                     </AlertDialog>
@@ -1415,7 +1487,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                         </TableRow>
                                     )})
                                 ) : (
-                                    <TableRow><TableCell colSpan={10} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
+                                    <TableRow><TableCell colSpan={11} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
                                 )}
                             </TableBody>
                         </Table>
@@ -1489,14 +1561,15 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                     <TableRow>
                                         <TableHead>
                                             <Checkbox
-                                                checked={filteredTransfersForManifest.length > 0 && selectedForManifest.size === filteredTransfersForManifest.length}
+                                                checked={filteredTransfersForManifest.length > 0 && groupTransfersByTF(filteredTransfersForManifest).every(t => t.allIds.every(id => selectedForManifest.has(id)))}
                                                 onCheckedChange={(checked) => {
-                                                    const ids = filteredTransfersForManifest.map(t => t.id);
+                                                    const allGrouped = groupTransfersByTF(filteredTransfersForManifest);
+                                                    const allIds = allGrouped.flatMap(t => t.allIds);
                                                     if(checked) {
-                                                        setSelectedForManifest(new Set([...selectedForManifest, ...ids]));
+                                                        setSelectedForManifest(new Set([...selectedForManifest, ...allIds]));
                                                     } else {
                                                         const newSet = new Set(selectedForManifest);
-                                                        ids.forEach(id => newSet.delete(id));
+                                                        allIds.forEach(id => newSet.delete(id));
                                                         setSelectedForManifest(newSet);
                                                     }
                                                 }}
@@ -1510,14 +1583,27 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                     </TableRow>
                                 </TableHeader>
                                 <TableBody>
-                                    {filteredTransfersForManifest.length > 0 ? filteredTransfersForManifest.map(t => (
-                                        <TableRow key={t.id} data-state={selectedForManifest.has(t.id) ? "selected" : ""}>
-                                            <TableCell><Checkbox checked={selectedForManifest.has(t.id)} onCheckedChange={(checked) => handleSelectForManifest(t.id, !!checked)} /></TableCell>
-                                            <TableCell>{t.numeroTF}</TableCell>
+                                    {filteredTransfersForManifest.length > 0 ? groupTransfersByTF(filteredTransfersForManifest).map(t => (
+                                        <TableRow key={t.id} data-state={t.allIds.every(id => selectedForManifest.has(id)) ? "selected" : ""}>
+                                            <TableCell>
+                                                <Checkbox 
+                                                    checked={t.allIds.every(id => selectedForManifest.has(id))} 
+                                                    onCheckedChange={(checked) => {
+                                                        const newSet = new Set(selectedForManifest);
+                                                        if (checked) {
+                                                            t.allIds.forEach(id => newSet.add(id));
+                                                        } else {
+                                                            t.allIds.forEach(id => newSet.delete(id));
+                                                        }
+                                                        setSelectedForManifest(newSet);
+                                                    }} 
+                                                />
+                                            </TableCell>
+                                            <TableCell className="font-medium">{t.numeroTF}</TableCell>
                                             <TableCell>{t.bodegaOrigen}</TableCell>
                                             <TableCell>{t.bodegaDestino}</TableCell>
                                             <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yyyy HH:mm") : 'N/A'}</TableCell>
-                                            <TableCell><Badge>{t.status}</Badge></TableCell>
+                                            <TableCell>{getStatusBadge(t.status)}</TableCell>
                                         </TableRow>
                                     )) : (
                                         <TableRow><TableCell colSpan={6} className="h-24 text-center text-muted-foreground">No hay transferencias disponibles con los filtros actuales.</TableCell></TableRow>

@@ -2489,35 +2489,37 @@ export async function deleteTransfer(transferId: string): Promise<{ success: boo
     }
 }
 
-export async function updateTransferStatus(transferId: string, status: TransferStatus, justification?: string): Promise<{ success: boolean; error?: string }> {
+export async function updateTransferStatus(transferId: string | string[], status: TransferStatus, justification?: string): Promise<{ success: boolean; error?: string }> {
     try {
-        if (!transferId) {
-            return { success: false, error: 'ID de transferencia no proporcionado.' };
+        const ids = Array.isArray(transferId) ? transferId : [transferId];
+        if (ids.length === 0) {
+            return { success: false, error: 'ID(s) de transferencia no proporcionado(s).' };
         }
-        const transferRef = doc(firestore, "transfers", transferId);
+
+        const batch = writeBatch(firestore);
         
         const updates: any = { status };
-
         if (justification) {
             updates.manualStatusChangeJustification = justification;
         }
-    
-        if (status === 'Recibido en Bodega') {
-            updates.recibidoAt = Timestamp.now();
-        } else if (status === 'Enviado a Destino') {
-            updates.enviadoAt = Timestamp.now();
-        } else if (status === 'Validado Supervisor') {
-            updates.validatedAt = Timestamp.now(); // Add new timestamp
-        } else if (status === 'Entregado en Ruta') {
-            updates.deliveredAt = Timestamp.now(); // Add new timestamp
-        } else if (status === 'Recolectado en Ruta') {
-            updates.recibidoAt = Timestamp.now(); // Save the collection time
-        }
 
-        await updateDoc(transferRef, updates);
+        const now = Timestamp.now();
+        if (status === 'Recibido en Bodega') updates.recibidoAt = now;
+        else if (status === 'Enviado a Destino') updates.enviadoAt = now;
+        else if (status === 'Validado Supervisor') updates.validatedAt = now;
+        else if (status === 'Entregado en Ruta') updates.deliveredAt = now;
+        else if (status === 'Recolectado en Ruta') updates.recibidoAt = now;
+
+        ids.forEach(id => {
+            const transferRef = doc(firestore, "transfers", id);
+            batch.update(transferRef, updates);
+        });
+
+        await batch.commit();
         return { success: true };
     } catch (error: any) {
-        return { success: false, error: `No se pudo actualizar el estado de la transferencia: ${error.message}` };
+        console.error("Error actualizando estados:", error);
+        return { success: false, error: `No se pudo actualizar el estado de las transferencias: ${error.message}` };
     }
 }
 
