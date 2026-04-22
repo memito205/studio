@@ -1,13 +1,12 @@
+"use client";
 
 import React, { useState, useEffect, useMemo } from 'react';
+declare const XLSX: any;
 import FileUpload from './FileUpload';
 import Loader from './Loader';
 import { findHeader, generateVehiclePlanPdf, generateCajonReportPdf, docNumberMapping, exportToExcel, generateMainRouteTemplate, generateAdditionalRouteTemplate } from '../utils/helpers';
 import { TruckIcon, FileClockIcon, GripVerticalIcon, DownloadIcon, ArrowRightIcon, SortAscIcon, ClipboardPasteIcon, PlusCircleIcon, PdfFileIcon, CheckCircleIcon, AlertTriangleIcon } from './icons';
 import type { ExcelDataRow, VehiclePlan, RouteTask } from '../types';
-
-
-declare const XLSX: any;
 
 const addressMapping: { [key: string]: string } = {
     'B1': 'CC COMERCIAL DIAMANTE', 'B2': 'EDIFICIO NUEVO GUAYAQUIL', 'B3': 'CC COMERCIAL VIVA CAUCACIA',
