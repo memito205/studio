@@ -2357,20 +2357,21 @@ export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'statu
     const transfersCollection = collection(firestore, 'transfers');
     
     try {
-        // 1. Get ALL current transfers that might be related
-        // Note: For large datasets, this might need chunking, but usually transfer uploads are manageable (~100-500 rows)
-        const incomingTFs = new Set(transfers.map(t => t.numeroTF));
-        
-        // We only care about transfers that are NOT in a terminal/protected state if we were deleting,
-        // but since we want to UPDATE protected ones too, we need a broader look.
-        // However, to keep it efficient, we only fetch what's currently in the DB.
+        // 1. Get ALL current transfers to build an existence map
         const existingSnapshot = await getDocs(transfersCollection); 
         
-        const existingTransfersByTF = new Map<string, { id: string, data: TransferEntry }>();
+        const existingTransfersByKey = new Map<string, { id: string, data: TransferEntry }>();
         existingSnapshot.forEach(doc => {
             const data = doc.data() as TransferEntry;
-            existingTransfersByTF.set(data.numeroTF, { id: doc.id, data });
+            // Composite Key: TF + Marca + Grupo (Normalized)
+            const key = `${data.numeroTF}-${(data.marca || '').trim().toUpperCase()}-${(data.grupo || '').trim().toUpperCase()}`;
+            existingTransfersByKey.set(key, { id: doc.id, data });
         });
+
+        // Unique keys in the incoming file
+        const incomingKeys = new Set(transfers.map(t => 
+            `${t.numeroTF}-${(t.marca || '').trim().toUpperCase()}-${(t.grupo || '').trim().toUpperCase()}`
+        ));
 
         const batch = writeBatch(firestore);
         let added = 0;
@@ -2378,9 +2379,9 @@ export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'statu
         let removed = 0;
 
         // 2. Identify what to DELETE: In Firebase (as "En Tránsito") but NOT in Excel
-        // We only delete "En Tránsito" to avoid losing history of processed goods.
-        for (const [numeroTF, existing] of existingTransfersByTF.entries()) {
-            if (!incomingTFs.has(numeroTF) && existing.data.status === 'En Tránsito') {
+        // Comparison is now done via the composite key.
+        for (const [key, existing] of existingTransfersByKey.entries()) {
+            if (!incomingKeys.has(key) && existing.data.status === 'En Tránsito') {
                 batch.delete(doc(transfersCollection, existing.id));
                 removed++;
             }
@@ -2388,20 +2389,20 @@ export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'statu
 
         // 3. Process incoming transfers: ADD or UPDATE
         for (const incoming of transfers) {
-            const existing = existingTransfersByTF.get(incoming.numeroTF);
+            const compositeKey = `${incoming.numeroTF}-${(incoming.marca || '').trim().toUpperCase()}-${(incoming.grupo || '').trim().toUpperCase()}`;
+            const existing = existingTransfersByKey.get(compositeKey);
             
             if (existing) {
                 // UPDATE metadata but keep status
                 const docRef = doc(transfersCollection, existing.id);
                 const updates = {
                     ...convertDatesToTimestamps(incoming),
-                    // Ensure we don't overwrite status
-                    status: existing.data.status 
+                    status: existing.data.status // Preserve operational status
                 };
                 batch.update(docRef, updates);
                 updated++;
             } else {
-                // ADD new record
+                // ADD new record (New line for this TF or brand combination)
                 const docRef = doc(transfersCollection); 
                 batch.set(docRef, { 
                     ...convertDatesToTimestamps(incoming), 
@@ -2415,7 +2416,7 @@ export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'statu
         return { success: true, summary: { added, updated, removed } };
 
     } catch (error: any) {
-        console.error("Error guardando transferencias (Sync):", error);
+        console.error("Error guardando transferencias (Composite Sync):", error);
         return { success: false, error: `No se pudieron guardar las transferencias: ${error.message}` };
     }
 }
