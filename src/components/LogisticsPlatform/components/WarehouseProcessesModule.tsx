@@ -7,7 +7,7 @@ import { findHeader, formatDate, normalizeDate, generateDailySummaryPdf, exportT
 import type { ExcelDataRow, ObservationSummary, EntregasPorVehiculo, PendingGoodsItem } from '../types';
 import { ClipboardPasteIcon, PlusCircleIcon, PdfFileIcon, PackageIcon, Trash2Icon, DownloadIcon, FileClockIcon } from './icons';
 
-declare const XLSX: any;
+import * as XLSX from 'xlsx';
 
 const generateUniqueId = () => {
     return Math.random().toString(36).substring(2, 15) + Date.now().toString(36);

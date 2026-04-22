@@ -1,7 +1,5 @@
-
+import * as XLSX from 'xlsx';
 import type { SlaAnalysisData, PendingDocsAnalysisData, AnalysisResult, BrandSummaryRecord, PendingSummaryRecord, FinalizedDocDetail, VehiclePlan, ObservationSummary, EntregasPorVehiculo, ExcelDataRow, PendingGoodsItem, PendingDocDetail, RouteTask } from '../types';
-
-declare const XLSX: any;
 declare const jspdf: any;
 
 export const docNumberMapping: { [key: string]: string } = {

@@ -9,7 +9,7 @@ import { findHeader, formatDate, normalizeDate } from '../utils/helpers';
 import type { ExcelDataRow } from '../types';
 import { ClipboardSearchIcon, PackageIcon } from './icons';
 
-declare const XLSX: any;
+import * as XLSX from 'xlsx';
 declare const JSZip: any;
 
 interface ReportState {

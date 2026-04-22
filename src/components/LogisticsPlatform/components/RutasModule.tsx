@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from 'react';
-declare const XLSX: any;
+import * as XLSX from 'xlsx';
 import FileUpload from './FileUpload';
 import Loader from './Loader';
 import { findHeader, generateVehiclePlanPdf, generateCajonReportPdf, docNumberMapping, exportToExcel, generateMainRouteTemplate, generateAdditionalRouteTemplate } from '../utils/helpers';
