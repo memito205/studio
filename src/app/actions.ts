@@ -2353,76 +2353,69 @@ export async function loadSampleVerifications(): Promise<{ success: boolean; dat
 
 
 // --- Transfers Module Actions ---
-export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'status'>[]): Promise<{ success: boolean; error?: string; summary?: { added: number, removed: number, skipped: number } }> {
+export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'status'>[]): Promise<{ success: boolean; error?: string; summary?: { added: number, updated: number, removed: number } }> {
     const transfersCollection = collection(firestore, 'transfers');
-    const protectedStatuses: TransferStatus[] = ['Recibido en Bodega', 'Enviado a Destino', 'Recolectado en Ruta', 'Entregado en Ruta', 'Validado Supervisor'];
     
     try {
-        // 1. Get current "En Tránsito" transfers to compare
-        const q = query(transfersCollection, where("status", "==", "En Tránsito"));
-        const existingSnapshot = await getDocs(q);
+        // 1. Get ALL current transfers that might be related
+        // Note: For large datasets, this might need chunking, but usually transfer uploads are manageable (~100-500 rows)
+        const incomingTFs = new Set(transfers.map(t => t.numeroTF));
         
-        const existingTransfers = new Map<string, { id: string, data: TransferEntry }>();
+        // We only care about transfers that are NOT in a terminal/protected state if we were deleting,
+        // but since we want to UPDATE protected ones too, we need a broader look.
+        // However, to keep it efficient, we only fetch what's currently in the DB.
+        const existingSnapshot = await getDocs(transfersCollection); 
+        
+        const existingTransfersByTF = new Map<string, { id: string, data: TransferEntry }>();
         existingSnapshot.forEach(doc => {
             const data = doc.data() as TransferEntry;
-            existingTransfers.set(data.numeroTF, { id: doc.id, data });
+            existingTransfersByTF.set(data.numeroTF, { id: doc.id, data });
         });
 
         const batch = writeBatch(firestore);
         let added = 0;
+        let updated = 0;
         let removed = 0;
-        let skipped = 0;
 
-        const incomingTFs = new Set(transfers.map(t => t.numeroTF));
-
-        // 2. Identify what to DELETE: In Firebase (En Tránsito) but NOT in Excel
-        for (const [numeroTF, existing] of existingTransfers.entries()) {
-            if (!incomingTFs.has(numeroTF)) {
+        // 2. Identify what to DELETE: In Firebase (as "En Tránsito") but NOT in Excel
+        // We only delete "En Tránsito" to avoid losing history of processed goods.
+        for (const [numeroTF, existing] of existingTransfersByTF.entries()) {
+            if (!incomingTFs.has(numeroTF) && existing.data.status === 'En Tránsito') {
                 batch.delete(doc(transfersCollection, existing.id));
                 removed++;
             }
         }
 
-        // 3. Identify what to ADD or SKIP: In Excel but check existence
-        for (const newTransfer of transfers) {
-            const existing = existingTransfers.get(newTransfer.numeroTF);
+        // 3. Process incoming transfers: ADD or UPDATE
+        for (const incoming of transfers) {
+            const existing = existingTransfersByTF.get(incoming.numeroTF);
             
             if (existing) {
-                // If it already exists as "En Tránsito", we skip it to save writes
-                // unless we wanted to update metadata, but user said "if it appears again, do not change"
-                skipped++;
-                continue;
+                // UPDATE metadata but keep status
+                const docRef = doc(transfersCollection, existing.id);
+                const updates = {
+                    ...convertDatesToTimestamps(incoming),
+                    // Ensure we don't overwrite status
+                    status: existing.data.status 
+                };
+                batch.update(docRef, updates);
+                updated++;
+            } else {
+                // ADD new record
+                const docRef = doc(transfersCollection); 
+                batch.set(docRef, { 
+                    ...convertDatesToTimestamps(incoming), 
+                    status: 'En Tránsito' 
+                });
+                added++;
             }
-
-            // Before adding, we MUST check if it exists in a PROTECTED state
-            // This is a safety check because existingSnapshot only had "En Tránsito"
-            const protectedQuery = query(transfersCollection, where("numeroTF", "==", newTransfer.numeroTF));
-            const protectedSnapshot = await getDocs(protectedQuery);
-            
-            let isProtected = false;
-            protectedSnapshot.forEach(doc => {
-                const data = doc.data() as TransferEntry;
-                if (data.status && protectedStatuses.includes(data.status)) {
-                    isProtected = true;
-                }
-            });
-
-            if (isProtected) {
-                skipped++;
-                continue;
-            }
-
-            // It's truly new or was previously deleted
-            const docRef = doc(transfersCollection); 
-            batch.set(docRef, { ...convertDatesToTimestamps(newTransfer), status: 'En Tránsito' });
-            added++;
         }
         
         await batch.commit();
-        return { success: true, summary: { added, removed, skipped } };
+        return { success: true, summary: { added, updated, removed } };
 
     } catch (error: any) {
-        console.error("Error guardando transferencias (Delta Sync):", error);
+        console.error("Error guardando transferencias (Sync):", error);
         return { success: false, error: `No se pudieron guardar las transferencias: ${error.message}` };
     }
 }

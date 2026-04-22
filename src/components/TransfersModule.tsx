@@ -1337,6 +1337,8 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                     <TableHead>Número TF</TableHead>
                                     <TableHead>Origen</TableHead>
                                     <TableHead>Destino</TableHead>
+                                    <TableHead>Marca</TableHead>
+                                    <TableHead>Grupo</TableHead>
                                     <TableHead>Cantidad</TableHead>
                                     <TableHead>Estado</TableHead>
                                     <TableHead>Placa Recolección</TableHead>
@@ -1352,11 +1354,13 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                     filteredTransfers.map(t => {
                                         const placa = transferIdToPlacaMap.get(t.id) || 'N/A';
                                         return (
-                                        <TableRow key={t.id}>
+                                         <TableRow key={t.id}>
                                             <TableCell>{t.fecha.toLocaleDateString('es-CO')}</TableCell>
                                             <TableCell className="font-medium">{t.numeroTF}</TableCell>
                                             <TableCell>{t.bodegaOrigen}</TableCell>
                                             <TableCell>{t.bodegaDestino}</TableCell>
+                                            <TableCell>{t.marca || '-'}</TableCell>
+                                            <TableCell>{t.grupo || '-'}</TableCell>
                                             <TableCell>{t.cantidad || 1}</TableCell>
                                             <TableCell>{getStatusBadge(t.status)}</TableCell>
                                             <TableCell>{placa}</TableCell>
@@ -1934,14 +1938,16 @@ const CollectionTabView: React.FC<{
 
 const DownloadTemplateButton: React.FC = () => {
     const handleDownload = () => {
-        const headers = ["Fecha", "Numero TF", "Bodega Origen", "Bodega Destino", "Cantidad"];
+        const headers = ["Fecha", "Numero TF", "Bodega Origen", "Bodega Destino", "Cantidad", "Marca", "Grupo"];
         const exampleData = [
             {
                 "Fecha": "2024-07-29",
                 "Numero TF": "TF-101",
                 "Bodega Origen": "BODEGA PPA",
                 "Bodega Destino": "TIENDA BELLO",
-                "Cantidad": 1
+                "Cantidad": 1,
+                "Marca": "MARCA EJEMPLO",
+                "Grupo": "CALZADO"
             }
         ];
         
@@ -2141,6 +2147,8 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
                   bodegaOrigen: String(row['Bodega Origen'] || 'N/A'),
                   bodegaDestino: String(row['Bodega Destino'] || 'N/A'),
                   cantidad: Number(row['Cantidad'] || 1),
+                  marca: String(row['Marca'] || ''),
+                  grupo: String(row['Grupo'] || ''),
               } as Omit<TransferEntry, 'id' | 'status'>;
           }).filter((r): r is Omit<TransferEntry, 'id' | 'status'> => r !== null);
           
@@ -2151,7 +2159,10 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
           const result = await saveTransfers(newRoutes);
   
           if(result.summary) {
-              toast({ title: "Base de Datos Actualizada", description: `Se añadieron ${result.summary.added} TFs nuevas, se eliminaron ${result.summary.removed} y se omitieron ${result.summary.skipped} por estar protegidos.` });
+              toast({ 
+                  title: "Base de Datos Actualizada", 
+                  description: `Se añadieron ${result.summary.added} TFs nuevas, se actualizaron ${result.summary.updated} y se eliminaron ${result.summary.removed} de 'En Tránsito'.` 
+              });
               fetchData();
           } else if (result.error) {
                throw new Error(result.error);

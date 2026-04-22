@@ -18,7 +18,12 @@ import NovedadesModule from './components/NovedadesModule';
 import { useReportData } from './hooks/useReportData';
 import { findHeader, normalizeDate, formatDate, parseDateString, generatePendingSummaryPdf, getWeekStartDate } from './utils/helpers';
 import type { ExcelDataRow, BreaksReportData, ProcessedBreak, EmployeeDailyAnalysis, DailyAnalysis, WeeklyTrend, EmployeePerformance } from './types';
+import type { TransferEntry } from '@/types';
+import { loadAllTransfers } from '@/app/actions';
 import { FileIcon, PackageIcon, TruckIcon, ChartIcon, CheckCircleIcon, TableIcon, UserCheckIcon, PdfFileIcon } from './components/icons';
+import { Button } from '@/components/ui/button';
+import { RefreshCw, Database } from 'lucide-react';
+import { toast } from '@/hooks/use-toast';
 
 
 declare const XLSX: any;
@@ -52,6 +57,43 @@ const WarehouseAnalyzer: React.FC = () => {
   const [startDate, setStartDate] = React.useState<string>('');
   const [endDate, setEndDate] = React.useState<string>('');
   const [documentNumberFilter, setDocumentNumberFilter] = React.useState('');
+  const [dataCount, setDataCount] = React.useState(0);
+
+  const fetchTransfersFromDB = React.useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+        const result = await loadAllTransfers();
+        if (result.error) {
+            throw new Error(result.error);
+        }
+        
+        if (result.data) {
+            const mappedData: ExcelDataRow[] = result.data.map(t => ({
+                'Fecha': t.fecha,
+                'Nro Documento': t.numeroTF,
+                'Bodega Origen': t.bodegaOrigen,
+                'Bodega Destino': t.bodegaDestino,
+                'Cantidad': t.cantidad || 1,
+                'Marca': t.marca || 'N/A',
+                'Grupo': t.grupo || 'N/A',
+                'Estado': t.status,
+            }));
+            
+            processData(mappedData);
+            setDataCount(mappedData.length);
+            setMainFileName("Base de Datos (Firestore)");
+        }
+    } catch (err: any) {
+        setError(`Error al cargar datos desde la base de datos: ${err.message}`);
+    } finally {
+        setIsLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchTransfersFromDB();
+  }, [fetchTransfersFromDB]);
 
   const handleClearFilters = () => {
     setSelectedWarehouse('all');
@@ -426,45 +468,69 @@ const WarehouseAnalyzer: React.FC = () => {
   const hasData = baseData.length > 0;
   
   return (
-    <div className="space-y-8">
-      <section className="bg-white rounded-lg shadow-lg p-6">
-          <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 1: Cargar Reporte Principal</h2>
-          <FileUpload 
-              onFileProcess={handleMainFileProcess} 
-              isLoading={isLoading}
-              fileName={mainFileName}
-              mainText="Arrastra o selecciona el archivo del reporte de bodega"
-              subText="Solo archivos .xlsx o .xls"
-              loadedSubText="Archivo cargado. Para cambiar, selecciona otro."
-          />
-          {isLoading && <Loader />}
-          {error && <div className="mt-4 text-center text-red-600 bg-red-100 p-3 rounded-md">{error}</div>}
-          {infoMessage && <div className="mt-4 text-center text-blue-600 bg-blue-100 p-3 rounded-md">{infoMessage}</div>}
-          
-          {hasData && (
-              <div className="mt-6">
-                <h3 className="font-semibold text-lg text-gray-700 mb-2">Validación de Columnas (Reporte Principal)</h3>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm border-collapse border border-slate-300">
-                      <thead className="bg-slate-50">
-                          <tr>
-                              <th className="border border-slate-300 p-2 text-left font-semibold text-gray-600">Columna Esperada</th>
-                              <th className="border border-slate-300 p-2 text-left font-semibold text-gray-600">Columna Encontrada en el Archivo</th>
-                          </tr>
-                      </thead>
-                      <tbody>
-                          {debugMapping.map(({ expected, found }) => (
-                              <tr key={expected}>
-                                  <td className="border border-slate-300 p-2">{expected}</td>
-                                  <td className={`border border-slate-300 p-2 font-mono ${found.includes('No encontrado') ? 'text-red-600' : 'text-green-700'}`}>{found}</td>
-                              </tr>
-                          ))}
-                      </tbody>
-                  </table>
+    <div className="space-y-6">
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+                <div className="p-3 bg-blue-50 rounded-lg">
+                    <Database className="w-6 h-6 text-blue-600" />
                 </div>
+                <div>
+                    <h3 className="font-semibold text-slate-900">Origen de Datos: Base de Datos (Transferencias)</h3>
+                    <p className="text-sm text-slate-500">Se están analizando {dataCount} registros. Marca y Grupo incluidos.</p>
+                </div>
+            </div>
+            
+            <div className="flex gap-2">
+                <Button 
+                    onClick={fetchTransfersFromDB} 
+                    disabled={isLoading}
+                    variant="outline"
+                    className="flex items-center gap-2"
+                >
+                    <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+                    Actualizar Datos
+                </Button>
+                
+                <FileUpload 
+                  onFileProcess={handleMainFileProcess} 
+                  isLoading={isLoading}
+                  fileName={mainFileName === "Base de Datos (Firestore)" ? null : mainFileName}
+                  mainText="Cargar Excel Manual (Opcional)"
+                  subText="Backup"
+                  loadedSubText="Archivo de backup cargado."
+                />
+            </div>
+        </div>
+      </div>
+
+      {isLoading && <Loader />}
+      {error && <div className="mt-4 text-center text-red-600 bg-red-100 p-3 rounded-md">{error}</div>}
+      {infoMessage && <div className="mt-4 text-center text-blue-600 bg-blue-100 p-3 rounded-md">{infoMessage}</div>}
+      
+      {hasData && (
+          <section className="bg-white rounded-lg shadow-lg p-6">
+              <h3 className="font-semibold text-lg text-gray-700 mb-2">Validación de Columnas y Mapeo</h3>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm border-collapse border border-slate-300">
+                    <thead className="bg-slate-50">
+                        <tr>
+                            <th className="border border-slate-300 p-2 text-left font-semibold text-gray-600">Campo de Análisis</th>
+                            <th className="border border-slate-300 p-2 text-left font-semibold text-gray-600">Origen Encontrado</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {debugMapping.map(({ expected, found }) => (
+                            <tr key={expected}>
+                                <td className="border border-slate-300 p-2">{expected}</td>
+                                <td className={`border border-slate-300 p-2 font-mono ${found.includes('No encontrado') ? 'text-red-600' : 'text-green-700'}`}>{found}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
               </div>
-          )}
-      </section>
+          </section>
+      )}
       
       {hasData && (
         <>

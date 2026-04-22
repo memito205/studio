@@ -373,6 +373,8 @@ export interface TransferEntry {
   bodegaOrigen: string;
   bodegaDestino: string;
   cantidad?: number;
+  marca?: string;
+  grupo?: string;
   status: TransferStatus;
   recibidoAt?: Date;
   enviadoAt?: Date;
