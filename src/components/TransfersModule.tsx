@@ -702,11 +702,12 @@ const WarehouseReceptionView: React.FC<{
         }
     };
     
-    const handleConfirmAndPrint = useCallback(async (transfer: TransferEntry) => {
+    const handleConfirmAndPrint = useCallback(async (transfer: GroupedTransfer | TransferEntry) => {
         if (!transfer) return;
         
         try {
-            const result = await updateTransferStatus(transfer.id, 'Recibido en Bodega');
+            const ids = 'allIds' in transfer ? (transfer as any).allIds : [transfer.id];
+            const result = await updateTransferStatus(ids, 'Recibido en Bodega');
             if (result.success) {
                 toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
                 onRefresh();
@@ -1438,11 +1439,11 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                             <TableCell className="font-medium">{t.numeroTF}</TableCell>
                                             <TableCell>{t.bodegaOrigen}</TableCell>
                                             <TableCell>{t.bodegaDestino}</TableCell>
-                                            <TableCell className="max-w-[150px] truncate" title={t.marca}>{t.marca || '-'}</TableCell>
-                                            <TableCell className="max-w-[150px] truncate" title={t.grupo}>{t.grupo || '-'}</TableCell>
-                                            <TableCell className="text-center font-bold">{t.cantidad}</TableCell>
+                                            <TableCell className="max-w-[150px] truncate text-xs text-muted-foreground" title={t.marca}>{t.marca || '-'}</TableCell>
+                                            <TableCell className="max-w-[150px] truncate text-xs text-muted-foreground" title={t.grupo}>{t.grupo || '-'}</TableCell>
+                                            <TableCell className="text-center font-bold text-lg">{t.cantidad}</TableCell>
                                             <TableCell>{getStatusBadge(t.status)}</TableCell>
-                                            <TableCell className="font-mono">{placa}</TableCell>
+                                            <TableCell className="font-mono text-xs">{placa}</TableCell>
                                             <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
                                             <TableCell>{t.enviadoAt ? format(t.enviadoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
                                             <TableCell className="text-right">
@@ -1732,11 +1733,12 @@ const OperatorView: React.FC<{
         setIsLogOpen(true);
     };
 
-    const handleConfirmPrintAndReceive = useCallback(async (transfer: TransferEntry) => {
+    const handleConfirmPrintAndReceive = useCallback(async (transfer: GroupedTransfer | TransferEntry) => {
         if (!transfer) return;
         setIsPrinting(true);
         try {
-            const result = await updateTransferStatus(transfer.id, 'Recibido en Bodega');
+            const ids = 'allIds' in transfer ? transfer.allIds : [transfer.id];
+            const result = await updateTransferStatus(ids, 'Recibido en Bodega');
             if (result.success) {
                 toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
                 onRefresh();
@@ -1815,46 +1817,46 @@ const OperatorView: React.FC<{
                         <TableHead className="text-right">Acciones</TableHead>
                     </TableRow>
                 </TableHeader>
-                <TableBody>
-                    {isLoading ? (
-                        <TableRow><TableCell colSpan={10} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
-                    ) : filteredTransfers.length > 0 ? (
-                        filteredTransfers.map(t => {
-                            const placa = transferIdToPlacaMap.get(t.id) || 'N/A';
-                            return (
-                            <TableRow key={t.id}>
-                                <TableCell>{t.fecha.toLocaleDateString('es-CO')}</TableCell>
-                                <TableCell className="font-medium">{t.numeroTF}</TableCell>
-                                <TableCell>{t.bodegaOrigen}</TableCell>
-                                <TableCell>{t.bodegaDestino}</TableCell>
-                                <TableCell>{t.cantidad || 1}</TableCell>
-                                <TableCell>{getStatusBadge(t.status)}</TableCell>
-                                <TableCell>{placa}</TableCell>
-                                <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
-                                <TableCell>{t.enviadoAt ? format(t.enviadoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
-                                <TableCell className="text-right">
-                                    <DropdownMenu>
-                                        <DropdownMenuTrigger asChild>
-                                            <Button variant="ghost" size="icon">
-                                                <MoreHorizontal className="h-4 w-4" />
-                                            </Button>
-                                        </DropdownMenuTrigger>
-                                        <DropdownMenuContent align="end">
-                                            <DropdownMenuItem onSelect={() => handleViewLog(t)}>
-                                                <History className="mr-2 h-4 w-4" /> Ver Historial
-                                            </DropdownMenuItem>
-                                            <DropdownMenuItem onSelect={() => handlePrintLabelClick(t)} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
-                                                <Printer className="mr-2 h-4 w-4" /> Imprimir Rótulo
-                                            </DropdownMenuItem>
-                                        </DropdownMenuContent>
-                                    </DropdownMenu>
-                                </TableCell>
-                            </TableRow>
-                        )})
-                    ) : (
-                        <TableRow><TableCell colSpan={10} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
-                    )}
-                </TableBody>
+                        <TableBody>
+                            {isLoading ? (
+                                <TableRow><TableCell colSpan={10} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
+                            ) : filteredTransfers.length > 0 ? (
+                                groupTransfersByTF(filteredTransfers, transferIdToPlacaMap).map(t => {
+                                    const placa = transferIdToPlacaMap.get(t.id) || 'N/A';
+                                    return (
+                                    <TableRow key={t.id}>
+                                        <TableCell>{t.fecha.toLocaleDateString('es-CO')}</TableCell>
+                                        <TableCell className="font-medium">{t.numeroTF}</TableCell>
+                                        <TableCell>{t.bodegaOrigen}</TableCell>
+                                        <TableCell>{t.bodegaDestino}</TableCell>
+                                        <TableCell className="text-center font-bold">{t.cantidad}</TableCell>
+                                        <TableCell>{getStatusBadge(t.status)}</TableCell>
+                                        <TableCell className="font-mono">{placa}</TableCell>
+                                        <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
+                                        <TableCell>{t.enviadoAt ? format(t.enviadoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
+                                        <TableCell className="text-right">
+                                            <DropdownMenu>
+                                                <DropdownMenuTrigger asChild>
+                                                    <Button variant="ghost" size="icon">
+                                                        <MoreHorizontal className="h-4 w-4" />
+                                                    </Button>
+                                                </DropdownMenuTrigger>
+                                                <DropdownMenuContent align="end">
+                                                    <DropdownMenuItem onSelect={() => handleViewLog(t)}>
+                                                        <History className="mr-2 h-4 w-4" /> Ver Historial
+                                                    </DropdownMenuItem>
+                                                    <DropdownMenuItem onSelect={() => handlePrintLabelClick(t)} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
+                                                        <Printer className="mr-2 h-4 w-4" /> Imprimir Rótulo
+                                                    </DropdownMenuItem>
+                                                </DropdownMenuContent>
+                                            </DropdownMenu>
+                                        </TableCell>
+                                    </TableRow>
+                                )})
+                            ) : (
+                                <TableRow><TableCell colSpan={10} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
+                            )}
+                        </TableBody>
               </Table>
             </div>
           </CardContent>
