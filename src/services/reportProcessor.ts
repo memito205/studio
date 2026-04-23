@@ -371,13 +371,18 @@ export function applyJustifications(
             const isoId = incident.id.replace(/-?\d+$/, () => new Date(timestamp).toISOString());
             justification = justifications[isoId];
 
-            // 2. If still not found, try Fuzzy Search by Timestamp
+            // 2. If still not found, try Fuzzy Search by Timestamp (allow 1-min jitter)
             if (!justification) {
-                // Find any key that contains this timestamp (at the end)
-                const tsSuffix = `-${timestamp}`;
-                const matchingKey = Object.keys(justifications).find(key => 
-                    key.endsWith(tsSuffix) || key.includes(new Date(timestamp).toISOString())
-                );
+                const matchingKey = Object.keys(justifications).find(key => {
+                    // Try to extract timestamp from the end of the key (e.g. "Name-123456789")
+                    const match = key.match(/-(\d{10,14})$/);
+                    if (match) {
+                        const keyTs = parseInt(match[1]);
+                        // Allow 70 seconds jitter to account for slight parsing differences
+                        return Math.abs(keyTs - timestamp) <= 70000;
+                    }
+                    return key.includes(new Date(timestamp).toISOString());
+                });
                 if (matchingKey) {
                     justification = justifications[matchingKey];
                 }
