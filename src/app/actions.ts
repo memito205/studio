@@ -402,15 +402,25 @@ export async function loadJustificationsByDate(dateStr: string): Promise<{ data?
             return { data: {} };
         }
 
-        // Sort by snapshotCreatedAt desc in JS to avoid index requirement
+        // Combine justifications from ALL snapshots of the day to avoid losing work
+        // if some snapshots are partial. More recent ones (by snapshotCreatedAt) overwrite older ones.
         const docs = querySnapshot.docs.map(doc => ({
             ...doc.data(),
+            id: doc.id,
             snapshotCreatedAt: doc.data().snapshotCreatedAt?.toDate?.() || new Date(doc.data().snapshotCreatedAt)
         })) as any[];
 
-        docs.sort((a, b) => b.snapshotCreatedAt.getTime() - a.snapshotCreatedAt.getTime());
+        // Sort by date ascending so that when we merge, more recent ones overwrite older ones
+        docs.sort((a, b) => a.snapshotCreatedAt.getTime() - b.snapshotCreatedAt.getTime());
 
-        return { data: docs[0].manualJustifications || {} };
+        const mergedJustifications: ManualJustifications = {};
+        docs.forEach(doc => {
+            if (doc.manualJustifications) {
+                Object.assign(mergedJustifications, doc.manualJustifications);
+            }
+        });
+
+        return { data: mergedJustifications };
     } catch (error: any) {
         console.error("Error loading justifications by date:", error);
         return { data: {}, error: error.message };
