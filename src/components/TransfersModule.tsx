@@ -1329,6 +1329,11 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                          </div>
                     </CardHeader>
                     <CardContent>
+                       <div className="flex justify-between items-center mb-2 px-1">
+                            <span className="text-sm font-medium text-muted-foreground">
+                                {supervisorValidationTransfers.length > 0 ? `Pendientes: ${groupTransfersByTF(supervisorValidationTransfers).length} TFs (${supervisorValidationTransfers.length} líneas)` : 'Sin pendientes de validación'}
+                            </span>
+                       </div>
                        <div className="border rounded-md max-h-[60vh] overflow-y-auto">
                             <Table>
                                 <TableHeader>
@@ -1462,6 +1467,11 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                 <X className="h-4 w-4" />
                             </Button>
                         </div>
+                    </div>
+                    <div className="flex justify-between items-center mb-2 px-1">
+                        <span className="text-sm font-medium text-muted-foreground">
+                            {filteredTransfers.length > 0 ? `Mostrando ${groupTransfersByTF(filteredTransfers).length} TFs únicas (${filteredTransfers.length} líneas halladas)` : 'No hay resultados'}
+                        </span>
                     </div>
                     <div className="border rounded-md max-h-[60vh] overflow-y-auto">
                         <Table>
