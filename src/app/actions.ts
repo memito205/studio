@@ -386,6 +386,37 @@ export async function getAllUserStatuses(): Promise<{ data?: any[]; error?: stri
     }
 }
 
+export async function loadJustificationsByDate(dateStr: string): Promise<{ data?: ManualJustifications; error?: string }> {
+    try {
+        const start = startOfDay(new Date(dateStr + 'T00:00:00'));
+        const end = endOfDay(new Date(dateStr + 'T23:59:59'));
+        
+        const q = query(
+            collection(firestore, "reports_summary"),
+            where("reportDate", ">=", Timestamp.fromDate(start)),
+            where("reportDate", "<=", Timestamp.fromDate(end))
+        );
+
+        const querySnapshot = await getDocs(q);
+        if (querySnapshot.empty) {
+            return { data: {} };
+        }
+
+        // Sort by snapshotCreatedAt desc in JS to avoid index requirement
+        const docs = querySnapshot.docs.map(doc => ({
+            ...doc.data(),
+            snapshotCreatedAt: doc.data().snapshotCreatedAt?.toDate?.() || new Date(doc.data().snapshotCreatedAt)
+        })) as any[];
+
+        docs.sort((a, b) => b.snapshotCreatedAt.getTime() - a.snapshotCreatedAt.getTime());
+
+        return { data: docs[0].manualJustifications || {} };
+    } catch (error: any) {
+        console.error("Error loading justifications by date:", error);
+        return { data: {}, error: error.message };
+    }
+}
+
 export async function getPulsesByDate(dateStr: string): Promise<{ data?: OperationPulse[]; error?: string }> {
     try {
         const start = Timestamp.fromDate(new Date(dateStr + 'T00:00:00'));
