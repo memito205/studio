@@ -220,8 +220,20 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   useEffect(() => {
     if (reportDate) {
       import('@/app/actions').then(actions => {
+        // 1. Get pulses for floor monitor
         actions.getPulsesByDate(reportDate).then(res => {
           if (res.data) setPulsesForDay(res.data);
+        });
+        
+        // 2. Clear current justifications before loading (to avoid mixing days)
+        // Only load if current state is empty or if it's a fresh date selection
+        actions.loadJustificationsByDate(reportDate).then(res => {
+          if (res.data && Object.keys(res.data).length > 0) {
+            setManualJustifications(prev => ({
+              ...prev,
+              ...res.data
+            }));
+          }
         });
       });
     }
