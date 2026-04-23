@@ -371,18 +371,19 @@ export function applyJustifications(
             const isoId = incident.id.replace(/-?\d+$/, () => new Date(timestamp).toISOString());
             justification = justifications[isoId];
 
-            // 2. If still not found, try Fuzzy Search by Timestamp (allow 1-min jitter)
+            // 2. If still not found, try Fuzzy Search by Timestamp (allow 2-min jitter)
             if (!justification) {
                 const matchingKey = Object.keys(justifications).find(key => {
-                    const match = key.match(/-(\d{10,14})$/);
+                    // Capture timestamp (10-14 digits) and ignore any subsequent suffixes like -justified, -remains, -excess, etc.
+                    const match = key.match(/(\d{10,14})(?:-[\w-]+)?$/);
                     if (match) {
                         const keyTs = parseInt(match[1]);
-                        const isTimeMatch = Math.abs(keyTs - timestamp) <= 120000; // Increased to 2 minutes jitter
+                        const isTimeMatch = Math.abs(keyTs - timestamp) <= 120000; // 2 minutes jitter
                         if (!isTimeMatch) return false;
-
-                        // Robust packer name check: 
-                        // 1. Try to find the name part by splitting from the first digit-looking thing at the end
-                        const namePartFromKey = key.replace(/-(\w+-)?\d{10,14}$/, '').toUpperCase();
+                        
+                        // Robust packer name check:
+                        // Strip the timestamp and any subsequent suffixes
+                        const namePartFromKey = key.replace(/-?\d{10,14}(?:-[\w-]+)?$/, '').toUpperCase();
                         const currentName = incident.packerName.toUpperCase();
                         
                         // Exact match
