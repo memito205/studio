@@ -526,7 +526,13 @@ export function preProcessDeadTimes(
     const validData = data.filter(entry => {
         const d = parseFlexibleDate(entry.fechaDeLectura);
         return d && !isNaN(d.getTime());
-    }).map(entry => ({...entry, fechaDeLectura: parseFlexibleDate(entry.fechaDeLectura)!}));
+    }).map(entry => {
+        const originalDate = parseFlexibleDate(entry.fechaDeLectura)!;
+        // Normalize to report date to match processReport and ensure stable IDs
+        const normalizedDate = new Date(originalDate);
+        normalizedDate.setFullYear(reportDateObj.getFullYear(), reportDateObj.getMonth(), reportDateObj.getDate());
+        return { ...entry, fechaDeLectura: normalizedDate };
+    });
         
     const dataInTimeRange = validData.filter(entry => 
       entry.fechaDeLectura >= reportStartDate && entry.fechaDeLectura <= reportEndDate

@@ -388,22 +388,33 @@ export async function getAllUserStatuses(): Promise<{ data?: any[]; error?: stri
 
 export async function loadJustificationsByDate(dateStr: string): Promise<{ data?: ManualJustifications; error?: string }> {
     try {
-        const start = startOfDay(new Date(dateStr + 'T00:00:00'));
-        const end = endOfDay(new Date(dateStr + 'T23:59:59'));
+        // Wider range to account for timezone skew (+/- 12 hours)
+        const start = new Date(dateStr + 'T00:00:00');
+        start.setHours(start.getHours() - 12);
+        const end = new Date(dateStr + 'T23:59:59');
+        end.setHours(end.getHours() + 12);
         
-        const q = query(
-            collection(firestore, "reports_summary"),
-            where("reportDate", ">=", Timestamp.fromDate(start)),
-            where("reportDate", "<=", Timestamp.fromDate(end))
+        const snapshotsRef = collection(firestore, "reports_summary");
+        
+        // 1. Try Timestamp query
+        let querySnapshot = await getDocs(
+            query(
+                snapshotsRef,
+                where("reportDate", ">=", Timestamp.fromDate(start)),
+                where("reportDate", "<=", Timestamp.fromDate(end))
+            )
         );
 
-        const querySnapshot = await getDocs(q);
+        // 2. Fallback to String query for older records
+        if (querySnapshot.empty) {
+            querySnapshot = await getDocs(query(snapshotsRef, where("reportDate", "==", dateStr)));
+        }
+
         if (querySnapshot.empty) {
             return { data: {} };
         }
 
-        // Combine justifications from ALL snapshots of the day to avoid losing work
-        // if some snapshots are partial. More recent ones (by snapshotCreatedAt) overwrite older ones.
+        // Combine justifications from ALL snapshots of the day
         const docs = querySnapshot.docs.map(doc => ({
             ...doc.data(),
             id: doc.id,
