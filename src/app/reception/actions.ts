@@ -622,12 +622,32 @@ export async function exportBasicOperationReport(operationId: string): Promise<{
         return a.Talla.localeCompare(b.Talla);
     });
 
+    // --- New Logic for Sheet 4: Item Master (Catalog) ---
+    const catalogData: any[] = [];
+    allItems.forEach((item, key) => {
+        item.barcodes.forEach(barcode => {
+            catalogData.push({
+                'Referencia': item.ref,
+                'Talla': item.talla,
+                'Código de Barras': barcode,
+                'Descripción': item.name || 'N/A'
+            });
+        });
+    });
+
+    // Sort catalog by Reference and Size
+    catalogData.sort((a, b) => {
+        if (a['Referencia'] !== b['Referencia']) return a['Referencia'].localeCompare(b['Referencia']);
+        return String(a['Talla']).localeCompare(String(b['Talla']));
+    });
+
     return {
       success: true,
       sheets: [
         { sheetName: 'Resumen por Referencia', data: consolidatedData },
         { sheetName: 'Detalle por Talla', data: detailedData },
         { sheetName: 'Trazabilidad por Caja', data: traceabilityData },
+        { sheetName: 'Maestro de Artículos', data: catalogData },
       ],
     };
 
@@ -635,6 +655,26 @@ export async function exportBasicOperationReport(operationId: string): Promise<{
     console.error("Unexpected error in exportBasicOperationReport:", error);
     return { success: false, error: `Error inesperado: ${error.message}` };
   }
+}
+
+/**
+ * Specialized action to export ONLY the catalog (item master) of an operation.
+ */
+export async function exportOperationCatalog(operationId: string): Promise<{
+    success: boolean;
+    data?: any[];
+    error?: string;
+}> {
+    try {
+        const result = await exportBasicOperationReport(operationId);
+        if (result.success && result.sheets) {
+            const catalogSheet = result.sheets.find(s => s.sheetName === 'Maestro de Artículos');
+            return { success: true, data: catalogSheet?.data || [] };
+        }
+        return { success: false, error: result.error };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
 }
 
 export async function getPackingUnitsForOperation(operationId: string): Promise<{ success: boolean; data?: PackingUnit[]; error?: string; }> {

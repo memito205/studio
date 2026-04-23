@@ -20,7 +20,7 @@ import { exportToXlsx } from '@/services/export';
 import ProductivityReportDialog from './ProductivityReportDialog';
 import { OperationDebugDialog } from './OperationDebugDialog';
 import { useAuth } from '@/hooks/use-auth-context';
-import { exportBasicOperationReport, getPackingUnitDetails, updateReceptionOperation } from '@/app/reception/actions';
+import { exportBasicOperationReport, getPackingUnitDetails, updateReceptionOperation, exportOperationCatalog } from '@/app/reception/actions';
 import { useToast } from '@/hooks/use-toast';
 import * as XLSX from 'xlsx';
 import { FindPackingUnitDialog } from './FindPackingUnitDialog';
@@ -58,6 +58,7 @@ const ReceptionOperationsTable: React.FC<ReceptionOperationsTableProps> = ({ ope
   const { role } = useAuth();
   const { toast } = useToast();
   const [isExporting, setIsExporting] = useState<string | null>(null);
+  const [isExportingCatalog, setIsExportingCatalog] = useState<string | null>(null);
   const [reopeningId, setReopeningId] = useState<string | null>(null);
   const [isFindUnitDialogOpen, setIsFindUnitDialogOpen] = useState(false);
   const [isUnitDetailsOpen, setIsUnitDetailsOpen] = useState(false);
@@ -96,6 +97,23 @@ const ReceptionOperationsTable: React.FC<ReceptionOperationsTableProps> = ({ ope
         toast({ variant: 'destructive', title: 'Error', description: result.error || 'No se pudo generar el reporte completo.' });
     }
     setIsExporting(null);
+  };
+
+  const handleCatalogExport = async (operation: ReceptionOperation) => {
+    if (!operation.id) return;
+    setIsExportingCatalog(operation.id);
+    const result = await exportOperationCatalog(operation.id);
+
+    if (result.success && result.data) {
+        const worksheet = XLSX.utils.json_to_sheet(result.data);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, "Catálogo de Operación");
+        XLSX.writeFile(workbook, `Catalogo_${operation.rk_identifier}.xlsx`);
+        toast({ title: 'Éxito', description: 'El catálogo de la operación ha sido exportado.' });
+    } else {
+        toast({ variant: 'destructive', title: 'Error', description: result.error || 'No se pudo generar el catálogo.' });
+    }
+    setIsExportingCatalog(null);
   };
   
   const handleOpenFindUnitDialog = (operationId: string) => {
@@ -232,6 +250,16 @@ const ReceptionOperationsTable: React.FC<ReceptionOperationsTableProps> = ({ ope
                             disabled={isExporting === operation.id}
                           >
                             {isExporting === operation.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                          </Button>
+
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title="Exportar Solo Catálogo (Ref, Talla, Barcode)"
+                            onClick={() => handleCatalogExport(operation)}
+                            disabled={isExportingCatalog === operation.id}
+                          >
+                            {isExportingCatalog === operation.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Tag className="h-4 w-4 text-blue-600" />}
                           </Button>
 
                           <OperationDebugDialog operationId={operation.id}>
