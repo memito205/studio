@@ -94,7 +94,9 @@ function standardizeData(
         }
 
         const empacador = String(newRow.empacador || '').trim();
-        newRow.empacador = (combinedOperatorMap[empacador] || empacador).trim();
+        // Check if it's an ID (key) or already a Name (value)
+        const isAlreadyName = Object.values(combinedOperatorMap).includes(empacador);
+        newRow.empacador = isAlreadyName ? empacador : (combinedOperatorMap[empacador] || empacador).trim();
         newRow.cantidad = typeof newRow.cantidad === 'number' ? newRow.cantidad : 1;
         newRow.codigoBarras = String(newRow.codigoBarras || '').trim();
         newRow.descripcion = String(newRow.descripcion || '').trim();
@@ -1479,7 +1481,13 @@ export function extractPackersFromReport(
     manualOperatorMappings: ManualOperatorMappings
 ): string[] {
     const combinedOperatorMap = { ...OPERATOR_MAP, ...manualOperatorMappings };
-    const packerNames = new Set(data.map(d => (combinedOperatorMap[d.empacador] || d.empacador).trim()));
+    const knownNames = new Set(Object.values(combinedOperatorMap));
+    
+    const packerNames = new Set(data.map(d => {
+        const val = String(d.empacador || '').trim();
+        if (knownNames.has(val)) return val;
+        return (combinedOperatorMap[val] || val).trim();
+    }));
     return Array.from(packerNames).sort();
 }
 
@@ -1489,12 +1497,15 @@ export function extractUnmappedPackers(
 ): string[] {
     const unmappedIds = new Set<string>();
     
+    const combinedOperatorMap = { ...OPERATOR_MAP, ...manualOperatorMappings };
+    const knownNames = new Set(Object.values(combinedOperatorMap));
+
     rawData.forEach(row => {
         const empacadorKey = Object.keys(row).find(k => k.toLowerCase().trim() === 'empacador' || k.toLowerCase().trim() === 'empacado');
         if (empacadorKey) {
             const empacadorId = String(row[empacadorKey]).trim();
-            const combinedOperatorMap = { ...OPERATOR_MAP, ...manualOperatorMappings };
-            if (empacadorId && !combinedOperatorMap[empacadorId]) {
+            // It's unmapped if it's NOT a key AND it's NOT already one of the known names
+            if (empacadorId && !combinedOperatorMap[empacadorId] && !knownNames.has(empacadorId)) {
                 const unidadDeEmpaque = String(row['unidad de empaque'] || row['unidad empaque'] || '').trim().toUpperCase();
                 if (!unidadDeEmpaque.startsWith('EVI') && !unidadDeEmpaque.startsWith('INT') && !unidadDeEmpaque.startsWith('VXM')) {
                     unmappedIds.add(empacadorId);
