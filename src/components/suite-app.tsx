@@ -8,7 +8,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import type { ProcessedReportData, ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ReferenceCorrections, UniqueReference, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, ChatMessage, SmartAlert, ActionPlan, Annotations, TaggedReport, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, PackingUnit, PackingSession, AppStep, ReceptionOperation, JustificationType, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReportSummary, CreditCalculationResult, DispatchSessionInfo, RouteEntry, TransferEntry, EcommerceOrder, DelayedOrderLog, OperationPulse } from '@/types';
 import { processReport, getSanitizedData, extractUniqueReferences, extractPackersFromReport, preProcessDeadTimes, classifyProduct } from '@/services/reportProcessor';
-import { handleExecutiveSummary, handleRootCauseAnalysis, handleGenerateSmartAlerts, handleGetJustificationSuggestions, saveReportToHistory, loadHistoricalReports, updateOrderStatus, savePackingSession, loadWholesaleOrders, getPackingSession, loadAllPackingSessions, consolidateDailyReports, previewConsolidatedReport, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, loadFullReportSnapshots, loadOperatorMappings, saveJustificationsForDay } from '@/app/actions';
+import { handleExecutiveSummary, handleRootCauseAnalysis, handleGenerateSmartAlerts, handleGetJustificationSuggestions, saveReportToHistory, loadHistoricalReports, updateOrderStatus, savePackingSession, loadWholesaleOrders, getPackingSession, loadAllPackingSessions, consolidateDailyReports, previewConsolidatedReport, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, loadFullReportSnapshots, loadOperatorMappings, saveJustificationsForDay, loadJustificationsByDate } from '@/app/actions';
 import { getProductsByBarcodes } from '@/app/reception/actions';
 import { Loader2, AlertTriangle } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -265,13 +265,21 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
         
         // --- SILENT CACHE REHYDRATION ---
         try {
+            // Load robust justifications (merged from dedicated docs and snapshots)
+            const justificationResult = await loadJustificationsByDate(reportDateStr);
+            if (justificationResult.data && Object.keys(justificationResult.data).length > 0) {
+                console.log(`[Hydration] Loaded ${Object.keys(justificationResult.data).length} justifications for ${reportDateStr}`);
+                setManualJustifications(justificationResult.data);
+            } else {
+                setManualJustifications({});
+            }
+
+            // Still load snapshots for the incident log (until we have a dedicated log doc)
             const previousReports = await loadHistoricalReports({ startDate: reportDateStr, endDate: reportDateStr });
             if (previousReports.data && previousReports.data.length > 0) {
                 const latest = previousReports.data[0];
-                if (latest.manualJustifications) setManualJustifications(latest.manualJustifications);
                 if (latest.incidentLog) setIncidentLog(latest.incidentLog as IncidentLogEntry[]);
             } else {
-                setManualJustifications({});
                 setIncidentLog([]);
             }
         } catch (e) {

@@ -438,8 +438,11 @@ export async function loadJustificationsByDate(dateStr: string): Promise<{ data?
             if (dedicatedJustificationDoc.exists()) {
                 const data = dedicatedJustificationDoc.data() as { justifications: ManualJustifications };
                 if (data.justifications) {
+                    console.log(`[Firestore] Found dedicated justifications for ${dateStr}:`, Object.keys(data.justifications).length, "items");
                     Object.assign(mergedJustifications, data.justifications);
                 }
+            } else {
+                console.log(`[Firestore] No dedicated justifications found for ${dateStr}`);
             }
         } catch (e) {
             console.warn("Could not load dedicated justifications:", e);
@@ -455,6 +458,8 @@ export async function loadJustificationsByDate(dateStr: string): Promise<{ data?
 export async function saveJustificationsForDay(dateStr: string, justifications: ManualJustifications): Promise<{ success: boolean; error?: string }> {
     try {
         if (!dateStr) throw new Error("dateStr is required");
+        
+        console.log(`[Firestore] Saving ${Object.keys(justifications).length} justifications for ${dateStr}`);
         
         const docRef = doc(firestore, "reports_justifications", dateStr);
         await setDoc(docRef, {
