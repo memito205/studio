@@ -2566,7 +2566,7 @@ export async function loadAnalysisRecords(): Promise<{ data?: any[]; error?: str
 
 export async function getTransfersByStatus(status: TransferStatus): Promise<{ data?: TransferEntry[]; error?: string }> {
     try {
-        const q = query(collection(firestore, "transfers"), where("status", "==", status), limit(500));
+        const q = query(collection(firestore, "transfers"), where("status", "==", status), limit(1000));
         const querySnapshot = await getDocs(q);
         const transfers = querySnapshot.docs.map(doc => ({
             id: doc.id,
@@ -2588,7 +2588,7 @@ export async function getTransfersByQuery(searchQuery: string, type: 'number' | 
         const q = query(
             collection(firestore, "transfers"), 
             where(field, "==", searchQuery.toUpperCase().trim()),
-            limit(100)
+            limit(1000)
         );
         
         const querySnapshot = await getDocs(q);
