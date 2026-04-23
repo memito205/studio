@@ -364,13 +364,24 @@ export function applyJustifications(
         
         let justification = justifications[incident.id];
         
-        // Fallback for old ISO-based IDs
+        // --- Robust Matching Fallback ---
         if (!justification) {
-            const isoId = incident.id.replace(/-?\d+$/, (match) => {
-                const ts = parseInt(match.replace('-', ''));
-                return isNaN(ts) ? match : new Date(ts).toISOString();
-            });
+            // 1. Try ISO-based ID (legacy fallback)
+            const timestamp = incident.startTime.getTime();
+            const isoId = incident.id.replace(/-?\d+$/, () => new Date(timestamp).toISOString());
             justification = justifications[isoId];
+
+            // 2. If still not found, try Fuzzy Search by Timestamp
+            if (!justification) {
+                // Find any key that contains this timestamp (at the end)
+                const tsSuffix = `-${timestamp}`;
+                const matchingKey = Object.keys(justifications).find(key => 
+                    key.endsWith(tsSuffix) || key.includes(new Date(timestamp).toISOString())
+                );
+                if (matchingKey) {
+                    justification = justifications[matchingKey];
+                }
+            }
         }
         
         // --- Pulse Sync Logic ---
