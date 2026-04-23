@@ -1935,7 +1935,15 @@ const CollectionTabView: React.FC<{
             (debouncedFilters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(debouncedFilters.bodegaDestino.toLowerCase()) : true)
         );
     }, [transfers, debouncedFilters]);
+
+    const groupedForCollection = useMemo(() => groupTransfersByTF(availableTransfers), [availableTransfers]);
     
+    const uniqueSelectedTfCount = useMemo(() => {
+        const selectedLines = availableTransfers.filter(t => selectedTransfers.has(t.id));
+        const uniqueTFs = new Set(selectedLines.map(t => `${t.numeroTF}-${t.bodegaOrigen}-${t.bodegaDestino}`));
+        return uniqueTFs.size;
+    }, [selectedTransfers, availableTransfers]);
+
     const handleConfirmCollection = async () => {
         if (!user) {
             toast({ variant: 'destructive', title: 'Error', description: 'No se pudo identificar al usuario.' });
@@ -1948,7 +1956,7 @@ const CollectionTabView: React.FC<{
         setIsLoading(true);
         const result = await createCollectionLog(selectedPlate, Array.from(selectedTransfers), user.uid);
         if (result.success) {
-            toast({ title: 'Éxito', description: `${selectedTransfers.size} transferencias marcadas como recolectadas.` });
+            toast({ title: 'Éxito', description: `${uniqueSelectedTfCount} transferencias marcadas como recolectadas.` });
             fetchTransfers(); // Refresh local list
             onRefresh(); // Refresh parent if needed
             setSelectedTransfers(new Set());
@@ -1986,7 +1994,7 @@ const CollectionTabView: React.FC<{
                     <Input placeholder="Ingrese su placa..." value={selectedPlate} onChange={e => setSelectedPlate(e.target.value.toUpperCase())} className="max-w-xs" />
                     <Button onClick={handleConfirmCollection} disabled={isLoading || selectedTransfers.size === 0 || !selectedPlate.trim()}>
                         {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}
-                        Confirmar Recolección de ({selectedTransfers.size}) TFs
+                        Confirmar Recolección de ({uniqueSelectedTfCount}) TFs
                     </Button>
                 </div>
                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4 p-4 border rounded-lg bg-muted/50 items-end">
@@ -2005,25 +2013,37 @@ const CollectionTabView: React.FC<{
                             <TableRow>
                                 <TableHead className="w-12">
                                   <Checkbox
-                                    checked={selectedTransfers.size === availableTransfers.length && availableTransfers.length > 0}
+                                    checked={availableTransfers.length > 0 && availableTransfers.every(t => selectedTransfers.has(t.id))}
                                     onCheckedChange={(checked) => setSelectedTransfers(checked ? new Set(availableTransfers.map(t => t.id)) : new Set())}
                                   />
                                 </TableHead>
                                 <TableHead># TF</TableHead>
                                 <TableHead>Origen</TableHead>
                                 <TableHead>Destino</TableHead>
+                                <TableHead className="text-center">Cant. Líneas</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
-                            {availableTransfers.length > 0 ? availableTransfers.map(t => (
-                                <TableRow key={t.id} data-state={selectedTransfers.has(t.id) ? "selected" : ""}>
-                                    <TableCell><Checkbox checked={selectedTransfers.has(t.id)} onCheckedChange={(checked) => handleSelectTransfer(t.id, !!checked)} /></TableCell>
-                                    <TableCell>{t.numeroTF}</TableCell>
+                            {groupedForCollection.length > 0 ? groupedForCollection.map(t => (
+                                <TableRow key={t.id} data-state={t.allIds.every(id => selectedTransfers.has(id)) ? "selected" : ""}>
+                                    <TableCell>
+                                        <Checkbox 
+                                            checked={t.allIds.every(id => selectedTransfers.has(id))} 
+                                            onCheckedChange={(checked) => {
+                                                const newSet = new Set(selectedTransfers);
+                                                if (checked) t.allIds.forEach(id => newSet.add(id));
+                                                else t.allIds.forEach(id => newSet.delete(id));
+                                                setSelectedTransfers(newSet);
+                                            }} 
+                                        />
+                                    </TableCell>
+                                    <TableCell className="font-medium">{t.numeroTF}</TableCell>
                                     <TableCell>{t.bodegaOrigen}</TableCell>
                                     <TableCell>{t.bodegaDestino}</TableCell>
+                                    <TableCell className="text-center">{t.allIds.length}</TableCell>
                                 </TableRow>
                             )) : (
-                                <TableRow><TableCell colSpan={4} className="h-24 text-center text-muted-foreground">No hay transferencias en tránsito que coincidan con los filtros.</TableCell></TableRow>
+                                <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground">No hay transferencias en tránsito que coincidan con los filtros.</TableCell></TableRow>
                             )}
                         </TableBody>
                     </Table>
