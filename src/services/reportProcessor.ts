@@ -374,15 +374,20 @@ export function applyJustifications(
             // 2. If still not found, try Fuzzy Search by Timestamp (allow 1-min jitter)
             if (!justification) {
                 const matchingKey = Object.keys(justifications).find(key => {
-                    // Try to extract timestamp from the end of the key (e.g. "Name-123456789")
                     const match = key.match(/-(\d{10,14})$/);
                     if (match) {
                         const keyTs = parseInt(match[1]);
-                        // Allow 70 seconds jitter to account for slight parsing differences
-                        return Math.abs(keyTs - timestamp) <= 70000;
+                        const isMatch = Math.abs(keyTs - timestamp) <= 70000;
+                        // Relaxed packer name check: just check if at least one significant word matches
+                        const keyNameParts = key.split('-')[0].toUpperCase().split(/\s+/).filter(p => p.length > 2);
+                        const incNameParts = incident.packerName.toUpperCase().split(/\s+/).filter(p => p.length > 2);
+                        const packerMatch = keyNameParts.some(p => incNameParts.includes(p)) || incNameParts.some(p => keyNameParts.includes(p));
+                        
+                        return isMatch && packerMatch;
                     }
-                    return key.includes(new Date(timestamp).toISOString());
+                    return false;
                 });
+                
                 if (matchingKey) {
                     justification = justifications[matchingKey];
                 }
