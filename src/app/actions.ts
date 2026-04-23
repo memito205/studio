@@ -2687,6 +2687,104 @@ export async function batchUpdateTransferStatus(transferIds: string[], status: T
         return { success: false, error: error.message };
     }
 }
+
+export async function healInconsistentTransfers(): Promise<{ success: boolean; updatedCount: number; error?: string }> {
+    try {
+        // Filter from March 1st, 2026
+        const startDate = new Date(2026, 2, 1); // Month is 0-indexed, so 2 is March
+        const q = query(
+            collection(firestore, "transfers"), 
+            where("fecha", ">=", Timestamp.fromDate(startDate))
+        );
+        
+        const querySnapshot = await getDocs(q);
+        const allTransfers = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as TransferEntry));
+
+        const STATUS_ORDER: TransferStatus[] = [
+            'En Tránsito',
+            'Recolectado en Ruta',
+            'Validado Supervisor',
+            'Recibido en Bodega',
+            'Enviado a Destino',
+            'Entregado en Ruta'
+        ];
+
+        const getStatusWeight = (status: TransferStatus) => STATUS_ORDER.indexOf(status);
+
+        // Group by numeroTF
+        const tfGroups = new Map<string, TransferEntry[]>();
+        allTransfers.forEach(t => {
+            const group = tfGroups.get(t.numeroTF) || [];
+            group.push(t);
+            tfGroups.set(t.numeroTF, group);
+        });
+
+        const updatesToPerform: { id: string, status: TransferStatus, updates: any }[] = [];
+        let inconsistentTfCount = 0;
+
+        tfGroups.forEach((lines, numeroTF) => {
+            const statuses = new Set(lines.map(l => l.status));
+            if (statuses.size > 1) {
+                inconsistentTfCount++;
+                // Find the "highest" status in the group
+                let highestStatus = lines[0].status;
+                let maxWeight = getStatusWeight(highestStatus);
+                
+                lines.forEach(l => {
+                    const weight = getStatusWeight(l.status);
+                    if (weight > maxWeight) {
+                        maxWeight = weight;
+                        highestStatus = l.status;
+                    }
+                });
+
+                // Find a line that has the highest status to copy its metadata (dates) if possible
+                const templateLine = lines.find(l => l.status === highestStatus)!;
+                const metadata: any = {};
+                if (templateLine.recibidoAt) metadata.recibidoAt = templateLine.recibidoAt;
+                if (templateLine.validatedAt) metadata.validatedAt = templateLine.validatedAt;
+                if (templateLine.enviadoAt) metadata.enviadoAt = templateLine.enviadoAt;
+                if (templateLine.deliveredAt) metadata.deliveredAt = templateLine.deliveredAt;
+
+                // Mark lines that need update
+                lines.forEach(l => {
+                    if (l.status !== highestStatus) {
+                        updatesToPerform.push({
+                            id: l.id,
+                            status: highestStatus,
+                            updates: {
+                                status: highestStatus,
+                                ...metadata,
+                                healTimestamp: Timestamp.now()
+                            }
+                        });
+                    }
+                });
+            }
+        });
+
+        if (updatesToPerform.length === 0) {
+            return { success: true, updatedCount: 0 };
+        }
+
+        // Apply updates in batches
+        const CHUNK_SIZE = 450;
+        for (let i = 0; i < updatesToPerform.length; i += CHUNK_SIZE) {
+            const chunk = updatesToPerform.slice(i, i + CHUNK_SIZE);
+            const batch = writeBatch(firestore);
+            chunk.forEach(update => {
+                const docRef = doc(firestore, "transfers", update.id);
+                batch.update(docRef, update.updates);
+            });
+            await batch.commit();
+        }
+
+        return { success: true, updatedCount: updatesToPerform.length };
+    } catch (error: any) {
+        console.error("Error healing transfers:", error);
+        return { success: false, error: `Error reparando transferencias: ${error.message}`, updatedCount: 0 };
+    }
+}
     
 export async function createDeliveryManifest(manifestData: Omit<DeliveryManifest, 'id' | 'createdAt' | 'manifestId'>): Promise<{ success: boolean; error?: string; id?: string }> {
     const counterRef = doc(firestore, 'counters', 'manifestCounter');

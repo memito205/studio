@@ -5,14 +5,14 @@
 import React, { useState, useMemo, ChangeEvent, useRef, useCallback, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, UploadCloud, Truck, FileSignature, Search, Download, Trash2, Plus, File, Package, X, Check, Save, History, Eye, Printer, PackageCheck, Loader2, ScanLine, CircleDot, FileDown, MoreHorizontal, ChevronsUpDown, Database } from 'lucide-react';
+import { ArrowLeft, UploadCloud, Truck, FileSignature, Search, Download, Trash2, Plus, File, Package, X, Check, Save, History, Eye, Printer, PackageCheck, Loader2, ScanLine, CircleDot, FileDown, MoreHorizontal, ChevronsUpDown, Database, RefreshCw } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/card';
 import { Input } from './ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { TransferEntry, TransferStatus, DeliveryManifest, UserRole, CollectionLog, AppUser, RouteEntry } from '@/types';
-import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, syncAnalysisRecords, loadAnalysisRecords } from '@/app/actions';
+import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers } from '@/app/actions';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -927,6 +927,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     const [isManifestDetailsOpen, setIsManifestDetailsOpen] = useState(false);
     const [selectedCollectionLog, setSelectedCollectionLog] = useState<CollectionLog | null>(null);
     const [isMigrating, setIsMigrating] = useState(false);
+    const [isHealing, setIsHealing] = useState(false);
     
     // State for manifest creation tab
     const [manifestFilters, setManifestFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' });
@@ -1030,6 +1031,18 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         setIsMigrating(false);
     };
     
+    const handleHealClick = async () => {
+        setIsHealing(true);
+        const result = await healInconsistentTransfers();
+        if (result.success) {
+            toast({ title: 'Reparación Finalizada', description: `Se sincronizaron ${result.updatedCount} líneas de transferencia.` });
+            onRefresh();
+        } else {
+            toast({ variant: 'destructive', title: 'Error en Reparación', description: result.error });
+        }
+        setIsHealing(false);
+    };
+
     const fetchManifestData = useCallback(async () => {
         setIsLoadingManifests(true);
         const result = await getDeliveryManifests();
@@ -1365,6 +1378,27 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                 <AlertDialogFooter>
                                     <AlertDialogCancel>Cancelar</AlertDialogCancel>
                                     <AlertDialogAction onClick={handleMigrationClick}>Sí, corregir datos</AlertDialogAction>
+                                </AlertDialogFooter>
+                            </AlertDialogContent>
+                        </AlertDialog>
+
+                        <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                                <Button variant="secondary" size="sm" disabled={isHealing}>
+                                    {isHealing ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <RefreshCw className="mr-2 h-4 w-4" />}
+                                    Sincronizar TFs Inconsistentes (Desde Marzo)
+                                </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                                <AlertDialogHeader>
+                                    <AlertDialogTitle>¿Reparar transferencias divididas?</AlertDialogTitle>
+                                    <AlertDialogDescription>
+                                        Esta acción buscará transferencias que tengan líneas con diferentes estados y las sincronizará todas al estado más avanzado. Se procesarán todos los registros desde el 1 de Marzo.
+                                    </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                    <AlertDialogAction onClick={handleHealClick}>Sí, reparar datos</AlertDialogAction>
                                 </AlertDialogFooter>
                             </AlertDialogContent>
                         </AlertDialog>
