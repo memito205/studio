@@ -415,7 +415,7 @@ const ManifestDetailsDialog: React.FC<{
   
   const groupedByDestination = useMemo(() => {
     if (!transfers) return {};
-    return transfers.reduce((acc, transfer) => {
+    const grouped = transfers.reduce((acc, transfer) => {
         const dest = transfer.bodegaDestino.trim().toUpperCase();
         if (!acc[dest]) {
             acc[dest] = [];
@@ -423,6 +423,13 @@ const ManifestDetailsDialog: React.FC<{
         acc[dest].push(transfer);
         return acc;
     }, {} as Record<string, TransferEntry[]>);
+
+    // Apply TF grouping to each destination group
+    const finalGrouped: Record<string, GroupedTransfer[]> = {};
+    Object.entries(grouped).forEach(([dest, list]) => {
+        finalGrouped[dest] = groupTransfersByTF(list);
+    });
+    return finalGrouped;
   }, [transfers]);
 
   const handlePrint = async () => {
@@ -549,10 +556,14 @@ const ManifestDetailsDialog: React.FC<{
       });
       return;
     }
-    const dataToExport = transfers.map(t => ({
+    const groupedTransfers = groupTransfersByTF(transfers);
+    const dataToExport = groupedTransfers.map(t => ({
       'Numero TF': t.numeroTF,
       'Origen': t.bodegaOrigen,
       'Destino': t.bodegaDestino,
+      'Marcas': t.marca,
+      'Grupos': t.grupo,
+      'Cantidad Total': t.cantidad
     }));
     exportToXlsx(dataToExport, `Manifiesto_${manifest?.manifestId || 'desconocido'}`);
   };
