@@ -33,6 +33,7 @@ interface Props {
   justifications: ManualJustifications;
   onJustificationsChange: (justifications: ManualJustifications) => void;
   onAcceptSuggestion: (incidentId: string, type: JustificationType) => void;
+  isSaving?: boolean;
 }
 
 const getStatusVariant = (status: DeadTimeEntry['status']): 'success' | 'warning' | 'destructive' | 'default' => {
@@ -58,7 +59,8 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
   incidents, 
   justifications, 
   onJustificationsChange,
-  onAcceptSuggestion
+  onAcceptSuggestion,
+  isSaving = false
 }) => {
   
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -132,12 +134,35 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
   return (
     <>
     <Card>
-      <CardHeader>
-        <CardTitle>Gestión de Inactividad</CardTitle>
-        <CardDescription>
-            Revise las pausas detectadas (mayores o iguales a 5 minutos). Asígnelas a un descanso o justifíquelas con una razón.
-        </CardDescription>
-         <div className="relative pt-4">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <div className="space-y-1">
+          <CardTitle>Gestión de Inactividad</CardTitle>
+          <CardDescription>
+              Revise las pausas detectadas (mayores o iguales a 5 minutos). Asígnelas a un descanso o justifíquelas con una razón.
+          </CardDescription>
+        </div>
+        <Button 
+          variant="outline" 
+          size="sm" 
+          onClick={() => onJustificationsChange(justifications)}
+          disabled={isSaving}
+          className="ml-4"
+        >
+          {isSaving ? (
+            <>
+              <Clock className="mr-2 h-4 w-4 animate-spin" />
+              Guardando...
+            </>
+          ) : (
+            <>
+              <CheckCircle className="mr-2 h-4 w-4" />
+              Guardar Justificaciones
+            </>
+          )}
+        </Button>
+      </CardHeader>
+      <div className="px-6 pb-4">
+         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
           <Input 
             placeholder="Filtrar por nombre de operario..."
@@ -146,7 +171,7 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
             className="pl-10 w-full sm:w-80"
           />
         </div>
-      </CardHeader>
+      </div>
       <CardContent>
        {incidentsToDisplay.length === 0 ? (
         <p className="text-muted-foreground text-center py-8">

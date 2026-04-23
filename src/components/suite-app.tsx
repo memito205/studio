@@ -8,7 +8,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import type { ProcessedReportData, ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ReferenceCorrections, UniqueReference, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, ChatMessage, SmartAlert, ActionPlan, Annotations, TaggedReport, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, PackingUnit, PackingSession, AppStep, ReceptionOperation, JustificationType, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReportSummary, CreditCalculationResult, DispatchSessionInfo, RouteEntry, TransferEntry, EcommerceOrder, DelayedOrderLog, OperationPulse } from '@/types';
 import { processReport, getSanitizedData, extractUniqueReferences, extractPackersFromReport, preProcessDeadTimes, classifyProduct } from '@/services/reportProcessor';
-import { handleExecutiveSummary, handleRootCauseAnalysis, handleGenerateSmartAlerts, handleGetJustificationSuggestions, saveReportToHistory, loadHistoricalReports, updateOrderStatus, savePackingSession, loadWholesaleOrders, getPackingSession, loadAllPackingSessions, consolidateDailyReports, previewConsolidatedReport, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, loadFullReportSnapshots, loadOperatorMappings } from '@/app/actions';
+import { handleExecutiveSummary, handleRootCauseAnalysis, handleGenerateSmartAlerts, handleGetJustificationSuggestions, saveReportToHistory, loadHistoricalReports, updateOrderStatus, savePackingSession, loadWholesaleOrders, getPackingSession, loadAllPackingSessions, consolidateDailyReports, previewConsolidatedReport, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, loadFullReportSnapshots, loadOperatorMappings, saveJustificationsForDay } from '@/app/actions';
 import { getProductsByBarcodes } from '@/app/reception/actions';
 import { Loader2, AlertTriangle } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -161,6 +161,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const [sanitizedRecordCount, setSanitizedRecordCount] = useState<number>(0);
   const [discardedRecords, setDiscardedRecords] = useState<DiscardedRecord[]>([]);
   const [deadTimes, setDeadTimes] = useState<DeadTimeEntry[]>([]);
+  const [isSavingJustifications, setIsSavingJustifications] = useState(false);
 
 
   // AI State
@@ -661,8 +662,17 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
     setIncidentLog(log);
   };
   
-  const handleManualJustificationsChange = (newJustifications: ManualJustifications) => {
+  const handleManualJustificationsChange = async (newJustifications: ManualJustifications) => {
     setManualJustifications(newJustifications);
+    if (reportDate) {
+        setIsSavingJustifications(true);
+        // Silent background save
+        const result = await saveJustificationsForDay(reportDate, newJustifications);
+        setIsSavingJustifications(false);
+        if (result.error) {
+            console.error("Auto-save failed:", result.error);
+        }
+    }
   }
 
     const renderContent = () => {
@@ -689,7 +699,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToLogisticsPlatform={handleNavigateToLogisticsPlatform}
             />;
           case 'upload': return <FileUpload onProcessFile={handleFileProcess} isLoading={isLoading} onGoToHistorical={handleGoToHistorical} onReturnToSuite={handleReturnToSuite} reportDate={reportDate} onDateChange={setReportDate} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} />;
-          case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} />;
+          case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} isSavingJustifications={isSavingJustifications} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} />;
           case 'dashboard': return reportData && <Dashboard data={reportData} fileName={fileName} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} onGoToConfiguration={handleGoToConfiguration} onGoToPlantView={handleGoToPlantView} onGoToSupervisorView={handleGoToSupervisorView} onRequestAIInsight={handleRequestAIInsight} theme={theme} annotations={annotations} onAnnotationChange={handleAnnotationChange} />;
           case 'dashboards_bodega': return <BodegaDashboardsMenu onNavigateRemision={handleNavigateToDashboardsRemision} onNavigateLabeling={handleNavigateToDashboardsLabeling} onNavigateLogisticsPlatform={handleNavigateToLogisticsPlatform} onReturnToMain={handleNavigateToDashboardsMainMenu} />;
           case 'dashboards_remision': return <HistoricalDashboard onReturnToMain={() => setAppStep('dashboards_bodega')} onConsolidate={consolidateDailyReports} theme={theme} />;

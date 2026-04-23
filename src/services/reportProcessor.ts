@@ -377,13 +377,31 @@ export function applyJustifications(
                     const match = key.match(/-(\d{10,14})$/);
                     if (match) {
                         const keyTs = parseInt(match[1]);
-                        const isMatch = Math.abs(keyTs - timestamp) <= 70000;
-                        // Relaxed packer name check: just check if at least one significant word matches
-                        const keyNameParts = key.split('-')[0].toUpperCase().split(/\s+/).filter(p => p.length > 2);
-                        const incNameParts = incident.packerName.toUpperCase().split(/\s+/).filter(p => p.length > 2);
-                        const packerMatch = keyNameParts.some(p => incNameParts.includes(p)) || incNameParts.some(p => keyNameParts.includes(p));
+                        const isTimeMatch = Math.abs(keyTs - timestamp) <= 120000; // Increased to 2 minutes jitter
+                        if (!isTimeMatch) return false;
+
+                        // Robust packer name check: 
+                        // 1. Try to find the name part by splitting from the first digit-looking thing at the end
+                        const namePartFromKey = key.replace(/-(\w+-)?\d{10,14}$/, '').toUpperCase();
+                        const currentName = incident.packerName.toUpperCase();
                         
-                        return isMatch && packerMatch;
+                        // Exact match
+                        if (namePartFromKey === currentName) return true;
+                        
+                        // ID to Name mapping check
+                        const mappedNameFromKey = OPERATOR_MAP[namePartFromKey]?.toUpperCase();
+                        if (mappedNameFromKey === currentName) return true;
+                        
+                        // Name to ID mapping check (if key is a name but current incident has ID - rare but possible)
+                        const mappedCurrentName = OPERATOR_MAP[currentName]?.toUpperCase();
+                        if (mappedCurrentName === namePartFromKey) return true;
+
+                        // Fuzzy word-based match as last resort
+                        const keyNameWords = namePartFromKey.split(/\s+/).filter(p => p.length > 2);
+                        const incNameWords = currentName.split(/\s+/).filter(p => p.length > 2);
+                        const wordMatch = keyNameWords.some(p => incNameWords.includes(p)) || incNameWords.some(p => keyNameWords.includes(p));
+                        
+                        return wordMatch;
                     }
                     return false;
                 });

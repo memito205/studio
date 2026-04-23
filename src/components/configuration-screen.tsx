@@ -60,6 +60,7 @@ interface ConfigurationScreenProps {
   sanitizedRecordCount: number;
   discardedRecords: DiscardedRecord[];
   deadTimes: DeadTimeEntry[];
+  isSavingJustifications?: boolean;
 }
 
 export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
@@ -102,6 +103,7 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
   sanitizedRecordCount,
   discardedRecords,
   deadTimes,
+  isSavingJustifications,
 }) => {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [shareStatus, setShareStatus] = React.useState<'idle' | 'copied'>('idle');
@@ -397,6 +399,7 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
           justifications={manualJustifications} 
           onJustificationsChange={onManualJustificationsChange} 
           onAcceptSuggestion={onAcceptSuggestion}
+          isSaving={isSavingJustifications}
       />
 
       <div className="flex justify-end pt-4">

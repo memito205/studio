@@ -431,10 +431,42 @@ export async function loadJustificationsByDate(dateStr: string): Promise<{ data?
             }
         });
 
+        // 3. Try to load from the dedicated JUSTIFICATIONS collection for the specific date
+        // This is the new "Source of Truth" for immediate saves
+        try {
+            const dedicatedJustificationDoc = await getDoc(doc(firestore, "reports_justifications", dateStr));
+            if (dedicatedJustificationDoc.exists()) {
+                const data = dedicatedJustificationDoc.data() as { justifications: ManualJustifications };
+                if (data.justifications) {
+                    Object.assign(mergedJustifications, data.justifications);
+                }
+            }
+        } catch (e) {
+            console.warn("Could not load dedicated justifications:", e);
+        }
+
         return { data: mergedJustifications };
     } catch (error: any) {
         console.error("Error loading justifications by date:", error);
         return { data: {}, error: error.message };
+    }
+}
+
+export async function saveJustificationsForDay(dateStr: string, justifications: ManualJustifications): Promise<{ success: boolean; error?: string }> {
+    try {
+        if (!dateStr) throw new Error("dateStr is required");
+        
+        const docRef = doc(firestore, "reports_justifications", dateStr);
+        await setDoc(docRef, {
+            justifications,
+            updatedAt: Timestamp.now(),
+            reportDate: dateStr
+        });
+        
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error saving justifications for day:", error);
+        return { success: false, error: error.message };
     }
 }
 
