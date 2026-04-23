@@ -1493,7 +1493,8 @@ export function extractUnmappedPackers(
         const empacadorKey = Object.keys(row).find(k => k.toLowerCase().trim() === 'empacador' || k.toLowerCase().trim() === 'empacado');
         if (empacadorKey) {
             const empacadorId = String(row[empacadorKey]).trim();
-             if (empacadorId && !OPERATOR_MAP[empacadorId]) {
+            const combinedOperatorMap = { ...OPERATOR_MAP, ...manualOperatorMappings };
+            if (empacadorId && !combinedOperatorMap[empacadorId]) {
                 const unidadDeEmpaque = String(row['unidad de empaque'] || row['unidad empaque'] || '').trim().toUpperCase();
                 if (!unidadDeEmpaque.startsWith('EVI') && !unidadDeEmpaque.startsWith('INT') && !unidadDeEmpaque.startsWith('VXM')) {
                     unmappedIds.add(empacadorId);

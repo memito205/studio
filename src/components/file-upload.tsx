@@ -8,6 +8,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Separator } from '@/components/ui/separator';
 import { Loader2 } from 'lucide-react';
 
+import { ManualOperatorMappings } from '@/types';
+import { OperatorMappingsManager } from './OperatorMappingsManager';
+
 interface FileUploadProps {
   onProcessFile: (data: any[], fileName: string) => void;
   isLoading: boolean;
@@ -15,9 +18,20 @@ interface FileUploadProps {
   onReturnToSuite: () => void;
   reportDate: string;
   onDateChange: (date: string) => void;
+  manualOperatorMappings: ManualOperatorMappings;
+  onManualOperatorMappingChange: (mappings: ManualOperatorMappings) => void;
 }
 
-export const FileUpload: React.FC<FileUploadProps> = ({ onProcessFile, isLoading, onGoToHistorical, onReturnToSuite, reportDate, onDateChange }) => {
+export const FileUpload: React.FC<FileUploadProps> = ({ 
+  onProcessFile, 
+  isLoading, 
+  onGoToHistorical, 
+  onReturnToSuite, 
+  reportDate, 
+  onDateChange,
+  manualOperatorMappings,
+  onManualOperatorMappingChange
+}) => {
   const [dragActive, setDragActive] = React.useState(false);
 
   const handleFile = React.useCallback((file: File | null) => {
@@ -147,6 +161,15 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onProcessFile, isLoading
           <p className="ml-4 text-muted-foreground text-lg">Procesando archivo...</p>
         </div>
       )}
+
+      <div className="mt-12">
+          <OperatorMappingsManager 
+              initialMappings={manualOperatorMappings} 
+              onMappingsUpdated={onManualOperatorMappingChange} 
+          />
+      </div>
     </div>
   );
 };
+
+

@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 interface NewOperatorMapperProps {
     unmappedPackers: string[];
     mappings: ManualOperatorMappings;
-    onMappingChange: (id: string, name: string) => void;
+    onMappingChange: (newMappings: ManualOperatorMappings) => void;
 }
 
 export const NewOperatorMapper: React.FC<NewOperatorMapperProps> = ({
@@ -17,6 +17,13 @@ export const NewOperatorMapper: React.FC<NewOperatorMapperProps> = ({
     mappings,
     onMappingChange,
 }) => {
+    const handleInputChange = (id: string, name: string) => {
+        onMappingChange({
+            ...mappings,
+            [id]: name.toUpperCase()
+        });
+    };
+
     if (!unmappedPackers || unmappedPackers.length === 0) {
         return null;
     }
@@ -45,7 +52,7 @@ export const NewOperatorMapper: React.FC<NewOperatorMapperProps> = ({
                                     <Input
                                         type="text"
                                         value={mappings[id] || ''}
-                                        onChange={(e) => onMappingChange(id, e.target.value)}
+                                        onChange={(e) => handleInputChange(id, e.target.value)}
                                         className="w-full sm:w-80"
                                         placeholder="Ej: John Doe"
                                         aria-label={`Asignar nombre para ${id}`}

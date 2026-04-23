@@ -37,7 +37,7 @@ interface ConfigurationScreenProps {
   referenceCorrections: ReferenceCorrections;
   onReferenceCorrectionsChange: (newCorrections: ReferenceCorrections) => void;
   manualOperatorMappings: ManualOperatorMappings;
-  onManualOperatorMappingChange: (id: string, name: string) => void;
+  onManualOperatorMappingChange: (newMappings: ManualOperatorMappings) => void;
   incidentLog: IncidentLogEntry[];
   onIncidentLogChange: (log: IncidentLogEntry[]) => void;
   reportDate: string;

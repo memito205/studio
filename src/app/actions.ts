@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import type { ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, BagOperation, BagItem } from "@/types";
+import type { ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagItem } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -3573,3 +3573,39 @@ export async function updateAppVersion(newVersion: string): Promise<{ success: b
         return { success: false, error: error.message };
     }
 }
+
+// --- Operator Mappings (Packer Master) ---
+
+export async function saveOperatorMappings(mappings: ManualOperatorMappings): Promise<{ success: boolean; error?: string }> {
+    try {
+        const batch = writeBatch(firestore);
+        const colRef = collection(firestore, 'operator_mappings');
+
+        for (const [id, name] of Object.entries(mappings)) {
+            const docRef = doc(colRef, id); // Use ID (cedula) as document ID
+            batch.set(docRef, { id, name, updatedAt: Timestamp.now() }, { merge: true });
+        }
+
+        await batch.commit();
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error saving operator mappings:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function loadOperatorMappings(): Promise<{ data?: ManualOperatorMappings; error?: string }> {
+    try {
+        const querySnapshot = await getDocs(collection(firestore, 'operator_mappings'));
+        const mappings: ManualOperatorMappings = {};
+        querySnapshot.forEach((doc) => {
+            const data = doc.data();
+            mappings[data.id] = data.name;
+        });
+        return { data: mappings };
+    } catch (error: any) {
+        console.error("Error loading operator mappings:", error);
+        return { error: error.message };
+    }
+}
+
