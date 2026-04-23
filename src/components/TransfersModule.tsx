@@ -49,23 +49,41 @@ interface GroupedTransfer extends TransferEntry {
 const groupTransfersByTF = (transfers: TransferEntry[], placaMap?: Map<string, string>): GroupedTransfer[] => {
     const groups = new Map<string, GroupedTransfer>();
     
+    // Status priority for determining group status
+    const statusPriority: Record<TransferStatus, number> = {
+        'En Tránsito': 1,
+        'Recolectado en Ruta': 2,
+        'Entregado en Ruta': 3,
+        'Validado Supervisor': 4,
+        'Recibido en Bodega': 5,
+        'Enviado a Destino': 6
+    };
+
     transfers.forEach(t => {
         const placa = placaMap ? (placaMap.get(t.id) || '') : '';
-        const key = `${t.numeroTF}-${t.bodegaOrigen}-${t.bodegaDestino}-${t.status}-${placa}`;
+        // Removed status from key to truly unify the TF
+        const key = `${t.numeroTF}-${t.bodegaOrigen}-${t.bodegaDestino}-${placa}`;
         const existing = groups.get(key);
         
         if (existing) {
             existing.allIds.push(t.id);
             existing.cantidad = Number(existing.cantidad || 0) + Number(t.cantidad || 0);
             
+            // Update to most advanced status
+            if (statusPriority[t.status] > statusPriority[existing.status]) {
+                existing.status = t.status;
+            }
+
             // Handle multiple brands/groups
             if (t.marca && t.marca !== existing.marca) {
-                if (!existing.marca?.split(', ').includes(t.marca)) {
+                const existingBrands = existing.marca ? existing.marca.split(', ') : [];
+                if (!existingBrands.includes(t.marca)) {
                     existing.marca = existing.marca && existing.marca !== 'N/A' ? `${existing.marca}, ${t.marca}` : t.marca;
                 }
             }
             if (t.grupo && t.grupo !== existing.grupo) {
-               if (!existing.grupo?.split(', ').includes(t.grupo)) {
+                const existingGroups = existing.grupo ? existing.grupo.split(', ') : [];
+                if (!existingGroups.includes(t.grupo)) {
                     existing.grupo = existing.grupo && existing.grupo !== 'N/A' ? `${existing.grupo}, ${t.grupo}` : t.grupo;
                 }
             }
@@ -1300,12 +1318,14 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                     <CardHeader>
                         <CardTitle>Validación de Recolecciones en Ruta</CardTitle>
                         <CardDescription>Confirme la llegada a bodega de las TFs o márquelas como entregadas directamente en ruta.</CardDescription>
-                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4 pt-4 items-end">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4 pt-4 items-end">
                             <Input placeholder="Filtrar por # TF..." value={filters.numeroTF} onChange={e => setFilters(prev => ({...prev, numeroTF: e.target.value}))} />
                             <Input placeholder="Filtrar por Origen..." value={filters.bodegaOrigen} onChange={e => setFilters(prev => ({...prev, bodegaOrigen: e.target.value}))} />
                             <Input placeholder="Filtrar por Destino..." value={filters.bodegaDestino} onChange={e => setFilters(prev => ({...prev, bodegaDestino: e.target.value}))} />
                             <Input placeholder="Filtrar por Placa..." value={filters.placa} onChange={e => setFilters(prev => ({...prev, placa: e.target.value}))} />
-                            <Button variant="outline" onClick={() => setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all' })}>Limpiar Filtros</Button>
+                            <Button variant="outline" onClick={() => setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all' })}>
+                                Limpiar Filtros {supervisorValidationTransfers.length > 0 && <span className="ml-2 opacity-50">({supervisorValidationTransfers.length})</span>}
+                            </Button>
                          </div>
                     </CardHeader>
                     <CardContent>
@@ -1436,7 +1456,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                         <div className="flex gap-2">
                             <Button onClick={onSearch} disabled={isLoading} className="flex-1">
                                 {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Search className="mr-2 h-4 w-4"/>}
-                                Buscar
+                                Buscar {filteredTransfers.length > 0 && <span className="ml-2 bg-primary-foreground text-primary px-2 rounded-full text-xs">{filteredTransfers.length}</span>}
                             </Button>
                             <Button variant="outline" size="icon" onClick={() => setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all' })} title="Limpiar Filtros">
                                 <X className="h-4 w-4" />
