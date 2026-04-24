@@ -431,18 +431,25 @@ const WarehouseAnalyzer: React.FC = () => {
       try {
         const data = new Uint8Array(e.target!.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: 'array', cellDates: true, codepage: 65001 });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
+        
+        // --- Búsqueda de Hoja QUICK ---
+        const quickSheetName = workbook.SheetNames.find((name: string) => name.toUpperCase() === 'QUICK') || workbook.SheetNames[0];
+        
+        if (!quickSheetName) {
+            setError("No se encontraron hojas en el archivo de Excel.");
+            return;
+        }
+
+        const worksheet = workbook.Sheets[quickSheetName];
         const jsonData: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
 
         if (jsonData.length === 0) {
-            setError("El archivo de plataforma está vacío.");
+            setError(`El archivo de plataforma (${quickSheetName}) está vacío.`);
             return;
         }
 
         // --- Mapeo de Columnas Quick ---
-        const firstRow = jsonData[0];
-        const headers = Object.keys(firstRow);
+        const headers = Object.keys(jsonData[0] || {});
         
         const QUICK_DOC_COL = findHeader(headers, ['NUMERO TF', 'Numero TF', 'NumeroTF']);
         const QUICK_WHS_COL = findHeader(headers, ['BOD DESTINO', 'Bod Destino', 'Bodega Destino']);
@@ -450,9 +457,23 @@ const WarehouseAnalyzer: React.FC = () => {
         const QUICK_DATE_COL = findHeader(headers, ['fecha de servicio', 'fecha servicio']);
 
         if (!QUICK_DOC_COL || !QUICK_WHS_COL) {
-            setError("El archivo Quick no tiene las columnas 'NUMERO TF' y 'BOD DESTINO' necesarias para el cruce.");
+            setError(`El archivo Quick (${quickSheetName}) no tiene las columnas 'NUMERO TF' y 'BOD DESTINO' necesarias para el cruce.`);
             return;
         }
+
+        // --- OPTIMIZACIÓN: Crear un Mapa de búsqueda O(1) ---
+        const quickMap = new Map<string, any>();
+        jsonData.forEach(qRow => {
+            const qDoc = String(qRow[QUICK_DOC_COL] || '').trim();
+            const qWhs = String(qRow[QUICK_WHS_COL] || '').trim().toUpperCase();
+            if (qDoc && qWhs) {
+                const key = `${qDoc}-${qWhs}`;
+                // Guardar solo el primero o el más reciente si hay duplicados
+                if (!quickMap.has(key)) {
+                    quickMap.set(key, qRow);
+                }
+            }
+        });
 
         // --- Lógica de Intersección y Mezcla ---
         const todayStr = formatDate(new Date());
@@ -461,13 +482,9 @@ const WarehouseAnalyzer: React.FC = () => {
         const updatedData = baseData.map(row => {
             const docId = String(row[columnMap.doc!] || '').trim();
             const whsId = String(row[columnMap.warehouse!] || '').trim().toUpperCase();
+            const lookupKey = `${docId}-${whsId}`;
 
-            // Buscar match en el archivo Quick
-            const quickMatch = jsonData.find(qRow => {
-                const qDoc = String(qRow[QUICK_DOC_COL] || '').trim();
-                const qWhs = String(qRow[QUICK_WHS_COL] || '').trim().toUpperCase();
-                return qDoc === docId && qWhs === whsId;
-            });
+            const quickMatch = quickMap.get(lookupKey);
 
             if (quickMatch) {
                 matchesCount++;
@@ -475,7 +492,6 @@ const WarehouseAnalyzer: React.FC = () => {
                 
                 // Mapear campos
                 if (QUICK_IMG_COL) {
-                    // Soporte para múltiples links separados por |
                     newRow[columnMap.image || 'image'] = quickMatch[QUICK_IMG_COL];
                 }
                 
@@ -484,7 +500,6 @@ const WarehouseAnalyzer: React.FC = () => {
                     const serviceDateObj = normalizeDate(serviceDateRaw);
                     newRow[columnMap.fechaFinalizado || 'fechaFinalizado'] = serviceDateRaw;
                     
-                    // Lógica HOY RUTA
                     if (serviceDateObj && formatDate(serviceDateObj) === todayStr) {
                         newRow[columnMap.hoyRuta || 'hoyRuta'] = 'EN RUTA HOY';
                     }
@@ -496,7 +511,7 @@ const WarehouseAnalyzer: React.FC = () => {
         });
 
         setBaseData(updatedData);
-        setInfoMessage(`Cruce finalizado. Se encontraron ${matchesCount} coincidencias con el archivo de plataforma.`);
+        setInfoMessage(`Cruce finalizado (Hoja: ${quickSheetName}). Se encontraron ${matchesCount} coincidencias con el archivo de plataforma.`);
 
       } catch (err) {
         console.error(err);
