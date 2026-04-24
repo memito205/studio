@@ -19,10 +19,10 @@ import { useReportData } from './hooks/useReportData';
 import { findHeader, normalizeDate, formatDate, parseDateString, generatePendingSummaryPdf, getWeekStartDate } from './utils/helpers';
 import type { ExcelDataRow, BreaksReportData, ProcessedBreak, EmployeeDailyAnalysis, DailyAnalysis, WeeklyTrend, EmployeePerformance } from './types';
 import type { TransferEntry } from '@/types';
-import { loadAnalysisRecords } from '@/app/actions';
+import { loadAnalysisRecords, syncAnalysisRecords } from '@/app/actions';
 import { FileIcon, PackageIcon, TruckIcon, ChartIcon, CheckCircleIcon, TableIcon, UserCheckIcon, PdfFileIcon } from './components/icons';
 import { Button } from '@/components/ui/button';
-import { RefreshCw, Database } from 'lucide-react';
+import { RefreshCw, Database, CloudUpload } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 
 
@@ -58,6 +58,8 @@ const WarehouseAnalyzer: React.FC = () => {
   const [endDate, setEndDate] = React.useState<string>('');
   const [documentNumberFilter, setDocumentNumberFilter] = React.useState('');
   const [dataCount, setDataCount] = React.useState(0);
+  const [isSyncing, setIsSyncing] = React.useState(false);
+  const [platformFileName, setPlatformFileName] = React.useState<string | null>(null);
 
   const fetchTransfersFromDB = React.useCallback(async () => {
     setIsLoading(true);
@@ -80,6 +82,27 @@ const WarehouseAnalyzer: React.FC = () => {
         setIsLoading(false);
     }
   }, []);
+  
+  const handleSyncToDB = async () => {
+    if (baseData.length === 0) {
+        toast({ title: "No hay datos", description: "Carga un archivo antes de sincronizar.", variant: "destructive" });
+        return;
+    }
+
+    setIsSyncing(true);
+    try {
+        const result = await syncAnalysisRecords(baseData);
+        if (result.success) {
+            toast({ title: "Sincronización Exitosa", description: `Se han actualizado ${result.count} registros en la base de datos.` });
+        } else {
+            throw new Error(result.error);
+        }
+    } catch (err: any) {
+        toast({ title: "Error de Sincronización", description: err.message, variant: "destructive" });
+    } finally {
+        setIsSyncing(false);
+    }
+  };
 
   React.useEffect(() => {
     fetchTransfersFromDB();
@@ -394,6 +417,97 @@ const WarehouseAnalyzer: React.FC = () => {
     reader.readAsArrayBuffer(file);
   };
 
+  const handlePlatformFileProcess = (file: File) => {
+    if (baseData.length === 0) {
+        setError("Primero debes cargar el archivo principal de Transferencias para poder cruzar los datos.");
+        return;
+    }
+
+    setIsLoading(true);
+    setPlatformFileName(file.name);
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target!.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true, codepage: 65001 });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const jsonData: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+
+        if (jsonData.length === 0) {
+            setError("El archivo de plataforma está vacío.");
+            return;
+        }
+
+        // --- Mapeo de Columnas Quick ---
+        const firstRow = jsonData[0];
+        const headers = Object.keys(firstRow);
+        
+        const QUICK_DOC_COL = findHeader(headers, ['NUMERO TF', 'Numero TF', 'NumeroTF']);
+        const QUICK_WHS_COL = findHeader(headers, ['BOD DESTINO', 'Bod Destino', 'Bodega Destino']);
+        const QUICK_IMG_COL = findHeader(headers, ['link de imagenes', 'link imagenes']);
+        const QUICK_DATE_COL = findHeader(headers, ['fecha de servicio', 'fecha servicio']);
+
+        if (!QUICK_DOC_COL || !QUICK_WHS_COL) {
+            setError("El archivo Quick no tiene las columnas 'NUMERO TF' y 'BOD DESTINO' necesarias para el cruce.");
+            return;
+        }
+
+        // --- Lógica de Intersección y Mezcla ---
+        const todayStr = formatDate(new Date());
+        let matchesCount = 0;
+
+        const updatedData = baseData.map(row => {
+            const docId = String(row[columnMap.doc!] || '').trim();
+            const whsId = String(row[columnMap.warehouse!] || '').trim().toUpperCase();
+
+            // Buscar match en el archivo Quick
+            const quickMatch = jsonData.find(qRow => {
+                const qDoc = String(qRow[QUICK_DOC_COL] || '').trim();
+                const qWhs = String(qRow[QUICK_WHS_COL] || '').trim().toUpperCase();
+                return qDoc === docId && qWhs === whsId;
+            });
+
+            if (quickMatch) {
+                matchesCount++;
+                const newRow = { ...row };
+                
+                // Mapear campos
+                if (QUICK_IMG_COL) {
+                    // Soporte para múltiples links separados por |
+                    newRow[columnMap.image || 'image'] = quickMatch[QUICK_IMG_COL];
+                }
+                
+                if (QUICK_DATE_COL) {
+                    const serviceDateRaw = quickMatch[QUICK_DATE_COL];
+                    const serviceDateObj = normalizeDate(serviceDateRaw);
+                    newRow[columnMap.fechaFinalizado || 'fechaFinalizado'] = serviceDateRaw;
+                    
+                    // Lógica HOY RUTA
+                    if (serviceDateObj && formatDate(serviceDateObj) === todayStr) {
+                        newRow[columnMap.hoyRuta || 'hoyRuta'] = 'EN RUTA HOY';
+                    }
+                }
+                
+                return newRow;
+            }
+            return row;
+        });
+
+        setBaseData(updatedData);
+        setInfoMessage(`Cruce finalizado. Se encontraron ${matchesCount} coincidencias con el archivo de plataforma.`);
+
+      } catch (err) {
+        console.error(err);
+        setError('Error al procesar el archivo de plataforma.');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
   const { kpiData, analysisData, dailyChartData, slaAnalysisData, pendingDocsAnalysisData, generalReport, deliveredDocsReport, brandReport, brandSummaryByWarehouse, deliveredDocsByWarehouse, pendingRows } = useReportData(
     baseData,
     columnMap,
@@ -482,6 +596,15 @@ const WarehouseAnalyzer: React.FC = () => {
                     Actualizar Datos
                 </Button>
                 
+                <Button 
+                    onClick={handleSyncToDB} 
+                    disabled={isSyncing || baseData.length === 0}
+                    className="flex items-center gap-2 bg-green-600 hover:bg-green-700"
+                >
+                    <CloudUpload className={`w-4 h-4 ${isSyncing ? 'animate-pulse' : ''}`} />
+                    {isSyncing ? 'Sincronizando...' : 'Sincronizar a DB'}
+                </Button>
+                
                 <FileUpload 
                   onFileProcess={handleMainFileProcess} 
                   isLoading={isLoading}
@@ -562,6 +685,21 @@ const WarehouseAnalyzer: React.FC = () => {
                 </div>
               </div>
             )}
+          </section>
+
+          <section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-blue-500">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 3: Cargar Archivo Quick - Plataforma (Intersección)</h2>
+            <p className="text-sm text-gray-600 mb-4">
+                Sube el archivo de plataforma (Quick) con +15,000 registros. El sistema filtrará automáticamente y solo conservará los matches basados en <b>NUMERO TF</b> y <b>BOD DESTINO</b>.
+            </p>
+            <FileUpload
+              onFileProcess={handlePlatformFileProcess}
+              isLoading={isLoading}
+              fileName={platformFileName}
+              mainText="Subir Archivo Quick (Estado/Evidencias)"
+              subText="Cruce por NUMERO TF y BOD DESTINO"
+              loadedSubText="Archivo Quick cruzado exitosamente."
+            />
           </section>
           
           <FilterPanel

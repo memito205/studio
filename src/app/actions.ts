@@ -2559,13 +2559,22 @@ export async function syncAnalysisRecords(rawJson: any[]): Promise<{ success: bo
             const dataToSave = {
                 ...row,
                 // Normalized fields for consistent identification
-                numeroTF: String(row['Numero TF'] || 'N/A'),
-                marca: String(row['Marca'] || ''),
-                grupo: String(row['Grupo'] || ''),
-                bodegaOrigen: String(row['Bodega Origen'] || 'N/A'),
-                bodegaDestino: String(row['Bodega Destino'] || 'N/A'),
-                fecha: row['Fecha'] ? convertDatesToTimestamps({ f: parseFlexibleDate(row['Fecha']) }).f : null,
-                cantidad: Number(row['Cantidad'] || 1),
+                numeroTF: String(row['Numero TF'] || row['NUMERO TF'] || row['doc'] || 'N/A'),
+                marca: String(row['Marca'] || row['MARCA'] || ''),
+                grupo: String(row['Grupo'] || row['GRUPO'] || ''),
+                bodegaOrigen: String(row['Bodega Origen'] || row['BOD. SALIDA'] || 'N/A'),
+                bodegaDestino: String(row['Bodega Destino'] || row['BOD. ENTRADA'] || row['BOD DESTINO'] || 'N/A'),
+                fecha: row['Fecha'] ? convertDatesToTimestamps({ f: parseFlexibleDate(row['Fecha']) }).f : 
+                       (row['fechaFinalizado'] ? convertDatesToTimestamps({ f: parseFlexibleDate(row['fechaFinalizado']) }).f : null),
+                cantidad: Number(row['Cantidad'] || row['CANTIDAD'] || 1),
+                
+                // Platform Specific persistence
+                estadoPlataforma: row['estadoPlataforma'] || row['ESTADO PLATAFORMA'] || '',
+                novedad: row['novedad'] || row['NOVEDAD'] || '',
+                image: row['image'] || row['link de imagenes'] || '',
+                fechaFinalizado: row['fechaFinalizado'] || row['fecha de servicio'] || '',
+                hoyRuta: row['hoyRuta'] || row['HOY RUTA'] || '',
+                
                 lastSync: new Date()
             };
             

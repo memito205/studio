@@ -477,8 +477,32 @@ export const useReportData = (
                     case 'number': record[header] = Number(value ?? 0); break;
                     case 'link':
                         const linkStr = String(value ?? '').trim();
-                        const match = linkStr.match(/https?:\/\/[^\s]+/);
-                        record[header] = match ? React.createElement('a', { href: match[0], target: '_blank', rel: 'noopener noreferrer', className: 'text-blue-600 hover:underline' }, 'Ver Evidencia') : linkStr;
+                        if (!linkStr) {
+                            record[header] = '';
+                            break;
+                        }
+                        
+                        // Split by '|' and normalize links
+                        const links = linkStr.split('|')
+                            .map(l => l.trim())
+                            .filter(l => l.startsWith('http'));
+
+                        if (links.length === 0) {
+                            record[header] = linkStr;
+                            break;
+                        }
+
+                        record[header] = React.createElement('div', { className: 'flex gap-2' }, 
+                            links.map((link, idx) => (
+                                React.createElement('a', { 
+                                    key: idx,
+                                    href: link, 
+                                    target: '_blank', 
+                                    rel: 'noopener noreferrer', 
+                                    className: 'text-blue-600 hover:underline flex items-center gap-1 bg-blue-50 px-2 py-1 rounded border border-blue-200 text-xs' 
+                                }, `Evidencia ${idx + 1}`)
+                            ))
+                        );
                         break;
                     default: record[header] = String(value ?? '');
                 }
