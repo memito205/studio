@@ -24,9 +24,7 @@ import { FileIcon, PackageIcon, TruckIcon, ChartIcon, CheckCircleIcon, TableIcon
 import { Button } from '@/components/ui/button';
 import { RefreshCw, Database, CloudUpload } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
-
-
-declare const XLSX: any;
+import * as XLSX from 'xlsx';
 
 
 // --- MODULE 1: Warehouse Analyzer ---
