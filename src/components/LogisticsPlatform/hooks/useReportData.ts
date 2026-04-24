@@ -219,15 +219,15 @@ export const useReportData = (
                     const daysSinceFinalized = Math.max(0, Math.floor(diffTime / (1000 * 3600 * 24)));
                     const isOverdue = daysSinceFinalized >= 3; 
 
-                    const linkValue = IMAGE_LINK_COL ? String(row[IMAGE_LINK_COL!] || '').trim() : '';
-                    const urlMatch = linkValue.match(/https?:\/\/[^\s,;]+/);
+                    const linkValue = IMAGE_LINK_COL ? String(row[IMAGE_LINK_COL!] || '').trim() : String(row['image'] || '').trim();
+                    const links = linkValue.split('|').map(l => l.trim()).filter(l => l.startsWith('http'));
                     
                     const finalizedDetail: FinalizedDocDetail = {
                         docNumber: String(row[DOC_COL!] || ''),
                         finalizedDate: formatDate(fechaFin),
                         daysToFinalize: daysSinceFinalized,
                         isOverdue,
-                        imageLink: urlMatch ? urlMatch[0] : undefined,
+                        imageLink: links[0], // Keep for backward compatibility if needed elsewhere
                         docDate: formatDate(docDate),
                         quantity: Number(row[QTY_COL!] || 0),
                         type: 'finalized',
@@ -310,8 +310,8 @@ export const useReportData = (
 
             const diffTime = currentDate.getTime() - docDate.getTime();
             const daysPending = Math.max(0, Math.floor(diffTime / (1000 * 3600 * 24)));
-            const linkValue = IMAGE_LINK_COL ? String(row[IMAGE_LINK_COL!] || '').trim() : '';
-            const urlMatch = linkValue.match(/https?:\/\/[^\s,;]+/);
+            const linkValue = IMAGE_LINK_COL ? String(row[IMAGE_LINK_COL!] || '').trim() : String(row['image'] || '').trim();
+            const links = linkValue.split('|').map(l => l.trim()).filter(l => l.startsWith('http'));
             const docNumber = String(row[DOC_COL!] || '');
             const digitsOnly = docNumber.replace(/\D/g, '');
             const cleanDocNumber = digitsOnly ? String(Number(digitsOnly)) : null;
@@ -337,7 +337,7 @@ export const useReportData = (
                 marca: MARCA_COL ? String(row[MARCA_COL!] || 'N/A') : 'N/A',
                 grupo: GRUPO_COL ? String(row[GRUPO_COL!] || 'N/A') : 'N/A',
                 daysPending,
-                imageLink: urlMatch ? urlMatch[0] : undefined,
+                imageLink: links[0],
                 docDate: formatDate(docDate),
                 enRuta: enRuta,
                 warehouseOut: WAREHOUSE_OUT_COL ? String(row[WAREHOUSE_OUT_COL!] || 'N/A') : 'N/A',

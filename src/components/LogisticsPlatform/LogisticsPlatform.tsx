@@ -432,20 +432,18 @@ const WarehouseAnalyzer: React.FC = () => {
         const data = new Uint8Array(e.target!.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: 'array', cellDates: true, codepage: 65001 });
         
-        // --- Búsqueda de Hoja QUICK ---
-        const quickSheetName = workbook.SheetNames.find((name: string) => name.toUpperCase() === 'QUICK') || workbook.SheetNames[0];
+        // --- Búsqueda de Hoja QUICK con Trim y Flexibilidad ---
+        const quickSheetName = workbook.SheetNames.find((name: string) => name.trim().toUpperCase() === 'QUICK') || workbook.SheetNames[0];
         
         if (!quickSheetName) {
-            setError("No se encontraron hojas en el archivo de Excel.");
-            return;
+            throw new Error("No se encontraron hojas en el archivo de Excel.");
         }
 
         const worksheet = workbook.Sheets[quickSheetName];
         const jsonData: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
 
         if (jsonData.length === 0) {
-            setError(`El archivo de plataforma (${quickSheetName}) está vacío.`);
-            return;
+            throw new Error(`La hoja "${quickSheetName}" está vacía.`);
         }
 
         // --- Mapeo de Columnas Quick ---
@@ -457,18 +455,23 @@ const WarehouseAnalyzer: React.FC = () => {
         const QUICK_DATE_COL = findHeader(headers, ['fecha de servicio', 'fecha servicio']);
 
         if (!QUICK_DOC_COL || !QUICK_WHS_COL) {
-            setError(`El archivo Quick (${quickSheetName}) no tiene las columnas 'NUMERO TF' y 'BOD DESTINO' necesarias para el cruce.`);
-            return;
+            throw new Error(`Faltan columnas requeridas en "${quickSheetName}": se requiere NUMERO TF y BOD DESTINO.`);
         }
 
-        // --- OPTIMIZACIÓN: Crear un Mapa de búsqueda O(1) ---
+        // --- Función de Normalización de Documento (Eliminar ceros y no dígitos) ---
+        const normalizeDoc = (val: any): string => {
+            const strVal = String(val || '').trim();
+            const digitsOnly = strVal.replace(/\D/g, '');
+            return digitsOnly ? String(Number(digitsOnly)) : '';
+        };
+
+        // --- OPTIMIZACIÓN: Crear un Mapa de búsqueda O(1) con IDs normalizados ---
         const quickMap = new Map<string, any>();
         jsonData.forEach(qRow => {
-            const qDoc = String(qRow[QUICK_DOC_COL] || '').trim();
+            const qDoc = normalizeDoc(qRow[QUICK_DOC_COL]);
             const qWhs = String(qRow[QUICK_WHS_COL] || '').trim().toUpperCase();
             if (qDoc && qWhs) {
                 const key = `${qDoc}-${qWhs}`;
-                // Guardar solo el primero o el más reciente si hay duplicados
                 if (!quickMap.has(key)) {
                     quickMap.set(key, qRow);
                 }
@@ -479,8 +482,11 @@ const WarehouseAnalyzer: React.FC = () => {
         const todayStr = formatDate(new Date());
         let matchesCount = 0;
 
+        // Asegurar que columnMap tenga una entrada para imagen si es undefined
+        const targetImageCol = columnMap.image || 'image';
+
         const updatedData = baseData.map(row => {
-            const docId = String(row[columnMap.doc!] || '').trim();
+            const docId = normalizeDoc(row[columnMap.doc!]);
             const whsId = String(row[columnMap.warehouse!] || '').trim().toUpperCase();
             const lookupKey = `${docId}-${whsId}`;
 
@@ -490,9 +496,8 @@ const WarehouseAnalyzer: React.FC = () => {
                 matchesCount++;
                 const newRow = { ...row };
                 
-                // Mapear campos
                 if (QUICK_IMG_COL) {
-                    newRow[columnMap.image || 'image'] = quickMatch[QUICK_IMG_COL];
+                    newRow[targetImageCol] = quickMatch[QUICK_IMG_COL];
                 }
                 
                 if (QUICK_DATE_COL) {
@@ -511,11 +516,11 @@ const WarehouseAnalyzer: React.FC = () => {
         });
 
         setBaseData(updatedData);
-        setInfoMessage(`Cruce finalizado (Hoja: ${quickSheetName}). Se encontraron ${matchesCount} coincidencias con el archivo de plataforma.`);
+        setInfoMessage(`Cruce finalizado (Hoja: ${quickSheetName}). Se encontraron ${matchesCount} coincidencias.`);
 
-      } catch (err) {
+      } catch (err: any) {
         console.error(err);
-        setError('Error al procesar el archivo de plataforma.');
+        setError(`Error al procesar el archivo: ${err.message || 'Error desconocido'}`);
       } finally {
         setIsLoading(false);
       }
