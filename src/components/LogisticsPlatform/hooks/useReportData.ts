@@ -144,6 +144,9 @@ export const useReportData = (
     const totalWarehouses = new Set(filteredRows.map(r => r[WAREHOUSE_COL!])).size;
     const avgDocsPerWarehouse = totalWarehouses > 0 ? (totalDocs / totalWarehouses).toFixed(1) : '0';
 
+    const now = new Date();
+    const currentDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+
     // --- NUEVA LÓGICA DE KPI: ENTREGADOS Y CUMPLIMIENTO ---
     const platformMatches = new Set<string>();
     const nonCompliantDocs = new Set<string>();
@@ -228,9 +231,6 @@ export const useReportData = (
         .map(([date, docSet]) => ({ 'FECHA': date, 'Total Documentos': docSet.size }))
         .sort((a, b) => (parseDateString(a.FECHA)?.getTime() || 0) - (parseDateString(b.FECHA)?.getTime() || 0));
     
-    const now = new Date();
-    const currentDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-
     const finalizedRecordsByWarehouse: { [warehouse: string]: FinalizedDocDetail[] } = {};
     const pendingDocsByWarehouse: { [warehouse: string]: ExcelDataRow[] } = {};
     const processedFinalizedDocKeys = new Set<string>();
@@ -311,7 +311,7 @@ export const useReportData = (
         }
     });
 
-    const allPendingRows = Object.values(pendingDocsByWarehouse).flat();
+    const allPendingRows = Object.values(pendingDocsByWarehouse).flat() as ExcelDataRow[];
 
     const slaAnalysisData: SlaAnalysisData[] = Object.entries(finalizedRecordsByWarehouse)
     .map(([warehouseName, finalizedRecords]) => {
@@ -471,6 +471,7 @@ export const useReportData = (
             quantity: data.quantity,
         })).sort((a,b) => b.quantity - a.quantity)
     }));
+
 
     // --- NUEVA LÓGICA DE ESTADOS PARA EL REPORTE ---
     const desiredHeaders = [
