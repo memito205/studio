@@ -144,15 +144,47 @@ export const useReportData = (
     const totalWarehouses = new Set(filteredRows.map(r => r[WAREHOUSE_COL!])).size;
     const avgDocsPerWarehouse = totalWarehouses > 0 ? (totalDocs / totalWarehouses).toFixed(1) : '0';
 
-    const sinNovedadDocs = new Set<string>();
-    if (NOVEDAD_COL) {
-        filteredRows.forEach(row => {
-            if (String(row[NOVEDAD_COL!] || '').trim().toLowerCase() === 'sin novedad') {
-                sinNovedadDocs.add(getUniqueDocKey(row));
+    // --- NUEVA LÓGICA DE KPI: ENTREGADOS Y CUMPLIMIENTO ---
+    const platformMatches = new Set<string>();
+    const nonCompliantDocs = new Set<string>();
+
+    filteredRows.forEach(row => {
+        const uniqueKey = getUniqueDocKey(row);
+        const hasPlatformData = row['image'] || row[ESTADO_PLATAFORMA_COL!] || row[FECHA_FINALIZADO_PLATAFORMA_COL!];
+        
+        if (hasPlatformData || deliveredDocsKeys.has(uniqueKey)) {
+            platformMatches.add(uniqueKey);
+            
+            // Regla de Cumplimiento: mas de 3 dias despues de la entrega (o fecha base si no hay fecha fin)
+            const docDate = normalizeDate(row[FECHA_COL!]);
+            const finalDate = normalizeDate(row[FECHA_FINALIZADO_PLATAFORMA_COL!] || row['fechaFinalizado']);
+            
+            if (finalDate && docDate) {
+                const diffTime = finalDate.getTime() - docDate.getTime();
+                const daysToDeliver = Math.max(0, Math.floor(diffTime / (1000 * 3600 * 24)));
+                if (daysToDeliver > 3) {
+                    nonCompliantDocs.add(uniqueKey);
+                }
+            } else if (!finalDate && docDate) {
+                // Si ya pasaron mas de 3 dias y no se ha entregado (sin match)
+                const diffTime = currentDate.getTime() - docDate.getTime();
+                const daysPending = Math.max(0, Math.floor(diffTime / (1000 * 3600 * 24)));
+                if (daysPending > 3 && !hasPlatformData && !deliveredDocsKeys.has(uniqueKey)) {
+                     nonCompliantDocs.add(uniqueKey);
+                }
             }
-        });
-    }
-    const compliancePercentage = totalDocs > 0 ? ((sinNovedadDocs.size / totalDocs) * 100).toFixed(1) + '%' : '0.0%';
+        } else {
+             // Docs sin entrega que ya pasaron de 3 dias
+             const docDate = normalizeDate(row[FECHA_COL!]);
+             if (docDate) {
+                const diffTime = currentDate.getTime() - docDate.getTime();
+                const daysPending = Math.max(0, Math.floor(diffTime / (1000 * 3600 * 24)));
+                if (daysPending > 3) nonCompliantDocs.add(uniqueKey);
+             }
+        }
+    });
+
+    const compliancePercentage = totalDocs > 0 ? (((totalDocs - nonCompliantDocs.size) / totalDocs) * 100).toFixed(1) + '%' : '0.0%';
 
     const kpiData = {
         totalDocs: totalDocs.toLocaleString('es-ES'),
@@ -160,7 +192,7 @@ export const useReportData = (
         totalWarehouses: totalWarehouses.toLocaleString('es-ES'),
         avgDocsPerWarehouse,
         compliancePercentage,
-        deliveredCount: deliveredDocsKeys.size.toLocaleString('es-ES'),
+        deliveredCount: platformMatches.size.toLocaleString('es-ES'),
     };
 
     const warehouseSummary = filteredRows.reduce((acc, row) => {
@@ -440,9 +472,10 @@ export const useReportData = (
         })).sort((a,b) => b.quantity - a.quantity)
     }));
 
+    // --- NUEVA LÓGICA DE ESTADOS PARA EL REPORTE ---
     const desiredHeaders = [
         'FECHA', 'BOD. ENTRADA', 'BOD. SALIDA', 'NRO DOCUMENTO.2', 'CANTIDAD', 
-        'ESTADO', 'ESTADO PLATAFORMA', 'NOVEDAD', 'LINK IMAGENES.1.1.1', 'FECHA FINALIZADO PLATAFORMA'
+        'ESTADO', 'ESTADO PLATAFORMA', 'LINK IMAGENES.1.1.1', 'FECHA FINALIZADO PLATAFORMA'
     ];
     
     const headerMappings = {
@@ -452,20 +485,36 @@ export const useReportData = (
         'NRO DOCUMENTO.2': { actual: DOC_COL, type: 'string' },
         'CANTIDAD': { actual: QTY_COL, type: 'number' },
         'ESTADO': { actual: ESTADO_GENERAL_COL, type: 'string' },
-        'ESTADO PLATAFORMA': { actual: ESTADO_PLATAFORMA_COL, type: 'string' },
-        'NOVEDAD': { actual: NOVEDAD_COL, type: 'string' },
-        'LINK IMAGENES.1.1.1': { actual: IMAGE_LINK_COL, type: 'link' },
-        'FECHA FINALIZADO PLATAFORMA': { actual: FECHA_FINALIZADO_PLATAFORMA_COL, type: 'date' }
+        'ESTADO PLATAFORMA': { actual: ESTADO_PLATAFORMA_COL || 'estadoPlataforma', type: 'statusOverride' },
+        'LINK IMAGENES.1.1.1': { actual: IMAGE_LINK_COL || 'image', type: 'link' },
+        'FECHA FINALIZADO PLATAFORMA': { actual: FECHA_FINALIZADO_PLATAFORMA_COL || 'fechaFinalizado', type: 'date' }
     };
 
     const processRow = (row: ExcelDataRow, forExport: boolean) => {
         const record: { [key: string]: any } = {};
+        const uniqueKey = getUniqueDocKey(row);
+        const hasMatch = row['image'] || row[ESTADO_PLATAFORMA_COL!] || row[FECHA_FINALIZADO_PLATAFORMA_COL!];
+        // Determinar si es hoy ruta
+        let isHoyRuta = false;
+        if (HOY_RUTA_COL && row[HOY_RUTA_COL!]) {
+            const val = String(row[HOY_RUTA_COL!]).toUpperCase();
+            if (val === 'EN RUTA HOY' || val === 'TRUE') isHoyRuta = true;
+        }
+
         desiredHeaders.forEach(header => {
             const mapping = headerMappings[header as keyof typeof headerMappings];
             if (!mapping || !mapping.actual) {
                 record[header] = '';
                 return;
             }
+
+            if (mapping.type === 'statusOverride') {
+                if (isHoyRuta) record[header] = "EN PROCESO DE ENTREGA";
+                else if (hasMatch) record[header] = "ENTREGADO";
+                else record[header] = String(row[mapping.actual] || '').toUpperCase();
+                return;
+            }
+
             const value = row[mapping.actual];
             if (forExport) {
                 if (mapping.type === 'date') record[header] = formatDate(normalizeDate(value));
@@ -482,11 +531,7 @@ export const useReportData = (
                             break;
                         }
                         
-                        // Split by '|' and normalize links
-                        const links = linkStr.split('|')
-                            .map(l => l.trim())
-                            .filter(l => l.startsWith('http'));
-
+                        const links = linkStr.split('|').map(l => l.trim()).filter(l => l.startsWith('http'));
                         if (links.length === 0) {
                             record[header] = linkStr;
                             break;
@@ -512,14 +557,14 @@ export const useReportData = (
     };
 
     const deliveredReportExportData = filteredRows
-        .filter(row => deliveredDocsKeys.has(getUniqueDocKey(row)))
+        .filter(row => platformMatches.has(getUniqueDocKey(row)))
         .map(row => ({
             'FECHA': formatDate(normalizeDate(row[FECHA_COL!])),
             'BOD. ENTRADA': String(row[WAREHOUSE_COL!] || ''),
             'NRO DOCUMENTO.2': String(row[DOC_COL!] || ''),
             'CANTIDAD': Number(row[QTY_COL!] || 0),
-            'ESTADO': 'FUE ENTREGADA',
-            'Origen de Estado': 'Archivo de Rutas (estado "recibida")',
+            'ESTADO': platformMatches.has(getUniqueDocKey(row)) ? 'ENTREGADO' : 'N/D',
+            'Origen de Estado': 'Cruce Plataforma / Quick',
         }));
     
     return {

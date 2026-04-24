@@ -163,13 +163,13 @@ const WarehouseAnalyzer: React.FC = () => {
         { expected: 'BOD. SALIDA', found: newColumnMap.warehouseOut || 'No encontrado (Opcional)' },
         { expected: 'NRO DOCUMENTO.2', found: newColumnMap.doc || 'No encontrado' },
         { expected: 'CANTIDAD', found: newColumnMap.qty || 'No encontrado' },
-        { expected: 'ESTADO PLATAFORMA', found: newColumnMap.estadoPlataforma || 'No encontrado (Opcional)' },
+        { expected: 'ESTADO PLATAFORMA', found: newColumnMap.estadoPlataforma || (platformFileName ? 'Vinculado (Plataforma)' : 'No encontrado (Opcional)') },
         { expected: 'NOVEDAD', found: newColumnMap.novedad || 'No encontrado (Opcional)' },
-        { expected: 'LINK IMAGENES.1.1.1', found: newColumnMap.image || 'No encontrado (Opcional)' },
-        { expected: 'FECHA FINALIZADO PLATAFORMA', found: newColumnMap.fechaFinalizado || 'No encontrado (Opcional)' },
+        { expected: 'LINK IMAGENES.1.1.1', found: newColumnMap.image || (platformFileName ? 'Vinculado (Plataforma)' : 'No encontrado (Opcional)') },
+        { expected: 'FECHA FINALIZADO PLATAFORMA', found: newColumnMap.fechaFinalizado || (platformFileName ? 'Vinculado (Plataforma)' : 'No encontrado (Opcional)') },
         { expected: 'MARCA', found: newColumnMap.marca || 'No encontrado (Opcional)' },
         { expected: 'GRUPO', found: newColumnMap.grupo || 'No encontrado (Opcional)' },
-        { expected: 'HOY RUTA.Personalizado', found: newColumnMap.hoyRuta || 'No encontrado (Opcional)' },
+        { expected: 'HOY RUTA.Personalizado', found: newColumnMap.hoyRuta || (platformFileName ? 'Vinculado (Plataforma)' : 'No encontrado (Opcional)') },
     ];
     setDebugMapping(debugMapForDisplay);
 
