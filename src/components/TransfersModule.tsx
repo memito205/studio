@@ -873,7 +873,7 @@ const WarehouseReceptionView: React.FC<{
                         </div>
                     </div>
                     
-                    <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+                    <div className="border rounded-md max-h-[60vh] overflow-auto">
                         <Table>
                             <TableHeader>
                                 <TableRow>
@@ -1357,7 +1357,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                 {supervisorValidationTransfers.length > 0 ? `Pendientes: ${groupTransfersByTF(supervisorValidationTransfers).length} TFs (${supervisorValidationTransfers.length} líneas)` : 'Sin pendientes de validación'}
                             </span>
                        </div>
-                       <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+                       <div className="border rounded-md max-h-[60vh] overflow-auto">
                             <Table>
                                 <TableHeader>
                                     <TableRow>
@@ -1520,7 +1520,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                             {filteredTransfers.length > 0 ? `Mostrando ${groupTransfersByTF(filteredTransfers).length} TFs únicas (${filteredTransfers.length} líneas halladas)` : 'No hay resultados'}
                         </span>
                     </div>
-                    <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+                    <div className="border rounded-md max-h-[60vh] overflow-auto">
                         <Table>
                             <TableHeader>
                                  <TableRow>
@@ -1680,7 +1680,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                <FileSignature className="mr-2 h-4 w-4" /> Crear Manifiesto con {manifestSummary.totalTFs} TF(s)
                            </Button>
                        </div>
-                       <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+                       <div className="border rounded-md max-h-[60vh] overflow-auto">
                             <Table>
                                 <TableHeader>
                                     <TableRow>
@@ -1745,7 +1745,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                         <CardTitle>Manifiestos Creados</CardTitle>
                     </CardHeader>
                     <CardContent>
-                       <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+                       <div className="border rounded-md max-h-[60vh] overflow-auto">
                            <Table>
                                <TableHeader><TableRow><TableHead>ID Manifiesto</TableHead><TableHead>Fecha</TableHead><TableHead>Recurso</TableHead><TableHead>Total Unidades</TableHead><TableHead className="text-right">Acciones</TableHead></TableRow></TableHeader>
                                <TableBody>
@@ -1775,7 +1775,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                         <CardDescription>Registro de todas las recolecciones confirmadas por los operarios.</CardDescription>
                     </CardHeader>
                     <CardContent>
-                        <div className="border rounded-md max-h-[70vh] overflow-y-auto">
+                        <div className="border rounded-md max-h-[70vh] overflow-auto">
                             <Table>
                                 <TableHeader>
                                     <TableRow>
@@ -1914,7 +1914,7 @@ const OperatorView: React.FC<{
                     </SelectContent>
                 </Select>
             </div>
-            <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+            <div className="border rounded-md max-h-[60vh] overflow-auto">
               <Table>
                 <TableHeader>
                     <TableRow>
@@ -2122,7 +2122,7 @@ const CollectionTabView: React.FC<{
                     </Button>
                     <Button variant="ghost" onClick={() => { setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' }); setTransfers([]); }}>Limpiar</Button>
                 </div>
-                 <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+                 <div className="border rounded-md max-h-[60vh] overflow-auto">
                     <Table>
                         <TableHeader>
                             <TableRow>
