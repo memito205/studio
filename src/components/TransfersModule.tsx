@@ -145,7 +145,7 @@ const TransferLabel: React.FC<{ transfer: TransferEntry }> = ({ transfer }) => {
     <div id={`transfer-label-to-print-${transfer.id}`} className="p-2 border border-gray-300 rounded-lg bg-white text-black flex flex-col overflow-hidden" style={{ width: '10cm', height: '5cm' }}>
       
       {/* Header */}
-      <div className="flex justify-between items-start text-xs font-sans border-b pb-1 mb-1">
+      <div className="flex justify-between items-start text-[10px] font-sans border-b pb-0.5 mb-1">
         <p className="font-bold">TRANSFERENCIA INTERNA</p>
         <p>Fecha: <span className="font-semibold">{format(transfer.fecha, "dd/MM/yyyy")}</span></p>
       </div>
@@ -165,19 +165,19 @@ const TransferLabel: React.FC<{ transfer: TransferEntry }> = ({ transfer }) => {
         </div>
         
         {/* Large TF number */}
-        <div className="text-center font-sans text-2xl font-bold tracking-wider my-0.5">
+        <div className="text-center font-sans text-2xl font-bold tracking-wider my-0">
           {transfer.numeroTF}
         </div>
         
         {/* Barcode and its text */}
-        <div className="flex flex-col items-center mt-0.5">
+        <div className="flex flex-col items-center mt-0">
           <canvas ref={barcodeRef} />
-           <div className="font-sans text-[10px] tracking-widest mt-0.5">{barcodeValue}</div>
+           <div className="font-sans text-[10px] tracking-widest mt-0">{barcodeValue}</div>
         </div>
       </div>
       
       {/* Footer */}
-       <div className="mt-1 border-t pt-1 flex justify-between items-end">
+       <div className="mt-0 border-t pt-0.5 flex justify-between items-end">
         <div>
           <p className="text-[10px] font-semibold">Recibido por:</p>
           <div className="h-3 w-40 border-b border-black"></div>
