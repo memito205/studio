@@ -132,7 +132,7 @@ const TransferLabel: React.FC<{ transfer: TransferEntry }> = ({ transfer }) => {
           format: "CODE128",
           displayValue: false,
           margin: 0,
-          height: 20,
+          height: 18,
           width: 1.5,
         });
       } catch (e) {
@@ -142,45 +142,45 @@ const TransferLabel: React.FC<{ transfer: TransferEntry }> = ({ transfer }) => {
   }, [barcodeValue]);
 
   return (
-    <div id={`transfer-label-to-print-${transfer.id}`} className="p-2 border border-gray-300 rounded-lg bg-white text-black flex flex-col overflow-hidden" style={{ width: '10cm', height: '5cm' }}>
+    <div id={`transfer-label-to-print-${transfer.id}`} className="px-3 py-1 border border-gray-300 rounded-lg bg-white text-black flex flex-col overflow-hidden" style={{ width: '10cm', height: '4.8cm' }}>
       
       {/* Header */}
-      <div className="flex justify-between items-start text-[10px] font-sans border-b pb-0.5 mb-1">
+      <div className="flex justify-between items-start text-[10px] font-sans border-b pb-0.5 mb-0.5">
         <p className="font-bold">TRANSFERENCIA INTERNA</p>
         <p>Fecha: <span className="font-semibold">{format(transfer.fecha, "dd/MM/yyyy")}</span></p>
       </div>
-
+      
       {/* Main content area */}
-      <div className="flex-grow flex flex-col items-center justify-center pt-1">
+      <div className="flex-grow flex flex-col items-center">
         {/* Destino / Unidades */}
-        <div className="flex justify-around w-full items-center">
+        <div className="flex justify-around w-full items-center mt-1">
             <div className="text-center">
-                <p className="font-sans text-[10px] uppercase font-semibold text-gray-600">Destino</p>
-                <p className="font-sans text-xl font-bold">{transfer.bodegaDestino}</p>
+                <p className="font-sans text-[10px] uppercase font-semibold text-gray-400">Destino</p>
+                <p className="font-sans text-2xl font-bold leading-tight">{transfer.bodegaDestino}</p>
             </div>
             <div className="text-center">
-                <p className="font-sans text-[10px] uppercase font-semibold text-gray-600">Unidades</p>
-                <p className="font-sans text-xl font-bold">{transfer.cantidad || 1}</p>
+                <p className="font-sans text-[10px] uppercase font-semibold text-gray-400">Unidades</p>
+                <p className="font-sans text-2xl font-bold leading-tight">{transfer.cantidad || 1}</p>
             </div>
         </div>
         
         {/* Large TF number */}
-        <div className="text-center font-sans text-2xl font-bold tracking-wider my-0">
+        <div className="text-center font-sans text-3xl font-bold tracking-widest mt-1 mb-1">
           {transfer.numeroTF}
         </div>
         
         {/* Barcode and its text */}
-        <div className="flex flex-col items-center mt-0">
-          <canvas ref={barcodeRef} />
-           <div className="font-sans text-[10px] tracking-widest mt-0">{barcodeValue}</div>
+        <div className="flex flex-col items-center">
+          <canvas ref={barcodeRef} className="max-h-[20px]" />
+          <div className="font-sans text-[9px] font-bold tracking-widest leading-none mt-1">{barcodeValue}</div>
         </div>
       </div>
       
       {/* Footer */}
-       <div className="mt-auto pt-1 flex justify-end items-end">
+       <div className="mt-auto flex justify-end pb-1 pr-1">
         {transfer.storageOrder && (
-          <div className="flex flex-col items-center border border-black rounded px-1.5 py-0.5 bg-black text-white min-w-[70px]">
-            <span className="text-[8px] font-bold leading-none">ORDEN</span>
+          <div className="flex flex-col items-center border-2 border-black rounded px-2 py-0.5 bg-black text-white min-w-[80px]">
+            <span className="text-[9px] font-bold leading-none">ORDEN</span>
             <span className="text-xl font-black leading-none">{transfer.storageOrder}</span>
           </div>
         )}
