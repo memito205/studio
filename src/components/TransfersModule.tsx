@@ -12,7 +12,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { TransferEntry, TransferStatus, DeliveryManifest, UserRole, CollectionLog, AppUser, RouteEntry } from '@/types';
-import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers } from '@/app/actions';
+import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers } from '@/app/actions';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -921,8 +921,8 @@ interface AdminViewProps {
     operationalTransfers: TransferEntry[];
     collectionLogs: CollectionLog[];
     isLoading: boolean;
-    filters: { numeroTF: string, bodegaOrigen: string, bodegaDestino: string, placa: string, status: string };
-    setFilters: React.Dispatch<React.SetStateAction<{ numeroTF: string, bodegaOrigen: string, bodegaDestino: string, placa: string, status: string }>>;
+    filters: { numeroTF: string, bodegaOrigen: string, bodegaDestino: string, placa: string, status: string, startDate?: string, endDate?: string };
+    setFilters: React.Dispatch<React.SetStateAction<{ numeroTF: string, bodegaOrigen: string, bodegaDestino: string, placa: string, status: string, startDate?: string, endDate?: string }>>;
     onRefresh: () => void;
     onSearch: () => void;
     role: UserRole;
@@ -1077,7 +1077,9 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             (filters.numeroTF ? t.numeroTF.toLowerCase().includes(filters.numeroTF.toLowerCase()) : true) &&
             (filters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(filters.bodegaOrigen.toLowerCase()) : true) &&
             (filters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(filters.bodegaDestino.toLowerCase()) : true) &&
-            (filters.status === 'all' ? true : t.status === filters.status)
+            (filters.status === 'all' ? true : t.status === filters.status) &&
+            (filters.startDate ? t.fecha >= new Date(filters.startDate + 'T00:00:00') : true) &&
+            (filters.endDate ? t.fecha <= new Date(filters.endDate + 'T23:59:59') : true)
         );
     }, [transfers, filters]);
     
@@ -1087,7 +1089,9 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             (filters.numeroTF ? t.numeroTF.toLowerCase().includes(filters.numeroTF.toLowerCase()) : true) &&
             (filters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(filters.bodegaOrigen.toLowerCase()) : true) &&
             (filters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(filters.bodegaDestino.toLowerCase()) : true) &&
-            (filters.placa ? (transferIdToPlacaMap.get(t.id) || '').toLowerCase().includes(filters.placa.toLowerCase()) : true)
+            (filters.placa ? (transferIdToPlacaMap.get(t.id) || '').toLowerCase().includes(filters.placa.toLowerCase()) : true) &&
+            (filters.startDate ? t.fecha >= new Date(filters.startDate + 'T00:00:00') : true) &&
+            (filters.endDate ? t.fecha <= new Date(filters.endDate + 'T23:59:59') : true)
         );
     }, [operationalTransfers, filters, transferIdToPlacaMap]);
 
@@ -1323,7 +1327,11 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                             <Input placeholder="Filtrar por Origen..." value={filters.bodegaOrigen} onChange={e => setFilters(prev => ({...prev, bodegaOrigen: e.target.value}))} />
                             <Input placeholder="Filtrar por Destino..." value={filters.bodegaDestino} onChange={e => setFilters(prev => ({...prev, bodegaDestino: e.target.value}))} />
                             <Input placeholder="Filtrar por Placa..." value={filters.placa} onChange={e => setFilters(prev => ({...prev, placa: e.target.value}))} />
-                            <Button variant="outline" onClick={() => setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all' })}>
+                            <div className="flex gap-2 col-span-1 md:col-span-2">
+                                <Input type="date" value={filters.startDate} onChange={e => setFilters(prev => ({...prev, startDate: e.target.value}))} title="Fecha Inicio" />
+                                <Input type="date" value={filters.endDate} onChange={e => setFilters(prev => ({...prev, endDate: e.target.value}))} title="Fecha Fin" />
+                            </div>
+                            <Button variant="outline" onClick={() => setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all', startDate: '', endDate: '' })}>
                                 Limpiar Filtros {supervisorValidationTransfers.length > 0 && <span className="ml-2 opacity-50">({supervisorValidationTransfers.length})</span>}
                             </Button>
                          </div>
@@ -1458,12 +1466,22 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                 </SelectContent>
                             </Select>
                         </div>
+                        <div className="md:col-span-2 flex gap-2">
+                            <div className="space-y-1 flex-1">
+                                <Label className="text-xs">Fecha Inicio</Label>
+                                <Input type="date" value={filters.startDate} onChange={e => setFilters(prev => ({...prev, startDate: e.target.value}))} />
+                            </div>
+                            <div className="space-y-1 flex-1">
+                                <Label className="text-xs">Fecha Fin</Label>
+                                <Input type="date" value={filters.endDate} onChange={e => setFilters(prev => ({...prev, endDate: e.target.value}))} />
+                            </div>
+                        </div>
                         <div className="flex gap-2">
                             <Button onClick={onSearch} disabled={isLoading} className="flex-1">
                                 {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Search className="mr-2 h-4 w-4"/>}
                                 Buscar {filteredTransfers.length > 0 && <span className="ml-2 bg-primary-foreground text-primary px-2 rounded-full text-xs">{filteredTransfers.length}</span>}
                             </Button>
-                            <Button variant="outline" size="icon" onClick={() => setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all' })} title="Limpiar Filtros">
+                            <Button variant="outline" size="icon" onClick={() => setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all', startDate: '', endDate: '' })} title="Limpiar Filtros">
                                 <X className="h-4 w-4" />
                             </Button>
                         </div>
@@ -2212,7 +2230,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
     const [searchResults, setSearchResults] = useState<TransferEntry[] | null>(null); // Results from search tab
     const [allUsers, setAllUsers] = useState<AppUser[]>([]);
     const [collectionLogs, setCollectionLogs] = useState<CollectionLog[]>([]);
-    const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all' });
+    const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all', startDate: '', endDate: '' });
     const [isLoading, setIsLoading] = useState(false);
     const { toast } = useToast();
     const { role } = useAuth();
@@ -2261,10 +2279,8 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
     }, [toast]);
 
     const handleSearch = useCallback(async () => {
-        const { numeroTF, bodegaOrigen, bodegaDestino, status } = filters;
-        
-        if (!numeroTF && !bodegaOrigen && !bodegaDestino && status === 'all') {
-            toast({ title: "Filtros vacíos", description: "Por favor ingrese al menos un criterio de búsqueda (TF, Origen, Destino o Estado)." });
+        if (!numeroTF && !bodegaOrigen && !bodegaDestino && status === 'all' && !startDate && !endDate) {
+            toast({ title: "Filtros vacíos", description: "Por favor ingrese al menos un criterio de búsqueda (TF, Origen, Destino, Estado o Fecha)." });
             return;
         }
 
@@ -2276,6 +2292,10 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             result = await getTransfersByQuery(bodegaOrigen, 'origin');
         } else if (bodegaDestino) {
             result = await getTransfersByQuery(bodegaDestino, 'destination');
+        } else if (startDate || endDate) {
+            const start = startDate ? new Date(startDate) : new Date(0);
+            const end = endDate ? new Date(endDate) : new Date();
+            result = await getTransfersByDateRange(start, end);
         } else {
             // Status only search
             result = await getTransfersByStatus(status as TransferStatus);

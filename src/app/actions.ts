@@ -2649,6 +2649,34 @@ export async function getTransfersByQuery(searchQuery: string, type: 'number' | 
     }
 }
 
+export async function getTransfersByDateRange(startDate: Date, endDate: Date): Promise<{ data?: TransferEntry[]; error?: string }> {
+    try {
+        // Ensure we cover the full range of the end date
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+
+        const q = query(
+            collection(firestore, "transfers"),
+            where("fecha", ">=", Timestamp.fromDate(start)),
+            where("fecha", "<=", Timestamp.fromDate(end)),
+            orderBy("fecha", "desc"),
+            limit(1000)
+        );
+
+        const querySnapshot = await getDocs(q);
+        const transfers = querySnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...convertTimestampsToDates(doc.data())
+        })) as TransferEntry[];
+        return { data: transfers };
+    } catch (error: any) {
+        console.error("Error searching transfers by date range:", error);
+        return { error: `Date range search failed: ${error.message}` };
+    }
+}
+
 
 export async function loadAllTransfers(): Promise<{ data?: TransferEntry[]; error?: string }> {
     try {
