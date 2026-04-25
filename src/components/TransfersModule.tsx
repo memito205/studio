@@ -177,15 +177,11 @@ const TransferLabel: React.FC<{ transfer: TransferEntry }> = ({ transfer }) => {
       </div>
       
       {/* Footer */}
-       <div className="mt-0 border-t pt-0.5 flex justify-between items-end">
-        <div>
-          <p className="text-[10px] font-semibold">Recibido por:</p>
-          <div className="h-3 w-40 border-b border-black"></div>
-        </div>
+       <div className="mt-auto pt-1 flex justify-end items-end">
         {transfer.storageOrder && (
-          <div className="flex flex-col items-center border border-black rounded px-1.5 py-0.5 bg-black text-white min-w-[60px]">
+          <div className="flex flex-col items-center border border-black rounded px-1.5 py-0.5 bg-black text-white min-w-[70px]">
             <span className="text-[8px] font-bold leading-none">ORDEN</span>
-            <span className="text-lg font-black leading-none">{transfer.storageOrder}</span>
+            <span className="text-xl font-black leading-none">{transfer.storageOrder}</span>
           </div>
         )}
        </div>
