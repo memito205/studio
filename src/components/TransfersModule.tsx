@@ -1078,8 +1078,8 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             (filters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(filters.bodegaOrigen.toLowerCase()) : true) &&
             (filters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(filters.bodegaDestino.toLowerCase()) : true) &&
             (filters.status === 'all' ? true : t.status === filters.status) &&
-            (filters.startDate ? t.fecha >= new Date(filters.startDate + 'T00:00:00') : true) &&
-            (filters.endDate ? t.fecha <= new Date(filters.endDate + 'T23:59:59') : true)
+            (filters.startDate && t.fecha instanceof Date ? t.fecha >= new Date(filters.startDate + 'T00:00:00') : true) &&
+            (filters.endDate && t.fecha instanceof Date ? t.fecha <= new Date(filters.endDate + 'T23:59:59') : true)
         );
     }, [transfers, filters]);
     
@@ -1090,8 +1090,8 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             (filters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(filters.bodegaOrigen.toLowerCase()) : true) &&
             (filters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(filters.bodegaDestino.toLowerCase()) : true) &&
             (filters.placa ? (transferIdToPlacaMap.get(t.id) || '').toLowerCase().includes(filters.placa.toLowerCase()) : true) &&
-            (filters.startDate ? t.fecha >= new Date(filters.startDate + 'T00:00:00') : true) &&
-            (filters.endDate ? t.fecha <= new Date(filters.endDate + 'T23:59:59') : true)
+            (filters.startDate && t.fecha instanceof Date ? t.fecha >= new Date(filters.startDate + 'T00:00:00') : true) &&
+            (filters.endDate && t.fecha instanceof Date ? t.fecha <= new Date(filters.endDate + 'T23:59:59') : true)
         );
     }, [operationalTransfers, filters, transferIdToPlacaMap]);
 
@@ -2279,6 +2279,8 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
     }, [toast]);
 
     const handleSearch = useCallback(async () => {
+        const { numeroTF, bodegaOrigen, bodegaDestino, status, startDate, endDate } = filters;
+
         if (!numeroTF && !bodegaOrigen && !bodegaDestino && status === 'all' && !startDate && !endDate) {
             toast({ title: "Filtros vacíos", description: "Por favor ingrese al menos un criterio de búsqueda (TF, Origen, Destino, Estado o Fecha)." });
             return;
