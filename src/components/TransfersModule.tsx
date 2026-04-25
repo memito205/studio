@@ -874,7 +874,7 @@ const WarehouseReceptionView: React.FC<{
                     </div>
                     
                     <div className="border rounded-md max-h-[60vh] overflow-auto">
-                        <Table>
+                        <Table className="min-w-[1000px]">
                             <TableHeader>
                                 <TableRow>
                                     <TableHead className="w-12">
@@ -1521,7 +1521,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                         </span>
                     </div>
                     <div className="border rounded-md max-h-[60vh] overflow-auto">
-                        <Table>
+                        <Table className="min-w-[1500px]">
                             <TableHeader>
                                  <TableRow>
                                     <TableHead className="w-[80px]">Ord.</TableHead>
