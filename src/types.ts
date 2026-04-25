@@ -381,6 +381,7 @@ export interface TransferEntry {
   validatedAt?: Date;
   deliveredAt?: Date;
   manualStatusChangeJustification?: string;
+  storageOrder?: string;
   }
 
 export interface DeliveryManifest {

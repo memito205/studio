@@ -5,14 +5,14 @@
 import React, { useState, useMemo, ChangeEvent, useRef, useCallback, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, UploadCloud, Truck, FileSignature, Search, Download, Trash2, Plus, File, Package, X, Check, Save, History, Eye, Printer, PackageCheck, Loader2, ScanLine, CircleDot, FileDown, MoreHorizontal, ChevronsUpDown, Database, RefreshCw } from 'lucide-react';
+import { ArrowLeft, UploadCloud, Truck, FileSignature, Search, Download, Trash2, Plus, File, Package, X, Check, Save, History, Eye, Printer, PackageCheck, Loader2, ScanLine, CircleDot, FileDown, MoreHorizontal, ChevronsUpDown, Database, RefreshCw, ListOrdered } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/card';
 import { Input } from './ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { TransferEntry, TransferStatus, DeliveryManifest, UserRole, CollectionLog, AppUser, RouteEntry } from '@/types';
-import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers } from '@/app/actions';
+import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders } from '@/app/actions';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -177,9 +177,17 @@ const TransferLabel: React.FC<{ transfer: TransferEntry }> = ({ transfer }) => {
       </div>
       
       {/* Footer */}
-       <div className="mt-auto border-t pt-1">
-        <p className="text-xs font-semibold">Recibido por:</p>
-        <div className="h-4 border-b border-black"></div>
+       <div className="mt-auto border-t pt-1 flex justify-between items-end">
+        <div>
+          <p className="text-xs font-semibold">Recibido por:</p>
+          <div className="h-4 w-48 border-b border-black"></div>
+        </div>
+        {transfer.storageOrder && (
+          <div className="flex flex-col items-center border-2 border-black rounded px-2 py-1 bg-black text-white">
+            <span className="text-[10px] font-bold leading-none">ORDEN</span>
+            <span className="text-xl font-black leading-none">{transfer.storageOrder}</span>
+          </div>
+        )}
        </div>
     </div>
   );
@@ -876,6 +884,7 @@ const WarehouseReceptionView: React.FC<{
                                             disabled={foundTransfers.length === 0}
                                         />
                                     </TableHead>
+                                    <TableHead className="w-[80px]">Ord.</TableHead>
                                     <TableHead># TF</TableHead>
                                     <TableHead>Origen</TableHead>
                                     <TableHead>Destino</TableHead>
@@ -895,6 +904,7 @@ const WarehouseReceptionView: React.FC<{
                                                 }} 
                                             />
                                         </TableCell>
+                                        <TableCell className="font-bold text-blue-600 font-mono text-sm">{t.storageOrder || '---'}</TableCell>
                                         <TableCell className="font-medium">{t.numeroTF}</TableCell>
                                         <TableCell>{t.bodegaOrigen}</TableCell>
                                         <TableCell>{t.bodegaDestino}</TableCell>
@@ -1426,20 +1436,30 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                         <AlertDialog>
                             <AlertDialogTrigger asChild>
                                 <Button variant="secondary" size="sm" disabled={isHealing}>
-                                    {isHealing ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <RefreshCw className="mr-2 h-4 w-4" />}
-                                    Sincronizar TFs Inconsistentes (Desde Marzo)
+                                    {isHealing ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <ListOrdered className="mr-2 h-4 w-4" />}
+                                    Enumerar FIFO (Registros Actuales)
                                 </Button>
                             </AlertDialogTrigger>
                             <AlertDialogContent>
                                 <AlertDialogHeader>
-                                    <AlertDialogTitle>¿Reparar transferencias divididas?</AlertDialogTitle>
+                                    <AlertDialogTitle>¿Asignar orden de almacenamiento?</AlertDialogTitle>
                                     <AlertDialogDescription>
-                                        Esta acción buscará transferencias que tengan líneas con diferentes estados y las sincronizará todas al estado más avanzado. Se procesarán todos los registros desde el 1 de Marzo.
+                                        Esta acción asignará un código de orden (ej. 1-v1) a todas las transferencias activas basado en su fecha. Úselo para inicializar el sistema por primera vez.
                                     </AlertDialogDescription>
                                 </AlertDialogHeader>
                                 <AlertDialogFooter>
                                     <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                                    <AlertDialogAction onClick={handleHealClick}>Sí, reparar datos</AlertDialogAction>
+                                    <AlertDialogAction onClick={async () => {
+                                        setIsHealing(true);
+                                        const res = await healTransferStorageOrders();
+                                        setIsHealing(false);
+                                        if (res.success) {
+                                            toast({ title: 'Éxito', description: `Se asignó orden a ${res.count} registros.` });
+                                            onRefresh();
+                                        } else {
+                                            toast({ variant: 'destructive', title: 'Error', description: res.error });
+                                        }
+                                    }}>Confirmar</AlertDialogAction>
                                 </AlertDialogFooter>
                             </AlertDialogContent>
                         </AlertDialog>
@@ -1503,7 +1523,8 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                     <div className="border rounded-md max-h-[60vh] overflow-y-auto">
                         <Table>
                             <TableHeader>
-                                <TableRow>
+                                 <TableRow>
+                                    <TableHead className="w-[80px]">Ord.</TableHead>
                                     <TableHead>Fecha</TableHead>
                                     <TableHead>Número TF</TableHead>
                                     <TableHead>Origen</TableHead>
@@ -1525,7 +1546,8 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                     groupTransfersByTF(filteredTransfers, transferIdToPlacaMap).map((t) => {
                                         const placa = transferIdToPlacaMap.get(t.id) || 'N/A';
                                         return (
-                                        <TableRow key={t.id}>
+                                         <TableRow key={t.id}>
+                                            <TableCell className="font-bold text-blue-600">{t.storageOrder || '---'}</TableCell>
                                             <TableCell>{t.fecha.toLocaleDateString('es-CO')}</TableCell>
                                             <TableCell className="font-medium">{t.numeroTF}</TableCell>
                                             <TableCell>{t.bodegaOrigen}</TableCell>

@@ -2441,6 +2441,86 @@ export async function loadSampleVerifications(): Promise<{ success: boolean; dat
 }
 
 
+// --- FIFO Ordering for Transfers ---
+export async function getNextStorageOrders(count: number = 1): Promise<string[]> {
+    const counterRef = doc(firestore, 'counters', 'transfers_fifo');
+    
+    try {
+        return await runTransaction(firestore, async (transaction) => {
+            const counterDoc = await transaction.get(counterRef);
+            let currentPrimary = 0;
+            let currentLap = 1;
+
+            if (counterDoc.exists()) {
+                const data = counterDoc.data();
+                currentPrimary = data.lastPrimary || 0;
+                currentLap = data.lastLap || 1;
+            }
+
+            const results: string[] = [];
+            for (let i = 0; i < count; i++) {
+                currentPrimary++;
+                if (currentPrimary > 999) {
+                    currentPrimary = 1;
+                    currentLap++;
+                }
+                results.push(`${currentPrimary}-v${currentLap}`);
+            }
+
+            transaction.set(counterRef, { lastPrimary: currentPrimary, lastLap: currentLap });
+            return results;
+        });
+    } catch (error) {
+        console.error("Error generating next storage orders:", error);
+        return Array(count).fill("N/A");
+    }
+}
+
+/**
+ * Migration helper to assign storage orders to existing active transfers.
+ * Sorts by date and assigns v1 sequence.
+ */
+export async function healTransferStorageOrders(): Promise<{ success: boolean; count?: number; error?: string }> {
+    try {
+        const transfersCollection = collection(firestore, 'transfers');
+        // We only care about those not yet sent
+        const q = query(
+            transfersCollection, 
+            where("status", "!=", "Enviado a Destino")
+        );
+        
+        const snapshot = await getDocs(q);
+        const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as any[];
+        
+        // Sort by date ASC
+        docs.sort((a, b) => {
+            const dateA = a.fecha?.toDate ? a.fecha.toDate() : new Date(a.fecha);
+            const dateB = b.fecha?.toDate ? b.fecha.toDate() : new Date(b.fecha);
+            return dateA.getTime() - dateB.getTime();
+        });
+
+        const batch = writeBatch(firestore);
+        let count = 0;
+        
+        for (let i = 0; i < docs.length; i++) {
+            const order = `${i + 1}-v1`;
+            batch.update(doc(firestore, 'transfers', docs[i].id), { storageOrder: order });
+            count++;
+        }
+        
+        // Also update the counter doc to prevent collisions for new uploads
+        const counterRef = doc(firestore, 'counters', 'transfers_fifo');
+        batch.set(counterRef, { lastPrimary: docs.length, lastLap: 1 });
+
+        await batch.commit();
+        return { success: true, count };
+    } catch (error: any) {
+        console.error("Error healing storage orders:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+
 // --- Transfers Module Actions ---
 export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'status'>[]): Promise<{ success: boolean; error?: string; summary?: { added: number, updated: number, removed: number } }> {
     const transfersCollection = collection(firestore, 'transfers');
@@ -2477,6 +2557,15 @@ export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'statu
         }
 
         // 3. Process incoming transfers: ADD or UPDATE
+        // Pre-calculate count for NEW records only
+        const newTransfersCount = transfers.filter(incoming => {
+            const compositeKey = `${incoming.numeroTF}-${(incoming.marca || '').trim().toUpperCase()}-${(incoming.grupo || '').trim().toUpperCase()}`;
+            return !existingTransfersByKey.has(compositeKey);
+        }).length;
+        
+        const newOrders = newTransfersCount > 0 ? await getNextStorageOrders(newTransfersCount) : [];
+        let orderIndex = 0;
+
         for (const incoming of transfers) {
             const compositeKey = `${incoming.numeroTF}-${(incoming.marca || '').trim().toUpperCase()}-${(incoming.grupo || '').trim().toUpperCase()}`;
             const existing = existingTransfersByKey.get(compositeKey);
@@ -2495,7 +2584,8 @@ export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'statu
                 const docRef = doc(transfersCollection); 
                 batch.set(docRef, { 
                     ...convertDatesToTimestamps(incoming), 
-                    status: 'En Tránsito' 
+                    status: 'En Tránsito',
+                    storageOrder: newOrders[orderIndex++]
                 });
                 added++;
             }
@@ -2997,6 +3087,7 @@ export async function saveMunicipios(fileContent: ArrayBuffer): Promise<{ succes
 export async function createManualTransfer(data: { numeroTF: string; bodegaDestino: string; origen?: string; status?: TransferStatus }): Promise<{ success: boolean; error?: string }> {
     const transfersCollection = collection(firestore, 'transfers');
     try {
+        const order = await getNextStorageOrders(1);
         const newTransfer: Omit<TransferEntry, 'id'> = {
             fecha: new Date(),
             numeroTF: data.numeroTF.toUpperCase().trim(),
@@ -3004,6 +3095,7 @@ export async function createManualTransfer(data: { numeroTF: string; bodegaDesti
             bodegaDestino: data.bodegaDestino,
             cantidad: 1, // Default value
             status: data.status || 'En Tránsito', // Default to En Tránsito if not provided
+            storageOrder: order[0]
         };
 
         await addDoc(transfersCollection, convertDatesToTimestamps(newTransfer));
