@@ -130,9 +130,9 @@ const TransferLabel: React.FC<{ transfer: TransferEntry }> = ({ transfer }) => {
       try {
         JsBarcode(barcodeRef.current, barcodeValue, {
           format: "CODE128",
-          displayValue: false, // The value is displayed separately
+          displayValue: false,
           margin: 0,
-          height: 30,
+          height: 20,
           width: 1.5,
         });
       } catch (e) {
@@ -142,50 +142,50 @@ const TransferLabel: React.FC<{ transfer: TransferEntry }> = ({ transfer }) => {
   }, [barcodeValue]);
 
   return (
-    <div id={`transfer-label-to-print-${transfer.id}`} className="p-3 border border-gray-300 rounded-lg bg-white text-black flex flex-col" style={{ width: '10cm', height: '5cm' }}>
+    <div id={`transfer-label-to-print-${transfer.id}`} className="p-2 border border-gray-300 rounded-lg bg-white text-black flex flex-col overflow-hidden" style={{ width: '10cm', height: '5cm' }}>
       
       {/* Header */}
       <div className="flex justify-between items-start text-xs font-sans border-b pb-1 mb-1">
         <p className="font-bold">TRANSFERENCIA INTERNA</p>
-        <p>Fecha: <span className="font-semibold">{transfer.fecha.toLocaleDateString('es-CO')}</span></p>
+        <p>Fecha: <span className="font-semibold">{format(transfer.fecha, "dd/MM/yyyy")}</span></p>
       </div>
 
       {/* Main content area */}
       <div className="flex-grow flex flex-col items-center justify-center pt-1">
         {/* Destino / Unidades */}
         <div className="flex justify-around w-full items-center">
-            <div>
-                <p className="font-sans text-lg font-semibold">Destino:</p>
-                <p className="font-sans text-2xl font-bold">{transfer.bodegaDestino}</p>
+            <div className="text-center">
+                <p className="font-sans text-[10px] uppercase font-semibold text-gray-600">Destino</p>
+                <p className="font-sans text-xl font-bold">{transfer.bodegaDestino}</p>
             </div>
-            <div>
-                <p className="font-sans text-lg font-semibold">Unidades:</p>
-                <p className="font-sans text-2xl font-bold">{transfer.cantidad || 1}</p>
+            <div className="text-center">
+                <p className="font-sans text-[10px] uppercase font-semibold text-gray-600">Unidades</p>
+                <p className="font-sans text-xl font-bold">{transfer.cantidad || 1}</p>
             </div>
         </div>
         
         {/* Large TF number */}
-        <div className="text-center font-sans text-3xl font-bold tracking-wider my-2">
+        <div className="text-center font-sans text-2xl font-bold tracking-wider my-0.5">
           {transfer.numeroTF}
         </div>
         
         {/* Barcode and its text */}
-        <div className="flex flex-col items-center mt-1">
+        <div className="flex flex-col items-center mt-0.5">
           <canvas ref={barcodeRef} />
-           <div className="font-sans text-xs tracking-widest mt-1">{barcodeValue}</div>
+           <div className="font-sans text-[10px] tracking-widest mt-0.5">{barcodeValue}</div>
         </div>
       </div>
       
       {/* Footer */}
-       <div className="mt-auto border-t pt-1 flex justify-between items-end">
+       <div className="mt-1 border-t pt-1 flex justify-between items-end">
         <div>
-          <p className="text-xs font-semibold">Recibido por:</p>
-          <div className="h-4 w-48 border-b border-black"></div>
+          <p className="text-[10px] font-semibold">Recibido por:</p>
+          <div className="h-3 w-40 border-b border-black"></div>
         </div>
         {transfer.storageOrder && (
-          <div className="flex flex-col items-center border-2 border-black rounded px-2 py-1 bg-black text-white">
-            <span className="text-[10px] font-bold leading-none">ORDEN</span>
-            <span className="text-xl font-black leading-none">{transfer.storageOrder}</span>
+          <div className="flex flex-col items-center border border-black rounded px-1.5 py-0.5 bg-black text-white min-w-[60px]">
+            <span className="text-[8px] font-bold leading-none">ORDEN</span>
+            <span className="text-lg font-black leading-none">{transfer.storageOrder}</span>
           </div>
         )}
        </div>
