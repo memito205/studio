@@ -2488,54 +2488,59 @@ export async function getNextStorageOrders(destCounts: Record<string, number>): 
 }
 
 /**
- * Migration helper to assign storage orders to existing active transfers.
- * Grouped by destination, excluding those already sent or delivered in route.
+ * Migration helper to assign storage orders to existing active transfers that DON'T have one.
+ * Ensures that subsequent clicks don't overwrite existing codes.
  */
 export async function healTransferStorageOrders(): Promise<{ success: boolean; count?: number; error?: string }> {
     try {
         const transfersCollection = collection(firestore, 'transfers');
-        // Exclude those that won't occupy warehouse space for dispatch
+        // Only target active ones without a storage order
         const q = query(
             transfersCollection, 
             where("status", "in", ["En Tránsito", "Recolectado en Ruta", "Recibido en Bodega", "Validado Supervisor"])
         );
         
         const snapshot = await getDocs(q);
-        const allDocs = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as any[];
+        const docsToUpdate = snapshot.docs
+            .map(d => ({ id: d.id, ...d.data() } as any))
+            .filter(d => !d.storageOrder); // ONLY those without order
         
-        // Group by destination
+        if (docsToUpdate.length === 0) {
+            return { success: true, count: 0 };
+        }
+
+        // Group by destination to request batches
         const byDest: Record<string, any[]> = {};
-        allDocs.forEach(d => {
+        docsToUpdate.forEach(d => {
             const dest = (d.bodegaDestino || 'UNKNOWN').trim().toUpperCase();
             if (!byDest[dest]) byDest[dest] = [];
             byDest[dest].push(d);
         });
 
+        // Get next orders for each dest
+        const countsByDest: Record<string, number> = {};
+        Object.keys(byDest).forEach(dest => countsByDest[dest] = byDest[dest].length);
+        
+        const newOrdersMap = await getNextStorageOrders(countsByDest);
+
         const batch = writeBatch(firestore);
         let totalCount = 0;
-        const finalCounters: Record<string, { lastPrimary: number, lastLap: number }> = {};
 
         for (const [dest, docs] of Object.entries(byDest)) {
-            // Sort by date ASC
+            // Sort by date ASC to keep consistent numbering logic
             docs.sort((a, b) => {
                 const dateA = a.fecha?.toDate ? a.fecha.toDate() : (a.fecha instanceof Date ? a.fecha : new Date(a.fecha));
                 const dateB = b.fecha?.toDate ? b.fecha.toDate() : (b.fecha instanceof Date ? b.fecha : new Date(b.fecha));
                 return dateA.getTime() - dateB.getTime();
             });
 
+            const destOrders = newOrdersMap[dest] || [];
             for (let i = 0; i < docs.length; i++) {
-                const order = `${i + 1}-v1`;
-                batch.update(doc(firestore, 'transfers', docs[i].id), { storageOrder: order });
+                batch.update(doc(firestore, 'transfers', docs[i].id), { storageOrder: destOrders[i] || 'N/A' });
                 totalCount++;
             }
-            
-            finalCounters[dest] = { lastPrimary: docs.length, lastLap: 1 };
         }
         
-        // Save the counters per destination
-        const counterRef = doc(firestore, 'counters', 'transfers_fifo_by_dest');
-        batch.set(counterRef, finalCounters);
-
         await batch.commit();
         return { success: true, count: totalCount };
     } catch (error: any) {
