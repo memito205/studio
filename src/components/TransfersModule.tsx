@@ -935,6 +935,7 @@ interface AdminViewProps {
 
 const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, collectionLogs, isLoading, filters, setFilters, onRefresh, onSearch, role, users, isUploading, onFileChange, fileInputRef, setIsManualEntryOpen }) => {
     const { toast } = useToast();
+    const isAdmin = role === 'admin' || role === 'supervisor';
     const [manifests, setManifests] = useState<DeliveryManifest[]>([]);
     const [isLoadingManifests, setIsLoadingManifests] = useState(false);
     const [selectedForManifest, setSelectedForManifest] = useState(new Set<string>());
@@ -1308,10 +1309,14 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             <TabsList className="flex flex-wrap h-auto justify-start">
                 <TabsTrigger value="general">Consulta General</TabsTrigger>
                 <TabsTrigger value="collection">Registrar Recolección</TabsTrigger>
-                <TabsTrigger value="validation">Validación Supervisor</TabsTrigger>
+                {isAdmin && <TabsTrigger value="validation">Validación Supervisor</TabsTrigger>}
                 <TabsTrigger value="reception">Recepción en Bodega</TabsTrigger>
-                <TabsTrigger value="manifest">Crear Relación de Entrega</TabsTrigger>
-                <TabsTrigger value="history_manifest">Historial de Manifiestos</TabsTrigger>
+                {isAdmin && (
+                    <>
+                        <TabsTrigger value="manifest">Crear Relación de Entrega</TabsTrigger>
+                        <TabsTrigger value="history_manifest">Historial de Manifiestos</TabsTrigger>
+                    </>
+                )}
                 <TabsTrigger value="history_collection">Historial de Recolecciones</TabsTrigger>
             </TabsList>
             <TabsContent value="reception" className="mt-6">
@@ -1385,15 +1390,18 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                         </div>
                         <div className="flex gap-2">
                              <input type="file" ref={fileInputRef} onChange={onFileChange} className="hidden" accept=".xlsx, .xls" />
-                            <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
-                                {isUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <UploadCloud className="mr-2 h-4 w-4"/>}
-                                Actualizar Base
-                            </Button>
+                            {isAdmin && (
+                                <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
+                                    {isUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <UploadCloud className="mr-2 h-4 w-4"/>}
+                                    Actualizar Base
+                                </Button>
+                            )}
                              <Button onClick={() => setIsManualEntryOpen(true)}><Plus className="mr-2 h-4 w-4"/> Agregar Manual</Button>
                             <DownloadTemplateButton/>
                         </div>
                     </div>
-                     <div className="mt-4 flex gap-2">
+                     {isAdmin && (
+                      <div className="mt-4 flex gap-2">
                          <AlertDialog>
                             <AlertDialogTrigger asChild>
                                 <Button variant="secondary" size="sm" disabled={isMigrating}>
@@ -1435,7 +1443,8 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                 </AlertDialogFooter>
                             </AlertDialogContent>
                         </AlertDialog>
-                    </div>
+                      </div>
+                     )}
                   </CardHeader>
                   <CardContent>
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4 items-end">
@@ -2235,6 +2244,8 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
     const { toast } = useToast();
     const { role } = useAuth();
     const isAdminOrSupervisor = role === 'admin' || role === 'supervisor';
+    const isAdmin = role === 'admin' || role === 'supervisor'; // Re-using logic but semantic
+    const canSeeAdminView = isAdminOrSupervisor || role === 'operator';
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [isManualEntryOpen, setIsManualEntryOpen] = useState(false);
     const [isSavingManualEntry, setIsSavingManualEntry] = useState(false);
@@ -2411,7 +2422,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
         </CardHeader>
       </Card>
       
-      {isAdminOrSupervisor ? (
+      {canSeeAdminView ? (
           <AdminView 
             transfers={searchResults || []} 
             operationalTransfers={allTransfers}
