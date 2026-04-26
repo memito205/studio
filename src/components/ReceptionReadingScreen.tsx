@@ -5,8 +5,8 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, PlusCircle, AlertTriangle } from 'lucide-react';
-import { getReceptionOperationById, getExpectedItemsByReception, getProductsByBarcodes, getLocations, createPackingUnit, startOperationPause, endOperationPause, updateReceptionOperation, addScannedItem, deleteScannedItem, getActivePauseForUser, updatePackingUnit, registerNovelty, getScannedItemsByReception } from '@/app/reception/actions';
+import { Loader2, PlusCircle, AlertTriangle, RefreshCw } from 'lucide-react';
+import { getReceptionOperationById, getExpectedItemsByReception, getProductsByBarcodes, getLocations, createPackingUnit, startOperationPause, endOperationPause, updateReceptionOperation, addScannedItem, deleteScannedItem, getActivePauseForUser, updatePackingUnit, registerNovelty, getScannedItemsByReception, repairReceptionStats } from '@/app/reception/actions';
 import { getUserGoals, getProductivitySettings, getUserPulsesForDay } from '@/app/actions';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import type { ReceptionOperation, ScannedItem, ProductDatabaseItem, PackingUnit, Location, OperationPause, ReceptionExpectedItem, UserGoal, PackedItem, ProductivitySettings, OperationPulse } from '@/types';
@@ -22,6 +22,7 @@ import { collection, query, where, onSnapshot, doc } from 'firebase/firestore';
 import { UnexpectedItemDialog } from './UnexpectedItemDialog';
 import { Button } from '@/components/ui/button';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { cn } from '@/lib/utils';
 
 
 interface ReceptionReadingScreenProps {
@@ -604,6 +605,34 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
     );
   }
 
+  const handleRepairStats = async () => {
+    if (!operation) return;
+    setIsSubmitting(true);
+    try {
+      const result = await repairReceptionStats(operation.id);
+      if (result.success) {
+        toast({
+          title: "Sincronización Completada",
+          description: "Los contadores de la operación han sido recalculados correctamente.",
+        });
+      } else {
+        toast({
+          title: "Error al Reparar",
+          description: result.error || "Ocurrió un error inesperado al intentar reparar los contadores.",
+          variant: "destructive"
+        });
+      }
+    } catch (e: any) {
+      toast({
+        title: "Error de Servidor",
+        description: e.message,
+        variant: "destructive"
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   if (error) {
     return <div className="text-destructive text-center p-8">{error}</div>;
   }
@@ -715,6 +744,14 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
                 <Button onClick={handleCreateNewUnit} variant="secondary" disabled={isSubmitting}>
                     <PlusCircle className="mr-2 h-4 w-4" />
                     Crear Nueva Unidad Manualmente
+                </Button>
+            </div>
+        )}
+        {(role === 'admin' || role === 'supervisor') && (
+            <div className="mt-4 flex justify-center">
+                <Button onClick={handleRepairStats} variant="outline" size="sm" disabled={isSubmitting} className="text-muted-foreground hover:text-primary">
+                    <RefreshCw className={cn("mr-2 h-3 w-3", isSubmitting && "animate-spin")} />
+                    Reparar Contadores de la Operación
                 </Button>
             </div>
         )}

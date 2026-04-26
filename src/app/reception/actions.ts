@@ -1000,24 +1000,45 @@ export async function deletePackingUnitAndContents(unitFirestoreId: string): Pro
             if (!unitDoc.exists()) {
                 throw new Error("La unidad de empaque no existe o ya fue eliminada.");
             }
-            receptionId = unitDoc.data().reception_id;
+            const unitData = unitDoc.data();
+            receptionId = unitData.reception_id;
 
             const itemsSnapshot = await getDocs(itemsQuery);
+            const refStatsMap = new Map<string, number>();
+
             itemsSnapshot.forEach(itemDoc => {
-                totalQuantityDeleted += (itemDoc.data().quantity || 1);
+                const itemData = itemDoc.data();
+                const qty = itemData.quantity || 1;
+                totalQuantityDeleted += qty;
+                
+                const safeRefId = (itemData.reference || 'UNKNOWN').trim().replace(/\//g, '-');
+                refStatsMap.set(safeRefId, (refStatsMap.get(safeRefId) || 0) + qty);
+                
                 transaction.delete(itemDoc.ref);
             });
             
             transaction.delete(unitRef);
 
-            if (receptionId && totalQuantityDeleted > 0) {
+            if (receptionId) {
                 const receptionRef = doc(firestore, 'receptionOperations', receptionId);
-                transaction.update(receptionRef, { totalScannedQuantity: increment(-totalQuantityDeleted) });
+                
+                if (totalQuantityDeleted > 0) {
+                    transaction.update(receptionRef, { totalScannedQuantity: increment(-totalQuantityDeleted) });
+                    
+                    // Update each reference's stats
+                    for (const [safeRefId, qty] of refStatsMap.entries()) {
+                        const statsRef = doc(firestore, 'receptionOperations', receptionId, 'referenceStats', safeRefId);
+                        transaction.set(statsRef, {
+                            totalScanned: increment(-qty),
+                            packingUnits: arrayRemove(unitFirestoreId)
+                        }, { merge: true });
+                    }
+                }
             }
         });
         return { success: true };
     } catch(e: any) {
-        console.error("Error en la transacción de eliminación:", e);
+        console.error("Error en la transacción de eliminación de caja:", e);
         return { success: false, error: e.message };
     }
 }
@@ -1188,17 +1209,35 @@ export async function deleteScannedItem(itemId: string): Promise<{ success: bool
             const receptionRef = doc(firestore, 'receptionOperations', itemData.reception_id);
             
             transaction.delete(itemRef);
-            transaction.update(receptionRef, { totalScannedQuantity: increment(-itemData.quantity) });
+            transaction.update(receptionRef, { totalScannedQuantity: increment(-(itemData.quantity || 1)) });
             
             // --- PATRON CONTADOR: Firebase Optimization ---
             const safeRefId = (itemData.reference || 'UNKNOWN').trim().replace(/\//g, '-');
             const statsRef = doc(firestore, 'receptionOperations', itemData.reception_id, 'referenceStats', safeRefId);
-            transaction.set(statsRef, {
-                totalScanned: increment(-itemData.quantity)
-            }, { merge: true });
+            
+            // Check if there are other items of the same reference in the same box
+            const otherItemsQuery = query(
+                collection(firestore, 'scannedItems'),
+                where('reception_id', '==', itemData.reception_id),
+                where('packing_unit_id', '==', itemData.packing_unit_id),
+                where('barcode', '==', itemData.barcode)
+            );
+            const otherItemsSnapshot = await getDocs(otherItemsQuery);
+            
+            const updates: any = {
+                totalScanned: increment(-(itemData.quantity || 1))
+            };
+
+            // If it was the last item of this reference in this box, remove the box from the list
+            if (otherItemsSnapshot.size <= 1) {
+                updates.packingUnits = arrayRemove(itemData.packing_unit_id);
+            }
+
+            transaction.set(statsRef, updates, { merge: true });
         });
         return { success: true };
     } catch (error: any) {
+        console.error("Error al eliminar ítem escaneado:", error);
         return { success: false, error: `Error al eliminar: ${error.message}` };
     }
 }
@@ -2018,6 +2057,55 @@ export async function getLabelingHistoricalData(dateRange?: { from: Date; to?: D
     } catch (error: any) {
         console.error("Error in getLabelingHistoricalData:", error);
         return { success: false, error: error.message };
+    }
+}
+
+export async function repairReceptionStats(operationId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        if (!operationId) throw new Error("ID de operación requerido.");
+
+        // Fetch all items from scratch
+        const itemsQuery = query(collection(firestore, "scannedItems"), where("reception_id", "==", operationId));
+        const itemsSnapshot = await getDocs(itemsQuery);
+        const scannedItems = itemsSnapshot.docs.map(doc => ({ id: doc.id, ...convertTimestampsToDates(doc.data()) } as ScannedItem));
+
+        const totalScannedQuantity = scannedItems.reduce((sum, item) => sum + (item.quantity || 1), 0);
+        
+        // Group by reference
+        const refMap = new Map<string, { totalScanned: number, packingUnits: Set<string> }>();
+        
+        scannedItems.forEach(item => {
+            const safeRefId = (item.reference || 'UNKNOWN').trim().replace(/\//g, '-');
+            if (!refMap.has(safeRefId)) {
+                refMap.set(safeRefId, { totalScanned: 0, packingUnits: new Set() });
+            }
+            const stats = refMap.get(safeRefId)!;
+            stats.totalScanned += (item.quantity || 1);
+            if (item.packing_unit_id) stats.packingUnits.add(item.packing_unit_id);
+        });
+
+        // Use a batch to update everything
+        const batch = writeBatch(firestore);
+        
+        // 1. Update main operation doc
+        const receptionRef = doc(firestore, 'receptionOperations', operationId);
+        batch.update(receptionRef, { totalScannedQuantity, updated_at: Timestamp.now() });
+
+        // 2. Overwrite all found reference stats
+        for (const [safeRefId, stats] of refMap.entries()) {
+            const statsRef = doc(firestore, 'receptionOperations', operationId, 'referenceStats', safeRefId);
+            batch.set(statsRef, {
+                reference: safeRefId,
+                totalScanned: stats.totalScanned,
+                packingUnits: Array.from(stats.packingUnits)
+            });
+        }
+
+        await batch.commit();
+        return { success: true };
+    } catch (e: any) {
+        console.error("Error repairing reception stats:", e);
+        return { success: false, error: e.message };
     }
 }
     
