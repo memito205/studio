@@ -121,12 +121,12 @@ const DESTINOS_PREDEFINIDOS = [
     "B21", "B22", "B23", "MOLINOS", "BODEGA PIONEROS", "OFICINA"
 ].sort();
 
-const TransferLabel: React.FC<{ transfer: TransferEntry }> = ({ transfer }) => {
+const TransferLabel: React.FC<{ transfer: TransferEntry; hideBarcode?: boolean }> = ({ transfer, hideBarcode }) => {
   const barcodeRef = React.useRef<HTMLCanvasElement>(null);
   const barcodeValue = `${transfer.bodegaDestino}-${transfer.numeroTF}`.toUpperCase();
 
   React.useEffect(() => {
-    if (barcodeRef.current) {
+    if (barcodeRef.current && !hideBarcode) {
       try {
         JsBarcode(barcodeRef.current, barcodeValue, {
           format: "CODE128",
@@ -180,10 +180,12 @@ const TransferLabel: React.FC<{ transfer: TransferEntry }> = ({ transfer }) => {
         </div>
         
         {/* Barcode and its text */}
-        <div className="flex flex-col items-center">
-          <canvas ref={barcodeRef} />
-          <div className="font-sans text-[9px] font-bold tracking-[0.3em] leading-none mt-1">{barcodeValue}</div>
-        </div>
+        {!hideBarcode && (
+          <div className="flex flex-col items-center">
+            <canvas ref={barcodeRef} />
+            <div className="font-sans text-[9px] font-bold tracking-[0.3em] leading-none mt-1">{barcodeValue}</div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -196,13 +198,16 @@ const TransferLabelDialog: React.FC<{
   transfer: TransferEntry | null;
   onConfirm: (transfer: TransferEntry) => Promise<void>;
   isSaving: boolean;
-}> = ({ isOpen, onOpenChange, transfer, onConfirm, isSaving }) => {
+  mode?: 'receive' | 'standalone';
+}> = ({ isOpen, onOpenChange, transfer, onConfirm, isSaving, mode = 'receive' }) => {
   const { toast } = useToast();
   
   const handleConfirmAndPrint = async () => {
     if (!transfer) return;
     await onConfirm(transfer);
   };
+
+  const isStandalone = mode === 'standalone';
   
   if (!transfer) return null;
 
@@ -210,20 +215,23 @@ const TransferLabelDialog: React.FC<{
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Rótulo para Transferencia</DialogTitle>
+          <DialogTitle>{isStandalone ? 'Rótulo FIFO (Solo Orden)' : 'Rótulo para Transferencia'}</DialogTitle>
           <DialogDescription>
-            Rótulo para el TF: {transfer.numeroTF} con destino a {transfer.bodegaDestino}. Al imprimir se marcará como recibido.
+            {isStandalone 
+              ? `Rótulo FIFO para el TF: ${transfer.numeroTF}. Este rótulo NO contiene código de barras.`
+              : `Rótulo para el TF: ${transfer.numeroTF} con destino a ${transfer.bodegaDestino}. Al imprimir se marcará como recibido.`
+            }
           </DialogDescription>
         </DialogHeader>
         <div className="py-4 flex justify-center">
-          <TransferLabel transfer={transfer} />
+          <TransferLabel transfer={transfer} hideBarcode={isStandalone} />
         </div>
         <DialogFooter>
           <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
             Cerrar
           </Button>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={async () => {
+            <Button variant={isStandalone ? 'default' : 'outline'} onClick={async () => {
                 const input = document.getElementById(`transfer-label-to-print-${transfer.id}`);
                 if (!input) return;
                 const canvas = await html2canvas(input, { scale: 3, useCORS: true, backgroundColor: '#ffffff' });
@@ -232,13 +240,16 @@ const TransferLabelDialog: React.FC<{
                 pdf.addImage(imgData, 'PNG', 0, 0, 10, 5);
                 pdf.autoPrint();
                 window.open(pdf.output('bloburl'), '_blank');
+                if (isStandalone) onOpenChange(false);
             }} disabled={isSaving}>
-              <Printer className="mr-2 h-4 w-4"/> Solo Imprimir (FIFO)
+              <Printer className="mr-2 h-4 w-4"/> Imprimir Rótulo FIFO
             </Button>
-            <Button onClick={handleConfirmAndPrint} disabled={isSaving}>
-              {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <PackageCheck className="mr-2 h-4 w-4"/>}
-              Imprimir y Recibir
-            </Button>
+            {!isStandalone && (
+              <Button onClick={handleConfirmAndPrint} disabled={isSaving}>
+                {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <PackageCheck className="mr-2 h-4 w-4"/>}
+                Imprimir y Recibir
+              </Button>
+            )}
           </div>
         </DialogFooter>
       </DialogContent>
@@ -978,6 +989,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     const [isLabelDialogOpen, setIsLabelDialogOpen] = useState(false);
     const [transferForLabel, setTransferForLabel] = useState<TransferEntry | null>(null);
     const [isPrinting, setIsPrinting] = useState(false);
+    const [printMode, setPrintMode] = useState<'receive' | 'standalone'>('receive');
 
     const [isLogOpen, setIsLogOpen] = useState(false);
     const [selectedTransferForLog, setSelectedTransferForLog] = useState<TransferEntry | null>(null);
@@ -1283,6 +1295,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         transfer={transferForLabel}
         onConfirm={handleConfirmPrintAndReceive}
         isSaving={isPrinting}
+        mode={printMode}
       />
       <StatusChangeDialog
         isOpen={statusChangeState.isOpen}
@@ -1577,20 +1590,21 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                                         </Button>
                                                     </DropdownMenuTrigger>
                                                     <DropdownMenuContent align="end">
-                                                         <DropdownMenuItem onSelect={() => handleViewLog(t)}>
-                                                            <History className="mr-2 h-4 w-4" /> Ver Historial
-                                                        </DropdownMenuItem>
-                                                         <DropdownMenuItem onSelect={() => handlePrintLabelClick(t)} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
+                                                         <DropdownMenuItem onSelect={() => {
+                                                            setTransferForLabel(t);
+                                                            setPrintMode('receive');
+                                                            setIsLabelDialogOpen(true);
+                                                         }} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
                                                             <Printer className="mr-2 h-4 w-4" />
                                                             Imprimir y Recibir
                                                         </DropdownMenuItem>
-                                                        <DropdownMenuItem onSelect={async () => {
-                                                            // Simplified standalone print logic directly in dropdown for quick access
+                                                        <DropdownMenuItem onSelect={() => {
                                                             setTransferForLabel(t);
+                                                            setPrintMode('standalone');
                                                             setIsLabelDialogOpen(true);
                                                         }} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
                                                             <ScanLine className="mr-2 h-4 w-4" />
-                                                            Solo Imprimir Rótulo (FIFO)
+                                                            Rótulo FIFO (Solo Orden)
                                                         </DropdownMenuItem>
                                                         {role === 'admin' && (
                                                             <>
@@ -1845,6 +1859,7 @@ const OperatorView: React.FC<{
     const [isLabelDialogOpen, setIsLabelDialogOpen] = useState(false);
     const [transferForLabel, setTransferForLabel] = useState<TransferEntry | null>(null);
     const [isPrinting, setIsPrinting] = useState(false);
+    const [printMode, setPrintMode] = useState<'receive' | 'standalone'>('receive');
     const [isLogOpen, setIsLogOpen] = useState(false);
     const [selectedTransferForLog, setSelectedTransferForLog] = useState<TransferEntry | null>(null);
 
@@ -1976,8 +1991,19 @@ const OperatorView: React.FC<{
                                                     <DropdownMenuItem onSelect={() => handleViewLog(t)}>
                                                         <History className="mr-2 h-4 w-4" /> Ver Historial
                                                     </DropdownMenuItem>
-                                                    <DropdownMenuItem onSelect={() => handlePrintLabelClick(t)} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
-                                                        <Printer className="mr-2 h-4 w-4" /> Imprimir Rótulo
+                                                    <DropdownMenuItem onSelect={() => {
+                                                        setTransferForLabel(t);
+                                                        setPrintMode('receive');
+                                                        setIsLabelDialogOpen(true);
+                                                    }} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
+                                                        <Printer className="mr-2 h-4 w-4" /> Imprimir y Recibir
+                                                    </DropdownMenuItem>
+                                                    <DropdownMenuItem onSelect={() => {
+                                                        setTransferForLabel(t);
+                                                        setPrintMode('standalone');
+                                                        setIsLabelDialogOpen(true);
+                                                    }} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
+                                                        <ScanLine className="mr-2 h-4 w-4" /> Rótulo FIFO (Solo Orden)
                                                     </DropdownMenuItem>
                                                 </DropdownMenuContent>
                                             </DropdownMenu>
@@ -1997,6 +2023,7 @@ const OperatorView: React.FC<{
             transfer={transferForLabel}
             onConfirm={handleConfirmPrintAndReceive}
             isSaving={isPrinting}
+            mode={printMode}
           />
           <TransferLogDialog
             isOpen={isLogOpen}
