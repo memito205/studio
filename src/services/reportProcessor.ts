@@ -438,6 +438,7 @@ export function applyJustifications(
                 if (pulse.reason === 'Desayuno') type = 'BREAKFAST';
                 else if (pulse.reason === 'Almuerzo') type = 'LUNCH';
                 else if (pulse.reason === 'Refrigerio') type = 'SNACK';
+                else if (pulse.reason === 'Fin de Turno') type = 'SHIFT_END';
                 
                 justification = {
                     type,
@@ -517,6 +518,12 @@ export function applyJustifications(
                 
                 handleSplit(justifiedPart, remainingPart);
             }
+        } else if (justification.type === 'SHIFT_END') {
+            finalIncidents.push({
+                ...incident,
+                status: 'Justificado',
+                justification: justification.reasonText || 'Fin de Turno / Salida'
+            });
         } else {
             // UNJUSTIFIED or other types
             incident.status = 'No Justificado';

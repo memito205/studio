@@ -1,5 +1,3 @@
-
-
 "use client";
 
 import React, { useState, useMemo } from 'react';
@@ -22,11 +20,26 @@ import {
     DialogTitle,
     DialogClose
 } from "@/components/ui/dialog";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { MoreHorizontal, CheckCircle, AlertTriangle, Clock, Search } from 'lucide-react';
+import { 
+    MoreHorizontal, 
+    CheckCircle, 
+    AlertTriangle, 
+    Clock, 
+    Search, 
+    User, 
+    CalendarCheck, 
+    Timer, 
+    ArrowRightCircle, 
+    UserMinus,
+    LayoutGrid,
+    List
+} from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Separator } from '@/components/ui/separator';
 
 interface Props {
   incidents: DeadTimeEntry[];
@@ -54,7 +67,6 @@ const getStatusIcon = (status: DeadTimeEntry['status']): React.ReactNode => {
     }
 }
 
-
 export const DeadTimeJustificationEditor: React.FC<Props> = ({ 
   incidents, 
   justifications, 
@@ -68,6 +80,7 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
   const [reason, setReason] = useState('');
   const [customDuration, setCustomDuration] = useState<number | undefined>(undefined);
   const [filter, setFilter] = useState('');
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
   const handleOpenReasonDialog = (incident: DeadTimeEntry) => {
     setSelectedIncident(incident);
@@ -130,159 +143,232 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
     );
   }, [incidents, filter]);
 
+  const groupedIncidents = useMemo(() => {
+    return incidentsToDisplay.reduce((acc, inc) => {
+        if (!acc[inc.packerName]) acc[inc.packerName] = [];
+        acc[inc.packerName].push(inc);
+        return acc;
+    }, {} as Record<string, DeadTimeEntry[]>);
+  }, [incidentsToDisplay]);
 
   return (
     <>
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+    <div className="space-y-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="space-y-1">
-          <CardTitle>Gestión de Inactividad</CardTitle>
-          <CardDescription>
-              Revise las pausas detectadas (mayores o iguales a 5 minutos). Asígnelas a un descanso o justifíquelas con una razón.
-          </CardDescription>
+          <h2 className="text-2xl font-bold flex items-center gap-2">
+            <Timer className="h-6 w-6 text-primary" />
+            Gestión de Inactividad
+          </h2>
+          <p className="text-muted-foreground">
+              Refina y justifica los tiempos muertos detectados para optimizar el cálculo de productividad.
+          </p>
         </div>
-        <Button 
-          variant="outline" 
-          size="sm" 
-          onClick={() => onJustificationsChange(justifications)}
-          disabled={isSaving}
-          className="ml-4"
-        >
-          {isSaving ? (
-            <>
-              <Clock className="mr-2 h-4 w-4 animate-spin" />
-              Guardando...
-            </>
-          ) : (
-            <>
-              <CheckCircle className="mr-2 h-4 w-4" />
-              Guardar Justificaciones
-            </>
-          )}
-        </Button>
-      </CardHeader>
-      <div className="px-6 pb-4">
-         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
-          <Input 
-            placeholder="Filtrar por nombre de operario..."
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            className="pl-10 w-full sm:w-80"
-          />
+        <div className="flex gap-2">
+          <div className="flex border rounded-lg p-1 bg-background shadow-sm">
+              <Button 
+                  variant={viewMode === 'grid' ? 'secondary' : 'ghost'} 
+                  size="sm" 
+                  onClick={() => setViewMode('grid')}
+                  className="px-3"
+              >
+                  <LayoutGrid className="h-4 w-4 mr-2" /> Cuadrícula
+              </Button>
+              <Button 
+                  variant={viewMode === 'list' ? 'secondary' : 'ghost'} 
+                  size="sm" 
+                  onClick={() => setViewMode('list')}
+                  className="px-3"
+              >
+                  <List className="h-4 w-4 mr-2" /> Lista
+              </Button>
+          </div>
+          <Button 
+              onClick={() => onJustificationsChange(justifications)}
+              disabled={isSaving}
+              className="shadow-lg hover:shadow-xl transition-all"
+          >
+              {isSaving ? (
+              <>
+                  <Clock className="mr-2 h-4 w-4 animate-spin" />
+                  Guardando...
+              </>
+              ) : (
+              <>
+                  <CalendarCheck className="mr-2 h-4 w-4" />
+                  Fijar Justificaciones
+              </>
+              )}
+          </Button>
         </div>
       </div>
-      <CardContent>
-       {incidentsToDisplay.length === 0 ? (
-        <p className="text-muted-foreground text-center py-8">
-          {incidents.length > 0 ? 'No se encontraron resultados para el filtro actual.' : 'No se detectaron pausas o tiempos muertos significativos para la selección actual.'}
-        </p>
+      
+      <div className="flex items-center gap-4">
+        <div className="relative flex-1 max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+          <Input 
+            placeholder="Buscar por operario..."
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            className="pl-10 h-11 bg-background shadow-sm border-muted-foreground/20 focus:border-primary transition-colors"
+          />
+        </div>
+        {filter && (
+          <Button variant="ghost" onClick={() => setFilter('')} className="h-11">
+              Limpiar Filtro
+          </Button>
+        )}
+      </div>
+
+      {incidentsToDisplay.length === 0 ? (
+        <Card className="bg-muted/50 border-dashed border-2">
+          <CardContent className="flex flex-col items-center justify-center py-12">
+             <div className="bg-background p-4 rounded-full shadow-sm mb-4">
+                <Clock className="h-8 w-8 text-muted-foreground" />
+             </div>
+             <p className="text-muted-foreground text-lg font-medium">
+                {incidents.length > 0 ? 'No se encontraron resultados para el filtro actual.' : 'Sin inactividades pendientes de revisión.'}
+             </p>
+          </CardContent>
+        </Card>
       ) : (
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Operario</TableHead>
-                <TableHead>Horario Pausa</TableHead>
-                <TableHead className="text-center">Duración (min)</TableHead>
-                <TableHead>Clasificación Actual</TableHead>
-                <TableHead className="text-center">Acciones</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {incidentsToDisplay.map((incident) => (
-                  <TableRow key={incident.id}>
-                    <TableCell className="font-medium whitespace-nowrap">{incident.packerName}</TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      {incident.startTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {incident.endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </TableCell>
-                    <TableCell className="text-center font-semibold">{incident.duration}</TableCell>
-                    <TableCell>
-                        <Badge variant={getStatusVariant(incident.status)} className="whitespace-nowrap">
-                            {getStatusIcon(incident.status)}
-                            {getClassificationText(incident)}
-                        </Badge>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="icon">
-                                  <MoreHorizontal className="h-4 w-4" />
-                                  <span className="sr-only">Toggle menu</span>
-                              </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                              <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'UNJUSTIFIED')}>Marcar como No Justificado</DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'BREAKFAST')}>Asignar a Desayuno</DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'LUNCH')}>Asignar a Almuerzo</DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'SNACK')}>Asignar a Refrigerio</DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleOpenReasonDialog(incident)}>Justificar con Razón...</DropdownMenuItem>
-                          </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+        <div className={cn(
+            "grid gap-6",
+            viewMode === 'grid' ? "grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" : "grid-cols-1"
+        )}>
+          {Object.entries(groupedIncidents).map(([packerName, packerIncidents]) => (
+              <Card key={packerName} className="flex flex-col h-full bg-card hover:shadow-md transition-shadow">
+                  <CardHeader className="pb-3 bg-muted/30 rounded-t-lg">
+                      <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                              <div className="bg-primary/10 p-2 rounded-lg">
+                                  <User className="h-4 w-4 text-primary" />
+                              </div>
+                              <CardTitle className="text-sm font-bold truncate max-w-[150px]">{packerName}</CardTitle>
+                          </div>
+                          <Badge variant="outline" className="font-mono">{packerIncidents.length}</Badge>
+                      </div>
+                  </CardHeader>
+                  <CardContent className="p-4 flex-1">
+                      <ScrollArea className={cn("pr-4", viewMode === 'grid' ? "h-[350px]" : "h-auto")}>
+                          <div className="space-y-4">
+                              {packerIncidents.map((incident) => (
+                                  <div key={incident.id} className="group relative p-3 rounded-lg border bg-background hover:border-primary/50 transition-all">
+                                      <div className="flex justify-between items-start mb-2">
+                                          <div className="space-y-1">
+                                              <div className="flex items-center text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                                                  <ArrowRightCircle className="h-3 w-3 mr-1 text-primary" />
+                                                  {incident.startTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {incident.endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                              </div>
+                                              <div className="flex items-center gap-2">
+                                                  <span className="text-lg font-black tracking-tight">{incident.duration}</span>
+                                                  <span className="text-xs text-muted-foreground font-medium">minutos</span>
+                                              </div>
+                                          </div>
+                                          <DropdownMenu>
+                                              <DropdownMenuTrigger asChild>
+                                                  <Button variant="ghost" size="icon" className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                      <MoreHorizontal className="h-4 w-4" />
+                                                  </Button>
+                                              </DropdownMenuTrigger>
+                                              <DropdownMenuContent align="end" className="w-[200px]">
+                                                  <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'UNJUSTIFIED')}>Marcar como No Justificado</DropdownMenuItem>
+                                                  <Separator className="my-1" />
+                                                  <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'BREAKFAST')}>Asignar a Desayuno</DropdownMenuItem>
+                                                  <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'LUNCH')}>Asignar a Almuerzo</DropdownMenuItem>
+                                                  <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'SNACK')}>Asignar a Refrigerio</DropdownMenuItem>
+                                                  <Separator className="my-1" />
+                                                  <DropdownMenuItem onClick={() => handleOpenReasonDialog(incident)}>Justificar con Razón...</DropdownMenuItem>
+                                                  <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'SHIFT_END')} className="text-destructive font-semibold">
+                                                      <UserMinus className="h-4 w-4 mr-2" /> Finalizar Labor
+                                                  </DropdownMenuItem>
+                                              </DropdownMenuContent>
+                                          </DropdownMenu>
+                                      </div>
+                                      <Badge variant={getStatusVariant(incident.status)} className="w-full justify-start font-medium py-1 px-2 border-none">
+                                          {getStatusIcon(incident.status)}
+                                          <span className="truncate ml-1">{getClassificationText(incident)}</span>
+                                      </Badge>
+                                  </div>
+                              ))}
+                          </div>
+                      </ScrollArea>
+                  </CardContent>
+              </Card>
+          ))}
         </div>
       )}
-      </CardContent>
-       <CardContent>
-        <AutoJustificationSuggestions 
-            incidents={incidents} 
-            onAcceptSuggestion={onAcceptSuggestion}
-            existingJustifications={justifications}
-        />
-      </CardContent>
-    </Card>
+      
+      <AutoJustificationSuggestions 
+          incidents={incidents} 
+          onAcceptSuggestion={onAcceptSuggestion}
+          existingJustifications={justifications}
+      />
+    </div>
 
     <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="sm:max-w-[425px]">
             {selectedIncident && (
             <>
                 <DialogHeader>
-                    <DialogTitle>Justificar Inactividad</DialogTitle>
+                    <DialogTitle className="flex items-center gap-2">
+                        <Timer className="h-5 w-5 text-primary" />
+                        Justificar Inactividad
+                    </DialogTitle>
                     <DialogDescription>
-                        Para la pausa de <span className="font-bold">{selectedIncident.packerName}</span> de {selectedIncident.duration} minutos.
+                        Ingrese la razón por la cual <span className="font-bold text-foreground">{selectedIncident.packerName}</span> tuvo un tiempo muerto de {selectedIncident.duration} minutos.
                     </DialogDescription>
                 </DialogHeader>
-                <div className="grid gap-4 py-4">
-                    <div className="grid grid-cols-4 items-center gap-4">
-                        <Label htmlFor="reason" className="text-right">Razón</Label>
+                <div className="grid gap-6 py-4">
+                    <div className="space-y-2">
+                        <Label htmlFor="reason">Razón o Motivo</Label>
                         <Input
                           id="reason"
                           value={reason}
                           onChange={(e) => setReason(e.target.value)}
-                          className="col-span-3"
-                          placeholder="Ej: Falla de impresora"
+                          className="w-full"
+                          placeholder="Ej: Falla de impresora, Falta de cajas..."
                         />
                     </div>
-                    <div className="grid grid-cols-4 items-center gap-4">
-                        <Label htmlFor="duration" className="text-right">Duración (min)</Label>
-                        <Input
-                          id="duration"
-                          type="number"
-                          value={customDuration ?? ''}
-                          onChange={(e) => {
-                              const val = e.target.value;
-                              const numVal = Number(val);
-                              if (val === '') {
-                                setCustomDuration(undefined);
-                              } else if (!isNaN(numVal)) {
-                                setCustomDuration(Math.min(numVal, selectedIncident.duration));
-                              }
-                          }}
-                          className="col-span-3"
-                          placeholder={`Parcial (máx ${selectedIncident.duration})`}
-                          max={selectedIncident.duration}
-                        />
+                    <div className="space-y-2">
+                        <Label htmlFor="duration">Duración a Justificar (minutos)</Label>
+                        <div className="flex items-center gap-3">
+                            <Input
+                            id="duration"
+                            type="number"
+                            value={customDuration ?? ''}
+                            onChange={(e) => {
+                                const val = e.target.value;
+                                const numVal = Number(val);
+                                if (val === '') {
+                                    setCustomDuration(undefined);
+                                } else if (!isNaN(numVal)) {
+                                    setCustomDuration(Math.min(numVal, selectedIncident.duration));
+                                }
+                            }}
+                            className="flex-1"
+                            placeholder={`Total: ${selectedIncident.duration}`}
+                            max={selectedIncident.duration}
+                            />
+                            <Button 
+                                variant="outline" 
+                                size="sm" 
+                                onClick={() => setCustomDuration(selectedIncident.duration)}
+                                className="shrink-0"
+                            >
+                                Seleccionar Todo
+                            </Button>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground italic">
+                            Puede justificar la pausa completa o solo una parte de ella.
+                        </p>
                     </div>
                 </div>
-                <DialogFooter>
+                <DialogFooter className="gap-2 sm:gap-0">
                     <DialogClose asChild>
-                        <Button type="button" variant="secondary">Cancelar</Button>
+                        <Button type="button" variant="ghost">Cancelar</Button>
                     </DialogClose>
-                    <Button type="button" onClick={handleSaveReason}>Guardar Justificación</Button>
+                    <Button type="button" onClick={handleSaveReason} className="shadow-md">Guardar Justificación</Button>
                 </DialogFooter>
             </>
             )}

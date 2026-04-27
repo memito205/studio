@@ -572,7 +572,7 @@ export type ManualProductClassifications = {
     };
 };
 
-export type JustificationType = 'REASON' | 'BREAKFAST' | 'LUNCH' | 'SNACK';
+export type JustificationType = 'REASON' | 'BREAKFAST' | 'LUNCH' | 'SNACK' | 'SHIFT_END';
 
 export type ManualJustifications = {
     [deadTimeId: string]: {
@@ -614,7 +614,7 @@ export interface IncidentLogEntry {
 }
 
 export type PulseType = 'activity' | 'pause' | 'status_change';
-export type PulseReason = 'Desayuno' | 'Almuerzo' | 'Refrigerio' | 'Baño' | 'Café' | 'Soporte Técnico' | 'Sin Carga de Trabajo' | 'Otro' | 'Pausa Global' | 'Remisión';
+export type PulseReason = 'Desayuno' | 'Almuerzo' | 'Refrigerio' | 'Baño' | 'Café' | 'Soporte Técnico' | 'Sin Carga de Trabajo' | 'Otro' | 'Pausa Global' | 'Remisión' | 'Fin de Turno';
 export type UserStatus = 'Disponible' | 'En Remisión' | 'Pausado' | 'Inactivo' | 'Desconectado';
 
 export interface OperationPulse {
