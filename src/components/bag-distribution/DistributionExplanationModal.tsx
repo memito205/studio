@@ -50,8 +50,19 @@ export const DistributionExplanationModal: React.FC<DistributionExplanationModal
         return (
           <>
             <DetailRow indent label="Método de Pronóstico Local" value={trace.localWinningMethod} />
-            <DetailRow indent label="Pronóstico Mensual Promedio Local" value={trace.localMonthlyForecast?.toFixed(0)} />
-            <DetailRow indent label="Demanda Diaria Base (Local)" value={trace.shortfall_dailyRate?.toFixed(2)} calculation={`${trace.localMonthlyForecast?.toFixed(0)} / 30.44`} />
+            <DetailRow indent label="Pronóstico Mensual Promedio (Tendencia)" value={trace.localMonthlyForecast?.toFixed(0)} />
+            {trace.seasonalIndex !== undefined && trace.seasonalIndex !== 1 && (
+                <DetailRow indent label="Índice Estacional Aplicado" value={trace.seasonalIndex.toFixed(2)} className="text-amber-300 font-medium" />
+            )}
+            <DetailRow 
+                indent 
+                label="Demanda Diaria Base (Local)" 
+                value={trace.shortfall_dailyRate?.toFixed(2)} 
+                calculation={trace.seasonalIndex && trace.seasonalIndex !== 1 
+                    ? `(${trace.localMonthlyForecast?.toFixed(0)} * ${trace.seasonalIndex.toFixed(2)}) / 30.44`
+                    : `${trace.localMonthlyForecast?.toFixed(0)} / 30.44`
+                } 
+            />
 
           </>
         );
@@ -88,23 +99,23 @@ export const DistributionExplanationModal: React.FC<DistributionExplanationModal
 
         <div className="pt-2 mt-2 border-t border-slate-700">
           <DetailRow isSubHeader label="Ajuste por Consumo AJS" />
-          <DetailRow indent label="Ajuste por AJS" value={`${trace.bodegaAjsPercentage.toFixed(1)}%`} />
-          <DetailRow indent label="Demanda Diaria Final Ajustada" value={trace.effectiveBodegaDailyForecast_AjsAdjusted.toFixed(2)} calculation={`${trace.shortfall_dailyRate?.toFixed(2)} * (1 + ${(trace.bodegaAjsPercentage/100).toFixed(2)})`} className="font-semibold" />
+          <DetailRow indent label="Ajuste por AJS" value={`${trace.bodegaAjsPercentage?.toFixed(1)}%`} />
+          <DetailRow indent label="Demanda Diaria Final Ajustada" value={trace.effectiveBodegaDailyForecast_AjsAdjusted?.toFixed(2)} calculation={`${trace.shortfall_dailyRate?.toFixed(2)} * (1 + ${((trace.bodegaAjsPercentage || 0) / 100).toFixed(2)})`} className="font-semibold" />
         </div>
 
         <DetailRow isHeader label="2. Inventario Objetivo" value={trace.targetInventory?.toLocaleString('es-CO')} className="mt-4" />
         <DetailRow indent label="Días de Cobertura" value={`${trace.coverageDays} días`} />
-        <DetailRow indent label="Demanda Diaria Ajustada" value={trace.effectiveBodegaDailyForecast_AjsAdjusted.toFixed(2)} />
-        <DetailRow isCalculation indent label="Cálculo" value={trace.targetInventory?.toLocaleString('es-CO')} calculation={`${trace.effectiveBodegaDailyForecast_AjsAdjusted.toFixed(2)} * ${trace.coverageDays} días`} />
+        <DetailRow indent label="Demanda Diaria Ajustada" value={trace.effectiveBodegaDailyForecast_AjsAdjusted?.toFixed(2)} />
+        <DetailRow isCalculation indent label="Cálculo" value={trace.targetInventory?.toLocaleString('es-CO')} calculation={`${trace.effectiveBodegaDailyForecast_AjsAdjusted?.toFixed(2)} * ${trace.coverageDays} días`} />
         
-        <DetailRow isHeader label="3. Cobertura Actual" value={trace.currentInventoryCoverageDays !== null ? `${trace.currentInventoryCoverageDays.toFixed(1)} días` : '999+'} className="mt-4" />
+        <DetailRow isHeader label="3. Cobertura Actual" value={trace.currentInventoryCoverageDays !== null && trace.currentInventoryCoverageDays !== undefined ? `${trace.currentInventoryCoverageDays.toFixed(1)} días` : '999+'} className="mt-4" />
         <DetailRow indent label="Inventario Actual en Bodega" value={trace.currentBodegaInventory?.toLocaleString('es-CO') ?? '0'} />
         <DetailRow indent label="Demanda Diaria Ajustada" value={trace.effectiveBodegaDailyForecast_AjsAdjusted?.toFixed(2)} />
-        <DetailRow isCalculation indent label="Cálculo de Cobertura" value={trace.currentInventoryCoverageDays !== null ? `${trace.currentInventoryCoverageDays.toFixed(1)} días` : '999+'} calculation={`${trace.currentBodegaInventory?.toLocaleString('es-CO') ?? '0'} / ${trace.effectiveBodegaDailyForecast_AjsAdjusted?.toFixed(2)}`} />
+        <DetailRow isCalculation indent label="Cálculo de Cobertura" value={trace.currentInventoryCoverageDays !== null && trace.currentInventoryCoverageDays !== undefined ? `${trace.currentInventoryCoverageDays.toFixed(1)} días` : '999+'} calculation={`${trace.currentBodegaInventory?.toLocaleString('es-CO') ?? '0'} / ${trace.effectiveBodegaDailyForecast_AjsAdjusted?.toFixed(2)}`} />
 
         <DetailRow isHeader label="4. Cantidad a Enviar" value={(trace.quantityToSend_Final ?? 0).toLocaleString('es-CO')} className="mt-4" />
         <DetailRow indent label="Inventario Objetivo" value={trace.targetInventory?.toLocaleString('es-CO')} />
-        <DetailRow indent label="Inventario Actual (Resta)" value={trace.currentBodegaInventory.toLocaleString('es-CO')} className="border-b border-slate-700" />
+        <DetailRow indent label="Inventario Actual (Resta)" value={trace.currentBodegaInventory?.toLocaleString('es-CO') ?? '0'} className="border-b border-slate-700" />
         <DetailRow indent label="Necesidad (antes de redondeo)" value={trace.quantityToSend_PreRounding?.toFixed(2)} className="font-semibold"/>
         <DetailRow indent label="Redondeado a múltiplo de" value={trace.roundingMultiple?.toLocaleString('es-CO') ?? 'N/A'} />
         <DetailRow 

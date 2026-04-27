@@ -119,6 +119,7 @@ export interface CalculationTrace {
     directForecastEligibility?: DirectForecastEligibility;
     localWinningMethod?: string;
     localMonthlyForecast?: number;
+    seasonalIndex?: number;
     baseItemMonthlyForecast?: number;
     bodegaShare?: number;
     daysInForecastMonth?: number;
