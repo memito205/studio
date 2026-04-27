@@ -13,6 +13,7 @@ import {
 import { parseRobustNumber } from '@/lib/parsingUtils';
 import { addDays, startOfWeek, format, isSameDay, differenceInDays, startOfDay } from 'date-fns';
 import { es } from 'date-fns/locale';
+import { getEffectiveSeasonalFactor } from './forecastingEngine';
 
 export const parseBodegaInventoryFile = (fileContent: string): BodegaInventory[] => {
   const lines = fileContent.split(/\r?\n/).filter(line => line.trim() !== '');
@@ -436,14 +437,30 @@ export function calculateDistribution(
                 const forecastValues = forecastFn ? forecastFn(localSeries, 1) : [localAverage];
                 const trendForecast = forecastValues.length > 0 ? forecastValues[0] : localAverage;
 
-                // --- HYBRID SEASONALITY: Use global seasonal factor from Purchase Forecast ---
-                const finalSeasonalFactor = item.calculationTrace?.shortfall_seasonalFactor || 1.0;
+                // --- INTELLIGENT WEIGHTED SEASONALITY ---
+                // Calculate average factor across the coverage window
+                const coverageDays = bodegaCoverageConfig[bodega] || 15;
+                const startDate = new Date();
+                let totalWeightedFactor = 0;
+                
+                // Retrieve global data for seasonality calculation
+                const globalIndices = item.seasonalIndices;
+                const globalHistoricalData = item.historicalData;
+
+                for (let d = 0; d < coverageDays; d++) {
+                    const targetDate = addDays(startDate, d);
+                    const factor = getEffectiveSeasonalFactor(globalIndices, globalHistoricalData, targetDate);
+                    totalWeightedFactor += factor;
+                }
+                
+                const finalSeasonalFactor = totalWeightedFactor / coverageDays;
 
                 dailyRate = ((trendForecast || 0) * finalSeasonalFactor) / 30.44;
                 
                 trace.localWinningMethod = localWinningMethod;
                 trace.localMonthlyForecast = trendForecast || 0;
                 trace.seasonalIndex = finalSeasonalFactor;
+                trace.coverageDays = coverageDays;
 
             } else {
                 trace.calculationMethod = 'Participación Histórica';

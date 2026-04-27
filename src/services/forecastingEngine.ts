@@ -222,6 +222,35 @@ function calculateSeasonalIndices(historicalData: ItemMonthlyData, minYears: num
     return { indices: finalSeasonalIndices, trace: logs };
 }
 
+export function getEffectiveSeasonalFactor(
+    statisticalSeasonalIndices: number[] | null | undefined,
+    historicalMonthlyData: ItemMonthlyData,
+    targetDate: Date
+): number {
+    const monthIndex = targetDate.getMonth();
+    const monthNumber = monthIndex + 1;
+    
+    const statisticalFactor = statisticalSeasonalIndices ? statisticalSeasonalIndices[monthIndex] : 1.0;
+    
+    const prevYearDate = new Date(targetDate);
+    prevYearDate.setFullYear(targetDate.getFullYear() - 1);
+    
+    const consumptionThisMonthLastYear = historicalMonthlyData.find(d => d.year === prevYearDate.getFullYear() && d.month === (prevYearDate.getMonth() + 1))?.totalQuantity;
+    
+    const prevMonthOfPrevYear = new Date(prevYearDate);
+    prevMonthOfPrevYear.setMonth(prevYearDate.getMonth() - 1);
+    const consumptionPrevMonthLastYear = historicalMonthlyData.find(d => d.year === prevMonthOfPrevYear.getFullYear() && d.month === (prevMonthOfPrevYear.getMonth() + 1))?.totalQuantity;
+
+    let yoyGrowthFactor = 1.0;
+    if(consumptionThisMonthLastYear !== undefined && consumptionPrevMonthLastYear !== undefined && consumptionPrevMonthLastYear > 0) {
+        yoyGrowthFactor = consumptionThisMonthLastYear / consumptionPrevMonthLastYear;
+    }
+    
+    const minimumFactor = MINIMUM_SEASONAL_FACTORS[monthNumber] || 1.0;
+    
+    return Math.max(statisticalFactor, minimumFactor, yoyGrowthFactor);
+}
+
 // --- Forecasting Methods (Multi-Period Future Forecasts) ---
 function calculateSMA_MultiStep(data: number[], period: number, numForecasts: number): Array<number | null> {
   if (data.length < period || numForecasts <= 0) return [];
@@ -580,39 +609,23 @@ export function generateAllForecasts(
         const getBaseForecastForDate = (targetDate: Date): { value: number | null, trace: any } => {
             if (!firstMonthToForecastAfterHistory || winningTrendForecasts.length === 0) return { value: null, trace: {} };
             const offset = getMonthOffset(targetDate, firstMonthToForecastAfterHistory);
-            
             const forecastIndex = Math.max(0, offset);
 
             if (forecastIndex < winningTrendForecasts.length) {
                 const trendForecast = winningTrendForecasts[forecastIndex];
                 if (trendForecast === null) return { value: null, trace: {} };
 
-                const periodTrace: any = { trendForecast, trendForecast_inputData: deseasonalizedQuantities };
-                
-                const monthIndex = targetDate.getMonth();
-                const monthNumber = monthIndex + 1;
-                
-                const statisticalFactor = statisticalSeasonalIndices ? statisticalSeasonalIndices[monthIndex] : 1.0;
-                
-                const prevYearDate = new Date(targetDate);
-                prevYearDate.setFullYear(targetDate.getFullYear() - 1);
-                
-                const consumptionThisMonthLastYear = originalHistoricalMonthlyDataForItem.find(d => d.year === prevYearDate.getFullYear() && d.month === (prevYearDate.getMonth() + 1))?.totalQuantity;
-                
-                const prevMonthOfPrevYear = new Date(prevYearDate);
-                prevMonthOfPrevYear.setMonth(prevYearDate.getMonth() - 1);
-                const consumptionPrevMonthLastYear = originalHistoricalMonthlyDataForItem.find(d => d.year === prevMonthOfPrevYear.getFullYear() && d.month === (prevMonthOfPrevYear.getMonth() + 1))?.totalQuantity;
+                const finalSeasonalFactor = getEffectiveSeasonalFactor(
+                    statisticalSeasonalIndices,
+                    originalHistoricalMonthlyDataForItem,
+                    targetDate
+                );
 
-                let yoyGrowthFactor = 1.0;
-                if(consumptionThisMonthLastYear !== undefined && consumptionPrevMonthLastYear !== undefined && consumptionPrevMonthLastYear > 0) {
-                    yoyGrowthFactor = consumptionThisMonthLastYear / consumptionPrevMonthLastYear;
-                }
-                
-                const minimumFactor = MINIMUM_SEASONAL_FACTORS[monthNumber] || 1.0;
-                
-                const finalSeasonalFactor = Math.max(statisticalFactor, minimumFactor, yoyGrowthFactor);
-
-                periodTrace.seasonalIndex = finalSeasonalFactor;
+                const periodTrace: any = { 
+                    trendForecast, 
+                    trendForecast_inputData: deseasonalizedQuantities,
+                    seasonalIndex: finalSeasonalFactor
+                };
                 
                 return { value: Math.round(trendForecast * finalSeasonalFactor), trace: periodTrace };
             }
@@ -670,7 +683,7 @@ export function generateAllForecasts(
         
         let projectedInventoryLevel = currentInventory - calculatedDemandForShortfallPeriod;
         aggregatedFutureForecasts.forEach(aggFc => {
-            const demandThisPeriod = aggFc.adjustedValue !== null ? aggFc.adjustedValue : (aggFc.value !== null ? aggFc.value : 0);
+            const demandThisPeriod = (aggFc.adjustedValue !== null && aggFc.adjustedValue !== undefined) ? aggFc.adjustedValue : (aggFc.value !== null && aggFc.value !== undefined ? aggFc.value : 0);
             aggFc.neededToBuyForPeriod = Math.round(Math.max(0, demandThisPeriod - projectedInventoryLevel));
             projectedInventoryLevel = projectedInventoryLevel + (aggFc.neededToBuyForPeriod || 0) - demandThisPeriod;
             aggFc.projectedInventoryAfterDemand = Math.round(projectedInventoryLevel);
