@@ -102,6 +102,7 @@ export interface CalculationTrace {
     shortfall_daysInPeriod?: number;
     shortfall_baseDemand?: number;
     shortfall_avgMonthlyDemand?: number;
+    shortfall_seasonalFactor?: number;
     shortfall_monthsUsedForAvg?: number[];
     shortfall_dailyRate_source?: string;
     future_periods?: Array<{

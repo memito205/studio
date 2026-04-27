@@ -403,50 +403,22 @@ export function calculateDistribution(
             if (eligibility.isEligible) {
                 trace.calculationMethod = 'Pronóstico Directo';
                 
-                // 1. Convert history to ItemMonthlyData format for seasonality calculation
-                const monthlyData: ItemMonthlyData = [];
-                const monthlyMap = new Map<string, number>();
-                bodegaItemHistory.forEach(row => {
-                    const monthKey = format(row.date, 'yyyy-MM');
-                    monthlyMap.set(monthKey, (monthlyMap.get(monthKey) || 0) + row.quantity);
-                });
-                
-                Array.from(monthlyMap.entries()).forEach(([key, qty]) => {
-                    const [year, month] = key.split('-').map(Number);
-                    monthlyData.push({
-                        year,
-                        month,
-                        mainQuantity: qty,
-                        ajsQuantity: 0,
-                        totalQuantity: qty,
-                        date: new Date(year, month - 1, 1)
-                    });
-                });
-                
-                // 2. Detect outliers and calculate seasonal indices
-                const { adjustedData } = detectAndAdjustOutliers(monthlyData);
-                const { indices: seasonalIndices } = calculateSeasonalIndices(adjustedData, 2);
-                
-                // 3. Deseasonalize series for trend calculation
                 const { series: localSeries, average: localAverage } = getNormalizedLocalAverageMonthly(bodegaItemHistory);
-                const deseasonalizedSeries = localSeries.map((qty, idx) => {
-                    if (!seasonalIndices) return qty;
-                    const date = addDays(new Date(bodegaItemHistory[0].date.getFullYear(), bodegaItemHistory[0].date.getMonth() + idx, 1), 0);
-                    const monthIdx = date.getMonth();
-                    return seasonalIndices[monthIdx] > 0 ? qty / seasonalIndices[monthIdx] : qty;
-                });
+                
+                // Use deseasonalized local series if possible, but for simplicity in hybrid model,
+                // we calculate the trend on raw local data and apply global seasonality.
                 
                 const maePerMethod: Array<{ methodName: string; mae: number | null }> = [];
-                 if (deseasonalizedSeries.length > 0) {
+                 if (localSeries.length > 0) {
                     const methods = {
-                        'Regresión Lineal': calculateLinearRegression_HistoricalFit(deseasonalizedSeries),
-                        'Media Simple': calculateSimpleAverage_HistoricalFit(deseasonalizedSeries),
-                        'SMA': calculateSMA_HistoricalFit(deseasonalizedSeries, SMA_PERIOD),
-                        'SES': calculateSES_HistoricalFit(deseasonalizedSeries, SES_ALPHA),
-                        'WMA': calculateWMA_HistoricalFit(deseasonalizedSeries, WMA_PERIOD),
+                        'Regresión Lineal': calculateLinearRegression_HistoricalFit(localSeries),
+                        'Media Simple': calculateSimpleAverage_HistoricalFit(localSeries),
+                        'SMA': calculateSMA_HistoricalFit(localSeries, SMA_PERIOD),
+                        'SES': calculateSES_HistoricalFit(localSeries, SES_ALPHA),
+                        'WMA': calculateWMA_HistoricalFit(localSeries, WMA_PERIOD),
                     };
                     for (const [name, fit] of Object.entries(methods)) {
-                        maePerMethod.push({ methodName: name, mae: calculateMAE(deseasonalizedSeries, fit) });
+                        maePerMethod.push({ methodName: name, mae: calculateMAE(localSeries, fit) });
                     }
                 }
                 
@@ -461,17 +433,11 @@ export function calculateDistribution(
                 };
                 
                 const forecastFn = forecastFunctions[localWinningMethod];
-                const forecastValues = forecastFn ? forecastFn(deseasonalizedSeries, 1) : [localAverage];
+                const forecastValues = forecastFn ? forecastFn(localSeries, 1) : [localAverage];
                 const trendForecast = forecastValues.length > 0 ? forecastValues[0] : localAverage;
 
-                // 4. Re-apply seasonal factor for the current month
-                const currentMonthIdx = new Date().getMonth();
-                const currentMonthNumber = currentMonthIdx + 1;
-                const statisticalFactor = seasonalIndices ? seasonalIndices[currentMonthIdx] : 1.0;
-                
-                // Fallback to minimum factors if defined
-                const minimumFactor = MINIMUM_SEASONAL_FACTORS[currentMonthNumber] || 1.0;
-                const finalSeasonalFactor = Math.max(statisticalFactor, minimumFactor);
+                // --- HYBRID SEASONALITY: Use global seasonal factor from Purchase Forecast ---
+                const finalSeasonalFactor = item.calculationTrace?.shortfall_seasonalFactor || 1.0;
 
                 dailyRate = ((trendForecast || 0) * finalSeasonalFactor) / 30.44;
                 

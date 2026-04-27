@@ -632,6 +632,7 @@ export function generateAllForecasts(
         
         trace.shortfall_dailyRate_source = 'Pronóstico'; // Now it's always from the forecast model
         trace.shortfall_avgMonthlyDemand = currentMonthTrace?.trendForecast; // This is the trend value, label is a bit confusing but consistent
+        trace.shortfall_seasonalFactor = currentMonthTrace?.seasonalIndex; 
         trace.shortfall_monthsUsedForAvg = currentMonthTrace?.trendForecast_inputData;
 
         baseDemandForShortfallPeriod = dailyRateCurrentMonth * daysRemainingCurrentMonth;
