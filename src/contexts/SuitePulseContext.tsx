@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, ReactNode, useMemo } from 'react';
 import { firestore } from '@/services/firebase';
 import { collection, query, where, onSnapshot, limit, Timestamp, getDocs } from 'firebase/firestore';
 import { createPulse } from '@/app/actions';
@@ -20,6 +20,7 @@ interface SuitePulseContextType {
     endPause: () => Promise<void>;
     punchInRemision: () => Promise<void>;
     punchOut: () => Promise<void>;
+    refreshPulses: () => Promise<void>;
 }
 
 const SuitePulseContext = createContext<SuitePulseContextType | undefined>(undefined);
@@ -32,12 +33,20 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
     const [allPulsesDay, setAllPulsesDay] = useState<OperationPulse[]>([]);
     const [loading, setLoading] = useState(true);
 
-    // 1. Listen to Global Active Pulse
+    // Helper to get a "Freshness" date (last 18 hours or start of day)
+    const freshStartTime = useMemo(() => {
+        const d = new Date();
+        d.setHours(d.getHours() - 18);
+        return d;
+    }, []);
+
+    // 1. Listen to Global Active Pulse (Only if fresh)
     useEffect(() => {
         const q = query(
             collection(firestore, 'operation_pulses'),
             where('isGlobal', '==', true),
             where('endTime', '==', null),
+            where('startTime', '>=', Timestamp.fromDate(freshStartTime)),
             limit(1)
         );
 
@@ -56,9 +65,9 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
         });
 
         return () => unsubscribe();
-    }, []);
+    }, [freshStartTime]);
 
-    // 2. Listen to User's Current Active Pulse
+    // 2. Listen to User's Current Active Pulse (Only if fresh)
     useEffect(() => {
         if (!user?.uid) {
             setLoading(false);
@@ -69,6 +78,7 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
             collection(firestore, 'operation_pulses'),
             where('userId', '==', user.uid),
             where('endTime', '==', null),
+            where('startTime', '>=', Timestamp.fromDate(freshStartTime)),
             limit(1)
         );
 
@@ -88,7 +98,7 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
         });
 
         return () => unsubscribe();
-    }, [user?.uid]);
+    }, [user?.uid, freshStartTime]);
 
     // 3. Get ALL past pulses of the day for real-time productivity (One time fetch)
     const fetchPulsesOfDay = useCallback(async () => {
@@ -100,33 +110,42 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
         const qGlobal = query(
             collection(firestore, 'operation_pulses'),
             where('isGlobal', '==', true),
-            where('startTime', '>=', startOfToday)
+            where('startTime', '>=', Timestamp.fromDate(startOfToday))
         );
 
         const qUser = query(
             collection(firestore, 'operation_pulses'),
             where('userId', '==', user.uid),
-            where('startTime', '>=', startOfToday)
+            where('startTime', '>=', Timestamp.fromDate(startOfToday))
         );
 
         try {
-            // Utilizamos then() estático en lugar de onSnapshot para ahorrar lecturas.
-            // Si quieres que se actualice cada vez que cambie tu propio estado activo, puedes llamarlo.
-            const [globalSnap, userSnap] = await Promise.all([getDocs(qGlobal), getDocs(qUser)]);
-            
-            const globalPulses = globalSnap.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data(),
-                startTime: doc.data().startTime?.toDate(),
-                endTime: doc.data().endTime?.toDate() || null
-            } as OperationPulse));
+            // We verify permissions individually to avoid crashing everything
+            let globalPulses: OperationPulse[] = [];
+            try {
+                const globalSnap = await getDocs(qGlobal);
+                globalPulses = globalSnap.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data(),
+                    startTime: doc.data().startTime?.toDate(),
+                    endTime: doc.data().endTime?.toDate() || null
+                } as OperationPulse));
+            } catch (err) {
+                console.warn("[SuitePulse] No permissions for global pulses or query failed:", err);
+            }
 
-            const userPulses = userSnap.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data(),
-                startTime: doc.data().startTime?.toDate(),
-                endTime: doc.data().endTime?.toDate() || null
-            } as OperationPulse));
+            let userPulses: OperationPulse[] = [];
+            try {
+                const userSnap = await getDocs(qUser);
+                userPulses = userSnap.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data(),
+                    startTime: doc.data().startTime?.toDate(),
+                    endTime: doc.data().endTime?.toDate() || null
+                } as OperationPulse));
+            } catch (err) {
+                console.error("[SuitePulse] Fatal error fetching user pulses:", err);
+            }
 
              const combined = [...globalPulses, ...userPulses];
              const unique = combined.filter((p, index, self) => 
@@ -160,6 +179,9 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
 
             if (result.error) throw new Error(result.error);
 
+            // Re-fetch historical pulses after status change to ensure consistency
+            await fetchPulsesOfDay();
+
             toast({
                 title: `Estado: ${status}`,
                 description: reason ? `Motivo: ${reason}` : "Sincronizado con éxito.",
@@ -171,7 +193,7 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
                 description: error.message,
             });
         }
-    }, [user, toast]);
+    }, [user, toast, fetchPulsesOfDay]);
 
     const startPause = useCallback((reason: PulseReason) => changeStatus('Pausado', 'pause', reason), [changeStatus]);
     const endPause = useCallback(() => changeStatus('Disponible', 'status_change'), [changeStatus]);
@@ -188,7 +210,8 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
         startPause,
         endPause,
         punchInRemision,
-        punchOut: endPause
+        punchOut: endPause,
+        refreshPulses: fetchPulsesOfDay
     };
 
     return (

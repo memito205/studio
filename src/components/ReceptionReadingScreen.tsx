@@ -148,7 +148,14 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
     const unsubscribeOpDoc = onSnapshot(opDocRef, (docSnap) => {
         if (docSnap.exists()) {
             const opData = docSnap.data() as ReceptionOperation;
-            setOperation(prev => prev ? { ...prev, totalScannedQuantity: opData.totalScannedQuantity, status: opData.status, start_time: opData.start_time, end_time: opData.end_time } : opData);
+            setOperation(prev => prev ? { 
+                ...prev, 
+                totalScannedQuantity: opData.totalScannedQuantity, 
+                status: opData.status, 
+                start_time: opData.start_time, 
+                end_time: opData.end_time,
+                standard_units_per_hour: opData.standard_units_per_hour // Ensure this is synced!
+            } : opData);
         }
     });
 
@@ -538,7 +545,12 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
   }, [userScannedItems]);
   
   const productivityGoal = useMemo(() => {
-    return operation?.standard_units_per_hour ?? userGoals?.hourly_productivity_goal ?? productivitySettings?.standard_per_hour_goal ?? 350;
+    // Only use the field if it's a positive number. If it's 0, null or undefined, fall back.
+    const opGoal = operation?.standard_units_per_hour && operation.standard_units_per_hour > 0 ? operation.standard_units_per_hour : null;
+    const userGoal = userGoals?.hourly_productivity_goal && userGoals.hourly_productivity_goal > 0 ? userGoals.hourly_productivity_goal : null;
+    const globalGoal = productivitySettings?.standard_per_hour_goal && productivitySettings.standard_per_hour_goal > 0 ? productivitySettings.standard_per_hour_goal : null;
+
+    return opGoal ?? userGoal ?? globalGoal ?? 350;
   }, [operation, userGoals, productivitySettings]);
   
   const lastScannedItemLocationName = useMemo(() => {
