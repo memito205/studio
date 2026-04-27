@@ -222,10 +222,24 @@ const TransferLabelDialog: React.FC<{
           <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
             Cerrar
           </Button>
-          <Button onClick={handleConfirmAndPrint} disabled={isSaving}>
-            {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Printer className="mr-2 h-4 w-4"/>}
-            Imprimir y Marcar como Recibido
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={async () => {
+                const input = document.getElementById(`transfer-label-to-print-${transfer.id}`);
+                if (!input) return;
+                const canvas = await html2canvas(input, { scale: 3, useCORS: true, backgroundColor: '#ffffff' });
+                const imgData = canvas.toDataURL('image/png');
+                const pdf = new jsPDF({ orientation: 'landscape', unit: 'cm', format: [10, 5] });
+                pdf.addImage(imgData, 'PNG', 0, 0, 10, 5);
+                pdf.autoPrint();
+                window.open(pdf.output('bloburl'), '_blank');
+            }} disabled={isSaving}>
+              <Printer className="mr-2 h-4 w-4"/> Solo Imprimir (FIFO)
+            </Button>
+            <Button onClick={handleConfirmAndPrint} disabled={isSaving}>
+              {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <PackageCheck className="mr-2 h-4 w-4"/>}
+              Imprimir y Recibir
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1566,9 +1580,17 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                                          <DropdownMenuItem onSelect={() => handleViewLog(t)}>
                                                             <History className="mr-2 h-4 w-4" /> Ver Historial
                                                         </DropdownMenuItem>
-                                                        <DropdownMenuItem onSelect={() => handlePrintLabelClick(t)} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
+                                                         <DropdownMenuItem onSelect={() => handlePrintLabelClick(t)} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
                                                             <Printer className="mr-2 h-4 w-4" />
-                                                            Imprimir Rótulo
+                                                            Imprimir y Recibir
+                                                        </DropdownMenuItem>
+                                                        <DropdownMenuItem onSelect={async () => {
+                                                            // Simplified standalone print logic directly in dropdown for quick access
+                                                            setTransferForLabel(t);
+                                                            setIsLabelDialogOpen(true);
+                                                        }} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
+                                                            <ScanLine className="mr-2 h-4 w-4" />
+                                                            Solo Imprimir Rótulo (FIFO)
                                                         </DropdownMenuItem>
                                                         {role === 'admin' && (
                                                             <>
