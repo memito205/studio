@@ -4,7 +4,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Loader2, MoreHorizontal, Users, Target, FileDown, Tag, Pause, Search } from 'lucide-react';
+import { ArrowLeft, Loader2, MoreHorizontal, Users, Target, FileDown, Tag, Pause, Search, Play, RotateCcw, Check } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -20,6 +20,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { LabelingOperation, LabelingOperationStatus, LabelingActivityLog, AppUser, ReceptionExpectedItem, OperationPulse, ExternalVendor } from '@/types';
 import { loadLabelingOperations, updateLabelingOperation, getExpectedItemsForLabeling, getAllUserProfiles, getLabelingActivityLog, logLabelingActivity, finishLabelingTaskSession, getExternalVendors } from '@/app/reception/actions';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { FinishWorkDialog } from './FinishWorkDialog';
 import { getUserGoals, getProductivitySettings, getPulsesByDate } from '@/app/actions';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { AssignOperatorsDialog } from './AssignOperatorsDialog';
@@ -115,7 +117,9 @@ const AdminDashboard: React.FC<{
     users: AppUser[];
     vendors: ExternalVendor[];
     onAdminPause: (operation: LabelingOperation) => void;
-}> = ({ operations, productivityData, isSubmitting, onOpenDialog, onGenerateExcel, users, vendors, onAdminPause }) => {
+    onAction: (operationId: string, actionType: 'START' | 'PAUSE' | 'RESUME' | 'FINISH', reason?: string) => void;
+    onFinish: (operation: LabelingOperation) => void;
+}> = ({ operations, productivityData, isSubmitting, onOpenDialog, onGenerateExcel, users, vendors, onAdminPause, onAction, onFinish }) => {
     
     const userMap = useMemo(() => new Map(users.map(u => [u.uid, u.displayName || u.email])), [users]);
     const vendorMap = useMemo(() => new Map(vendors.map(v => [v.id, v.name])), [vendors]);
@@ -187,8 +191,18 @@ const AdminDashboard: React.FC<{
                                             <FileDown className="mr-2 h-4 w-4" /> Generar Excel de Trabajo
                                         </DropdownMenuItem>
                                         {op.status === 'En Progreso' && (
-                                            <DropdownMenuItem onClick={() => onAdminPause(op)} className="text-warning-foreground bg-warning/10">
-                                                <Pause className="mr-2 h-4 w-4" /> Pausar Tarea (Admin)
+                                            <DropdownMenuItem onClick={() => onFinish(op)}>
+                                                <Check className="mr-2 h-4 w-4" /> Finalizar Tarea
+                                            </DropdownMenuItem>
+                                        )}
+                                        {op.status === 'Asignada' && (
+                                            <DropdownMenuItem onClick={() => onAction(op.id, 'START')}>
+                                                <Play className="mr-2 h-4 w-4" /> Iniciar Tarea
+                                            </DropdownMenuItem>
+                                        )}
+                                        {op.status === 'Pausada' && (
+                                            <DropdownMenuItem onClick={() => onAction(op.id, 'RESUME')}>
+                                                <RotateCcw className="mr-2 h-4 w-4" /> Reanudar Tarea
                                             </DropdownMenuItem>
                                         )}
                                     </DropdownMenuContent>
@@ -225,6 +239,10 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
   const [isActivityLogOpen, setIsActivityLogOpen] = useState(false);
   const [selectedOperation, setSelectedOperation] = useState<LabelingOperation | null>(null);
   const [selectedLog, setSelectedLog] = useState<LabelingActivityLog[]>([]);
+
+  const [viewMode, setViewMode] = useState<'admin' | 'operator'>('admin');
+  const [taskToFinish, setTaskToFinish] = useState<LabelingOperation | null>(null);
+  const [isFinishDialogOpen, setIsFinishDialogOpen] = useState(false);
 
 
   const { toast } = useToast();
@@ -305,7 +323,7 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
       };
   };
 
-  const fetchOperationsAndProductivity = useCallback(async () => {
+  const fetchOperationsAndProductivity = async () => {
     setIsLoading(true);
     setLoadingVendors(true);
     const [opsResult, usersResult, vendorsResult] = await Promise.all([
@@ -350,7 +368,7 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     }
     setIsLoading(false);
     setLoadingVendors(false);
-  }, [toast]);
+  };
 
   const handleAdminPauseConfirm = async (reason: string, startTime: string) => {
     if (!operationToPause) return;
@@ -383,7 +401,7 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
 
   useEffect(() => {
     fetchOperationsAndProductivity();
-  }, [fetchOperationsAndProductivity, allPulses]);
+  }, [allPulses]);
   
   const handleOpenDialog = async (operation: LabelingOperation, dialog: 'assign' | 'standard' | 'log') => {
     setSelectedOperation(operation);
@@ -431,6 +449,59 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     setIsSubmitting(false);
     setIsStandardDialogOpen(false);
   };
+
+    const handleAdminAction = async (operationId: string, actionType: 'START' | 'PAUSE' | 'RESUME' | 'FINISH', reason?: string) => {
+        const operation = operations.find(o => o.id === operationId);
+        if (!operation) return;
+
+        const operatorId = operation.isExternal ? operation.assignedExternalVendorId! : (operation.assignedOperatorId || 'system');
+        const operatorName = operation.isExternal ? operation.assignedExternalOperatorName : undefined;
+
+        setIsSubmitting(true);
+        const result = await logLabelingActivity(
+            operationId,
+            operatorId,
+            actionType,
+            reason,
+            operation.isExternal,
+            undefined, // No PIN required for Admin
+            operatorName
+        );
+
+        if (result.success) {
+            toast({ title: 'Éxito', description: `Acción '${actionType}' registrada.` });
+            fetchOperationsAndProductivity();
+        } else {
+            toast({ variant: 'destructive', title: 'Error', description: result.error });
+        }
+        setIsSubmitting(false);
+    };
+
+    const handleOpenFinishDialog = (operation: LabelingOperation) => {
+        setTaskToFinish(operation);
+        setIsFinishDialogOpen(true);
+    };
+
+    const handleConfirmFinish = async (completedUnits: number) => {
+        if (!taskToFinish) return;
+        setIsSubmitting(true);
+        const result = await finishLabelingTaskSession(
+            taskToFinish.id,
+            completedUnits,
+            taskToFinish.isExternal,
+            undefined, // No PIN
+            taskToFinish.assignedExternalOperatorName
+        );
+        if (result.success) {
+            toast({ title: 'Tarea Finalizada', description: `Se ha registrado el trabajo.` });
+            fetchOperationsAndProductivity();
+        } else {
+            toast({ variant: 'destructive', title: 'Error al Finalizar', description: result.error });
+        }
+        setIsSubmitting(false);
+        setIsFinishDialogOpen(false);
+        setTaskToFinish(null);
+    };
   
   const handleGenerateExcel = async (operation: LabelingOperation) => {
     setIsSubmitting(true);
@@ -558,34 +629,53 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
                 <Loader2 className="h-12 w-12 animate-spin text-primary" />
               </div>
             ) : isManager ? (
-                 operations.length === 0 ? (
-                 <p className="text-center text-muted-foreground py-8">No hay operaciones de etiquetado. Envíe una desde el módulo de recepción.</p>
-               ) : (
-                <AdminDashboard 
-                    operations={operations.filter(op => {
-                      const matchRK = op.rk_identifier.toLowerCase().includes(searchRK.toLowerCase());
-                      const matchRef = op.reference.toLowerCase().includes(searchRef.toLowerCase());
-                      
-                      let opName = 'Ninguno';
-                      if (op.isExternal) {
-                          const vendorName = externalVendors.find(v => v.id === op.assignedExternalVendorId)?.name || 'Ext';
-                          opName = `[EXT] ${vendorName}${op.assignedExternalOperatorName ? ` - ${op.assignedExternalOperatorName}` : ''}`;
-                      } else if (op.assignedOperatorId) {
-                          opName = allUsers.find(u => u.uid === op.assignedOperatorId)?.displayName || 'Interno';
-                      }
-                      const matchOp = opName.toLowerCase().includes(searchOp.toLowerCase());
-                      
-                      return matchRK && matchRef && matchOp;
-                    })}
-                    productivityData={productivityData}
-                    isSubmitting={isSubmitting}
-                    onOpenDialog={handleOpenDialog}
-                    onGenerateExcel={handleGenerateExcel}
-                    users={allUsers}
-                    vendors={externalVendors}
-                    onAdminPause={handleAdminPauseClick}
-                />
-               )
+               <div className="space-y-4">
+                 {userOperations.length > 0 && (
+                   <div className="flex justify-center mb-4">
+                     <Tabs value={viewMode} onValueChange={(val: any) => setViewMode(val)} className="w-full max-w-[400px]">
+                        <TabsList className="grid w-full grid-cols-2">
+                           <TabsTrigger value="admin">Vista Supervisor</TabsTrigger>
+                           <TabsTrigger value="operator">Mis Tareas ({userOperations.length})</TabsTrigger>
+                        </TabsList>
+                     </Tabs>
+                   </div>
+                 )}
+
+                 {viewMode === 'admin' ? (
+                    operations.length === 0 ? (
+                      <p className="text-center text-muted-foreground py-8">No hay operaciones de etiquetado. Envíe una desde el módulo de recepción.</p>
+                    ) : (
+                    <AdminDashboard 
+                        operations={operations.filter(op => {
+                          const matchRK = op.rk_identifier.toLowerCase().includes(searchRK.toLowerCase());
+                          const matchRef = op.reference.toLowerCase().includes(searchRef.toLowerCase());
+                          
+                          let opName = 'Ninguno';
+                          if (op.isExternal) {
+                              const vendorName = externalVendors.find(v => v.id === op.assignedExternalVendorId)?.name || 'Ext';
+                              opName = `[EXT] ${vendorName}${op.assignedExternalOperatorName ? ` - ${op.assignedExternalOperatorName}` : ''}`;
+                          } else if (op.assignedOperatorId) {
+                              opName = allUsers.find(u => u.uid === op.assignedOperatorId)?.displayName || 'Interno';
+                          }
+                          const matchOp = opName.toLowerCase().includes(searchOp.toLowerCase());
+                          
+                          return matchRK && matchRef && matchOp;
+                        })}
+                        productivityData={productivityData}
+                        isSubmitting={isSubmitting}
+                        onOpenDialog={handleOpenDialog}
+                        onGenerateExcel={handleGenerateExcel}
+                        users={allUsers}
+                        vendors={externalVendors}
+                        onAdminPause={handleAdminPauseClick}
+                        onAction={handleAdminAction}
+                        onFinish={handleOpenFinishDialog}
+                    />
+                    )
+                 ) : (
+                    <LabelingOperatorView operations={userOperations} onRefresh={fetchOperationsAndProductivity} />
+                 )}
+               </div>
             ) : (
                  <LabelingOperatorView operations={userOperations} onRefresh={fetchOperationsAndProductivity} />
             )}
@@ -597,6 +687,15 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
             onConfirm={handleAdminPauseConfirm}
             operation={operationToPause}
         />
+        {taskToFinish && (
+            <FinishWorkDialog 
+                isOpen={isFinishDialogOpen}
+                onOpenChange={setIsFinishDialogOpen}
+                task={taskToFinish}
+                onConfirm={handleConfirmFinish}
+                isSubmitting={isSubmitting}
+            />
+        )}
       </div>
     </>
   );
