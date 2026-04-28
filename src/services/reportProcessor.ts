@@ -1,4 +1,4 @@
-import { RemisionEntry, PackerProductivity, ProcessedReportData, HourlyProductivity, BrandProductivity, ProductCategory, ProductTypeProductivity, ProductivityGoals, BrandProductTypeGoals, BrandPackerBreakdown, DeadTimeEntry, PackerBrandProductivityDetail, DetectedBreakDetail, DeadTimeSummaryEntry, PackerHourlyPerformance, ManualProductClassifications, ManualJustifications, JustificationType, UniqueReference, ReferenceCorrections, ManualOperatorMappings, IncidentLogEntry, ProductDatabaseItem, DiscardedRecord, ProductTypePackerBreakdown, HourlyOperatorDetail, OperationPulse, PackerReferenceProductivityDetail } from '@/types';
+import { RemisionEntry, PackerProductivity, ProcessedReportData, HourlyProductivity, BrandProductivity, ProductCategory, ProductTypeProductivity, ProductivityGoals, BrandProductTypeGoals, BrandPackerBreakdown, DeadTimeEntry, PackerBrandProductivityDetail, DetectedBreakDetail, DeadTimeSummaryEntry, PackerHourlyPerformance, ManualProductClassifications, ManualJustifications, JustificationType, UniqueReference, ReferenceCorrections, ManualOperatorMappings, IncidentLogEntry, ProductDatabaseItem, DiscardedRecord, ProductTypePackerBreakdown, HourlyOperatorDetail, OperationPulse, PackerReferenceProductivityDetail, ReferenceGoals } from '@/types';
 import { parseFlexibleDate, excelSerialDateToJSDate } from '@/lib/parsingUtils';
 
 // Mapeo de columnas para reconocer diferentes variaciones de los encabezados del archivo.
@@ -588,7 +588,8 @@ function calculateProductivity(
     justifiedDeadTimes: DeadTimeEntry[],
     reportStartTime: Date,
     reportEndTime: Date,
-    allDeadTimesAndPauses: DeadTimeEntry[]
+    allDeadTimesAndPauses: DeadTimeEntry[],
+    referenceGoals: ReferenceGoals = {}
 ): PackerProductivity[] {
     const packerData = data.reduce((acc, entry) => {
         if (!acc[entry.empacador]) {
@@ -647,7 +648,7 @@ function calculateProductivity(
         const productivity = hoursWorked > 0 ? totalQuantity / hoursWorked : 0;
         
         const earnedHours = packerEntries.reduce((sum, entry) => {
-            const goal = brandGoals[entry.marca]?.[entry.productType] || goals[entry.productType] || 60;
+            const goal = referenceGoals[entry.referencia] || brandGoals[entry.marca]?.[entry.productType] || goals[entry.productType] || 60;
             return sum + (entry.cantidad / goal);
         }, 0);
 
@@ -682,7 +683,8 @@ function calculatePackerBrandProductivityDetail(
     packerProductivity: PackerProductivity[],
     goals: ProductivityGoals,
     brandGoals: BrandProductTypeGoals,
-    justifiedDeadTimes: DeadTimeEntry[]
+    justifiedDeadTimes: DeadTimeEntry[],
+    referenceGoals: ReferenceGoals = {}
 ): PackerBrandProductivityDetail[] {
     const result: PackerBrandProductivityDetail[] = [];
 
@@ -711,7 +713,7 @@ function calculatePackerBrandProductivityDetail(
             if (entry.marca !== currentBlockBrand) {
                 if(currentBlockEntries.length > 0) {
                     const blockEndTime = entry.fechaDeLectura;
-                    processBlock(currentBlockEntries, currentBlockStartTime, blockEndTime, packerJustifiedPauses);
+                    processBlock(currentBlockEntries, currentBlockStartTime, blockEndTime, packerJustifiedPauses, referenceGoals);
                 }
                 currentBlockStartTime = entry.fechaDeLectura;
                 currentBlockBrand = entry.marca;
@@ -723,11 +725,11 @@ function calculatePackerBrandProductivityDetail(
         
         if (currentBlockEntries.length > 0) {
             const reportEndTime = packerProdInfo.workPeriodEnd;
-            processBlock(currentBlockEntries, currentBlockStartTime, reportEndTime, packerJustifiedPauses);
+            processBlock(currentBlockEntries, currentBlockStartTime, reportEndTime, packerJustifiedPauses, referenceGoals);
         }
     }
 
-    function processBlock(blockEntries: RemisionEntry[], startTime: Date, endTime: Date, pauses: DeadTimeEntry[]) {
+    function processBlock(blockEntries: RemisionEntry[], startTime: Date, endTime: Date, pauses: DeadTimeEntry[], referenceGoals: ReferenceGoals = {}) {
         if (!blockEntries || blockEntries.length === 0 || !startTime) return;
 
         const brandName = blockEntries[0].marca;
@@ -751,7 +753,7 @@ function calculatePackerBrandProductivityDetail(
         if (netHoursWorked > 0.001) { // Use a small threshold to avoid division by zero for micro-tasks
             const productivity = totalQuantity / netHoursWorked;
             const earnedHours = blockEntries.reduce((sum, entry) => {
-                 const goal = brandGoals[entry.marca]?.[entry.productType] || goals[entry.productType] || 60;
+                 const goal = referenceGoals[entry.referencia] || brandGoals[entry.marca]?.[entry.productType] || goals[entry.productType] || 60;
                  return sum + (entry.cantidad / goal);
             }, 0);
             
@@ -855,7 +857,8 @@ function calculateProductTypeProductivity(
     packerProductivity: PackerProductivity[],
     goals: ProductivityGoals,
     brandGoals: BrandProductTypeGoals,
-    justifiedDeadTimes: DeadTimeEntry[]
+    justifiedDeadTimes: DeadTimeEntry[],
+    referenceGoals: ReferenceGoals = {}
 ): ProductTypeProductivity[] {
     const productTypeDetails: PackerBrandProductivityDetail[] = [];
 
@@ -882,7 +885,7 @@ function calculateProductTypeProductivity(
             if (entry.productType !== currentBlockProductType) {
                 if (currentBlockEntries.length > 0) {
                     const blockEndTime = entry.fechaDeLectura;
-                    processBlock(currentBlockEntries, currentBlockStartTime, blockEndTime, packerJustifiedPauses);
+                    processBlock(currentBlockEntries, currentBlockStartTime, blockEndTime, packerJustifiedPauses, referenceGoals);
                 }
                 currentBlockStartTime = entry.fechaDeLectura;
                 currentBlockProductType = entry.productType;
@@ -894,11 +897,11 @@ function calculateProductTypeProductivity(
         
         if (currentBlockEntries.length > 0) {
             const reportEndTime = packerProdInfo.workPeriodEnd;
-            processBlock(currentBlockEntries, currentBlockStartTime, reportEndTime, packerJustifiedPauses);
+            processBlock(currentBlockEntries, currentBlockStartTime, reportEndTime, packerJustifiedPauses, referenceGoals);
         }
     }
 
-    function processBlock(blockEntries: RemisionEntry[], startTime: Date, endTime: Date, pauses: DeadTimeEntry[]) {
+    function processBlock(blockEntries: RemisionEntry[], startTime: Date, endTime: Date, pauses: DeadTimeEntry[], referenceGoals: ReferenceGoals = {}) {
         if (!blockEntries || blockEntries.length === 0 || !startTime) return;
 
         const productType = blockEntries[0].productType;
@@ -922,7 +925,7 @@ function calculateProductTypeProductivity(
             const productivity = totalQuantity / netHoursWorked;
             
             const earnedHours = blockEntries.reduce((sum, e) => {
-                 const goal = brandGoals[e.marca]?.[e.productType] || goals[e.productType] || 60;
+                 const goal = referenceGoals[e.referencia] || brandGoals[e.marca]?.[e.productType] || goals[e.productType] || 60;
                  return sum + (e.cantidad / goal);
             }, 0);
             
@@ -1021,7 +1024,8 @@ function calculatePackerReferenceProductivityDetail(
     data: RemisionEntry[],
     packerProductivity: PackerProductivity[],
     goals: ProductivityGoals,
-    brandGoals: BrandProductTypeGoals
+    brandGoals: BrandProductTypeGoals,
+    referenceGoals: ReferenceGoals = {}
 ): PackerReferenceProductivityDetail[] {
     const result: PackerReferenceProductivityDetail[] = [];
 
@@ -1044,7 +1048,7 @@ function calculatePackerReferenceProductivityDetail(
 
         // 3. Calculate total "earned hours" for the packer across all their tasks
         const totalPackerEarnedHours = packerEntries.reduce((sum, entry) => {
-            const goal = brandGoals[entry.marca]?.[entry.productType] || goals[entry.productType] || 60;
+            const goal = referenceGoals[entry.referencia] || brandGoals[entry.marca]?.[entry.productType] || goals[entry.productType] || 60;
             return sum + (entry.cantidad / goal);
         }, 0);
 
@@ -1074,7 +1078,7 @@ function calculatePackerReferenceProductivityDetail(
         tasksByReference.forEach((taskData, referencia) => {
             // Calculate "earned hours" for this specific reference task
             const taskEarnedHours = taskData.entries.reduce((sum, entry) => {
-                const goal = brandGoals[taskData.brandName]?.[taskData.productType] || goals[taskData.productType] || 60;
+                const goal = referenceGoals[entry.referencia] || brandGoals[taskData.brandName]?.[taskData.productType] || goals[taskData.productType] || 60;
                 return sum + (entry.cantidad / goal);
             }, 0);
             
@@ -1131,7 +1135,8 @@ function calculatePackerHourlyPerformance(
     goals: ProductivityGoals,
     brandGoals: BrandProductTypeGoals,
     justifiedDeadTimes: DeadTimeEntry[],
-    reportEndTime: Date
+    reportEndTime: Date,
+    referenceGoals: ReferenceGoals = {}
 ): { [hour: number]: Omit<HourlyOperatorDetail, 'productivity' | 'compliance' | 'trend'> } {
     const hourlyDetails: { [hour: number]: Omit<HourlyOperatorDetail, 'productivity' | 'compliance' | 'trend'> } = {};
 
@@ -1202,7 +1207,7 @@ function calculatePackerHourlyPerformance(
         if (entriesInHour.length > 0) {
             const unitsInHour = hourlyDetails[hour].units;
             const earnedHours = entriesInHour.reduce((sum, entry) => {
-                const goal = brandGoals[entry.marca]?.[entry.productType] || goals[entry.productType] || 60;
+                const goal = referenceGoals[entry.referencia] || brandGoals[entry.marca]?.[entry.productType] || goals[entry.productType] || 60;
                 return sum + (entry.cantidad / goal);
             }, 0);
             
@@ -1392,7 +1397,9 @@ export function processReport(
     manualJustifications: ManualJustifications,
     selectedPackers: string[],
     incidentLog: IncidentLogEntry[],
-    operationPulses: OperationPulse[] = []
+    operationPulses: OperationPulse[] = [],
+    referenceGoals: ReferenceGoals = {},
+    goals: ProductivityGoals = { 'CALZADO': 65, 'ROPA': 100, 'ACCESORIOS': 90, 'NO CLASIFICADO': 60 }
 ): ProcessedReportData {
     // Create UTC-based dates for start and end to avoid timezone issues during filtering
     const reportDateObj = parseFlexibleDate(reportDate);
@@ -1427,17 +1434,15 @@ export function processReport(
         ? fullDataInTimeRange 
         : fullDataInTimeRange.filter(entry => selectedPackers.includes(entry.empacador));
     
-    const goals: ProductivityGoals = { 'CALZADO': 65, 'ROPA': 100, 'ACCESORIOS': 90, 'NO CLASIFICADO': 60 };
+    const packerProductivity = calculateProductivity(dataForProductivity, fullDataInTimeRange, goals, brandGoals, processedDeadTimes, reportStartTime, reportEndTime, allDeadTimesAndPauses, referenceGoals);
     
-    const packerProductivity = calculateProductivity(dataForProductivity, fullDataInTimeRange, goals, brandGoals, processedDeadTimes, reportStartTime, reportEndTime, allDeadTimesAndPauses);
-    
-    const packerBrandProductivityDetail = calculatePackerBrandProductivityDetail(dataForProductivity, packerProductivity, goals, brandGoals, processedDeadTimes);
+    const packerBrandProductivityDetail = calculatePackerBrandProductivityDetail(dataForProductivity, packerProductivity, goals, brandGoals, processedDeadTimes, referenceGoals);
     
     const hourlyBreakdowns = new Map<string, { [hour: number]: Omit<HourlyOperatorDetail, 'productivity' | 'compliance' | 'trend'> }>();
     packerProductivity.forEach(packer => {
         const packerEntries = data.filter(d => d.empacador === packer.packerName);
         const justifiedForPacker = processedDeadTimes.filter(p => p.packerName === packer.packerName);
-        hourlyBreakdowns.set(packer.packerName, calculatePackerHourlyPerformance(packerEntries, packer, goals, brandGoals, justifiedForPacker, reportEndTime));
+        hourlyBreakdowns.set(packer.packerName, calculatePackerHourlyPerformance(packerEntries, packer, goals, brandGoals, justifiedForPacker, reportEndTime, referenceGoals));
     });
 
     packerProductivity.forEach(packer => {
@@ -1467,14 +1472,14 @@ export function processReport(
         }
     });
 
-    const packerReferenceProductivityDetail = calculatePackerReferenceProductivityDetail(data, packerProductivity, goals, brandGoals);
+    const packerReferenceProductivityDetail = calculatePackerReferenceProductivityDetail(data, packerProductivity, goals, brandGoals, referenceGoals);
       
     const filteredPackerBrandDetails = selectedPackers.includes('all') 
         ? packerBrandProductivityDetail
         : packerBrandProductivityDetail.filter(d => selectedPackers.includes(d.packerName));
         
     const brandProductivity = calculateBrandProductivity(dataForProductivity, filteredPackerBrandDetails);
-    const productTypeProductivity = calculateProductTypeProductivity(dataForProductivity, packerProductivity, goals, brandGoals, processedDeadTimes);
+    const productTypeProductivity = calculateProductTypeProductivity(dataForProductivity, packerProductivity, goals, brandGoals, processedDeadTimes, referenceGoals);
 
     const packerHourlyPerformance = packerProductivity.map(p => ({ packerName: p.packerName, hourlyDetails: (p as any).hourlyBreakdown || {} }));
     const hourlyProductivity = calculateHourlyProductivity(packerProductivity, reportStartTime, reportEndTime);
@@ -1522,6 +1527,8 @@ export function processReport(
         incidentLog,
         manualJustifications,
         reasonsSummary,
+        referenceGoals,
+        productivityGoals: goals
     };
 }
 
@@ -1631,14 +1638,38 @@ export function extractUniqueReferences(
                 uniqueRefs.set(key, {
                     codigoBarras: d.codigoBarras,
                     talla: d.talla,
-                    referenciaOriginal: d.referencia,
-                    descripcionOriginal: d.descripcion,
+                    referencia: d.referencia,
+                    descripcion: d.descripcion,
+                    marca: d.marca,
+                    productType: d.productType
                 });
             }
         }
     });
 
-    return Array.from(uniqueRefs.values()).sort((a,b) => a.descripcionOriginal.localeCompare(b.descripcionOriginal));
+    return Array.from(uniqueRefs.values()).sort((a,b) => a.referencia.localeCompare(b.referencia));
+}
+
+export function extractAllReferencesFromReport(
+    data: RemisionEntry[]
+): UniqueReference[] {
+    const uniqueRefs = new Map<string, UniqueReference>();
+    
+    data.forEach(d => {
+        const key = d.referencia; // Group by reference for goal setting
+        if (!uniqueRefs.has(key)) {
+            uniqueRefs.set(key, {
+                codigoBarras: d.codigoBarras,
+                talla: d.talla,
+                referencia: d.referencia,
+                descripcion: d.descripcion,
+                marca: d.marca,
+                productType: d.productType
+            });
+        }
+    });
+    
+    return Array.from(uniqueRefs.values()).sort((a,b) => a.referencia.localeCompare(b.referencia));
 }
     
     

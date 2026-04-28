@@ -436,8 +436,10 @@ export interface RemisionEntry {
 export interface UniqueReference {
   codigoBarras: string;
   talla?: string;
-  referenciaOriginal: string;
-  descripcionOriginal: string;
+  referencia: string;
+  descripcion: string;
+  marca: string;
+  productType: ProductCategory;
 }
 
 export interface ReferenceCorrection {
@@ -713,7 +715,12 @@ export interface ReportConfiguration {
     learnedCorrections?: ReferenceCorrections;
     manualOperatorMappings?: ManualOperatorMappings;
     annotations?: Annotations;
+    referenceGoals?: ReferenceGoals;
 }
+
+export type ReferenceGoals = {
+    [reference: string]: number;
+};
 
 
 export interface ProcessedReportData {
@@ -737,6 +744,7 @@ export interface ProcessedReportData {
     smartAlerts?: SmartAlert[] | null;
     annotations?: Annotations;
     reasonsSummary?: { reason: string; durationMinutes: number; type: string }[];
+    referenceGoals?: ReferenceGoals;
     id?: string;
     // Add processedData for full traceability, especially for snapshots
     processedData?: RemisionEntry[];
@@ -748,6 +756,7 @@ export interface ProcessedReportData {
     isConsolidated?: boolean;
     sourceSnapshotIds?: string[];
     snapshotCreatedAt?: Date;
+    productivityGoals?: ProductivityGoals;
 }
 
 export type ProductivityGoals = {

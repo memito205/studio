@@ -3,7 +3,7 @@
 "use client";
 
 import React, { useMemo, useEffect } from 'react';
-import type { ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, UniqueReference, ReferenceCorrections, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, JustificationType, Annotations, ProductDatabaseItem, DiscardedRecord, RemisionEntry, DeadTimeEntry } from '@/types';
+import type { ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, UniqueReference, ReferenceCorrections, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, JustificationType, Annotations, ProductDatabaseItem, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReferenceGoals } from '@/types';
 import { FileDown, Upload, Share2, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -18,7 +18,8 @@ import { ReferenceCorrectionEditor } from './reference-correction-editor';
 import { NewOperatorMapper } from './new-operator-mapper';
 import { IncidentLogEditor } from './incident-log-editor';
 import { DiscardedRecordsViewer } from './discarded-records-viewer';
-import { classifyProduct, extractBrandsFromReport, preScanForUnclassifiedProducts, extractUnmappedPackers } from '@/services/reportProcessor';
+import { classifyProduct, extractBrandsFromReport, preScanForUnclassifiedProducts, extractUnmappedPackers, extractAllReferencesFromReport } from '@/services/reportProcessor';
+import { ReferenceGoalConfiguration } from './reference-goal-configuration';
 
 interface ConfigurationScreenProps {
   fileName: string;
@@ -61,6 +62,8 @@ interface ConfigurationScreenProps {
   discardedRecords: DiscardedRecord[];
   deadTimes: DeadTimeEntry[];
   isSavingJustifications?: boolean;
+  referenceGoals: ReferenceGoals;
+  onReferenceGoalsChange: (goals: ReferenceGoals) => void;
 }
 
 export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
@@ -104,6 +107,8 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
   discardedRecords,
   deadTimes,
   isSavingJustifications,
+  referenceGoals,
+  onReferenceGoalsChange,
 }) => {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [shareStatus, setShareStatus] = React.useState<'idle' | 'copied'>('idle');
@@ -133,8 +138,9 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
     const brands = extractBrandsFromReport(fullyProcessedData);
     const unclassifiedProducts = preScanForUnclassifiedProducts(fullyProcessedData);
     const unmappedPackers = extractUnmappedPackers(rawData, manualOperatorMappings);
+    const allReferences = extractAllReferencesFromReport(fullyProcessedData);
 
-    return { brands, unclassifiedProducts, unmappedPackers };
+    return { brands, unclassifiedProducts, unmappedPackers, allReferences };
   }, [fullyProcessedData, rawData, manualOperatorMappings]);
   
   const handleCalculateClick = () => {
@@ -156,8 +162,9 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
       reportEndTime,
       configSelectedPacker,
       annotations,
+      referenceGoals,
     } as any;
-  }, [goals, brandProductTypeGoals, manualClassifications, manualJustifications, referenceCorrections, learnedCorrections, manualOperatorMappings, incidentLog, reportDate, reportStartTime, reportEndTime, configSelectedPacker, annotations]);
+  }, [goals, brandProductTypeGoals, manualClassifications, manualJustifications, referenceCorrections, learnedCorrections, manualOperatorMappings, incidentLog, reportDate, reportStartTime, reportEndTime, configSelectedPacker, annotations, referenceGoals]);
 
 
   const handleSaveConfiguration = React.useCallback(() => {
@@ -383,6 +390,13 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
       </Card>
 
       <GoalConfiguration goals={goals} onGoalsChange={onGoalsChange} onSuggestGoals={onSuggestGoals} />
+      <ReferenceGoalConfiguration 
+        uniqueReferences={derivedState.allReferences} 
+        referenceGoals={referenceGoals} 
+        onReferenceGoalsChange={onReferenceGoalsChange} 
+        brandProductTypeGoals={brandProductTypeGoals} 
+        baseGoals={goals} 
+      />
       <BrandProductTypeGoalConfiguration brands={derivedState.brands} goals={brandProductTypeGoals} onBrandProductTypeGoalsChange={onBrandProductTypeGoalsChange} baseGoals={goals} />
       
       <IncidentLogEditor incidentLog={incidentLog} onIncidentLogChange={onIncidentLogChange} />
