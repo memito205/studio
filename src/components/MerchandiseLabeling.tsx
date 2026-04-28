@@ -470,7 +470,7 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
         onOpenChange={setIsAssignDialogOpen}
         onAssign={handleAssignOperator}
         isLoading={isSubmitting || loadingVendors}
-        operators={allUsers.filter(u => u.role === 'operator' || u.role === 'supervisor')}
+        operators={allUsers}
         externalVendors={externalVendors}
         initialAssignedIds={selectedOperation?.assignedOperatorId ? [selectedOperation.assignedOperatorId] : []}
         isSingleTaskReassign={true}

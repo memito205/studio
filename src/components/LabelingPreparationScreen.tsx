@@ -52,7 +52,7 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
     }
 
     if(usersResult) {
-        setOperators(usersResult.filter(u => u.role === 'operator' || u.role === 'supervisor'));
+        setOperators(usersResult);
     } else {
         toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los operarios.' });
     }
