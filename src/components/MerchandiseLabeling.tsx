@@ -58,12 +58,22 @@ interface AdminPauseDialogProps {
 
 const AdminPauseDialog: React.FC<AdminPauseDialogProps> = ({ isOpen, onOpenChange, onConfirm, operation }) => {
   const [reason, setReason] = useState('Almuerzo');
+  const [otherReason, setOtherReason] = useState('');
   const [pauseTime, setPauseTime] = useState(new Date().toISOString().slice(0, 16));
   const reasons = ['Almuerzo', 'Baño', 'Ajuste de Puesto', 'Falla Técnica', 'Otro'];
 
   useEffect(() => {
-     if (isOpen) setPauseTime(new Date().toISOString().slice(0, 16));
+     if (isOpen) {
+         setPauseTime(new Date().toISOString().slice(0, 16));
+         setReason('Almuerzo');
+         setOtherReason('');
+     }
   }, [isOpen]);
+
+  const handleConfirm = () => {
+    const finalReason = reason === 'Otro' ? `Otro: ${otherReason}` : reason;
+    onConfirm(finalReason, new Date(pauseTime).toISOString());
+  };
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
@@ -84,6 +94,18 @@ const AdminPauseDialog: React.FC<AdminPauseDialogProps> = ({ isOpen, onOpenChang
               </SelectContent>
             </Select>
           </div>
+          
+          {reason === 'Otro' && (
+            <div className="space-y-2 animate-in fade-in slide-in-from-top-1">
+                <Label>Especifique Actividad (Justificación)</Label>
+                <Input 
+                    placeholder="¿Cuál es la actividad?"
+                    value={otherReason}
+                    onChange={(e) => setOtherReason(e.target.value)}
+                />
+            </div>
+          )}
+
           <div className="space-y-2">
             <Label>Hora de Inicio (Referencia)</Label>
             <Input 
@@ -95,7 +117,7 @@ const AdminPauseDialog: React.FC<AdminPauseDialogProps> = ({ isOpen, onOpenChang
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
-          <Button onClick={() => onConfirm(reason, new Date(pauseTime).toISOString())}>Registrar Pausa</Button>
+          <Button onClick={handleConfirm} disabled={reason === 'Otro' && !otherReason}>Registrar Pausa</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -190,6 +212,11 @@ const AdminDashboard: React.FC<{
                                         <DropdownMenuItem onClick={() => onGenerateExcel(op)} disabled={isSubmitting}>
                                             <FileDown className="mr-2 h-4 w-4" /> Generar Excel de Trabajo
                                         </DropdownMenuItem>
+                                        {op.status === 'En Progreso' && (
+                                            <DropdownMenuItem onClick={() => onAdminPause(op)} className="text-warning-foreground bg-warning/10">
+                                                <Pause className="mr-2 h-4 w-4" /> Pausar Tarea (Admin)
+                                            </DropdownMenuItem>
+                                        )}
                                         {op.status === 'En Progreso' && (
                                             <DropdownMenuItem onClick={() => onFinish(op)}>
                                                 <Check className="mr-2 h-4 w-4" /> Finalizar Tarea

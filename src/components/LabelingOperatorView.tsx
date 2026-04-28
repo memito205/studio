@@ -1,7 +1,7 @@
 /** @jsxImportSource react */
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -98,7 +98,20 @@ interface PauseReasonDialogProps {
 
 const PauseReasonDialog: React.FC<PauseReasonDialogProps> = ({ isOpen, onOpenChange, onConfirm }) => {
   const [selectedReason, setSelectedReason] = useState('Almuerzo');
+  const [otherReason, setOtherReason] = useState('');
   const reasons = ['Almuerzo', 'Baño', 'Ajuste de Puesto', 'Falla Técnica', 'Otro'];
+
+  useEffect(() => {
+    if (isOpen) {
+        setSelectedReason('Almuerzo');
+        setOtherReason('');
+    }
+  }, [isOpen]);
+
+  const handleConfirm = () => {
+    const finalReason = selectedReason === 'Otro' ? `Otro: ${otherReason}` : selectedReason;
+    onConfirm(finalReason);
+  };
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
@@ -109,20 +122,33 @@ const PauseReasonDialog: React.FC<PauseReasonDialogProps> = ({ isOpen, onOpenCha
             Seleccione el motivo por el cual va a pausar su actividad.
           </DialogDescription>
         </DialogHeader>
-        <div className="py-4">
-            <Label>Razón</Label>
-            <Select value={selectedReason} onValueChange={setSelectedReason}>
-                <SelectTrigger>
-                    <SelectValue placeholder="Seleccione motivo..." />
-                </SelectTrigger>
-                <SelectContent>
-                    {reasons.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
-                </SelectContent>
-            </Select>
+        <div className="py-4 space-y-4">
+            <div className="space-y-2">
+                <Label>Razón</Label>
+                <Select value={selectedReason} onValueChange={setSelectedReason}>
+                    <SelectTrigger>
+                        <SelectValue placeholder="Seleccione motivo..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                        {reasons.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                    </SelectContent>
+                </Select>
+            </div>
+
+            {selectedReason === 'Otro' && (
+                <div className="space-y-2 animate-in fade-in slide-in-from-top-1">
+                    <Label>Especifique Actividad (Justificación)</Label>
+                    <Input 
+                        placeholder="¿Cuál es la actividad?"
+                        value={otherReason}
+                        onChange={(e) => setOtherReason(e.target.value)}
+                    />
+                </div>
+            )}
         </div>
         <DialogFooter>
           <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancelar</Button>
-          <Button onClick={() => onConfirm(selectedReason)}>Confirmar Motivo</Button>
+          <Button onClick={handleConfirm} disabled={selectedReason === 'Otro' && !otherReason}>Confirmar Motivo</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -258,18 +284,18 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
     const handleRefresh = isExternalPortal ? fetchExternalTasks : (propOnRefresh || (() => {}));
 
     const initiateAction = (operationId: string, actionType: 'START' | 'PAUSE' | 'RESUME' | 'FINISH', reason?: string, completedUnits?: number) => {
+        if (actionType === 'PAUSE' && !reason) {
+            setPausePendingOpId(operationId);
+            setIsPauseReasonDialogOpen(true);
+            return;
+        }
+
         if (!isExternalPortal) {
             if (actionType === 'FINISH' && completedUnits !== undefined) {
                 handleConfirmFinish(completedUnits);
             } else {
                 handleAction(operationId, actionType, reason);
             }
-            return;
-        }
-
-        if (actionType === 'PAUSE' && !reason) {
-            setPausePendingOpId(operationId);
-            setIsPauseReasonDialogOpen(true);
             return;
         }
 
