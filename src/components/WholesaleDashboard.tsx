@@ -586,8 +586,19 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
                 
                 // Calculate pauses after start
                 const intervals = [
-                    ...data.sessions.flatMap(s => (s.pauses || [])).filter(p => p.userId === packerId).map(p => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : now })),
-                    ...pulses.map(p => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : now }))
+                    ...data.sessions.flatMap(s => (s.pauses || [])).filter(p => p.userId === packerId).map(p => ({ 
+                        start: new Date(p.startTime).getTime(), 
+                        end: p.endTime ? new Date(p.endTime).getTime() : now 
+                    })),
+                    ...pulses
+                        .filter(p => {
+                            const pulseStart = p.startTime instanceof Date ? p.startTime.getTime() : (p.startTime as any).toDate?.()?.getTime() || new Date(p.startTime).getTime();
+                            return pulseStart >= firstScanTime;
+                        })
+                        .map(p => ({ 
+                            start: p.startTime instanceof Date ? p.startTime.getTime() : (p.startTime as any).toDate?.()?.getTime() || new Date(p.startTime).getTime(), 
+                            end: p.endTime ? (p.endTime instanceof Date ? p.endTime.getTime() : (p.endTime as any).toDate?.()?.getTime() || new Date(p.endTime).getTime()) : now 
+                        }))
                 ];
 
                 // Merge and filter
@@ -616,16 +627,18 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
                 // Current status from last pulse
                 const lastPulse = pulses.sort((a,b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())[0];
 
-                processedData.push({
-                    packerId,
-                    name: data.name,
-                    firstScanTime,
-                    totalItems: units,
-                    effectiveMs,
-                    uph,
-                    status: lastPulse?.status || 'Activo',
-                    isPaused: lastPulse?.type === 'pause' && !lastPulse.endTime
-                });
+                if (units > 0) {
+                    processedData.push({
+                        packerId,
+                        name: data.name,
+                        firstScanTime,
+                        totalItems: units,
+                        effectiveMs,
+                        uph,
+                        status: lastPulse?.status || 'Activo',
+                        isPaused: lastPulse?.type === 'pause' && !lastPulse.endTime
+                    });
+                }
             }
 
             setReportData(processedData.sort((a,b) => b.totalItems - a.totalItems));
