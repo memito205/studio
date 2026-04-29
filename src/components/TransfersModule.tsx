@@ -2066,7 +2066,8 @@ const CollectionTabView: React.FC<{
         if (result.data) {
             // Filter only 'En Tránsito' records from the query result
             const collected = result.data.filter(t => t.status === 'En Tránsito');
-            const sorted = [...collected].sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
+            // Sort by TF number (Natural Sort)
+            const sorted = [...collected].sort((a, b) => a.numeroTF.localeCompare(b.numeroTF, undefined, { numeric: true, sensitivity: 'base' }));
             setTransfers(sorted);
             if (sorted.length === 0) {
                 toast({ title: 'Sin resultados', description: 'No se encontraron transferencias En Tránsito con esos criterios.' });
