@@ -250,6 +250,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     const [mixedReferenceError, setMixedReferenceError] = useState<{ show: boolean, expected: string, scanned: string } | null>(null);
     const [packerPulses, setPackerPulses] = useState<OperationPulse[]>([]);
     const [isFetchingPulses, setIsFetchingPulses] = useState(false);
+    const [isTimelineDialogOpen, setIsTimelineDialogOpen] = useState(false);
     const { isPaused, currentPulse, globalPulse, allPulses } = useSuitePulse();
     
     // State for productivity timer
@@ -418,7 +419,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 const orderedQty = detail?.cantidad || 0;
                 const scannedReference = (result.item.referencia || result.item.reference || '').toString().trim();
                 const totalOrderedForRef = packingOrder.order.details
-                    .filter(d => (d.referencia || d.reference || '').toString().trim() === scannedReference)
+                    .filter(d => ((d as any).referencia || (d as any).reference || '').toString().trim() === scannedReference)
                     .reduce((sum, d) => sum + (d.cantidad || 0), 0);
                 
                 // Safety check for progress object
@@ -1065,11 +1066,33 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         const targetPackerId = session.packerId;
         if (!targetPackerId) return { totalElapsedTimeFormatted: '00:00:00', effectiveWorkTimeFormatted: '00:00:00', unitsPerHour: '0.0', compliance: '0.0' };
         
-        const userFirstScan = session.units
+        const times: number[] = [];
+        
+        // 1. From session units
+        session.units
             .filter(u => u.createdBy === targetPackerId && u.createdAt)
-            .map(u => new Date(u.createdAt!).getTime())
-            .filter(t => !isNaN(t))
-            .sort((a,b)=>a-b)[0];
+            .forEach(u => {
+                const t = new Date(u.createdAt!).getTime();
+                if (!isNaN(t)) times.push(t);
+            });
+
+        // 2. From packed items
+        allPackedItems
+            .filter(i => i.packerId === targetPackerId && i.scannedAt)
+            .forEach(i => {
+                const scannedAt = i.scannedAt as any;
+                // Handle both Date and Firestore Timestamp
+                const t = scannedAt?.toDate ? scannedAt.toDate().getTime() : new Date(scannedAt).getTime();
+                if (!isNaN(t)) times.push(t);
+            });
+
+        // 3. From session startTime as ultimate fallback
+        if (session.startTime) {
+            const t = session.startTime instanceof Date ? session.startTime.getTime() : (session.startTime as any).toDate?.()?.getTime() || new Date(session.startTime).getTime();
+            if (!isNaN(t)) times.push(t);
+        }
+
+        const userFirstScan = times.length > 0 ? Math.min(...times) : null;
             
         if (!userFirstScan) return { totalElapsedTimeFormatted: '00:00:00', effectiveWorkTimeFormatted: '00:00:00', unitsPerHour: '0.0', compliance: '0.0' };
         
@@ -1143,6 +1166,9 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             effectiveWorkTimeFormatted: formatElapsedTime(effectiveWorkTimeMs),
             unitsPerHour: unitsPerHour.toFixed(1),
             compliance: compliance.toFixed(1),
+            userFirstScan,
+            relevantPulses,
+            totalPauseMs
         };
     }, [session, user, totalUserPackedQuantity, productivityGoal, elapsedTime, packerPulses]);
 
@@ -1446,16 +1472,34 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                     <div className="space-y-6">
                         <Card className="flex flex-col">
                             <CardHeader>
-                                <CardTitle className="flex items-center gap-2">
-                                    <Timer className="w-6 h-6" />
-                                    Productividad
+                                <CardTitle className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                        <Timer className="w-5 h-5 text-primary" />
+                                        Productividad
+                                    </div>
+                                    <Button 
+                                        variant="ghost" 
+                                        size="sm" 
+                                        className="h-8 text-[11px] uppercase tracking-wider flex items-center gap-1"
+                                        onClick={() => setIsTimelineDialogOpen(true)}
+                                    >
+                                        <History className="w-3.5 h-3.5" />
+                                        Detalle
+                                    </Button>
                                 </CardTitle>
                             </CardHeader>
                             <CardContent className="space-y-4">
                                 <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
-                                    <span className="text-sm font-medium text-muted-foreground mr-2">
-                                        {user?.uid === session.packerId ? 'Items Empacados (Míos)' : `Items Empacados (${session.packerName || 'Operario'})`}
-                                    </span>
+                                    <div className="flex flex-col">
+                                        <span className="text-sm font-medium text-muted-foreground mr-2">
+                                            {user?.uid === session.packerId ? 'Items Empacados (Míos)' : `Items Empacados (${session.packerName || 'Operario'})`}
+                                        </span>
+                                        <div className="flex gap-2">
+                                            <Badge variant="outline" className="text-[10px] h-4">
+                                                Inició: {productivityStats.userFirstScan ? new Date(productivityStats.userFirstScan).toLocaleTimeString() : 'N/A'}
+                                            </Badge>
+                                        </div>
+                                    </div>
                                     <span className="font-bold text-lg">{totalUserPackedQuantity}</span>
                                 </div>
                                 <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
@@ -1831,15 +1875,131 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             )}
         </Tabs>
 
-        <OrphanContentDialog 
-            isOpen={isOrphanDialogOpen}
-            onOpenChange={setIsOrphanDialogOpen}
-            firestoreId={orphanToView?.id || null}
-            unitLabel={orphanToView?.label || ''}
-            allPackedItems={allPackedItems}
+        <TimelineDialog 
+            isOpen={isTimelineDialogOpen}
+            onOpenChange={setIsTimelineDialogOpen}
+            stats={productivityStats}
+            session={session}
         />
     </div>
   );
+};
+
+const TimelineDialog: React.FC<{
+    isOpen: boolean;
+    onOpenChange: (open: boolean) => void;
+    stats: any;
+    session: PackingSession;
+}> = ({ isOpen, onOpenChange, stats, session }) => {
+    const sortedTimeline = useMemo(() => {
+        if (!stats.userFirstScan) return [];
+        
+        const events: { time: number, type: string, label: string, color: string }[] = [];
+        
+        // Start Work
+        events.push({ 
+            time: stats.userFirstScan, 
+            type: 'start', 
+            label: 'Inicio de Actividad',
+            color: 'bg-green-500'
+        });
+
+        // Pauses from session
+        session.pauses.forEach(p => {
+            if (p.userId === session.packerId) {
+                events.push({ 
+                    time: new Date(p.startTime).getTime(), 
+                    type: 'pause_start', 
+                    label: `Inicio Pausa: ${p.reason}`,
+                    color: 'bg-amber-500'
+                });
+                if (p.endTime) {
+                    events.push({ 
+                        time: new Date(p.endTime).getTime(), 
+                        type: 'pause_end', 
+                        label: 'Reanudación',
+                        color: 'bg-blue-500'
+                    });
+                }
+            }
+        });
+
+        // Pulses (Global or User)
+        stats.relevantPulses.forEach((p: any) => {
+            events.push({ 
+                time: p.startTime instanceof Date ? p.startTime.getTime() : p.startTime.toDate().getTime(), 
+                type: 'pulse_start', 
+                label: `Estado: ${p.status} - ${p.reason || ''}`,
+                color: 'bg-indigo-500'
+            });
+            if (p.endTime) {
+                events.push({ 
+                    time: p.endTime instanceof Date ? p.endTime.getTime() : p.endTime.toDate().getTime(), 
+                    type: 'pulse_end', 
+                    label: 'Fin Estado',
+                    color: 'bg-slate-500'
+                });
+            }
+        });
+
+        return events.sort((a,b) => a.time - b.time);
+    }, [stats, session.pauses, session.packerId]);
+
+    const formatTime = (time: number) => new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    return (
+        <Dialog open={isOpen} onOpenChange={onOpenChange}>
+            <DialogContent className="max-w-2xl sm:max-h-[80vh] flex flex-col">
+                <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                        <History className="w-5 h-5 text-primary" />
+                        Línea de Tiempo de Productividad
+                    </DialogTitle>
+                    <DialogDescription>
+                        Desglose detallado de la jornada para {session.packerName || 'el operario'}.
+                    </DialogDescription>
+                </DialogHeader>
+
+                <div className="flex-grow overflow-y-auto pr-2 my-4">
+                    {sortedTimeline.length === 0 ? (
+                        <div className="text-center py-8 text-muted-foreground">No hay eventos registrados.</div>
+                    ) : (
+                        <div className="relative pl-6 border-l border-muted space-y-6 ml-4 mt-2">
+                            {sortedTimeline.map((item, idx) => (
+                                <div key={idx} className="relative">
+                                    <div className={cn("absolute -left-[31px] top-1 w-[12px] h-[12px] rounded-full border-2 border-background", item.color)} />
+                                    <div className="flex justify-between items-start">
+                                        <div>
+                                            <p className="text-sm font-bold leading-tight">{item.label}</p>
+                                            <p className="text-[11px] text-muted-foreground">{new Date(item.time).toLocaleDateString()}</p>
+                                        </div>
+                                        <Badge variant="secondary" className="font-mono text-xs">{formatTime(item.time)}</Badge>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 mt-4 p-4 bg-secondary rounded-lg">
+                    <div>
+                        <p className="text-xs text-muted-foreground uppercase font-bold tracking-wider">Tiempo Efectivo</p>
+                        <p className="text-xl font-bold font-mono text-green-600">{stats.effectiveWorkTimeFormatted}</p>
+                    </div>
+                    <div>
+                        <p className="text-xs text-muted-foreground uppercase font-bold tracking-wider">Total Pausas</p>
+                        <p className="text-xl font-bold font-mono text-amber-600">
+                            {Math.floor(stats.totalPauseMs / 60000)}m {(Math.floor(stats.totalPauseMs / 1000) % 60)}s
+                        </p>
+                    </div>
+                </div>
+
+                <DialogFooter className="mt-4">
+                    <Button onClick={() => onOpenChange(false)}>Cerrar</Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
 };
 
 const StatDisplay: React.FC<{title: string, value: string | number, variant?: 'default' | 'success'}> = ({ title, value, variant='default' }) => (
