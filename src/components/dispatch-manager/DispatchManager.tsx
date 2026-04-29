@@ -209,7 +209,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
     }
   };
 
-  const { filteredMatchedData, filteredUnmatchedData } = useMemo(() => {
+  const { filteredMatchedData, filteredUnmatchedData, excludedMatchedData, dispatchStats } = useMemo(() => {
     const baseFilter = (item: MerchandiseItem) => {
       const normalizedSearch = searchTerm.toLowerCase();
       const matchesDestino = selectedDestinos.length === 0 || selectedDestinos.includes(item.destino);
@@ -233,50 +233,65 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
       return numA - numB;
     };
 
-    if (Object.keys(destLimits).every(k => destLimits[k] === '' || destLimits[k] === undefined)) {
-        return {
-            filteredMatchedData: initialMatched.sort(sortByDateAndTf),
-            filteredUnmatchedData: initialUnmatched.sort((a, b) => a.fechaCreacion.getTime() - b.fechaCreacion.getTime())
-        };
-    }
+    // Calculate Original Stats per destination
+    const groupedByTF: Record<string, MerchandiseItem[]> = {};
+    initialMatched.forEach(item => {
+      const tfKey = item.tftMatch || 'VIRTUAL';
+      if (!groupedByTF[tfKey]) groupedByTF[tfKey] = [];
+      groupedByTF[tfKey].push(item);
+    });
 
-    const bdbolItems = initialMatched.filter(item => item.origen.toUpperCase() === 'BDBOL');
-    const standardItems = initialMatched.filter(item => item.origen.toUpperCase() !== 'BDBOL')
-      .sort(sortByDateAndTf);
+    const stats: Record<string, { originalUnits: number, originalTFs: number, filteredUnits: number, filteredTFs: number }> = {};
+    
+    // Group groups by destination to apply limits
+    const destGroups: Record<string, { tfKey: string, items: MerchandiseItem[] }[]> = {};
+    Object.entries(groupedByTF).forEach(([tfKey, items]) => {
+      const dest = items[0].destino;
+      if (!destGroups[dest]) destGroups[dest] = [];
+      destGroups[dest].push({ tfKey, items });
 
-    let finalList: MerchandiseItem[] = [...bdbolItems];
-    const largeTfCounts: Record<string, number> = {};
-    const processedCodes = new Set<string>(bdbolItems.map(i => i.codigo));
+      if (!stats[dest]) stats[dest] = { originalUnits: 0, originalTFs: 0, filteredUnits: 0, filteredTFs: 0 };
+      stats[dest].originalUnits += items.reduce((sum, i) => sum + i.cant, 0);
+      stats[dest].originalTFs += 1;
+    });
 
-    standardItems.forEach(item => {
-        const dest = item.destino;
-        const limit = destLimits[dest];
-        
-        if (limit === '' || limit === undefined || limit < 0) {
-            if (!processedCodes.has(item.codigo)) {
-                finalList.push(item);
-                processedCodes.add(item.codigo);
-            }
-            return;
-        }
+    let finalList: MerchandiseItem[] = [];
+    let excludedList: MerchandiseItem[] = [];
 
-        const currentLargeCount = largeTfCounts[dest] || 0;
-        const isLarge = (item.tftCantidad || 0) >= 5;
+    // Process each destination separately to apply its limit
+    Object.keys(destGroups).forEach(dest => {
+      const groups = destGroups[dest].sort((a, b) => sortByDateAndTf(a.items[0], b.items[0]));
+      const limit = destLimits[dest];
+      let largeCount = 0;
 
-        if (isLarge) {
-            if (currentLargeCount < limit) {
-                finalList.push(item);
-                largeTfCounts[dest] = currentLargeCount + 1;
-            }
+      groups.forEach(group => {
+        const isBdbol = group.items.some(i => i.origen.toUpperCase() === 'BDBOL');
+        const isLarge = (group.items[0].tftCantidad || 0) >= 5;
+
+        // BDBOL and Small TFs are always included
+        if (isBdbol || !isLarge || limit === '' || limit === undefined || limit < 0) {
+          finalList.push(...group.items);
+          stats[dest].filteredUnits += group.items.reduce((sum, i) => sum + i.cant, 0);
+          stats[dest].filteredTFs += 1;
         } else {
-            finalList.push(item);
+          // Limit only applies to large non-BDBOL transfers
+          if (largeCount < limit) {
+            finalList.push(...group.items);
+            largeCount++;
+            stats[dest].filteredUnits += group.items.reduce((sum, i) => sum + i.cant, 0);
+            stats[dest].filteredTFs += 1;
+          } else {
+            excludedList.push(...group.items);
+          }
         }
+      });
     });
 
     return {
-      filteredMatchedData: Array.from(new Map(finalList.map(item => [item.codigo, item])).values())
-        .sort(sortByDateAndTf),
-      filteredUnmatchedData: initialUnmatched
+      filteredMatchedData: finalList.sort(sortByDateAndTf),
+      filteredUnmatchedData: initialUnmatched,
+      excludedMatchedData: excludedList,
+      dispatchStats: stats
     };
   }, [allMatchedData, allUnmatchedData, selectedDestinos, searchTerm, destLimits]);
 
@@ -360,6 +375,25 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
         savedBy: user.displayName || user.email || 'N/A',
         results: verificationItems,
         unmatchedResults: unmatchedVerificationItems,
+        excludedResults: excludedMatchedData.map(item => ({
+            codigo: item.codigo,
+            tftCruce: item.tftMatch || '',
+            fechaTft: item.tftFecha ? format(item.tftFecha, 'dd/MM/yyyy') : '-',
+            cantTft: String(item.tftCantidad || ''),
+            destino: item.destino,
+            empacador: item.empacador,
+            contenidoOriginal: item.contenido,
+            tfOriginal: item.tf,
+            scanned: false,
+        })),
+        originalStats: {
+            totalUnits: Object.values(dispatchStats).reduce((sum, s) => sum + s.originalUnits, 0),
+            totalTFs: Object.values(dispatchStats).reduce((sum, s) => sum + s.originalTFs, 0),
+        },
+        filteredStats: {
+            totalUnits: Object.values(dispatchStats).reduce((sum, s) => sum + s.filteredUnits, 0),
+            totalTFs: Object.values(dispatchStats).reduce((sum, s) => sum + s.filteredTFs, 0),
+        },
         stats: {
             total: verificationItems.length,
             scanned: 0,
@@ -559,16 +593,31 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                                 )}>{dest}</span>
                               </label>
                               {selectedDestinos.includes(dest) && (
-                                <div className="flex items-center gap-2 mt-1 pl-6">
-                                  <span className="text-[9px]  opacity-40 uppercase">Límite (TFs &gt;= 5 und):</span>
-                                  <input
-                                    type="number"
-                                    min="1"
-                                    placeholder="Todos"
-                                    className="w-full border-b border-border py-0.5 text-[10px]  focus:outline-none bg-transparent"
-                                    value={destLimits[dest] || ''}
-                                    onChange={(e) => setLimitForDest(dest, e.target.value === '' ? '' : parseInt(e.target.value))}
-                                  />
+                                <div className="space-y-2 mt-2 ml-6">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[9px]  opacity-40 uppercase">Límite (TFs &gt;= 5 und):</span>
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      placeholder="Todos"
+                                      className="w-full border-b border-border py-0.5 text-[10px]  focus:outline-none bg-transparent"
+                                      value={destLimits[dest] || ''}
+                                      onChange={(e) => setLimitForDest(dest, e.target.value === '' ? '' : parseInt(e.target.value))}
+                                    />
+                                  </div>
+                                  <div className="bg-muted/30 p-2  text-[9px]  space-y-1">
+                                    <div className="flex justify-between">
+                                      <span className="opacity-60">TFs Seleccionadas:</span>
+                                      <span className="font-bold">{dispatchStats[dest]?.filteredTFs || 0} / {dispatchStats[dest]?.originalTFs || 0}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span className="opacity-60">Unidades Totales:</span>
+                                      <span className="font-bold">{dispatchStats[dest]?.filteredUnits || 0} / {dispatchStats[dest]?.originalUnits || 0}</span>
+                                    </div>
+                                    <p className="text-[8px] italic opacity-40 leading-tight pt-1">
+                                      * BDBOL y TFs pequeñas se incluyen siempre.
+                                    </p>
+                                  </div>
                                 </div>
                               )}
                             </div>

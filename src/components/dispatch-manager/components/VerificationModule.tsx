@@ -241,6 +241,12 @@ const ScanningInterface: React.FC<{
           <Card>
             <CardHeader>
                 <CardTitle>Progreso: {session.name}</CardTitle>
+                {session.originalStats && (
+                  <div className="text-[10px] text-muted-foreground mt-1 bg-muted/50 p-2 border border-border">
+                    <span className="font-bold">PLANIFICACIÓN:</span> {session.filteredStats?.totalTFs} / {session.originalStats?.totalTFs} TFs seleccionadas 
+                    ({session.filteredStats?.totalUnits} / {session.originalStats?.totalUnits} unidades)
+                  </div>
+                )}
                  <div className="text-xs text-muted-foreground  mt-2 h-4">{renderSaveStatus()}</div>
             </CardHeader>
             <CardContent>

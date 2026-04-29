@@ -1409,6 +1409,15 @@ export interface SavedVerification {
   savedBy: string;
   results: VerificationItem[];
   unmatchedResults?: VerificationItem[];
+  excludedResults?: VerificationItem[]; // New: Items excluded by limits
+  originalStats?: {
+    totalUnits: number;
+    totalTFs: number;
+  }; // New: Stats before filtering
+  filteredStats?: {
+    totalUnits: number;
+    totalTFs: number;
+  }; // New: Stats after filtering
   stats: {
     total: number;
     scanned: number;
