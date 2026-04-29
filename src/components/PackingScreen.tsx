@@ -1106,16 +1106,31 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         const relevantPulses = user?.uid === targetPackerId ? allPulses : packerPulses;
 
         const rawIntervals = [
-            ...session.pauses.filter(p => p.userId === targetPackerId).map(p => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : now })),
-            ...relevantPulses.map(p => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : now }))
+            ...session.pauses.filter(p => p.userId === targetPackerId).map(p => ({ 
+                start: new Date(p.startTime).getTime(), 
+                end: p.endTime ? new Date(p.endTime).getTime() : now 
+            })),
+            ...relevantPulses
+                .filter(p => {
+                    const pulseStart = p.startTime instanceof Date ? p.startTime.getTime() : (p.startTime as any).toDate?.()?.getTime() || new Date(p.startTime).getTime();
+                    // IMPORTANT: Only count suite pauses that START after the user started this order
+                    return pulseStart >= userFirstScan;
+                })
+                .map(p => ({ 
+                    start: p.startTime instanceof Date ? p.startTime.getTime() : (p.startTime as any).toDate?.()?.getTime() || new Date(p.startTime).getTime(), 
+                    end: p.endTime ? (p.endTime instanceof Date ? p.endTime.getTime() : (p.endTime as any).toDate?.()?.getTime() || new Date(p.endTime).getTime()) : now 
+                }))
         ];
 
-        // Explicitly add the current active pulse interval if we are paused
+        // Explicitly add the current active pulse interval IF it started after the first scan
         if (isPaused && activePulseFromContext) {
-            rawIntervals.push({
-                start: activePulseFromContext.startTime.getTime(),
-                end: now
-            });
+            const activeStart = activePulseFromContext.startTime instanceof Date ? activePulseFromContext.startTime.getTime() : (activePulseFromContext.startTime as any).toDate?.()?.getTime() || new Date(activePulseFromContext.startTime).getTime();
+            if (activeStart >= userFirstScan) {
+                rawIntervals.push({
+                    start: activeStart,
+                    end: now
+                });
+            }
         }
 
         // 2. Sort and Merge Overlapping Intervals
@@ -1907,42 +1922,55 @@ const TimelineDialog: React.FC<{
         // Pauses from session
         session.pauses.forEach(p => {
             if (p.userId === session.packerId) {
-                events.push({ 
-                    time: new Date(p.startTime).getTime(), 
-                    type: 'pause_start', 
-                    label: `Inicio Pausa: ${p.reason}`,
-                    color: 'bg-amber-500'
-                });
-                if (p.endTime) {
+                const startTime = new Date(p.startTime).getTime();
+                if (startTime >= stats.userFirstScan) {
                     events.push({ 
-                        time: new Date(p.endTime).getTime(), 
-                        type: 'pause_end', 
-                        label: 'Reanudación',
-                        color: 'bg-blue-500'
+                        time: startTime, 
+                        type: 'pause_start', 
+                        label: `Pausa: ${p.reason}`,
+                        color: 'bg-amber-500'
                     });
+                    if (p.endTime) {
+                        events.push({ 
+                            time: new Date(p.endTime).getTime(), 
+                            type: 'pause_end', 
+                            label: 'Reanudación',
+                            color: 'bg-blue-500'
+                        });
+                    }
                 }
             }
         });
 
         // Pulses (Global or User)
         stats.relevantPulses.forEach((p: any) => {
-            events.push({ 
-                time: p.startTime instanceof Date ? p.startTime.getTime() : p.startTime.toDate().getTime(), 
-                type: 'pulse_start', 
-                label: `Estado: ${p.status} - ${p.reason || ''}`,
-                color: 'bg-indigo-500'
-            });
-            if (p.endTime) {
+            const pulseStart = p.startTime instanceof Date ? p.startTime.getTime() : p.startTime.toDate().getTime();
+            // ONLY show pulses that happened after the first scan
+            if (pulseStart >= stats.userFirstScan) {
                 events.push({ 
-                    time: p.endTime instanceof Date ? p.endTime.getTime() : p.endTime.toDate().getTime(), 
-                    type: 'pulse_end', 
-                    label: 'Fin Estado',
-                    color: 'bg-slate-500'
+                    time: pulseStart, 
+                    type: 'pulse_start', 
+                    label: `Estado Suite: ${p.status} ${p.reason ? `(${p.reason})` : ''}`,
+                    color: 'bg-indigo-500'
                 });
+                if (p.endTime) {
+                    const pulseEnd = p.endTime instanceof Date ? p.endTime.getTime() : p.endTime.toDate().getTime();
+                    events.push({ 
+                        time: pulseEnd, 
+                        type: 'pulse_end', 
+                        label: 'Fin Estado Suite',
+                        color: 'bg-slate-500'
+                    });
+                }
             }
         });
 
-        return events.sort((a,b) => a.time - b.time);
+        // Deduplicate events that happen at the same time and have same label
+        return events
+            .sort((a,b) => a.time - b.time)
+            .filter((e, idx, self) => 
+                idx === 0 || !(e.time === self[idx-1].time && e.label === self[idx-1].label)
+            );
     }, [stats, session.pauses, session.packerId]);
 
     const formatTime = (time: number) => new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
