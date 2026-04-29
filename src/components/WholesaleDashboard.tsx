@@ -5,14 +5,15 @@ import React, { useEffect, useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { UploadCloud, Loader2, PackageCheck, ArrowLeft, Database, Boxes, BarChart2, Printer, Send, Lock, Compass, Download, FileSearch } from 'lucide-react';
+import { UploadCloud, Loader2, PackageCheck, ArrowLeft, Database, Boxes, BarChart2, Printer, Send, Lock, Compass, Download, FileSearch, RotateCcw } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
-import type { WholesaleOrder, WholesaleOrderDetail, OrderStatus, ProductDatabaseItem, PackingSession, PreprintedLabel, PackedItem } from '@/types';
-import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrder } from '@/app/actions';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { WholesaleOrder, WholesaleOrderDetail, OrderStatus, ProductDatabaseItem, PackingSession, PreprintedLabel, PackedItem, OperationPulse } from '@/types';
+import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrder, getPackedItemsForDate, getUserPulsesForDay } from '@/app/actions';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
 import { exportToXlsx } from '@/services/export';
@@ -197,6 +198,7 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
   const [orderForAuditing, setOrderForAuditing] = useState<WholesaleOrder | null>(null);
   const [allPackedItems, setAllPackedItems] = useState<PackedItem[]>([]);
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
+  const [isProductivityDialogOpen, setIsProductivityDialogOpen] = useState(false);
 
   const { role } = useAuth();
   const { toast } = useToast();
@@ -424,6 +426,10 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
             order={orderForPrinting}
         />
       )}
+      <PackingProductivityDialog
+        isOpen={isProductivityDialogOpen}
+        onOpenChange={setIsProductivityDialogOpen}
+      />
       {orderForAuditing && (
         <OrderAuditDialog
             isOpen={isAuditDialogOpen}
@@ -452,12 +458,12 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
             </Button>
             {(role === 'admin' || role === 'supervisor') && (
                 <>
-                    <Button onClick={onNavigateToDispatchDashboard} variant="default">
-                        <Compass className="mr-2 h-4 w-4" />
-                        Gestionar Despachos
+                    <Button onClick={() => setIsProductivityDialogOpen(true)} variant="outline" className="bg-primary/5 border-primary/20 hover:bg-primary/10">
+                        <BarChart2 className="mr-2 h-4 w-4" />
+                        Reporte de Productividad
                     </Button>
                     <Button onClick={onNavigateToPackedOrdersDashboard} variant="outline">
-                        <BarChart2 className="mr-2 h-4 w-4" />
+                        <Compass className="mr-2 h-4 w-4" />
                         Ver Analíticas
                     </Button>
                 </>
@@ -516,4 +522,218 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
       </Card>
     </div>
   );
+};
+
+const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open: boolean) => void }> = ({ isOpen, onOpenChange }) => {
+    const [isLoading, setIsLoading] = useState(false);
+    const [reportData, setReportData] = useState<any[]>([]);
+    const { toast } = useToast();
+
+    const fetchReportData = async () => {
+        setIsLoading(true);
+        try {
+            const today = new Date().toLocaleDateString('sv-SE');
+            const [sessionsRes, itemsRes] = await Promise.all([
+                loadAllPackingSessions(),
+                getPackedItemsForDate(today)
+            ]);
+
+            if (sessionsRes.error) throw new Error(sessionsRes.error);
+            if (itemsRes.error) throw new Error(itemsRes.error);
+
+            const sessions = sessionsRes.data || [];
+            const allItems = itemsRes.data || [];
+
+            // Group by packer
+            const packerMap = new Map<string, { id: string, name: string, items: PackedItem[], sessions: PackingSession[] }>();
+
+            // Collect all unique packers from sessions and items
+            sessions.forEach(s => {
+                if (!s.packerId) return;
+                if (!packerMap.has(s.packerId)) {
+                    packerMap.set(s.packerId, { id: s.packerId, name: s.packerName || 'Operario', items: [], sessions: [] });
+                }
+                packerMap.get(s.packerId)!.sessions.push(s);
+            });
+
+            allItems.forEach(i => {
+                if (!i.packerId) return;
+                if (!packerMap.has(i.packerId)) {
+                    packerMap.set(i.packerId, { id: i.packerId, name: 'Operario', items: [], sessions: [] });
+                }
+                packerMap.get(i.packerId)!.items.push(i);
+            });
+
+            const processedData = [];
+            for (const [packerId, data] of packerMap.entries()) {
+                const pulsesRes = await getUserPulsesForDay(packerId, today);
+                const pulses = pulsesRes.data || [];
+                
+                // Find first scan
+                const scanTimes = data.items.map(i => {
+                    const d = (i.scannedAt as any)?.toDate?.() || new Date(i.scannedAt);
+                    return d.getTime();
+                }).filter(t => !isNaN(t));
+                
+                const sessionTimes = data.sessions.flatMap(s => (s.units || []).map(u => u.createdAt ? new Date(u.createdAt).getTime() : 0)).filter(t => t > 0);
+                
+                const firstScanTime = Math.min(...scanTimes, ...sessionTimes);
+                
+                if (isNaN(firstScanTime) || firstScanTime === Infinity) continue; // Skip if no activity
+
+                const now = Date.now();
+                const totalElapsedMs = now - firstScanTime;
+                
+                // Calculate pauses after start
+                const intervals = [
+                    ...data.sessions.flatMap(s => (s.pauses || [])).filter(p => p.userId === packerId).map(p => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : now })),
+                    ...pulses.map(p => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : now }))
+                ];
+
+                // Merge and filter
+                intervals.sort((a,b) => a.start - b.start);
+                const merged = [];
+                if (intervals.length > 0) {
+                    let curr = { ...intervals[0] };
+                    for (let i = 1; i < intervals.length; i++) {
+                        if (intervals[i].start <= curr.end) curr.end = Math.max(curr.end, intervals[i].end);
+                        else { merged.push(curr); curr = { ...intervals[i] }; }
+                    }
+                    merged.push(curr);
+                }
+
+                let totalPauseMs = 0;
+                merged.forEach(p => {
+                    const s = Math.max(p.start, firstScanTime);
+                    const e = Math.min(p.end, now);
+                    if (e > s) totalPauseMs += (e - s);
+                });
+
+                const effectiveMs = Math.max(0, totalElapsedMs - totalPauseMs);
+                const units = data.items.reduce((sum, i) => sum + (i.quantity || 1), 0);
+                const uph = effectiveMs > 0 ? (units / (effectiveMs / 1000)) * 3600 : 0;
+                
+                // Current status from last pulse
+                const lastPulse = pulses.sort((a,b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())[0];
+
+                processedData.push({
+                    packerId,
+                    name: data.name,
+                    firstScanTime,
+                    totalItems: units,
+                    effectiveMs,
+                    uph,
+                    status: lastPulse?.status || 'Activo',
+                    isPaused: lastPulse?.type === 'pause' && !lastPulse.endTime
+                });
+            }
+
+            setReportData(processedData.sort((a,b) => b.totalItems - a.totalItems));
+        } catch (err: any) {
+            toast({ variant: 'destructive', title: 'Error', description: err.message });
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        if (isOpen) fetchReportData();
+    }, [isOpen]);
+
+    const formatMs = (ms: number) => {
+        const s = Math.floor(ms / 1000);
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        return `${h}h ${m}m`;
+    };
+
+    return (
+        <Dialog open={isOpen} onOpenChange={onOpenChange}>
+            <DialogContent className="max-w-5xl max-h-[90vh] flex flex-col">
+                <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                        <BarChart2 className="w-6 h-6 text-primary" />
+                        Reporte de Productividad de Empaque (Hoy)
+                    </DialogTitle>
+                    <DialogDescription>Resumen consolidado de todos los operarios que han empacado el día de hoy.</DialogDescription>
+                </DialogHeader>
+
+                {isLoading ? (
+                    <div className="flex-grow flex flex-col items-center justify-center p-12 gap-4">
+                        <Loader2 className="w-10 h-10 animate-spin text-primary" />
+                        <p className="text-muted-foreground">Procesando métricas de todos los trabajadores...</p>
+                    </div>
+                ) : (
+                    <div className="py-4 flex-grow overflow-y-auto pr-2">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                            <Card className="bg-primary/5">
+                                <CardContent className="pt-6">
+                                    <p className="text-sm font-medium text-muted-foreground">Total Ítems Empacados</p>
+                                    <p className="text-3xl font-bold">{reportData.reduce((sum, d) => sum + d.totalItems, 0)}</p>
+                                </CardContent>
+                            </Card>
+                            <Card className="bg-secondary/50">
+                                <CardContent className="pt-6">
+                                    <p className="text-sm font-medium text-muted-foreground">Operarios Activos</p>
+                                    <p className="text-3xl font-bold text-blue-600">{reportData.length}</p>
+                                </CardContent>
+                            </Card>
+                            <Card className="bg-green-500/5">
+                                <CardContent className="pt-6">
+                                    <p className="text-sm font-medium text-muted-foreground">Promedio Unidades/hr</p>
+                                    <p className="text-3xl font-bold text-green-600">
+                                        {reportData.length > 0 ? (reportData.reduce((sum, d) => sum + d.uph, 0) / reportData.length).toFixed(1) : '0.0'}
+                                    </p>
+                                </CardContent>
+                            </Card>
+                        </div>
+
+                        <div className="border rounded-md overflow-hidden">
+                            <Table>
+                                <TableHeader>
+                                    <TableRow>
+                                        <TableHead>Operario</TableHead>
+                                        <TableHead>Estado</TableHead>
+                                        <TableHead>Inicio</TableHead>
+                                        <TableHead className="text-right">Ítems</TableHead>
+                                        <TableHead className="text-right">T. Efectivo</TableHead>
+                                        <TableHead className="text-right font-bold text-primary">Unidades/hr</TableHead>
+                                    </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                    {reportData.map(d => (
+                                        <TableRow key={d.packerId}>
+                                            <TableCell className="font-medium">{d.name}</TableCell>
+                                            <TableCell>
+                                                <Badge variant={d.isPaused ? 'warning' : 'outline'} className={cn(!d.isPaused && "border-green-200 text-green-700 bg-green-50")}>
+                                                    {d.status}
+                                                </Badge>
+                                            </TableCell>
+                                            <TableCell className="text-xs text-muted-foreground">{new Date(d.firstScanTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</TableCell>
+                                            <TableCell className="text-right font-bold">{d.totalItems}</TableCell>
+                                            <TableCell className="text-right">{formatMs(d.effectiveMs)}</TableCell>
+                                            <TableCell className="text-right font-bold text-lg text-primary">{d.uph.toFixed(1)}</TableCell>
+                                        </TableRow>
+                                    ))}
+                                    {reportData.length === 0 && (
+                                        <TableRow>
+                                            <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">No se detectó actividad de empaque hoy.</TableCell>
+                                        </TableRow>
+                                    )}
+                                </TableBody>
+                            </Table>
+                        </div>
+                    </div>
+                )}
+
+                <DialogFooter className="gap-2 mt-4">
+                    <Button variant="outline" onClick={fetchReportData} disabled={isLoading}>
+                        <RotateCcw className="w-4 h-4 mr-2" />
+                        Actualizar
+                    </Button>
+                    <Button onClick={() => onOpenChange(false)}>Cerrar</Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
 };

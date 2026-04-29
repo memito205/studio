@@ -1404,6 +1404,26 @@ export async function revertLabelStatus(labelId: string): Promise<{ success: boo
     }
 }
 
+export async function getPackedItemsForDate(dateStr: string): Promise<{ data?: PackedItem[], error?: string }> {
+    try {
+        const start = Timestamp.fromDate(new Date(dateStr + 'T00:00:00'));
+        const end = Timestamp.fromDate(new Date(dateStr + 'T23:59:59'));
+        
+        const q = query(
+            collection(firestore, 'packedItems'),
+            where('scannedAt', '>=', start),
+            where('scannedAt', '<=', end)
+        );
+        
+        const querySnapshot = await getDocs(q);
+        const items = querySnapshot.docs.map(doc => ({ id: doc.id, ...convertTimestampsToDates(doc.data()) } as PackedItem));
+        return { data: items };
+    } catch (error: any) {
+        console.error("Error loading packed items for date:", error);
+        return { error: `Error loading items: ${error.message}` };
+    }
+}
+
 export async function getPackedItemsForOrder(orderId: string): Promise<{ data?: PackedItem[], error?: string }> {
     try {
         const q = query(collection(firestore, "packedItems"), where("orderId", "==", orderId));
