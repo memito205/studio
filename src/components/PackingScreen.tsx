@@ -97,14 +97,16 @@ const createItemKey = (ref: any, talla: any) => {
 const PauseDialog: React.FC<{
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
-    onConfirm: (reason: PauseReason) => void;
+    onConfirm: (reason: PauseReason, justification?: string) => void;
 }> = ({ isOpen, onOpenChange, onConfirm }) => {
     const [reason, setReason] = useState<PauseReason | ''>('');
+    const [justification, setJustification] = useState('');
 
     const handleConfirm = () => {
         if (reason) {
-            onConfirm(reason);
+            onConfirm(reason, reason === 'OTHER' ? justification : undefined);
             setReason('');
+            setJustification('');
         }
     };
 
@@ -115,21 +117,36 @@ const PauseDialog: React.FC<{
                     <DialogTitle>Pausar Operación</DialogTitle>
                     <DialogDescription>Seleccione el motivo de la pausa. El tiempo se registrará.</DialogDescription>
                 </DialogHeader>
-                <div className="py-4">
-                    <Select value={reason} onValueChange={(value) => setReason(value as PauseReason)}>
-                        <SelectTrigger>
-                            <SelectValue placeholder="Seleccione un motivo..." />
-                        </SelectTrigger>
-                        <SelectContent>
-                            {pauseReasons.map(r => (
-                                <SelectItem key={r} value={r}>{pauseReasonLabels[r]}</SelectItem>
-                            ))}
-                        </SelectContent>
-                    </Select>
+                <div className="py-4 space-y-4">
+                    <div className="space-y-2">
+                        <Label>Motivo de la Pausa</Label>
+                        <Select value={reason} onValueChange={(value) => setReason(value as PauseReason)}>
+                            <SelectTrigger>
+                                <SelectValue placeholder="Seleccione un motivo..." />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {pauseReasons.map(r => (
+                                    <SelectItem key={r} value={r}>{pauseReasonLabels[r]}</SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </div>
+
+                    {reason === 'OTHER' && (
+                        <div className="space-y-2 animate-in fade-in slide-in-from-top-1">
+                            <Label>Especifique la actividad (Justificación)</Label>
+                            <Input 
+                                value={justification}
+                                onChange={(e) => setJustification(e.target.value)}
+                                placeholder="Ej: Apoyo en otra área, reunión..."
+                                className="w-full"
+                            />
+                        </div>
+                    )}
                 </div>
                 <DialogFooter>
                     <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancelar</Button>
-                    <Button onClick={handleConfirm} disabled={!reason}>Confirmar Pausa</Button>
+                    <Button onClick={handleConfirm} disabled={!reason || (reason === 'OTHER' && !justification.trim())}>Confirmar Pausa</Button>
                 </DialogFooter>
             </DialogContent>
         </Dialog>
@@ -231,7 +248,8 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     const barcodeInputRef = React.useRef<HTMLInputElement>(null);
     const [overpackAlert, setOverpackAlert] = useState<OverpackAlertState>({ isOpen: false, itemKey: '', packed: 0, ordered: 0 });
     const [mixedReferenceError, setMixedReferenceError] = useState<{ show: boolean, expected: string, scanned: string } | null>(null);
-    const [externalPulses, setExternalPulses] = useState<OperationPulse[]>([]);
+    const [packerPulses, setPackerPulses] = useState<OperationPulse[]>([]);
+    const [isFetchingPulses, setIsFetchingPulses] = useState(false);
     const { isPaused, currentPulse, globalPulse, allPulses } = useSuitePulse();
     
     // State for productivity timer
@@ -306,11 +324,13 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         return activeUserUnit ? [activeUserUnit] : [];
     }, [session.units, user?.uid]);
     
-    // Timer effect now depends on user-specific first scan time
+    // Timer effect now depends on session-specific packer first scan time
     useEffect(() => {
         let timer: NodeJS.Timeout;
+        const targetPackerId = session.packerId;
+        
         const userFirstScanTime = session.units
-            .filter(u => u.createdBy === user?.uid && u.createdAt)
+            .filter(u => u.createdBy === targetPackerId && u.createdAt)
             .map(u => new Date(u.createdAt!).getTime())
             .filter(t => !isNaN(t))
             .sort((a,b)=>a-b)[0];
@@ -321,19 +341,43 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             }, 1000);
         }
         return () => clearInterval(timer);
-    }, [session.units, user?.uid]);
+    }, [session.units, session.packerId]);
+
+    // Fetch pulses for the session owner if the current user is a supervisor/admin
+    useEffect(() => {
+        const fetchOwnerPulses = async () => {
+            if (!session.packerId) return;
+            
+            // If the current user is the packer, we use allPulses from useSuitePulse
+            if (user?.uid === session.packerId) {
+                setPackerPulses(allPulses);
+                return;
+            }
+
+            // Otherwise (supervisor/admin), fetch the pulses for the packer
+            setIsFetchingPulses(true);
+            const today = new Date().toLocaleDateString('sv-SE'); // e.g. "2024-04-29"
+            const result = await getUserPulsesForDay(session.packerId, today);
+            if (result.data) {
+                setPackerPulses(result.data);
+            }
+            setIsFetchingPulses(false);
+        };
+
+        fetchOwnerPulses();
+    }, [session.packerId, user?.uid, allPulses]);
 
 
     const userPackingProgress = useMemo(() => {
-        if (!user) return {};
+        const targetPackerId = session.packerId;
         const progress: { [key: string]: number } = {};
         allPackedItems
-            .filter(item => item.packerId === user.uid)
+            .filter(item => item.packerId === targetPackerId)
             .forEach(item => {
                 progress[item.itemKey] = (progress[item.itemKey] || 0) + item.quantity;
             });
         return progress;
-    }, [allPackedItems, user]);
+    }, [allPackedItems, session.packerId]);
 
     const globalPackingProgress = useMemo(() => {
         const progress: { [key: string]: number } = {};
@@ -344,11 +388,11 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     }, [allPackedItems]);
     
     const totalUserPackedQuantity = useMemo(() => {
-        if (!user) return 0;
+        const targetPackerId = session.packerId;
         return allPackedItems
-            .filter(item => item.packerId === user.uid)
+            .filter(item => item.packerId === targetPackerId)
             .reduce((total, item) => total + item.quantity, 0);
-    }, [allPackedItems, user]);
+    }, [allPackedItems, session.packerId]);
 
 
     const handleBarcodeSubmit = async (e: React.FormEvent) => {
@@ -465,28 +509,37 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         }
     };
 
-    const handlePause = (reason: PauseReason) => {
-        if (!user) return;
-        setSession(prev => {
-            const now = new Date();
-            const newPauses = [...(prev.pauses || [])];
-            const newPause: PackingPause = { startTime: now, reason, userId: user.uid };
-            newPauses.push(newPause);
-            return { ...prev, status: 'paused', pauses: newPauses, lastActivity: now };
-        });
-        setIsPauseDialogOpen(false);
-    };
 
-    const handleResume = () => {
+    const handleResume = async () => {
         if (!user) return;
-        setSession(prev => {
+        setIsLoading(true);
+        try {
             const now = new Date();
-            const lastPause = prev.pauses?.slice().reverse().find(p => p.userId === user.uid && !p.endTime);
-            if (lastPause) {
-                lastPause.endTime = now;
-            }
-            return { ...prev, status: 'active', lastActivity: now };
-        });
+            setSession(prev => {
+                const lastPause = prev.pauses?.slice().reverse().find(p => p.userId === user.uid && !p.endTime);
+                if (lastPause) {
+                    lastPause.endTime = now;
+                }
+                return { ...prev, status: 'active', lastActivity: now };
+            });
+
+            // Sync with global pulse system
+            await import('@/app/actions').then(m => m.createPulse({
+                userId: user.uid,
+                userName: contextUserName || user.displayName || user.email || 'Operario',
+                email: user.email || undefined,
+                type: 'status_change',
+                status: 'Disponible',
+                startTime: now,
+                endTime: null
+            } as any));
+
+            toast({ title: 'Operación Reanudada', description: 'El tiempo efectivo se está contabilizando nuevamente.' });
+        } catch (error: any) {
+            toast({ variant: 'destructive', title: 'Error', description: error.message });
+        } finally {
+            setIsLoading(false);
+        }
     };
 
     const handleOpenCloseUnitDialog = (unitId: number) => {
@@ -800,6 +853,53 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         }
     };
 
+    const handlePause = async (reason: PauseReason, justification?: string) => {
+        if (!user) return;
+        setIsLoading(true);
+        try {
+            const now = new Date();
+            const newPuases = [...session.pauses, { 
+                startTime: now, 
+                reason, 
+                userId: user.uid,
+                justification // Optional field for pulses
+            }];
+            
+            setSession(prev => ({ ...prev, status: 'paused', pauses: newPuases }));
+            
+            // Sync with global pulse system
+            const pulseReasonMap: Record<PauseReason, any> = {
+                BREAKFAST: 'Desayuno',
+                LUNCH: 'Almuerzo',
+                SNACK: 'Refrigerio',
+                BATHROOM: 'Baño',
+                SUPPLIES: 'Falta de Insumos',
+                FAILURE: 'Falla de Máquina/Sistema',
+                RECYCLING: 'Reciclaje/Orden',
+                OTHER: 'Otro'
+            };
+
+            await import('@/app/actions').then(m => m.createPulse({
+                userId: user.uid,
+                userName: contextUserName || user.displayName || user.email || 'Operario',
+                email: user.email || undefined,
+                type: 'pause',
+                status: 'Pausado',
+                reason: pulseReasonMap[reason],
+                startTime: now,
+                endTime: null,
+                justification // Pass the justification to the backend action
+            } as any));
+
+            toast({ title: 'Operación Pausada', description: `Motivo: ${pauseReasonLabels[reason]}` });
+        } catch (error: any) {
+            toast({ variant: 'destructive', title: 'Error', description: error.message });
+        } finally {
+            setIsLoading(false);
+            setIsPauseDialogOpen(false);
+        }
+    };
+
     const handleAddManualItem = async (unitId: number, reference: string, talla: string, quantity: number) => {
         if (!reference || !talla || quantity <= 0) return;
 
@@ -962,10 +1062,11 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     const overallProgress = totalOrdered > 0 ? (totalPackedGlobal / totalOrdered) * 100 : 0;
     
     const productivityStats = useMemo(() => {
-        if (!user) return { totalElapsedTimeFormatted: '00:00:00', effectiveWorkTimeFormatted: '00:00:00', unitsPerHour: '0.0', compliance: '0.0' };
+        const targetPackerId = session.packerId;
+        if (!targetPackerId) return { totalElapsedTimeFormatted: '00:00:00', effectiveWorkTimeFormatted: '00:00:00', unitsPerHour: '0.0', compliance: '0.0' };
         
         const userFirstScan = session.units
-            .filter(u => u.createdBy === user.uid && u.createdAt)
+            .filter(u => u.createdBy === targetPackerId && u.createdAt)
             .map(u => new Date(u.createdAt!).getTime())
             .filter(t => !isNaN(t))
             .sort((a,b)=>a-b)[0];
@@ -975,11 +1076,15 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         const now = Date.now();
         const totalElapsedTimeMs = now - userFirstScan;
         
-        // 1. Collect all pause intervals
-        const activePulseFromContext = globalPulse || currentPulse;
+        // 1. Collect all pause intervals for the target packer
+        const activePulseFromContext = globalPulse || (user?.uid === targetPackerId ? currentPulse : null);
+        
+        // Use the packerPulses state if current user is not the packer
+        const relevantPulses = user?.uid === targetPackerId ? allPulses : packerPulses;
+
         const rawIntervals = [
-            ...session.pauses.map(p => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : now })),
-            ...allPulses.map(p => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : now }))
+            ...session.pauses.filter(p => p.userId === targetPackerId).map(p => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : now })),
+            ...relevantPulses.map(p => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : now }))
         ];
 
         // Explicitly add the current active pulse interval if we are paused
@@ -1039,7 +1144,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             unitsPerHour: unitsPerHour.toFixed(1),
             compliance: compliance.toFixed(1),
         };
-    }, [session, user, totalUserPackedQuantity, productivityGoal, elapsedTime]);
+    }, [session, user, totalUserPackedQuantity, productivityGoal, elapsedTime, packerPulses]);
 
     const lastScanInfo = useMemo(() => {
         if (lastScan?.status === 'success' && lastScan.item) {
@@ -1348,12 +1453,17 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                             </CardHeader>
                             <CardContent className="space-y-4">
                                 <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
-                                    <span className="text-sm font-medium text-muted-foreground">Items Empacados (Míos)</span>
+                                    <span className="text-sm font-medium text-muted-foreground mr-2">
+                                        {user?.uid === session.packerId ? 'Items Empacados (Míos)' : `Items Empacados (${session.packerName || 'Operario'})`}
+                                    </span>
                                     <span className="font-bold text-lg">{totalUserPackedQuantity}</span>
                                 </div>
                                 <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
                                     <span className="text-sm font-medium text-muted-foreground">Tiempo Efectivo</span>
-                                    <span className="font-bold font-mono text-green-600">{productivityStats.effectiveWorkTimeFormatted}</span>
+                                    <div className="flex flex-col items-end">
+                                        <span className="font-bold font-mono text-green-600">{productivityStats.effectiveWorkTimeFormatted}</span>
+                                        {isFetchingPulses && <span className="text-[10px] text-muted-foreground animate-pulse">Cargando pausas...</span>}
+                                    </div>
                                 </div>
                                 <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
                                     <span className="text-sm font-medium text-muted-foreground">Unidades/hr</span>
