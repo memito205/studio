@@ -780,7 +780,8 @@ const WarehouseReceptionView: React.FC<{
             
             if (andPrint) {
                 const transfersToUpdate = foundTransfers.filter(t => transferIdsToUpdate.includes(t.id));
-                setTransfersToPrint(transfersToUpdate);
+                // Consolidation: Group by TF before setting state for printing
+                setTransfersToPrint(groupTransfersByTF(transfersToUpdate));
             }
             
             onRefresh();
