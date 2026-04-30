@@ -5,7 +5,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { UploadCloud, Loader2, PackageCheck, ArrowLeft, Database, Boxes, BarChart2, Printer, Send, Lock, Compass, Download, FileSearch, RotateCcw } from 'lucide-react';
+import { UploadCloud, Loader2, PackageCheck, ArrowLeft, Database, Boxes, BarChart2, Printer, Send, Lock, Compass, Download, FileSearch, RotateCcw, Truck } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
@@ -461,6 +461,10 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
                     <Button onClick={() => setIsProductivityDialogOpen(true)} variant="outline" className="bg-primary/5 border-primary/20 hover:bg-primary/10">
                         <BarChart2 className="mr-2 h-4 w-4" />
                         Reporte de Productividad
+                    </Button>
+                    <Button onClick={onNavigateToDispatchDashboard} className="bg-amber-600 hover:bg-amber-700 text-white">
+                        <Truck className="mr-2 h-4 w-4" />
+                        Generar Despacho
                     </Button>
                     <Button onClick={onNavigateToPackedOrdersDashboard} variant="outline">
                         <Compass className="mr-2 h-4 w-4" />
