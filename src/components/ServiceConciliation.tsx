@@ -287,22 +287,60 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
     }));
 
     if (updatedRow) {
-      await updateExternalServiceRow(id, { [field]: value });
+      // Send all changed fields to the server, not just the single field
+      const currentUpdates: Partial<ExternalServiceRow> = {};
+      Object.keys(updatedRow).forEach(k => {
+          const key = k as keyof ExternalServiceRow;
+          const oldRow = data.find(r => r.id === id);
+          if (oldRow && updatedRow && oldRow[key] !== updatedRow[key]) {
+              currentUpdates[key] = updatedRow[key] as any;
+          }
+      });
+      // Safety: always ensure the original changed field is included if anything went wrong with diff
+      currentUpdates[field] = value;
+      
+      await updateExternalServiceRow(id, currentUpdates);
     }
   };
 
   const updateBatchField = async (batch: WeeklyBatch, field: keyof ExternalServiceRow, value: any) => {
     const rowsToUpdate = data.filter(row => getWeekKey(row.fechaServicio) === batch.weekKey && row.proveedor === batch.provider);
     
+    // Store final updates per row to send to Firestore
+    const updatesMap = new Map<string, Partial<ExternalServiceRow>>();
+
     setData(prev => prev.map(row => {
       if (getWeekKey(row.fechaServicio) === batch.weekKey && row.proveedor === batch.provider) {
-        return { ...row, [field]: value };
+        const updated = { ...row, [field]: value };
+        
+        if (field === 'valorFactura') {
+            const cobrar = updated.valorACobrar || 0;
+            const factura = cleanNumber(value);
+            updated.diferencia = cobrar - factura;
+        }
+
+        const currentUpdates: Partial<ExternalServiceRow> = {};
+        Object.keys(updated).forEach(k => {
+           const key = k as keyof ExternalServiceRow;
+           if (row[key] !== updated[key]) {
+               currentUpdates[key] = updated[key] as any;
+           }
+        });
+        currentUpdates[field] = value;
+        updatesMap.set(row.id, currentUpdates);
+
+        return updated;
       }
       return row;
     }));
 
     // Perform background updates
-    await Promise.all(rowsToUpdate.map(r => updateExternalServiceRow(r.id, { [field]: value })));
+    await Promise.all(rowsToUpdate.map(r => {
+        const updates = updatesMap.get(r.id);
+        if (updates) {
+            return updateExternalServiceRow(r.id, updates);
+        }
+    }));
   };
 
   const handleRatesUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
