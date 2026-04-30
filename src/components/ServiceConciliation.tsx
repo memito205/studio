@@ -58,6 +58,7 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
   const [expandedBatches, setExpandedBatches] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [activeElementId, setActiveElementId] = useState<string | null>(null);
   const { toast } = useToast();
 
   // Load data on mount
@@ -287,22 +288,16 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
     // Update local state immediately
     setData(prev => prev.map(row => row.id === id ? updated : row));
 
-    // Calculate diffs to save exactly what changed
-    const currentUpdates: Partial<ExternalServiceRow> = {};
-    Object.keys(updated).forEach(k => {
-        const key = k as keyof ExternalServiceRow;
-        if (oldRow[key] !== updated[key]) {
-            currentUpdates[key] = updated[key] as any;
-        }
-    });
-
-    if (value === undefined) {
-       currentUpdates[field] = null;
-    } else {
-       currentUpdates[field] = value;
+    // Restore focus if needed after state update
+    if (activeElementId) {
+        setTimeout(() => {
+            const el = document.getElementById(activeElementId);
+            if (el) el.focus();
+        }, 0);
     }
-    
-    const res = await updateExternalServiceRow(id, currentUpdates);
+
+    // Send the explicit updates to the server
+    const res = await updateExternalServiceRow(id, updated);
     if (!res.success) {
         toast({ variant: 'destructive', title: 'Error guardando celda', description: res.error || 'Error de base de datos' });
     }
@@ -312,7 +307,7 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
     const rowsToUpdate = data.filter(row => getWeekKey(row.fechaServicio) === batch.weekKey && row.proveedor === batch.provider);
     
     // Store final updates per row to send to Firestore
-    const updatesMap = new Map<string, Partial<ExternalServiceRow>>();
+    const updatesList: { id: string, data: ExternalServiceRow }[] = [];
 
     setData(prev => prev.map(row => {
       if (getWeekKey(row.fechaServicio) === batch.weekKey && row.proveedor === batch.provider) {
@@ -324,28 +319,14 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
             updated.diferencia = cobrar - factura;
         }
 
-        const currentUpdates: Partial<ExternalServiceRow> = {};
-        Object.keys(updated).forEach(k => {
-           const key = k as keyof ExternalServiceRow;
-           if (row[key] !== updated[key]) {
-               currentUpdates[key] = updated[key] as any;
-           }
-        });
-        currentUpdates[field] = value;
-        updatesMap.set(row.id, currentUpdates);
-
+        updatesList.push({ id: row.id, data: updated });
         return updated;
       }
       return row;
     }));
 
-    // Perform background updates
-    await Promise.all(rowsToUpdate.map(r => {
-        const updates = updatesMap.get(r.id);
-        if (updates) {
-            return updateExternalServiceRow(r.id, updates);
-        }
-    }));
+    // Perform background updates using the explicitly captured updated data
+    await Promise.all(updatesList.map(u => updateExternalServiceRow(u.id, u.data)));
   };
 
   const handleRatesUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -592,24 +573,37 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
                         </td>
                         <td className="px-6 py-4">
                           <input 
+                            id={`provider-${row.id}`}
                             list={`providers-${row.id}`}
                             className="bg-slate-100 border border-slate-200 rounded px-2 py-1.5 text-xs font-black uppercase outline-none focus:border-indigo-500 w-full"
                             value={row.proveedor || ''} 
+                            onFocus={() => setActiveElementId(`provider-${row.id}`)}
+                            onBlur={() => setActiveElementId(null)}
                             onChange={(e) => updateRowField(row.id, 'proveedor', e.target.value)}
                           />
                           <datalist id={`providers-${row.id}`}>{providerSuggestions.map(p => <option key={p} value={p} />)}</datalist>
                         </td>
                         <td className="px-6 py-4">
                           <input 
+                            id={`service-${row.id}`}
                             list={`services-${row.id}`}
                             className="bg-slate-50 border border-slate-200 rounded px-2 py-1.5 text-xs font-medium outline-none focus:border-indigo-500 w-full"
                             value={row.servicio || ''} 
+                            onFocus={() => setActiveElementId(`service-${row.id}`)}
+                            onBlur={() => setActiveElementId(null)}
                             onChange={(e) => updateRowField(row.id, 'servicio', e.target.value)}
                           />
                           <datalist id={`services-${row.id}`}>{getServiceSuggestions(row.proveedor).map(s => <option key={s} value={s} />)}</datalist>
                         </td>
                         <td className="px-6 py-4">
-                           <input className="bg-slate-100/50 border border-slate-200 rounded px-2 py-1 text-[10px] uppercase font-bold w-full" value={row.destino || ''} onChange={(e) => updateRowField(row.id, 'destino', e.target.value)} />
+                           <input 
+                             id={`dest-${row.id}`}
+                             className="bg-slate-100/50 border border-slate-200 rounded px-2 py-1 text-[10px] uppercase font-bold w-full" 
+                             value={row.destino || ''} 
+                             onFocus={() => setActiveElementId(`dest-${row.id}`)}
+                             onBlur={() => setActiveElementId(null)}
+                             onChange={(e) => updateRowField(row.id, 'destino', e.target.value)} 
+                           />
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex gap-2 items-center">
