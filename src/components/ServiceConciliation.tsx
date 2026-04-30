@@ -297,9 +297,16 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
           }
       });
       // Safety: always ensure the original changed field is included if anything went wrong with diff
-      currentUpdates[field] = value;
+      if (value === undefined) {
+         currentUpdates[field] = null;
+      } else {
+         currentUpdates[field] = value;
+      }
       
-      await updateExternalServiceRow(id, currentUpdates);
+      const res = await updateExternalServiceRow(id, currentUpdates);
+      if (!res.success) {
+          toast({ variant: 'destructive', title: 'Error guardando celda', description: res.error || 'Error desconocido' });
+      }
     }
   };
 
