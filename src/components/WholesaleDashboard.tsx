@@ -13,7 +13,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { WholesaleOrder, WholesaleOrderDetail, OrderStatus, ProductDatabaseItem, PackingSession, PreprintedLabel, PackedItem, OperationPulse } from '@/types';
-import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrder, getPackedItemsForDate, getUserPulsesForDay } from '@/app/actions';
+import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrder, getPackedItemsForDate, getUserPulsesForDay, loadOperatorMappings } from '@/app/actions';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
 import { exportToXlsx } from '@/services/export';
@@ -534,9 +534,10 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
         setIsLoading(true);
         try {
             const today = new Date().toLocaleDateString('sv-SE');
-            const [sessionsRes, itemsRes] = await Promise.all([
+            const [sessionsRes, itemsRes, mappingsRes] = await Promise.all([
                 loadAllPackingSessions(),
-                getPackedItemsForDate(today)
+                getPackedItemsForDate(today),
+                loadOperatorMappings()
             ]);
 
             if (sessionsRes.error) throw new Error(sessionsRes.error);
@@ -544,6 +545,7 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
 
             const sessions = sessionsRes.data || [];
             const allItems = itemsRes.data || [];
+            const mappings = mappingsRes.data || {};
 
             // Group by packer
             const packerMap = new Map<string, { id: string, name: string, items: PackedItem[], sessions: PackingSession[] }>();
@@ -574,9 +576,12 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
                 const pulsesRes = await getUserPulsesForDay(packerId, today);
                 const pulses = pulsesRes.data || [];
                 
-                // Better name retrieval
+                // Better name retrieval: Priority: Mappings > Pulse Name > Session Name > Default
                 let bestName = data.name;
-                if (bestName === 'Operario' || bestName.includes('@')) {
+                
+                if (mappings[packerId]) {
+                    bestName = mappings[packerId];
+                } else if (bestName === 'Operario' || bestName.includes('@')) {
                     const pulseWithName = pulses.find(p => p.userName && p.userName !== 'Operario' && !p.userName.includes('@'));
                     if (pulseWithName) bestName = pulseWithName.userName;
                 }
