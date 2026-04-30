@@ -261,52 +261,50 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
   }, [data, filterProvider]);
 
   const updateRowField = async (id: string, field: keyof ExternalServiceRow, value: any) => {
-    let updatedRow: ExternalServiceRow | null = null;
-    setData(prev => prev.map(row => {
-      if (row.id !== id) return row;
-      const updated = { ...row, [field]: value };
-      
-      if (field === 'proveedor' || field === 'servicio' || field === 'cantidad') {
-        const prov = field === 'proveedor' ? value : row.proveedor;
-        const serv = field === 'servicio' ? value : row.servicio;
-        const qty = field === 'cantidad' ? cleanNumber(value) : row.cantidad;
-        const newVal = calculateValor(prov, serv, qty);
-        if (newVal > 0) {
-          updated.valorACobrar = newVal;
-          updated.metodoPago = getMethod(prov, serv) as any;
+    const oldRow = data.find(row => row.id === id);
+    if (!oldRow) return;
+
+    let updated = { ...oldRow, [field]: value };
+    
+    // Auto-calculate depending on field changes
+    if (field === 'proveedor' || field === 'servicio' || field === 'cantidad') {
+      const prov = field === 'proveedor' ? value : oldRow.proveedor;
+      const serv = field === 'servicio' ? value : oldRow.servicio;
+      const qty = field === 'cantidad' ? cleanNumber(value) : oldRow.cantidad;
+      const newVal = calculateValor(prov, serv, qty);
+      if (newVal > 0) {
+        updated.valorACobrar = newVal;
+        updated.metodoPago = getMethod(prov, serv) as any;
+      }
+    }
+
+    if (field === 'valorACobrar' || field === 'valorFactura') {
+      const cobrar = field === 'valorACobrar' ? cleanNumber(value) : (oldRow.valorACobrar || 0);
+      const factura = field === 'valorFactura' ? cleanNumber(value) : (oldRow.valorFactura || 0);
+      updated.diferencia = cobrar - factura;
+    }
+
+    // Update local state immediately
+    setData(prev => prev.map(row => row.id === id ? updated : row));
+
+    // Calculate diffs to save exactly what changed
+    const currentUpdates: Partial<ExternalServiceRow> = {};
+    Object.keys(updated).forEach(k => {
+        const key = k as keyof ExternalServiceRow;
+        if (oldRow[key] !== updated[key]) {
+            currentUpdates[key] = updated[key] as any;
         }
-      }
+    });
 
-      if (field === 'valorACobrar' || field === 'valorFactura') {
-        const cobrar = field === 'valorACobrar' ? cleanNumber(value) : (row.valorACobrar || 0);
-        const factura = field === 'valorFactura' ? cleanNumber(value) : (row.valorFactura || 0);
-        updated.diferencia = cobrar - factura;
-      }
-      updatedRow = updated;
-      return updated;
-    }));
-
-    if (updatedRow) {
-      // Send all changed fields to the server, not just the single field
-      const currentUpdates: Partial<ExternalServiceRow> = {};
-      Object.keys(updatedRow).forEach(k => {
-          const key = k as keyof ExternalServiceRow;
-          const oldRow = data.find(r => r.id === id);
-          if (oldRow && updatedRow && oldRow[key] !== updatedRow[key]) {
-              currentUpdates[key] = updatedRow[key] as any;
-          }
-      });
-      // Safety: always ensure the original changed field is included if anything went wrong with diff
-      if (value === undefined) {
-         currentUpdates[field] = null;
-      } else {
-         currentUpdates[field] = value;
-      }
-      
-      const res = await updateExternalServiceRow(id, currentUpdates);
-      if (!res.success) {
-          toast({ variant: 'destructive', title: 'Error guardando celda', description: res.error || 'Error desconocido' });
-      }
+    if (value === undefined) {
+       currentUpdates[field] = null;
+    } else {
+       currentUpdates[field] = value;
+    }
+    
+    const res = await updateExternalServiceRow(id, currentUpdates);
+    if (!res.success) {
+        toast({ variant: 'destructive', title: 'Error guardando celda', description: res.error || 'Error de base de datos' });
     }
   };
 
