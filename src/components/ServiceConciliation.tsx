@@ -474,6 +474,45 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
     e.target.value = '';
   };
 
+  const handleBatchExport = (batch: WeeklyBatch) => {
+    const exportData: any[] = [];
+    
+    // Group all stores mentioned in all services to create headers
+    const allStores = new Set<string>();
+    Object.values(batch.serviceBreakdown).forEach(stats => {
+      Object.keys(stats.stores).forEach(s => allStores.add(s));
+    });
+
+    const sortedStores = Array.from(allStores).sort();
+
+    // Row 1: Header for services
+    Object.entries(batch.serviceBreakdown).forEach(([service, stats]) => {
+      const row: any = {
+        "Proveedor": batch.provider,
+        "Semana": batch.weekRange,
+        "Servicio": service,
+        "Cantidad Total": stats.totalQty,
+        "Metodo": stats.method,
+        "Tarifa": stats.rate,
+        "Total General": stats.total
+      };
+
+      // Add column per store
+      sortedStores.forEach(store => {
+        row[store] = stats.stores[store] || 0;
+      });
+
+      exportData.push(row);
+    });
+
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Resumen_Compra");
+    
+    const fileName = `Resumen_Compra_${batch.provider}_${batch.weekKey}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+  };
+
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50">
@@ -642,7 +681,7 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
                   const isExpanded = expandedBatches.includes(bKey);
                   return (
                     <div key={bKey} className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-md">
-                      <div className="bg-amber-500 text-white px-8 py-5 flex justify-between items-center cursor-pointer" onClick={() => setExpandedBatches(prev => isExpanded ? prev.filter(k => k !== bKey) : [...prev, bKey])}>
+                          <div className="bg-amber-500 text-white px-8 py-5 flex justify-between items-center cursor-pointer" onClick={() => setExpandedBatches(prev => isExpanded ? prev.filter(k => k !== bKey) : [...prev, bKey])}>
                         <div className="flex items-center gap-6">
                            {isExpanded ? <ChevronDown size={24} /> : <ChevronRight size={24} />}
                            <div>
@@ -650,11 +689,18 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
                               <h3 className="text-xl font-black uppercase tracking-tight mt-1">{batch.provider}</h3>
                            </div>
                         </div>
-                        <div className="flex items-center gap-10">
+                        <div className="flex items-center gap-6">
                            <div className="text-right">
                               <p className="text-[10px] font-bold uppercase opacity-75">Suma Semanal</p>
                               <p className="text-2xl font-mono font-black">${batch.totalValue.toLocaleString()}</p>
                            </div>
+                           <button 
+                             onClick={(e) => { e.stopPropagation(); handleBatchExport(batch); }}
+                             className="bg-white/20 hover:bg-white/30 p-3 rounded-xl transition-all shadow-sm active:scale-90"
+                             title="Exportar Resumen por Tienda"
+                           >
+                              <Download size={20} />
+                           </button>
                            <div className="bg-white/20 p-4 rounded-xl flex items-center gap-3" onClick={e => e.stopPropagation()}>
                               <ShoppingCart size={20} />
                               <input 
