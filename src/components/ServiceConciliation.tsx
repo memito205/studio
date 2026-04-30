@@ -223,7 +223,14 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
       const rowValue = Number(row.valorACobrar || 0);
 
       if (!b.serviceBreakdown[serviceName]) {
-        b.serviceBreakdown[serviceName] = { total: 0, totalQty: 0, stores: {}, storesQty: {} };
+        b.serviceBreakdown[serviceName] = { 
+          total: 0, 
+          totalQty: 0, 
+          stores: {}, 
+          storesQty: {},
+          rate: getUnitRate(row.proveedor, row.servicio),
+          method: getMethod(row.proveedor, row.servicio)
+        };
       }
 
       const rowQty = Number(row.cantidad || 0);
@@ -664,7 +671,17 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
                         <div className="p-8 bg-slate-50/20">
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                                 {Object.entries(batch.serviceBreakdown).map(([service, stats]) => (
-                                    <CardKeyMetric key={service} title={service} value={stats.total} quantity={stats.totalQty} stores={stats.stores} storesQty={stats.storesQty} total={batch.totalValue} />
+                                    <CardKeyMetric 
+                                      key={service} 
+                                      title={service} 
+                                      value={stats.total} 
+                                      quantity={stats.totalQty} 
+                                      stores={stats.stores} 
+                                      storesQty={stats.storesQty} 
+                                      total={batch.totalValue}
+                                      unitRate={stats.rate}
+                                      method={stats.method}
+                                    />
                                 ))}
                             </div>
                         </div>
@@ -769,16 +786,22 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
   );
 };
 
-const CardKeyMetric = ({ title, value, quantity, stores, storesQty, total }: any) => (
+const CardKeyMetric = ({ title, value, quantity, stores, storesQty, total, unitRate, method }: any) => (
     <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
         <div className="flex justify-between items-start mb-4">
             <h4 className="font-bold text-slate-800">{title}</h4>
             <span className="text-xs font-black text-amber-600 bg-amber-50 px-2 py-1 rounded">{((value / total) * 100).toFixed(1)}%</span>
         </div>
-        <div className="flex items-end gap-2 mb-6">
+        <div className="flex items-end gap-2 mb-2">
             <span className="text-2xl font-mono font-black text-slate-700">${value.toLocaleString()}</span>
-            <span className="text-xs text-slate-400 mb-1">({quantity.toLocaleString()} unds)</span>
+            <span className="text-xs text-slate-400 mb-1">({quantity.toLocaleString()} {method === 'Unidad' ? 'unds' : method === 'Jornada' ? 'días' : 'hrs'})</span>
         </div>
+        {unitRate > 0 && (
+          <div className="mb-6">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">Valor Unitario: </span>
+            <span className="text-xs font-mono font-bold text-blue-600">${unitRate.toLocaleString()}</span>
+          </div>
+        )}
         <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
             {Object.entries(stores).map(([store, val]: any) => (
                 <div key={store} className="flex justify-between text-[10px] items-center border-b border-slate-50 pb-1">
