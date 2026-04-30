@@ -325,10 +325,10 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         return activeUserUnit ? [activeUserUnit] : [];
     }, [session.units, user?.uid]);
     
-    // Timer effect now depends on session-specific packer first scan time
+    // Timer effect now depends on current user first scan time
     useEffect(() => {
         let timer: NodeJS.Timeout;
-        const targetPackerId = session.packerId;
+        const targetPackerId = user?.uid || session.packerId;
         
         const userFirstScanTime = session.units
             .filter(u => u.createdBy === targetPackerId && u.createdAt)
@@ -342,35 +342,36 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             }, 1000);
         }
         return () => clearInterval(timer);
-    }, [session.units, session.packerId]);
+    }, [session.units, session.packerId, user?.uid]);
 
-    // Fetch pulses for the session owner if the current user is a supervisor/admin
+    // Fetch pulses for the current user (if operario) or session owner (if admin/supervisor observing)
     useEffect(() => {
-        const fetchOwnerPulses = async () => {
-            if (!session.packerId) return;
+        const fetchTargetPulses = async () => {
+            const targetPackerId = user?.uid || session.packerId;
+            if (!targetPackerId) return;
             
-            // If the current user is the packer, we use allPulses from useSuitePulse
-            if (user?.uid === session.packerId) {
+            // If the current user is the target, we use allPulses from useSuitePulse
+            if (user?.uid === targetPackerId) {
                 setPackerPulses(allPulses);
                 return;
             }
-
-            // Otherwise (supervisor/admin), fetch the pulses for the packer
+ 
+            // Otherwise (supervisor/admin observing another user's session), fetch the pulses for that user
             setIsFetchingPulses(true);
             const today = new Date().toLocaleDateString('sv-SE'); // e.g. "2024-04-29"
-            const result = await getUserPulsesForDay(session.packerId, today);
+            const result = await getUserPulsesForDay(targetPackerId, today);
             if (result.data) {
                 setPackerPulses(result.data);
             }
             setIsFetchingPulses(false);
         };
-
-        fetchOwnerPulses();
+ 
+        fetchTargetPulses();
     }, [session.packerId, user?.uid, allPulses]);
 
 
     const userPackingProgress = useMemo(() => {
-        const targetPackerId = session.packerId;
+        const targetPackerId = user?.uid || session.packerId;
         const progress: { [key: string]: number } = {};
         allPackedItems
             .filter(item => item.packerId === targetPackerId)
@@ -378,7 +379,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 progress[item.itemKey] = (progress[item.itemKey] || 0) + item.quantity;
             });
         return progress;
-    }, [allPackedItems, session.packerId]);
+    }, [allPackedItems, session.packerId, user?.uid]);
 
     const globalPackingProgress = useMemo(() => {
         const progress: { [key: string]: number } = {};
@@ -389,11 +390,11 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     }, [allPackedItems]);
     
     const totalUserPackedQuantity = useMemo(() => {
-        const targetPackerId = session.packerId;
+        const targetPackerId = user?.uid || session.packerId;
         return allPackedItems
             .filter(item => item.packerId === targetPackerId)
             .reduce((total, item) => total + item.quantity, 0);
-    }, [allPackedItems, session.packerId]);
+    }, [allPackedItems, session.packerId, user?.uid]);
 
 
     const handleBarcodeSubmit = async (e: React.FormEvent) => {
@@ -1063,7 +1064,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     const overallProgress = totalOrdered > 0 ? (totalPackedGlobal / totalOrdered) * 100 : 0;
     
     const productivityStats = useMemo(() => {
-        const targetPackerId = session.packerId;
+        const targetPackerId = user?.uid || session.packerId;
         if (!targetPackerId) return { totalElapsedTimeFormatted: '00:00:00', effectiveWorkTimeFormatted: '00:00:00', unitsPerHour: '0.0', compliance: '0.0' };
         
         const times: number[] = [];
@@ -1507,7 +1508,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                 <div className="flex justify-between items-center p-3 bg-muted/50 rounded-md">
                                     <div className="flex flex-col">
                                         <span className="text-sm font-medium text-muted-foreground mr-2">
-                                            {user?.uid === session.packerId ? 'Items Empacados (Míos)' : `Items Empacados (${session.packerName || 'Operario'})`}
+                                            {user?.uid === (user?.uid || session.packerId) ? 'Items Empacados (Míos)' : `Items Empacados (${session.packerName || 'Operario'})`}
                                         </span>
                                         <div className="flex gap-2">
                                             <Badge variant="outline" className="text-[10px] h-4">
