@@ -477,32 +477,36 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
   const handleBatchExport = (batch: WeeklyBatch) => {
     const exportData: any[] = [];
     
-    // Group all stores mentioned in all services to create headers
-    const allStores = new Set<string>();
-    Object.values(batch.serviceBreakdown).forEach(stats => {
-      Object.keys(stats.stores).forEach(s => allStores.add(s));
-    });
-
-    const sortedStores = Array.from(allStores).sort();
-
-    // Row 1: Header for services
     Object.entries(batch.serviceBreakdown).forEach(([service, stats]) => {
-      const row: any = {
+      // First, add a "Total" row for this service for quick reference
+      exportData.push({
         "Proveedor": batch.provider,
         "Semana": batch.weekRange,
         "Servicio": service,
-        "Cantidad Total": stats.totalQty,
+        "Destino/Tienda": "--- TOTAL SERVICIO ---",
+        "Cant. Unitaria": stats.totalQty,
         "Metodo": stats.method,
         "Tarifa": stats.rate,
-        "Total General": stats.total
-      };
-
-      // Add column per store
-      sortedStores.forEach(store => {
-        row[store] = stats.stores[store] || 0;
+        "Subtotal": stats.total
       });
 
-      exportData.push(row);
+      // Then, add one row per store
+      Object.entries(stats.stores).sort((a,b) => a[0].localeCompare(b[0])).forEach(([store, value]) => {
+        const storeQty = stats.storesQty[store] || 0;
+        exportData.push({
+          "Proveedor": batch.provider,
+          "Semana": batch.weekRange,
+          "Servicio": service,
+          "Destino/Tienda": store,
+          "Cant. Unitaria": storeQty,
+          "Metodo": stats.method,
+          "Tarifa": stats.rate,
+          "Subtotal": value
+        });
+      });
+
+      // Add a spacer row for readability
+      exportData.push({});
     });
 
     const ws = XLSX.utils.json_to_sheet(exportData);
