@@ -526,6 +526,7 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
 
 const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open: boolean) => void }> = ({ isOpen, onOpenChange }) => {
     const [isLoading, setIsLoading] = useState(false);
+    const [debugInfo, setDebugInfo] = useState<any>(null);
     const [reportData, setReportData] = useState<any[]>([]);
     const { toast } = useToast();
 
@@ -653,6 +654,14 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
                 }
             }
 
+            setDebugInfo({
+                itemsCount: allItems.length,
+                sessionsCount: sessions.length,
+                packerMapSize: packerMap.size,
+                processedLength: processedData.length,
+                sampleItemScanAt: allItems[0]?.scannedAt,
+                sampleType: typeof allItems[0]?.scannedAt
+            });
             setReportData(processedData.sort((a,b) => b.totalItems - a.totalItems));
         } catch (err: any) {
             toast({ variant: 'destructive', title: 'Error', description: err.message });
@@ -748,6 +757,11 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
                                 </TableBody>
                             </Table>
                         </div>
+                        {debugInfo && (
+                            <div className="mt-4 p-2 bg-gray-100 text-xs text-black rounded break-all">
+                                Debug: {JSON.stringify(debugInfo)}
+                            </div>
+                        )}
                     </div>
                 )}
 
