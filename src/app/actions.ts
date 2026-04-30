@@ -4026,6 +4026,9 @@ export async function getExternalServiceRows(): Promise<{ success: boolean; data
         const q = query(collection(firestore, 'externalServices'), orderBy('fechaServicio', 'desc'), limit(1000));
         const querySnapshot = await getDocs(q);
         const rows = querySnapshot.docs.map(doc => convertTimestampsToDates({ id: doc.id, ...doc.data() }) as ExternalServiceRow);
+        
+        console.log(`FETCHED ${rows.length} EXTERNAL SERVICES. Sample: manual items count: ${rows.filter(r => r.id.includes('manual')).length}`);
+        
         return { success: true, data: rows };
     } catch (e: any) {
         console.error("Error loading external services:", e);

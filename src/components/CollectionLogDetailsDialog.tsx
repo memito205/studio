@@ -41,15 +41,30 @@ export const CollectionLogDetailsDialog: React.FC<CollectionLogDetailsDialogProp
     }
   }, [isOpen, fetchDetails]);
 
+  const groupedTransfers = React.useMemo(() => {
+    const map = new Map<string, TransferEntry & { totalUnidades: number }>();
+    for (const t of transfers) {
+      const key = t.numeroTF;
+      if (!map.has(key)) {
+        map.set(key, { ...t, totalUnidades: t.cantidad || 1 });
+      } else {
+        const existing = map.get(key)!;
+        existing.totalUnidades += (t.cantidad || 1);
+      }
+    }
+    return Array.from(map.values());
+  }, [transfers]);
+
   const handleExport = () => {
-    if (transfers.length === 0) {
+    if (groupedTransfers.length === 0) {
       toast({ variant: 'destructive', title: 'Sin datos', description: 'No hay transferencias para exportar.' });
       return;
     }
-    const dataToExport = transfers.map(t => ({
+    const dataToExport = groupedTransfers.map(t => ({
       'Numero TF': t.numeroTF,
       'Origen': t.bodegaOrigen,
       'Destino': t.bodegaDestino,
+      'Unidades': t.totalUnidades,
       'Fecha TF': t.fecha.toLocaleDateString('es-CO'),
     }));
     exportToXlsx(dataToExport, `Detalle_Recoleccion_${log?.placa}_${log?.createdAt.toISOString().split('T')[0]}`);
@@ -76,17 +91,19 @@ export const CollectionLogDetailsDialog: React.FC<CollectionLogDetailsDialogProp
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Número TF</TableHead>
-                    <TableHead>Origen</TableHead>
-                    <TableHead>Destino</TableHead>
+                     <TableHead>Número TF</TableHead>
+                     <TableHead>Origen</TableHead>
+                     <TableHead>Destino</TableHead>
+                     <TableHead>Unidades</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {transfers.map(t => (
+                  {groupedTransfers.map(t => (
                     <TableRow key={t.id}>
                       <TableCell className="font-medium">{t.numeroTF}</TableCell>
                       <TableCell>{t.bodegaOrigen}</TableCell>
                       <TableCell>{t.bodegaDestino}</TableCell>
+                      <TableCell>{t.totalUnidades}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
