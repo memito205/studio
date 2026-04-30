@@ -561,6 +561,7 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
                 if (!packerMap.has(i.packerId)) {
                     packerMap.set(i.packerId, { id: i.packerId, name: 'Operario', items: [], sessions: [] });
                 }
+                packerMap.get(i.packerId)!.items.push(i);
             });
 
             const processedData = [];
