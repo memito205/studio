@@ -1177,6 +1177,8 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
         };
 
+        const targetPackerName = targetPackerId === user?.uid ? (contextUserName || user?.displayName || user?.email || 'Mí') : (session.packerName || 'Operario');
+ 
         return {
             totalElapsedTimeFormatted: formatElapsedTime(totalElapsedTimeMs),
             effectiveWorkTimeFormatted: formatElapsedTime(effectiveWorkTimeMs),
@@ -1184,9 +1186,11 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             compliance: compliance.toFixed(1),
             userFirstScan,
             relevantPulses,
-            totalPauseMs
+            totalPauseMs,
+            targetPackerId,
+            targetPackerName
         };
-    }, [session, user, totalUserPackedQuantity, productivityGoal, elapsedTime, packerPulses]);
+    }, [session, user, totalUserPackedQuantity, productivityGoal, elapsedTime, packerPulses, contextUserName]);
 
     const lastScanInfo = useMemo(() => {
         if (lastScan?.status === 'success' && lastScan.item) {
@@ -1922,13 +1926,13 @@ const TimelineDialog: React.FC<{
 
         // Pauses from session
         session.pauses.forEach(p => {
-            if (p.userId === session.packerId) {
+            if (p.userId === stats.targetPackerId) {
                 const startTime = new Date(p.startTime).getTime();
                 if (startTime >= stats.userFirstScan) {
                     events.push({ 
                         time: startTime, 
                         type: 'pause_start', 
-                        label: `Pausa: ${p.reason}`,
+                        label: `Pausa: ${pauseReasonLabels[p.reason as PauseReason] || p.reason}`,
                         color: 'bg-amber-500'
                     });
                     if (p.endTime) {
@@ -1972,7 +1976,7 @@ const TimelineDialog: React.FC<{
             .filter((e, idx, self) => 
                 idx === 0 || !(e.time === self[idx-1].time && e.label === self[idx-1].label)
             );
-    }, [stats, session.pauses, session.packerId]);
+    }, [stats, session.pauses]);
 
     const formatTime = (time: number) => new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -1985,7 +1989,7 @@ const TimelineDialog: React.FC<{
                         Línea de Tiempo de Productividad
                     </DialogTitle>
                     <DialogDescription>
-                        Desglose detallado de la jornada para {session.packerName || 'el operario'}.
+                        Desglose detallado de la jornada para {stats.targetPackerName || 'el operario'}.
                     </DialogDescription>
                 </DialogHeader>
 
