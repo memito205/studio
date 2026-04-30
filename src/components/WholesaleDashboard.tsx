@@ -561,25 +561,36 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
                 if (!packerMap.has(i.packerId)) {
                     packerMap.set(i.packerId, { id: i.packerId, name: 'Operario', items: [], sessions: [] });
                 }
-                packerMap.get(i.packerId)!.items.push(i);
             });
 
             const processedData = [];
+            const todayStart = new Date();
+            todayStart.setHours(0, 0, 0, 0);
+            const todayStartTime = todayStart.getTime();
+
             for (const [packerId, data] of packerMap.entries()) {
                 const pulsesRes = await getUserPulsesForDay(packerId, today);
                 const pulses = pulsesRes.data || [];
                 
-                // Find first scan
+                // Better name retrieval
+                let bestName = data.name;
+                if (bestName === 'Operario' || bestName.includes('@')) {
+                    const pulseWithName = pulses.find(p => p.userName && p.userName !== 'Operario' && !p.userName.includes('@'));
+                    if (pulseWithName) bestName = pulseWithName.userName;
+                }
+
+                // Find first scan strictly today
                 const scanTimes = data.items.map(i => {
                     const d = (i.scannedAt as any)?.toDate?.() || new Date(i.scannedAt);
                     return d.getTime();
-                }).filter(t => !isNaN(t));
+                }).filter(t => !isNaN(t) && t >= todayStartTime);
                 
-                const sessionTimes = data.sessions.flatMap(s => (s.units || []).map(u => u.createdAt ? new Date(u.createdAt).getTime() : 0)).filter(t => t > 0);
+                const sessionTimes = data.sessions.flatMap(s => (s.units || []).map(u => u.createdAt ? new Date(u.createdAt).getTime() : 0))
+                    .filter(t => t >= todayStartTime);
                 
                 const firstScanTime = Math.min(...scanTimes, ...sessionTimes);
                 
-                if (isNaN(firstScanTime) || firstScanTime === Infinity) continue; // Skip if no activity
+                if (isNaN(firstScanTime) || firstScanTime === Infinity) continue;
 
                 const now = Date.now();
                 const totalElapsedMs = now - firstScanTime;
@@ -630,7 +641,7 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
                 if (units > 0) {
                     processedData.push({
                         packerId,
-                        name: data.name,
+                        name: bestName,
                         firstScanTime,
                         totalItems: units,
                         effectiveMs,

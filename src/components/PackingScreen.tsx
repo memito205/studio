@@ -1065,45 +1065,35 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     
     const productivityStats = useMemo(() => {
         const targetPackerId = user?.uid || session.packerId;
-        if (!targetPackerId) return { totalElapsedTimeFormatted: '00:00:00', effectiveWorkTimeFormatted: '00:00:00', unitsPerHour: '0.0', compliance: '0.0' };
+        const targetPackerName = targetPackerId === user?.uid ? (contextUserName || user?.displayName || user?.email || 'Mí') : (session.packerName || 'Operario');
+
+        if (!targetPackerId) return { totalElapsedTimeFormatted: '00:00:00', effectiveWorkTimeFormatted: '00:00:00', unitsPerHour: '0.0', compliance: '0.0', targetPackerId, targetPackerName };
         
-        const times: number[] = [];
-        
-        // 1. From session units
-        session.units
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const todayStartTime = todayStart.getTime();
+
+        const unitTimes = session.units
             .filter(u => u.createdBy === targetPackerId && u.createdAt)
-            .forEach(u => {
-                const t = new Date(u.createdAt!).getTime();
-                if (!isNaN(t)) times.push(t);
-            });
-
-        // 2. From packed items
-        allPackedItems
-            .filter(i => i.packerId === targetPackerId && i.scannedAt)
-            .forEach(i => {
-                const scannedAt = i.scannedAt as any;
-                // Handle both Date and Firestore Timestamp
-                const t = scannedAt?.toDate ? scannedAt.toDate().getTime() : new Date(scannedAt).getTime();
-                if (!isNaN(t)) times.push(t);
-            });
-
-        // 3. From session startTime as ultimate fallback
-        if (session.startTime) {
-            const t = session.startTime instanceof Date ? session.startTime.getTime() : (session.startTime as any).toDate?.()?.getTime() || new Date(session.startTime).getTime();
-            if (!isNaN(t)) times.push(t);
-        }
-
-        const userFirstScan = times.length > 0 ? Math.min(...times) : null;
+            .map(u => new Date(u.createdAt!).getTime());
             
-        if (!userFirstScan) return { totalElapsedTimeFormatted: '00:00:00', effectiveWorkTimeFormatted: '00:00:00', unitsPerHour: '0.0', compliance: '0.0' };
+        const scanTimes = allPackedItems
+            .filter(item => item.packerId === targetPackerId && item.scannedAt)
+            .map(item => {
+                const scannedAt = item.scannedAt as any;
+                return scannedAt?.toDate ? scannedAt.toDate().getTime() : new Date(scannedAt).getTime();
+            });
+
+        const times = [...unitTimes, ...scanTimes].filter(t => !isNaN(t) && t >= todayStartTime);
+        const userFirstScan = times.length > 0 ? Math.min(...times) : null;
+        
+        if (!userFirstScan) return { totalElapsedTimeFormatted: '00:00:00', effectiveWorkTimeFormatted: '00:00:00', unitsPerHour: '0.0', compliance: '0.0', targetPackerId, targetPackerName };
         
         const now = Date.now();
         const totalElapsedTimeMs = now - userFirstScan;
         
         // 1. Collect all pause intervals for the target packer
         const activePulseFromContext = globalPulse || (user?.uid === targetPackerId ? currentPulse : null);
-        
-        // Use the packerPulses state if current user is not the packer
         const relevantPulses = user?.uid === targetPackerId ? allPulses : packerPulses;
 
         const rawIntervals = [
@@ -1114,7 +1104,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             ...relevantPulses
                 .filter(p => {
                     const pulseStart = p.startTime instanceof Date ? p.startTime.getTime() : (p.startTime as any).toDate?.()?.getTime() || new Date(p.startTime).getTime();
-                    // IMPORTANT: Only count suite pauses that START after the user started this order
+                    // IMPORTANT: Only count suite pauses that overlap with the user's work today on this order
                     return pulseStart >= userFirstScan;
                 })
                 .map(p => ({ 
@@ -1123,53 +1113,36 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 }))
         ];
 
-        // Explicitly add the current active pulse interval IF it started after the first scan
         if (isPaused && activePulseFromContext) {
             const activeStart = activePulseFromContext.startTime instanceof Date ? activePulseFromContext.startTime.getTime() : (activePulseFromContext.startTime as any).toDate?.()?.getTime() || new Date(activePulseFromContext.startTime).getTime();
             if (activeStart >= userFirstScan) {
-                rawIntervals.push({
-                    start: activeStart,
-                    end: now
-                });
+                rawIntervals.push({ start: activeStart, end: now });
             }
         }
 
-        // 2. Sort and Merge Overlapping Intervals
         rawIntervals.sort((a, b) => a.start - b.start);
         const mergedIntervals: {start: number, end: number}[] = [];
-        
         if (rawIntervals.length > 0) {
             let current = { ...rawIntervals[0] };
             for (let i = 1; i < rawIntervals.length; i++) {
-                if (rawIntervals[i].start <= current.end) {
-                    current.end = Math.max(current.end, rawIntervals[i].end);
-                } else {
-                    mergedIntervals.push(current);
-                    current = { ...rawIntervals[i] };
-                }
+                if (rawIntervals[i].start <= current.end) current.end = Math.max(current.end, rawIntervals[i].end);
+                else { mergedIntervals.push(current); current = { ...rawIntervals[i] }; }
             }
             mergedIntervals.push(current);
         }
 
-        // 3. Sum non-overlapping pause durations within the work window
         let totalPauseMs = 0;
         mergedIntervals.forEach(p => {
-            const effectiveStart = Math.max(p.start, userFirstScan);
-            const effectiveEnd = Math.min(p.end, now);
-            if (effectiveEnd > effectiveStart) {
-                totalPauseMs += (effectiveEnd - effectiveStart);
-            }
+            const s = Math.max(p.start, userFirstScan);
+            const e = Math.min(p.end, now);
+            if (e > s) totalPauseMs += (e - s);
         });
 
         const effectiveWorkTimeMs = Math.max(0, totalElapsedTimeMs - totalPauseMs);
-        const effectiveSeconds = effectiveWorkTimeMs / 1000;
-        
-        const unitsPackedByUser = totalUserPackedQuantity;
-        const unitsPerHour = effectiveSeconds > 0 ? (unitsPackedByUser / effectiveSeconds) * 3600 : 0;
+        const unitsPerHour = effectiveWorkTimeMs > 0 ? (totalUserPackedQuantity / (effectiveWorkTimeMs / 3600000)) : 0;
         const compliance = productivityGoal > 0 ? (unitsPerHour / productivityGoal) * 100 : 0;
 
         const formatElapsedTime = (ms: number) => {
-            if (ms < 0) ms = 0;
             const totalSeconds = Math.floor(ms / 1000);
             const hours = Math.floor(totalSeconds / 3600);
             const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -1177,8 +1150,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
         };
 
-        const targetPackerName = targetPackerId === user?.uid ? (contextUserName || user?.displayName || user?.email || 'Mí') : (session.packerName || 'Operario');
- 
         return {
             totalElapsedTimeFormatted: formatElapsedTime(totalElapsedTimeMs),
             effectiveWorkTimeFormatted: formatElapsedTime(effectiveWorkTimeMs),
@@ -1190,7 +1161,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             targetPackerId,
             targetPackerName
         };
-    }, [session, user, totalUserPackedQuantity, productivityGoal, elapsedTime, packerPulses, contextUserName]);
+    }, [session, user, totalUserPackedQuantity, productivityGoal, elapsedTime, packerPulses, contextUserName, isPaused, globalPulse, currentPulse]);
 
     const lastScanInfo = useMemo(() => {
         if (lastScan?.status === 'success' && lastScan.item) {
