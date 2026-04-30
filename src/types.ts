@@ -949,7 +949,7 @@ export interface BagOperation {
     createdByName?: string;
 }
 
-export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform';
+export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'service_conciliation';
 
 // Types for Merchandise Reception
 export interface ReceptionOperation {
@@ -1428,3 +1428,31 @@ export interface SavedVerification {
 
 
 export type SortOrder = 'asc' | 'desc';
+
+// --- External Services Conciliation Types ---
+export interface ExternalServiceRow {
+    id: string;
+    fechaServicio: Date;
+    proveedor: string;
+    cantidad: number;
+    servicio: string;
+    destino?: string;
+    numeroFactura?: string;
+    numeroOC?: string;
+    valorACobrar: number;
+    valorFactura?: number;
+    diferencia?: number;
+    observacion?: string;
+    metodoPago: 'Jornada' | 'Unidad' | 'Hora';
+    estadoCadena: 'Logística' | 'Compras' | 'Contabilidad' | 'Devuelto';
+    duplicateHash: string; // Hash of key fields to prevent double uploads
+    createdAt: Date;
+}
+
+export interface ServiceRate {
+    id?: string;
+    provider: string;
+    service: string;
+    rate: number;
+    method: string;
+}

@@ -1,9 +1,8 @@
-
 "use client";
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw } from 'lucide-react';
+import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft } from 'lucide-react';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -63,6 +62,7 @@ interface SuiteDashboardProps {
     onNavigateToControlPiso: () => void;
     onNavigateToExternalPortal: () => void;
     onNavigateToLogisticsPlatform: () => void;
+    onNavigateToServiceConciliation: () => void;
 }
 
 export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({ 
@@ -83,7 +83,8 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToDistributorModule,
     onNavigateToControlPiso,
     onNavigateToExternalPortal,
-    onNavigateToLogisticsPlatform
+    onNavigateToLogisticsPlatform,
+    onNavigateToServiceConciliation
 }) => {
     const { role } = useAuth();
     const { toast } = useToast();
@@ -228,6 +229,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Acceder",
             onAction: onNavigateToLogisticsPlatform,
             roles: ['admin', 'office', 'supervisor']
+        },
+        {
+            key: 'service_conciliation',
+            icon: ArrowRightLeft,
+            title: "Conciliación Servicios",
+            description: "Gestione la conciliación de servicios con proveedores externos (Logística, Compras, Contabilidad).",
+            actionText: "Acceder",
+            onAction: onNavigateToServiceConciliation,
+            roles: ['admin', 'office']
         },
         {
             key: 'other_features',

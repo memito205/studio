@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import type { ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagItem } from "@/types";
+import type { ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagItem } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -3987,3 +3987,86 @@ export async function loadOperatorMappings(): Promise<{ data?: ManualOperatorMap
     }
 }
 
+
+// --- External Services Conciliation Actions ---
+
+export async function saveExternalServiceRows(rows: ExternalServiceRow[]): Promise<{ success: boolean; data?: { uploaded: number, skipped: number }, error?: string }> {
+    try {
+        const colRef = collection(firestore, 'externalServices');
+        let uploaded = 0;
+        let skipped = 0;
+
+        const CHUNK_SIZE = 450;
+        for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+            const chunk = rows.slice(i, i + CHUNK_SIZE);
+            const batch = writeBatch(firestore);
+            
+            for (const row of chunk) {
+                // Use duplicateHash as document ID to naturally prevent duplicates
+                const docRef = doc(colRef, row.duplicateHash);
+                const snap = await getDoc(docRef);
+                if (!snap.exists()) {
+                    batch.set(docRef, convertDatesToTimestamps({ ...row, id: docRef.id, createdAt: new Date() }));
+                    uploaded++;
+                } else {
+                    skipped++;
+                }
+            }
+            await batch.commit();
+        }
+        return { success: true, data: { uploaded, skipped } };
+    } catch (e: any) {
+        console.error("Error saving external services:", e);
+        return { success: false, error: e.message };
+    }
+}
+
+export async function getExternalServiceRows(): Promise<{ success: boolean; data?: ExternalServiceRow[]; error?: string }> {
+    try {
+        const q = query(collection(firestore, 'externalServices'), orderBy('fechaServicio', 'desc'), limit(1000));
+        const querySnapshot = await getDocs(q);
+        const rows = querySnapshot.docs.map(doc => convertTimestampsToDates({ id: doc.id, ...doc.data() }) as ExternalServiceRow);
+        return { success: true, data: rows };
+    } catch (e: any) {
+        console.error("Error loading external services:", e);
+        return { success: false, error: e.message };
+    }
+}
+
+export async function updateExternalServiceRow(id: string, updates: Partial<ExternalServiceRow>): Promise<{ success: boolean; error?: string }> {
+    try {
+        const docRef = doc(firestore, 'externalServices', id);
+        await updateDoc(docRef, convertDatesToTimestamps(updates));
+        return { success: true };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+}
+
+export async function saveServiceRates(rates: ServiceRate[]): Promise<{ success: boolean; error?: string }> {
+    try {
+        const batch = writeBatch(firestore);
+        const colRef = collection(firestore, 'externalServiceRates');
+        
+        for (const rate of rates) {
+            // Identifier for rate: provider + service
+            const rateId = `${rate.provider}_${rate.service}`.toUpperCase().replace(/\s+/g, '_');
+            const docRef = doc(colRef, rateId);
+            batch.set(docRef, rate, { merge: true });
+        }
+        await batch.commit();
+        return { success: true };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+}
+
+export async function getServiceRates(): Promise<{ success: boolean; data?: ServiceRate[]; error?: string }> {
+    try {
+        const querySnapshot = await getDocs(collection(firestore, 'externalServiceRates'));
+        const rates = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ServiceRate));
+        return { success: true, data: rates };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+}
