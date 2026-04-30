@@ -1600,6 +1600,13 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                                             Imprimir y Recibir
                                                         </DropdownMenuItem>
                                                         <DropdownMenuItem onSelect={() => {
+                                                            setSelectedTransferForLog(t);
+                                                            setIsLogOpen(true);
+                                                        }}>
+                                                            <FileSearch className="mr-2 h-4 w-4" />
+                                                            Dame Detalles (Trazabilidad)
+                                                        </DropdownMenuItem>
+                                                        <DropdownMenuItem onSelect={() => {
                                                             setTransferForLabel(t);
                                                             setPrintMode('standalone');
                                                             setIsLabelDialogOpen(true);
