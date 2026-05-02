@@ -2,7 +2,7 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft } from 'lucide-react';
+import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle } from 'lucide-react';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -63,6 +63,7 @@ interface SuiteDashboardProps {
     onNavigateToExternalPortal: () => void;
     onNavigateToLogisticsPlatform: () => void;
     onNavigateToServiceConciliation: () => void;
+    onNavigateToTransferNovelties: () => void;
 }
 
 export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({ 
@@ -84,7 +85,8 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToControlPiso,
     onNavigateToExternalPortal,
     onNavigateToLogisticsPlatform,
-    onNavigateToServiceConciliation
+    onNavigateToServiceConciliation,
+    onNavigateToTransferNovelties
 }) => {
     const { role } = useAuth();
     const { toast } = useToast();
@@ -238,6 +240,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Acceder",
             onAction: onNavigateToServiceConciliation,
             roles: ['admin', 'office']
+        },
+        {
+            key: 'transfer_novelties',
+            icon: AlertCircle,
+            title: "Novedades Traslados",
+            description: "Reporte y gestione sobrantes o faltantes en transferencias con trazabilidad de SLA.",
+            actionText: "Gestionar",
+            onAction: onNavigateToTransferNovelties,
+            roles: ['admin', 'supervisor']
         },
         {
             key: 'other_features',

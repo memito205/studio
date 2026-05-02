@@ -363,6 +363,28 @@ export interface RouteEntry {
     completedBy?: string;
 }
 
+export type TransferNoveltyStatus = 'Reportado' | 'En Justificación' | 'Justificado';
+export type TransferNoveltyType = 'Sobrante' | 'Faltante';
+
+export interface TransferNovelty {
+    id?: string;
+    numeroTF: string;
+    packerId: string;
+    packerName: string;
+    tipo: TransferNoveltyType;
+    estado: TransferNoveltyStatus;
+    cantidad: number;
+    codigoUnidad: string;
+    fechaEntregaTienda: Date | string;
+    fechaReporteTienda: Date | string;
+    almacen: string;
+    justificacion?: string;
+    tfLegalizacion?: string;
+    enTiempo: boolean;
+    comentariosAdmin?: string;
+    createdAt: Date | string;
+}
+
 // Types for Transfers Module
 export type UserRole = 'admin' | 'supervisor' | 'operator' | 'office' | 'conductor';
 export type TransferStatus = 'En Tránsito' | 'Recolectado en Ruta' | 'Entregado en Ruta' | 'Recibido en Bodega' | 'Validado Supervisor' | 'Enviado a Destino';

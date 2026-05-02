@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import type { ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagItem } from "@/types";
+import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagItem } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -4092,5 +4092,123 @@ export async function getServiceRates(): Promise<{ success: boolean; data?: Serv
         return { success: true, data: rates };
     } catch (e: any) {
         return { success: false, error: e.message };
+    }
+}
+
+/**
+ * Módulo de Novedades de Transferencias
+ */
+
+// Helper: Calcular si está en tiempo (3 días hábiles sin Sáb/Dom/Festivos)
+// Nota: Para festivos se requeriría una tabla, por ahora omitimos fines de semana
+export function isEntryOnTime(deliveryDate: Date | string, reportDate: Date | string): boolean {
+    const d1 = new Date(deliveryDate);
+    const d2 = new Date(reportDate);
+    
+    let businessDays = 0;
+    let current = new Date(d1);
+    
+    // Avanzamos día a día contando solo lunes a viernes
+    while (current < d2) {
+        current.setDate(current.getDate() + 1);
+        const day = current.getDay();
+        if (day !== 0 && day !== 6) { // 0=Dom, 6=Sáb
+            businessDays++;
+        }
+        if (businessDays > 3) return false;
+    }
+    
+    return businessDays <= 3;
+}
+
+export async function saveTransferNovelty(novelty: Omit<TransferNovelty, 'id' | 'createdAt'>): Promise<{ success: boolean; id?: string; error?: string }> {
+    try {
+        // Recalcular enTiempo por seguridad en servidor
+        const enTiempo = isEntryOnTime(novelty.fechaEntregaTienda, novelty.fechaReporteTienda);
+        
+        const docData = {
+            ...novelty,
+            enTiempo,
+            createdAt: Timestamp.now(),
+            fechaEntregaTienda: novelty.fechaEntregaTienda instanceof Date ? Timestamp.fromDate(novelty.fechaEntregaTienda) : Timestamp.fromDate(new Date(novelty.fechaEntregaTienda)),
+            fechaReporteTienda: novelty.fechaReporteTienda instanceof Date ? Timestamp.fromDate(novelty.fechaReporteTienda) : Timestamp.fromDate(new Date(novelty.fechaReporteTienda)),
+        };
+
+        const docRef = await addDoc(collection(firestore, "transferNovelties"), docData);
+        
+        // Log activity
+        await createActivityLog({
+            userName: novelty.packerName || 'Sistema',
+            action: `Registro de Novedad TF ${novelty.numeroTF}`,
+            category: 'TRANSFER_NOVELTY',
+            details: `Novedad tipo ${novelty.tipo} para TF ${novelty.numeroTF} (${novelty.almacen})`
+        });
+
+        return { success: true, id: docRef.id };
+    } catch (error: any) {
+        console.error("Error saving transfer novelty:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function getTransferNovelties(limitCount: number = 100): Promise<{ data?: TransferNovelty[]; error?: string }> {
+    try {
+        const q = query(
+            collection(firestore, "transferNovelties"), 
+            orderBy("createdAt", "desc"),
+            limit(limitCount)
+        );
+        const snapshot = await getDocs(q);
+        const data = snapshot.docs.map(doc => {
+            const raw = doc.data();
+            return {
+                ...convertTimestampsToDates(raw),
+                id: doc.id
+            } as TransferNovelty;
+        });
+        return { data };
+    } catch (error: any) {
+        console.error("Error fetching transfer novelties:", error);
+        return { error: error.message };
+    }
+}
+
+export async function updateTransferNoveltyStatus(
+    id: string, 
+    updates: Partial<TransferNovelty>
+): Promise<{ success: boolean; error?: string }> {
+    try {
+        const docRef = doc(firestore, "transferNovelties", id);
+        await updateDoc(docRef, {
+            ...updates,
+            updatedAt: Timestamp.now()
+        });
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error updating transfer novelty:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function getTransferNoveltiesByDateRange(startDate: Date, endDate: Date): Promise<{ data?: TransferNovelty[]; error?: string }> {
+    try {
+        const q = query(
+            collection(firestore, "transferNovelties"),
+            where("createdAt", ">=", Timestamp.fromDate(startDate)),
+            where("createdAt", "<=", Timestamp.fromDate(endDate)),
+            orderBy("createdAt", "desc")
+        );
+        const snapshot = await getDocs(q);
+        const data = snapshot.docs.map(doc => {
+            const raw = doc.data();
+            return {
+                ...convertTimestampsToDates(raw),
+                id: doc.id
+            } as TransferNovelty;
+        });
+        return { data };
+    } catch (error: any) {
+        console.error("Error fetching transfer novelties by range:", error);
+        return { error: error.message };
     }
 }

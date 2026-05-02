@@ -74,6 +74,7 @@ const LabelingDashboard = dynamic(() => import('@/components/LabelingDashboard')
 const LogisticsPlatform = dynamic(() => import('@/components/LogisticsPlatform/LogisticsPlatform'), { loading: () => <LoadingSpinner /> });
 const OperatorMappingsManager = dynamic(() => import('@/components/OperatorMappingsManager').then(mod => mod.OperatorMappingsManager), { loading: () => <LoadingSpinner /> });
 const ServiceConciliation = dynamic(() => import('@/components/ServiceConciliation').then(mod => mod.ServiceConciliation), { loading: () => <LoadingSpinner /> });
+const TransferNovelties = dynamic(() => import('@/components/TransferNovelties').then(mod => mod.TransferNovelties), { loading: () => <LoadingSpinner /> });
 
 
 type Theme = 'light' | 'dark';
@@ -569,6 +570,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const handleNavigateToExternalPortal = () => setAppStep('external_labeling_portal');
   const handleNavigateToLogisticsPlatform = () => setAppStep('logistics_platform');
   const handleNavigateToServiceConciliation = () => setAppStep('service_conciliation');
+  const handleNavigateToTransferNovelties = () => setAppStep('transfer_novelties');
 
   const handleStartPacking = async (order: WholesaleOrder) => {
       if (!user) {
@@ -688,7 +690,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
     }
   }
 
-    const renderContent = () => {
+  const renderContent = () => {
       switch(appStep) {
           case 'suite':
             return <SuiteDashboard
@@ -711,6 +713,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToExternalPortal={handleNavigateToExternalPortal}
                 onNavigateToLogisticsPlatform={handleNavigateToLogisticsPlatform}
                 onNavigateToServiceConciliation={handleNavigateToServiceConciliation}
+                onNavigateToTransferNovelties={handleNavigateToTransferNovelties}
             />;
           case 'upload': return <FileUpload onProcessFile={handleFileProcess} isLoading={isLoading} onGoToHistorical={handleGoToHistorical} onReturnToSuite={handleReturnToSuite} reportDate={reportDate} onDateChange={setReportDate} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} />;
           case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} isSavingJustifications={isSavingJustifications} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} referenceGoals={referenceGoals} onReferenceGoalsChange={setReferenceGoals} />;
@@ -764,6 +767,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           case 'distributor_module': return <DistributorModule onReturnToSuite={handleReturnToSuite} />;
           case 'control_piso': return <ControlPiso onReturn={handleReturnToSuite} />;
           case 'external_labeling_portal': return <ExternalLabelingPortal />;
+          case 'transfer_novelties': return <TransferNovelties onBack={handleReturnToSuite} />;
           case 'packing':
             if (packingOrder && currentSession) {
               return <PackingScreen 
@@ -802,6 +806,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToExternalPortal={handleNavigateToExternalPortal}
                 onNavigateToLogisticsPlatform={handleNavigateToLogisticsPlatform}
                 onNavigateToServiceConciliation={handleNavigateToServiceConciliation}
+                onNavigateToTransferNovelties={() => setAppStep('transfer_novelties' as any)}
             />;
       }
     }
