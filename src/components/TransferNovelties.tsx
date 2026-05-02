@@ -26,9 +26,9 @@ import {
 import { 
     saveTransferNovelty, 
     getTransferNovelties, 
-    updateTransferNoveltyStatus,
-    loadOperatorMappings 
-} from '@/app/actions';
+    updateTransferNoveltyStatus 
+} from '@/app/transfer-novelty-actions';
+import { loadOperatorMappings } from '@/app/actions';
 import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType } from '@/types';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -80,7 +80,7 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
         setIsLoading(true);
         try {
             const [noveltiesRes, operatorsRes] = await Promise.all([
-                getTransferNovelties(200),
+                getTransferNovelties(),
                 loadOperatorMappings()
             ]);
 
