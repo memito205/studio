@@ -1011,8 +1011,8 @@ export async function generateAndSaveLabels(orderId: string, totalQuantity: numb
         const batch = writeBatch(firestore);
         const chunkEnd = Math.min(i + CHUNK_SIZE, boxCount);
         for (let j = i; j < chunkEnd; j++) {
-            const randomBoxId = generateAlphanumericId();
-            const labelId = `VXM-${numericOrderId}-${randomBoxId}`;
+            const sequentialId = (j + 1).toString();
+            const labelId = `VXM-${numericOrderId}-${sequentialId}`;
             const newLabel = {
                 id: labelId,
                 orderId: orderId,
@@ -1049,8 +1049,29 @@ export async function getLabelsForOrder(orderId: string): Promise<{ data?: Prepr
 export async function addSingleLabel(orderId: string): Promise<{ data?: PreprintedLabel; error?: string }> {
     try {
         const numericOrderId = orderId.replace(/\D/g, '');
-        const randomBoxId = generateAlphanumericId();
-        const labelId = `VXM-${numericOrderId}-${randomBoxId}`;
+        
+        // 1. Get existing labels to find the next number
+        const existingLabelsRes = await getLabelsForOrder(orderId);
+        let nextNumber = 1;
+        
+        if (existingLabelsRes.data && existingLabelsRes.data.length > 0) {
+            const numericSuffixes = existingLabelsRes.data
+                .map(l => {
+                    const parts = l.id.split('-');
+                    const suffix = parts[parts.length - 1];
+                    return parseInt(suffix, 10);
+                })
+                .filter(n => !isNaN(n));
+            
+            if (numericSuffixes.length > 0) {
+                nextNumber = Math.max(...numericSuffixes) + 1;
+            } else {
+                // If existing labels have alphanumeric suffixes, just count them
+                nextNumber = existingLabelsRes.data.length + 1;
+            }
+        }
+
+        const labelId = `VXM-${numericOrderId}-${nextNumber}`;
 
         const newLabel: PreprintedLabel = {
             id: labelId,
