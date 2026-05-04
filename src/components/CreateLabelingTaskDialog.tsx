@@ -38,6 +38,10 @@ interface CreateLabelingTaskDialogProps {
 const formSchema = z.object({
   operatorId: z.string().min(1, 'Debe seleccionar un operario.'),
   externalOperatorName: z.string().optional(),
+  quantityToLabel: z.preprocess(
+    (val) => Number(String(val).trim() || 0),
+    z.number().min(1, 'La cantidad debe ser al menos 1.')
+  ),
   standard: z.preprocess(
     (val) => Number(String(val).trim() || 0),
     z.number().min(1, 'El estándar debe ser al menos 1.')
@@ -71,6 +75,7 @@ export const CreateLabelingTaskDialog: React.FC<CreateLabelingTaskDialogProps> =
     defaultValues: {
       operatorId: '',
       externalOperatorName: '',
+      quantityToLabel: referenceData?.totalQuantity ?? 0,
       standard: 150, // Default standard
     },
   });
@@ -81,15 +86,21 @@ export const CreateLabelingTaskDialog: React.FC<CreateLabelingTaskDialogProps> =
 
   useEffect(() => {
     if (isOpen) {
-      form.reset({ operatorId: '', externalOperatorName: '', standard: 150 });
+      form.reset({
+        operatorId: '',
+        externalOperatorName: '',
+        quantityToLabel: referenceData?.totalQuantity ?? 0,
+        standard: 150,
+      });
     }
-  }, [isOpen, form]);
+  }, [isOpen, form, referenceData]);
 
   if (!referenceData) return null;
 
   const onSubmit = async (values: z.infer<typeof formSchema>) => {
     setIsSubmitting(true);
     const cleanVendorId = values.operatorId.replace('ext_', '');
+    const quantityToLabel = Math.min(values.quantityToLabel, referenceData.totalQuantity);
 
     const result = await createLabelingTask({
       receptionOperationId: operationId,
@@ -97,7 +108,7 @@ export const CreateLabelingTaskDialog: React.FC<CreateLabelingTaskDialogProps> =
       supplier: supplier,
       reference: referenceData.reference,
       sizes: referenceData.sizes,
-      totalUnits: referenceData.totalQuantity,
+      totalUnits: quantityToLabel,
       assignedOperatorId: isExternal ? '' : values.operatorId,
       assignedExternalVendorId: isExternal ? cleanVendorId : undefined,
       assignedExternalOperatorName: isExternal ? values.externalOperatorName : undefined,
@@ -126,7 +137,7 @@ export const CreateLabelingTaskDialog: React.FC<CreateLabelingTaskDialogProps> =
         
         <div className="py-2 bg-muted/30 p-3 rounded-md border text-sm mb-4">
             <div className="flex justify-between">
-                <span><strong>Cantidad:</strong> {referenceData.totalQuantity} unidades</span>
+                <span><strong>Contado:</strong> {referenceData.totalQuantity} unidades</span>
                 <span className="text-muted-foreground font-mono text-[10px]">{rkIdentifier}</span>
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">
@@ -137,6 +148,32 @@ export const CreateLabelingTaskDialog: React.FC<CreateLabelingTaskDialogProps> =
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
             <div className="grid grid-cols-1 gap-4">
+                <FormField
+                  control={form.control}
+                  name="quantityToLabel"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-xs font-semibold">Cantidad a Etiquetar</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={referenceData.totalQuantity}
+                          {...field}
+                          className="h-9"
+                        />
+                      </FormControl>
+                      {form.watch('quantityToLabel') < referenceData.totalQuantity && (
+                        <p className="text-[10px] text-amber-600">
+                          ⚠ Se etiquetarán {form.watch('quantityToLabel')} de {referenceData.totalQuantity} unidades.
+                          Las restantes quedarán como tarea pendiente al finalizar.
+                        </p>
+                      )}
+                      <FormMessage className="text-[10px]" />
+                    </FormItem>
+                  )}
+                />
+
                 <FormField
                   control={form.control}
                   name="operatorId"

@@ -3,7 +3,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
-import { Loader2 } from 'lucide-react';
+import { Loader2, AlertTriangle } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -38,6 +38,8 @@ export const FinishWorkDialog: React.FC<FinishWorkDialogProps> = ({ isOpen, onOp
     }
   }, [isOpen, task.totalUnits]);
 
+  const remaining = task.totalUnits - completedUnits;
+  const isPartial = remaining > 0 && completedUnits > 0;
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
@@ -49,7 +51,7 @@ export const FinishWorkDialog: React.FC<FinishWorkDialogProps> = ({ isOpen, onOp
           </DialogDescription>
         </DialogHeader>
         <div className="py-4 space-y-4">
-          <p>Unidades totales asignadas para esta tarea: <span className="font-bold">{task.totalUnits}</span></p>
+          <p>Unidades asignadas para esta tarea: <span className="font-bold">{task.totalUnits}</span></p>
           <div>
             <Label htmlFor="completed-units">Unidades Completadas</Label>
             <Input
@@ -61,10 +63,19 @@ export const FinishWorkDialog: React.FC<FinishWorkDialogProps> = ({ isOpen, onOp
               min="0"
             />
           </div>
+
+          {isPartial && (
+            <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-md p-3 text-sm text-amber-800">
+              <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-600" />
+              <p>
+                Se reportarán <strong>{completedUnits}</strong> unidades como completadas. Las <strong>{remaining}</strong> unidades restantes quedarán registradas como una nueva tarea en estado <strong>Pendiente</strong>.
+              </p>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancelar</Button>
-          <Button onClick={handleConfirm} disabled={isSubmitting}>
+          <Button onClick={handleConfirm} disabled={isSubmitting || completedUnits <= 0}>
             {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : null}
             Confirmar y Finalizar
           </Button>
