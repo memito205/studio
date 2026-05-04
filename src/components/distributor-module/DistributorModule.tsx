@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
@@ -29,6 +29,23 @@ const DistributorModule: React.FC<DistributorModuleProps> = ({ onReturnToSuite }
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [resetCounter, setResetCounter] = useState(0);
   const [useAutoCurves, setUseAutoCurves] = useState(false);
+
+  // Pre-calculate auto curves for preview when mode is active
+  const previewCurves = useMemo(() => {
+    if (!useAutoCurves || !stockData) return null;
+    const curves = calculateAutoCurves(stockData);
+    // Group by reference
+    const byRef: Record<string, { talla: string; cantidad: number }[]> = {};
+    for (const rule of curves) {
+      if (!byRef[rule.REFERENCIA]) byRef[rule.REFERENCIA] = [];
+      byRef[rule.REFERENCIA].push({ talla: rule.TALLA, cantidad: rule.CANTIDAD_CURVA });
+    }
+    // Sort sizes numerically within each ref
+    for (const ref in byRef) {
+      byRef[ref].sort((a, b) => a.talla.localeCompare(b.talla, undefined, { numeric: true }));
+    }
+    return byRef;
+  }, [useAutoCurves, stockData]);
 
   // State for warehouse mapping
   const [coMap, setCoMap] = useState<{ [key: string]: string }>({
@@ -216,10 +233,34 @@ const DistributorModule: React.FC<DistributorModuleProps> = ({ onReturnToSuite }
                         reset={resetCounter > 0}
                     />
                   ) : (
-                    <div className="p-8 text-center border-2 border-dashed border-primary/30 rounded-2xl bg-primary/5">
-                      <p className="text-primary font-semibold">
-                        Modo Automático Activo: Las curvas se calcularán basado en las existencias leídas.
-                      </p>
+                    <div className="border border-primary/20 rounded-2xl bg-primary/5 overflow-hidden">
+                      <div className="px-6 py-4 bg-primary/10 border-b border-primary/20">
+                        <p className="text-primary font-bold text-sm">Resumen de Curvas Detectadas Automáticamente</p>
+                        <p className="text-xs text-gray-500 mt-0.5">Unidades por talla en cada caja (total ÷ 12, redondeado)</p>
+                      </div>
+                      <div className="overflow-auto max-h-96">
+                        {previewCurves && Object.entries(previewCurves).map(([ref, sizes]) => {
+                          const totalCurve = sizes.reduce((s, x) => s + x.cantidad, 0);
+                          return (
+                            <div key={ref} className="border-b border-primary/10 last:border-0 px-6 py-3">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="font-bold text-gray-800 text-sm">{ref}</span>
+                                <span className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full font-semibold">
+                                  {totalCurve} uds/caja
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                {sizes.map(s => (
+                                  <div key={s.talla} className="flex flex-col items-center bg-white border border-primary/20 rounded-lg px-3 py-1.5 shadow-sm">
+                                    <span className="text-xs text-gray-500">T{s.talla}</span>
+                                    <span className="font-bold text-gray-800 text-sm">{s.cantidad}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
                 </div>
