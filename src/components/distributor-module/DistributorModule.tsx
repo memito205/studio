@@ -1,13 +1,15 @@
 import React, { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft } from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import FileUpload from './components/FileUpload';
 import ResultsDisplay from './components/ResultsDisplay';
 import Spinner from './components/Spinner';
 import CurveConfigurator from './components/CurveConfigurator';
 import MappingModal from './components/MappingModal';
 import { DownloadIcon } from './components/icons';
-import { distribute } from './services/distributor';
+import { distribute, calculateAutoCurves } from './services/distributor';
 import { getDistributionSummary } from './services/geminiService';
 import { exportDocumentsToExcel, exportSummaryToExcel, findUnmappedWarehouses } from './services/exportService';
 import type { StockItem, DistributionRule, Allocation, BoxCurveRule } from './types';
@@ -26,6 +28,7 @@ const DistributorModule: React.FC<DistributorModuleProps> = ({ onReturnToSuite }
   const [error, setError] = useState<string>('');
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [resetCounter, setResetCounter] = useState(0);
+  const [useAutoCurves, setUseAutoCurves] = useState(false);
 
   // State for warehouse mapping
   const [coMap, setCoMap] = useState<{ [key: string]: string }>({
@@ -70,7 +73,12 @@ const DistributorModule: React.FC<DistributorModuleProps> = ({ onReturnToSuite }
     await new Promise(resolve => setTimeout(resolve, 500));
 
     try {
-      const result = distribute(stockData, planData, curveData);
+      let finalCurves = curveData;
+      if (useAutoCurves && stockData) {
+          finalCurves = calculateAutoCurves(stockData);
+      }
+      
+      const result = distribute(stockData, planData, finalCurves);
       setDistributionResult(result);
       
       getDistributionSummary(result).then(summary => {
@@ -94,6 +102,7 @@ const DistributorModule: React.FC<DistributorModuleProps> = ({ onReturnToSuite }
       setAiSummary(null);
       setError('');
       setIsLoading(false);
+      setUseAutoCurves(false);
       setResetCounter(c => c + 1);
   };
   
@@ -183,11 +192,37 @@ const DistributorModule: React.FC<DistributorModuleProps> = ({ onReturnToSuite }
               </div>
 
               {uniqueReferences.length > 0 && stockData && (
-                <CurveConfigurator 
-                    references={uniqueReferences}
-                    onCurvesChange={handleCurvesChange}
-                    reset={resetCounter > 0}
-                />
+                <div className="space-y-6">
+                  <div className="bg-primary/5 border border-primary/20 p-4 rounded-xl flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="auto-curves" className="text-base font-bold text-gray-800">
+                        Cálculo Automático de Curvas
+                      </Label>
+                      <p className="text-sm text-gray-600">
+                        Identifica las curvas por referencia automáticamente dividiendo las existencias por 12.
+                      </p>
+                    </div>
+                    <Switch
+                      id="auto-curves"
+                      checked={useAutoCurves}
+                      onCheckedChange={setUseAutoCurves}
+                    />
+                  </div>
+
+                  {!useAutoCurves ? (
+                    <CurveConfigurator 
+                        references={uniqueReferences}
+                        onCurvesChange={handleCurvesChange}
+                        reset={resetCounter > 0}
+                    />
+                  ) : (
+                    <div className="p-8 text-center border-2 border-dashed border-primary/30 rounded-2xl bg-primary/5">
+                      <p className="text-primary font-semibold">
+                        Modo Automático Activo: Las curvas se calcularán basado en las existencias leídas.
+                      </p>
+                    </div>
+                  )}
+                </div>
               )}
 
               {error && <div className="text-center text-red-600 bg-red-50 p-3 rounded-lg my-6">{error}</div>}

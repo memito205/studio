@@ -26,6 +26,50 @@ const sortSizesNumerically = (sizes: string[]): string[] => {
 };
 
 /**
+ * Calculates box curves automatically from stock data.
+ * @param stockData The stock data to analyze.
+ * @returns An array of box curve rules.
+ */
+export const calculateAutoCurves = (stockData: StockItem[]): BoxCurveRule[] => {
+  const refGroups: Record<string, Record<string, number>> = {};
+  
+  stockData.forEach(item => {
+    const ref = String(item.REFERENCIA).trim();
+    const talla = String(item.TALLA).trim();
+    const cant = Number(item['CANTD LEIDA']);
+    
+    if (!refGroups[ref]) {
+      refGroups[ref] = {};
+    }
+    
+    refGroups[ref][talla] = (refGroups[ref][talla] || 0) + cant;
+  });
+
+  const autoCurves: BoxCurveRule[] = [];
+  
+  Object.entries(refGroups).forEach(([ref, sizes]) => {
+    const totalUnits = Object.values(sizes).reduce((sum, qty) => sum + qty, 0);
+    if (totalUnits === 0) return;
+
+    // Normal box size is 12 as per user request
+    const numBoxes = totalUnits / 12;
+    
+    Object.entries(sizes).forEach(([talla, cant]) => {
+      const curveValue = Math.round(cant / numBoxes);
+      if (curveValue > 0) {
+        autoCurves.push({
+          REFERENCIA: ref,
+          TALLA: talla,
+          CANTIDAD_CURVA: curveValue
+        });
+      }
+    });
+  });
+
+  return autoCurves;
+};
+
+/**
  * Distributes merchandise using a hybrid strategy.
  * It first attempts to allocate full boxes based on a "box curve" if the order quantity is a multiple of the box size.
  * For remaining items or orders not matching box multiples, it uses an adaptive, balanced round-robin strategy.
