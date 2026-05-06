@@ -462,28 +462,90 @@ export function applyJustifications(
         };
         
         if (justification.type === 'REASON') {
-            const justifiedDuration = justification.customDuration ?? incident.duration;
-            const justifiedEndTime = new Date(incident.startTime.getTime() + justifiedDuration * 60000);
-            
-            const justifiedPart: DeadTimeEntry = {
-                ...incident,
-                id: `${incident.id}-justified`,
-                endTime: justifiedEndTime,
-                duration: Math.round(justifiedDuration),
-                status: 'Justificado',
-                justification: justification.reasonText || 'Razón especificada',
-            };
+            // Check for explicit time range
+            if (justification.startTime && justification.endTime) {
+                const [startH, startM] = justification.startTime.split(':').map(Number);
+                const [endH, endM] = justification.endTime.split(':').map(Number);
+                
+                const jStart = new Date(incident.startTime);
+                jStart.setHours(startH, startM, 0, 0);
+                
+                const jEnd = new Date(incident.startTime);
+                jEnd.setHours(endH, endM, 0, 0);
 
-            const remainingPart: DeadTimeEntry | undefined = justifiedDuration < incident.duration ? {
-                ...incident,
-                id: `${incident.id}-remains`, // Unique ID for remainder
-                startTime: justifiedEndTime,
-                duration: Math.round(incident.duration - justifiedDuration),
-                status: 'No Justificado',
-                justification: undefined,
-            } : undefined;
+                // Handle range that crosses midnight (unlikely for dead time but good for robustness)
+                if (jEnd < jStart) jEnd.setDate(jEnd.getDate() + 1);
 
-            handleSplit(justifiedPart, remainingPart);
+                // Intersection of incident [incident.startTime, incident.endTime] and [jStart, jEnd]
+                const overlapStart = Math.max(incident.startTime.getTime(), jStart.getTime());
+                const overlapEnd = Math.min(incident.endTime.getTime(), jEnd.getTime());
+
+                if (overlapEnd > overlapStart) {
+                    // 1. Part before the justified range
+                    if (overlapStart > incident.startTime.getTime()) {
+                        finalIncidents.push({
+                            ...incident,
+                            id: `${incident.id}-pre`,
+                            endTime: new Date(overlapStart),
+                            duration: Math.round((overlapStart - incident.startTime.getTime()) / 60000),
+                            status: 'No Justificado',
+                            justification: undefined
+                        });
+                    }
+
+                    // 2. The justified part
+                    finalIncidents.push({
+                        ...incident,
+                        id: `${incident.id}-justified`,
+                        startTime: new Date(overlapStart),
+                        endTime: new Date(overlapEnd),
+                        duration: Math.round((overlapEnd - overlapStart) / 60000),
+                        status: 'Justificado',
+                        justification: justification.reasonText || 'Razón especificada'
+                    });
+
+                    // 3. Part after the justified range
+                    if (overlapEnd < incident.endTime.getTime()) {
+                        // We unshift this so it can be further justified if needed? 
+                        // Actually, for simplicity, just push it as unjustified now.
+                        processQueue.unshift({
+                            ...incident,
+                            id: `${incident.id}-post`,
+                            startTime: new Date(overlapEnd),
+                            duration: Math.round((incident.endTime.getTime() - overlapEnd) / 60000),
+                            status: 'No Justificado',
+                            justification: undefined
+                        });
+                    }
+                } else {
+                    // No overlap found, treat as unjustified
+                    finalIncidents.push({ ...incident, status: 'No Justificado' });
+                }
+            } else {
+                // Fallback to duration-based justification
+                const justifiedDuration = justification.customDuration ?? incident.duration;
+                const justifiedEndTime = new Date(incident.startTime.getTime() + justifiedDuration * 60000);
+                
+                const justifiedPart: DeadTimeEntry = {
+                    ...incident,
+                    id: `${incident.id}-justified`,
+                    endTime: justifiedEndTime,
+                    duration: Math.round(justifiedDuration),
+                    status: 'Justificado',
+                    justification: justification.reasonText || 'Razón especificada',
+                };
+
+                const remainingPart: DeadTimeEntry | undefined = justifiedDuration < incident.duration ? {
+                    ...incident,
+                    id: `${incident.id}-remains`,
+                    startTime: justifiedEndTime,
+                    duration: Math.round(incident.duration - justifiedDuration),
+                    status: 'No Justificado',
+                    justification: undefined,
+                } : undefined;
+
+                handleSplit(justifiedPart, remainingPart);
+            }
 
         } else if (['BREAKFAST', 'LUNCH', 'SNACK'].includes(justification.type)) {
             if (!packerBreakUsage.has(incident.packerName)) {

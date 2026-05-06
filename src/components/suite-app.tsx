@@ -75,11 +75,12 @@ const LogisticsPlatform = dynamic(() => import('@/components/LogisticsPlatform/L
 const OperatorMappingsManager = dynamic(() => import('@/components/OperatorMappingsManager').then(mod => mod.OperatorMappingsManager), { loading: () => <LoadingSpinner /> });
 const ServiceConciliation = dynamic(() => import('@/components/ServiceConciliation').then(mod => mod.ServiceConciliation), { loading: () => <LoadingSpinner /> });
 const TransferNovelties = dynamic(() => import('@/components/TransferNovelties').then(mod => mod.TransferNovelties), { loading: () => <LoadingSpinner /> });
+const RemisionModule = dynamic(() => import('./RemisionModule').then(mod => mod.RemisionModule), { loading: () => <LoadingSpinner /> });
 
 
 type Theme = 'light' | 'dark';
 
-const PACKERS = [
+export const PACKERS = [
     "OBED SAUCEDO CONTRERAS",
     "OSME VALENCIA FLOREZ",
     "JHON JAMER CORDOBA CORDOBA",
@@ -112,6 +113,7 @@ interface SuiteAppProps {
 }
 
 export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
+
   const [appStep, setAppStep] = useState<AppStep>('suite');
   const [rawData, setRawData] = useState<any[] | null>(null);
   const [reportData, setReportData] = useState<ProcessedReportData | null>(null);
@@ -133,6 +135,15 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const [currentSession, setCurrentSession] = useState<PackingSession | null>(null);
   const { toast } = useToast();
   const { user, role, loading: isAuthLoading } = useAuth();
+  
+  // Name standardization helper
+  const getStandardizedName = useCallback(() => {
+    if (!user) return 'Desconocido';
+    const rawName = user.displayName || user.email || 'Desconocido';
+    const standardized = PACKERS.find(p => p.toUpperCase() === rawName.toUpperCase());
+    if (standardized) return standardized;
+    return localStorage.getItem(`op_name_${user.uid}`) || rawName;
+  }, [user]);
   
   const [costWarning, setCostWarning] = useState<CostWarningState>({ isOpen: false, title: '', description: '', onConfirm: () => {} });
 
@@ -571,6 +582,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const handleNavigateToLogisticsPlatform = () => setAppStep('logistics_platform');
   const handleNavigateToServiceConciliation = () => setAppStep('service_conciliation');
   const handleNavigateToTransferNovelties = () => setAppStep('transfer_novelties');
+  const handleNavigateToRemisionModule = () => setAppStep('remision');
 
   const handleStartPacking = async (order: WholesaleOrder) => {
       if (!user) {
@@ -585,7 +597,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
       const initialSession: PackingSession = sessionResult.data || {
           orderId: order.id,
           packerId: user.uid,
-          packerName: user.displayName || user.email || 'Desconocido',
+          packerName: getStandardizedName(),
           units: [],
           status: 'active',
           pauses: [],
@@ -714,6 +726,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToLogisticsPlatform={handleNavigateToLogisticsPlatform}
                 onNavigateToServiceConciliation={handleNavigateToServiceConciliation}
                 onNavigateToTransferNovelties={handleNavigateToTransferNovelties}
+                onNavigateToRemisionModule={handleNavigateToRemisionModule}
             />;
           case 'upload': return <FileUpload onProcessFile={handleFileProcess} isLoading={isLoading} onGoToHistorical={handleGoToHistorical} onReturnToSuite={handleReturnToSuite} reportDate={reportDate} onDateChange={setReportDate} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} />;
           case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} isSavingJustifications={isSavingJustifications} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} referenceGoals={referenceGoals} onReferenceGoalsChange={setReferenceGoals} />;
@@ -756,6 +769,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           case 'returns_module': return <ReturnsModule onReturn={() => setAppStep('other_features')} />;
           case 'logistics_platform': return <LogisticsPlatform onReturn={handleReturnToSuite} />;
           case 'service_conciliation': return <ServiceConciliation onReturn={handleReturnToSuite} />;
+          case 'remision': return <RemisionModule onReturn={handleReturnToSuite} />;
           case 'routes': return <RoutesModule onReturnToSuite={handleReturnToSuite} />;
           case 'dashboards': return <DashboardsModule onReturnToSuite={handleNavigateToDashboardsEcommerceMenu} />;
           case 'dashboards_main_menu': return <DashboardsMainMenu onNavigateEcommerce={handleNavigateToDashboardsEcommerceMenu} onNavigateBodega={handleNavigateToDashboardsBodegaMenu} onReturnToSuite={handleReturnToSuite} />;
@@ -807,6 +821,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToLogisticsPlatform={handleNavigateToLogisticsPlatform}
                 onNavigateToServiceConciliation={handleNavigateToServiceConciliation}
                 onNavigateToTransferNovelties={() => setAppStep('transfer_novelties' as any)}
+                onNavigateToRemisionModule={handleNavigateToRemisionModule}
             />;
       }
     }

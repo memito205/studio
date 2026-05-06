@@ -79,6 +79,8 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
   const [selectedIncident, setSelectedIncident] = useState<DeadTimeEntry | null>(null);
   const [reason, setReason] = useState('');
   const [customDuration, setCustomDuration] = useState<number | undefined>(undefined);
+  const [startTime, setStartTime] = useState<string>('');
+  const [endTime, setEndTime] = useState<string>('');
   const [filter, setFilter] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
@@ -87,6 +89,13 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
     const currentJustification = justifications[incident.id];
     setReason(currentJustification?.reasonText || '');
     setCustomDuration(currentJustification?.customDuration);
+    
+    // Default to the full incident range
+    const startStr = currentJustification?.startTime || incident.startTime.toTimeString().substring(0, 5);
+    const endStr = currentJustification?.endTime || incident.endTime.toTimeString().substring(0, 5);
+    
+    setStartTime(startStr);
+    setEndTime(endStr);
     setIsDialogOpen(true);
   };
 
@@ -105,11 +114,13 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
     
     const newJustifications = { ...justifications };
     const justificationText = reason.trim();
-    if (justificationText || customDuration) {
+    if (justificationText || customDuration || startTime || endTime) {
         newJustifications[selectedIncident.id] = {
             type: 'REASON',
             reasonText: justificationText,
-            customDuration: customDuration
+            customDuration: customDuration,
+            startTime: startTime,
+            endTime: endTime
         };
     } else {
         delete newJustifications[selectedIncident.id];
@@ -120,6 +131,8 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
     setSelectedIncident(null);
     setReason('');
     setCustomDuration(undefined);
+    setStartTime('');
+    setEndTime('');
   };
   
   const getClassificationText = (incident: DeadTimeEntry): string => {
@@ -330,8 +343,28 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
                           placeholder="Ej: Falla de impresora, Falta de cajas..."
                         />
                     </div>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                            <Label htmlFor="startTime">Desde</Label>
+                            <Input
+                                id="startTime"
+                                type="time"
+                                value={startTime}
+                                onChange={(e) => setStartTime(e.target.value)}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="endTime">Hasta</Label>
+                            <Input
+                                id="endTime"
+                                type="time"
+                                value={endTime}
+                                onChange={(e) => setEndTime(e.target.value)}
+                            />
+                        </div>
+                    </div>
                     <div className="space-y-2">
-                        <Label htmlFor="duration">Duración a Justificar (minutos)</Label>
+                        <Label htmlFor="duration">Duración Adicional (opcional)</Label>
                         <div className="flex items-center gap-3">
                             <Input
                             id="duration"
@@ -343,24 +376,15 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
                                 if (val === '') {
                                     setCustomDuration(undefined);
                                 } else if (!isNaN(numVal)) {
-                                    setCustomDuration(Math.min(numVal, selectedIncident.duration));
+                                    setCustomDuration(numVal);
                                 }
                             }}
                             className="flex-1"
-                            placeholder={`Total: ${selectedIncident.duration}`}
-                            max={selectedIncident.duration}
+                            placeholder="Minutos extra..."
                             />
-                            <Button 
-                                variant="outline" 
-                                size="sm" 
-                                onClick={() => setCustomDuration(selectedIncident.duration)}
-                                className="shrink-0"
-                            >
-                                Seleccionar Todo
-                            </Button>
                         </div>
                         <p className="text-[11px] text-muted-foreground italic">
-                            Puede justificar la pausa completa o solo una parte de ella.
+                            Si selecciona un rango, el sistema justificará exactamente ese periodo.
                         </p>
                     </div>
                 </div>

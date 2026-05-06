@@ -106,21 +106,11 @@ export const AppShell: React.FC<AppShellProps> = ({ title, children }) => {
                 </div>
                 
                 <div className="flex gap-2">
-                    {isInRemision ? (
-                        <Button variant="outline" size="sm" className="gap-2 border-red-200 text-red-600 hover:bg-red-50" onClick={punchOut}>
-                            <StopCircle className="w-4 h-4" /> Finalizar Remisión
-                        </Button>
-                    ) : (
-                        <Button variant="outline" size="sm" className="gap-2 border-blue-200 text-blue-600 hover:bg-blue-50" onClick={punchInRemision}>
-                            <ExternalLink className="w-4 h-4" /> Iniciar Remisión
-                        </Button>
-                    )}
                     <Button variant="secondary" size="sm" className="gap-2" onClick={() => setIsDialogOpen(true)}>
                         <Clock className="w-4 h-4" /> Pausa
                     </Button>
                 </div>
             </div>
-
             <div className="flex items-center gap-4">
               {user && (
                 <div className="flex items-center gap-2">
