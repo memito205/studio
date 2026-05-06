@@ -61,6 +61,9 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
     // Identity standardization
     const [operationalName, setOperationalName] = useState<string | null>(null);
     const [showIdentityDialog, setShowIdentityDialog] = useState(false);
+    
+    const isIdentityReady = Boolean(operationalName || (userName && PACKERS.find(p => p.toUpperCase() === userName.toUpperCase())));
+
 
     // Initialize identity
     useEffect(() => {
@@ -161,6 +164,14 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
 
     const handlePause = async (reason: string) => {
         if (!user || isLoading) return;
+        
+        let finalReason = reason;
+        if (reason === 'Otro') {
+            const extra = prompt('Por favor, especifique el motivo de la pausa:');
+            if (!extra || !extra.trim()) return; // Cancel if empty or aborted
+            finalReason = `Otro: ${extra.trim()}`;
+        }
+        
         setIsLoading(true);
         try {
             await createPulse({
@@ -169,7 +180,7 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                 email: user.email || undefined,
                 type: 'pause',
                 status: 'Pausado',
-                reason: reason as any,
+                reason: finalReason as any,
                 startTime: new Date(),
                 endTime: null,
                 metadata: { fromModule: 'Remisión' }
@@ -237,7 +248,13 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                                     <Button 
                                         size="lg" 
                                         className="w-full h-16 text-xl font-bold gap-3 transition-all active:scale-95 shadow-md hover:shadow-xl bg-indigo-600 hover:bg-indigo-700"
-                                        onClick={handleStartRemision}
+                                        onClick={() => {
+                                            if (!isIdentityReady) {
+                                                setShowIdentityDialog(true);
+                                                return;
+                                            }
+                                            handleStartRemision();
+                                        }}
                                         disabled={isLoading}
                                     >
                                         <Play size={24} /> Iniciar Remisión
@@ -315,15 +332,21 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                     <div className="space-y-1">
                         <h4 className="font-bold text-indigo-900">Información de Sincronización</h4>
                         <p className="text-sm text-indigo-700 leading-relaxed">
-                            Su tiempo en este módulo se registra automáticamente como **tiempo justificado** en el módulo de Empaque. Las pausas aquí registradas también se reflejarán en su reporte de productividad diario.
+                            El tiempo general en "Remisión" no detendrá su reloj de empaque ni cuenta como inactividad general. Sin embargo, **las pausas** registradas aquí sí se sincronizan automáticamente y aparecen como **justificaciones** en el módulo de Empaque.
                         </p>
                     </div>
                 </div>
             </div>
 
             {/* Identity Selection Dialog */}
-            <Dialog open={showIdentityDialog} onOpenChange={setShowIdentityDialog}>
-                <DialogContent>
+            <Dialog open={showIdentityDialog} onOpenChange={(open) => {
+                if (!open && isIdentityReady) {
+                    setShowIdentityDialog(false);
+                }
+            }}>
+                <DialogContent onInteractOutside={(e) => {
+                    if (!isIdentityReady) e.preventDefault();
+                }}>
                     <DialogHeader>
                         <DialogTitle>Identificación de Operario</DialogTitle>
                         <DialogDescription>
