@@ -143,17 +143,19 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
     return match ? (match.method || 'Unidad') : 'Unidad';
   };
 
-  const getWeekRange = (date: Date) => {
+  const getWeekRange = (date: any) => {
     try {
-      const start = startOfWeek(date, { weekStartsOn: 1 });
-      const end = endOfWeek(date, { weekStartsOn: 1 });
+      const d = date && date.seconds ? new Date(date.seconds * 1000) : new Date(date);
+      const start = startOfWeek(d, { weekStartsOn: 1 });
+      const end = endOfWeek(d, { weekStartsOn: 1 });
       return `${format(start, 'dd MMM')} - ${format(end, 'dd MMM')}`;
     } catch { return "Semana Indefinida"; }
   };
 
-  const getWeekKey = (date: Date) => {
+  const getWeekKey = (date: any) => {
     try {
-      const start = startOfWeek(date, { weekStartsOn: 1 });
+      const d = date && date.seconds ? new Date(date.seconds * 1000) : new Date(date);
+      const start = startOfWeek(d, { weekStartsOn: 1 });
       return format(start, 'yyyy-MM-dd');
     } catch { return "unknown"; }
   };
@@ -165,8 +167,14 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
       result = result.filter(row => row.proveedor.toLowerCase().includes(filterProvider.toLowerCase()));
     }
     result.sort((a, b) => {
-      const dateA = a.fechaServicio.getTime();
-      const dateB = b.fechaServicio.getTime();
+      const getMS = (d: any) => {
+        if (!d) return 0;
+        if (d.seconds) return d.seconds * 1000;
+        const parsed = new Date(d).getTime();
+        return isNaN(parsed) ? 0 : parsed;
+      };
+      const dateA = getMS(a.fechaServicio);
+      const dateB = getMS(b.fechaServicio);
       return sortOrder === 'asc' ? dateA - dateB : dateB - dateA;
     });
     return result;
@@ -619,7 +627,7 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
                     {logisticsData.map(row => (
                       <tr key={row.id} className={cn("hover:bg-blue-50/10", row.estadoCadena === 'Devuelto' && "bg-red-50")}>
                         <td className="px-6 py-4">
-                          <input type="date" className="bg-transparent border border-slate-200 rounded px-1 py-1 text-xs font-bold" value={format(row.fechaServicio, 'yyyy-MM-dd')} onChange={(e) => updateRowField(row.id, 'fechaServicio', new Date(e.target.value))} />
+                          <input type="date" className="bg-transparent border border-slate-200 rounded px-1 py-1 text-xs font-bold" value={row.fechaServicio ? format(row.fechaServicio.seconds ? new Date(row.fechaServicio.seconds * 1000) : new Date(row.fechaServicio as any), 'yyyy-MM-dd') : ''} onChange={(e) => updateRowField(row.id, 'fechaServicio', new Date(e.target.value))} />
                         </td>
                         <td className="px-6 py-4">
                           <input 
