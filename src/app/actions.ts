@@ -2660,13 +2660,18 @@ export async function repairSingleTransferStorageOrder(transferId: string): Prom
         const allDestinationDocs = destinationSnapshot.docs.map(d => convertTimestampsToDates({ id: d.id, ...d.data() }) as TransferEntry);
 
         const groupKey = `${target.numeroTF}__${target.bodegaOrigen}__${target.bodegaDestino}`;
-        const grouped = new Map<string, { docs: TransferEntry[]; representative: TransferEntry; orderValue: number | null }>();
+        const grouped = new Map<string, { docs: TransferEntry[]; representative: TransferEntry; orderValue: number | null; isLockedReceived: boolean }>();
 
         allDestinationDocs.forEach(entry => {
             const key = `${entry.numeroTF}__${entry.bodegaOrigen}__${entry.bodegaDestino}`;
             const existing = grouped.get(key);
             if (!existing) {
-                grouped.set(key, { docs: [entry], representative: entry, orderValue: parseStorageOrderValue(entry.storageOrder) });
+                grouped.set(key, {
+                    docs: [entry],
+                    representative: entry,
+                    orderValue: parseStorageOrderValue(entry.storageOrder),
+                    isLockedReceived: entry.status === 'Recibido en Bodega',
+                });
                 return;
             }
             existing.docs.push(entry);
@@ -2677,6 +2682,7 @@ export async function repairSingleTransferStorageOrder(transferId: string): Prom
             }
             const parsed = parseStorageOrderValue(entry.storageOrder);
             if (existing.orderValue === null && parsed !== null) existing.orderValue = parsed;
+            if (entry.status === 'Recibido en Bodega') existing.isLockedReceived = true;
         });
 
         const targetGroup = grouped.get(groupKey);
@@ -2709,8 +2715,11 @@ export async function repairSingleTransferStorageOrder(transferId: string): Prom
 
             if (isBeforeTarget && orderValue > lowerBound) lowerBound = orderValue;
             if (isAfterTarget) {
-                if (orderValue < upperBound) upperBound = orderValue;
-                afterTargetGroups.push({ key, docs: group.docs, orderValue });
+                if (group.isLockedReceived) {
+                    if (orderValue < upperBound) upperBound = orderValue;
+                } else {
+                    afterTargetGroups.push({ key, docs: group.docs, orderValue });
+                }
             }
         });
 
@@ -2738,13 +2747,20 @@ export async function repairSingleTransferStorageOrder(transferId: string): Prom
             const occupied = new Set<number>(usedValues);
 
             const groupsToShift = afterTargetGroups
-                .filter(g => g.orderValue >= insertionBase)
+                .filter(g => g.orderValue >= insertionBase && g.orderValue < upperBound)
                 .sort((a, b) => a.orderValue - b.orderValue);
 
             groupsToShift.forEach(g => occupied.delete(g.orderValue));
 
             let insertion = insertionBase;
             while (occupied.has(insertion)) insertion++;
+
+            if (insertion >= upperBound) {
+                return {
+                    success: false,
+                    error: 'No se puede reasignar sin mover transferencias ya recibidas en bodega. Mantengo los consecutivos impresos sin cambios.',
+                };
+            }
 
             finalTargetOrder = insertion;
             occupied.add(finalTargetOrder);
