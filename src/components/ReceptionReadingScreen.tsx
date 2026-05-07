@@ -35,6 +35,9 @@ interface UserProductivityMetrics {
     actualProductivity: number;
 }
 
+const isPauseLikePulse = (pulse: OperationPulse) =>
+  pulse.type === 'pause' || pulse.status === 'Pausado' || pulse.status === 'En Remisión';
+
 
 export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ operationId, onReturnToOperations }) => {
   const { user, role } = useAuth();
@@ -248,10 +251,9 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
               return isNaN(date.getTime()) ? null : date.getTime();
           };
 
-          const activityTimes = [
-              ...userItems.map(i => parseDate(i.scanned_at)),
-              ...userPauses.map(p => parseDate(p.start_time))
-          ].filter((t): t is number => t !== null);
+          const activityTimes = userItems
+              .map(i => parseDate(i.scanned_at))
+              .filter((t): t is number => t !== null);
 
           if (activityTimes.length === 0) {
              setUserProductivity({ timeSpentInMinutes: 0, actualProductivity: 0 });
@@ -275,11 +277,14 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
 
           const grossDurationMs = Math.max(0, endTime - firstScanTime);
 
-          // 1. Collect all pause intervals
-          const activePulseFromContext = globalPulse || currentPulse;
+          // 1. Collect all pause intervals (only pause-like pulses)
+          const pauseLikePulses = allPulses.filter(isPauseLikePulse);
+          const activePulseFromContext = [globalPulse, currentPulse].find(
+            (p): p is OperationPulse => !!p && isPauseLikePulse(p)
+          );
           const rawIntervals = [
             ...userPauses.map(p => ({ start: parseDate(p.start_time)!, end: p.end_time ? parseDate(p.end_time)! : now })),
-            ...allPulses.map(p => ({ start: parseDate(p.startTime)!, end: p.endTime ? parseDate(p.endTime)! : now }))
+            ...pauseLikePulses.map(p => ({ start: parseDate(p.startTime)!, end: p.endTime ? parseDate(p.endTime)! : now }))
           ];
 
           // Explicitly add the current active pulse interval if we are paused

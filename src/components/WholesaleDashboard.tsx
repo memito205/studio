@@ -590,7 +590,7 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
                     if (pulseWithName) bestName = pulseWithName.userName;
                 }
 
-                // Find first scan strictly today
+                // Build a single non-overlapping work window for the whole operator day.
                 const scanTimes = data.items.map(i => {
                     const d = (i.scannedAt as any)?.toDate?.() || new Date(i.scannedAt);
                     return d.getTime();
@@ -599,77 +599,53 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
                 const sessionTimes = data.sessions.flatMap(s => (s.units || []).map(u => u.createdAt ? new Date(u.createdAt).getTime() : 0))
                     .filter(t => t >= todayStartTime);
                 
-                let totalEffectiveMs = 0;
-                let units = 0;
+                if (scanTimes.length === 0 && sessionTimes.length === 0) continue;
 
-                // Group activity by orderId to calculate per-operation time
-                const ordersWorked = new Set([...data.items.map(i => i.orderId), ...data.sessions.map(s => s.orderId)]);
-                
-                ordersWorked.forEach(orderId => {
-                    const orderItems = data.items.filter(i => i.orderId === orderId);
-                    const orderSessions = data.sessions.filter(s => s.orderId === orderId);
-                    
-                    const orderScanTimes = orderItems.map(i => {
-                        const d = (i.scannedAt as any)?.toDate?.() || new Date(i.scannedAt);
-                        return d.getTime();
-                    }).filter(t => !isNaN(t) && t >= todayStartTime);
+                const firstActivityTime = Math.min(...scanTimes, ...sessionTimes);
+                const lastActivityTime = Math.max(...scanTimes, ...sessionTimes, firstActivityTime + 1000);
+                const sessionEnd = (Date.now() - lastActivityTime < 1800000) ? Date.now() : lastActivityTime;
 
-                    const orderSessionTimes = orderSessions.flatMap(s => (s.units || []).map(u => u.createdAt ? new Date(u.createdAt).getTime() : 0))
-                        .filter(t => t >= todayStartTime);
-
-                    if (orderScanTimes.length === 0 && orderSessionTimes.length === 0) return;
-
-                    const opStart = Math.min(...orderScanTimes, ...orderSessionTimes);
-                    const opEnd = Math.max(...orderScanTimes, ...orderSessionTimes, opStart + 1000);
-                    
-                    // If the operation was recent (within last 30 mins), consider it ongoing
-                    const finalOpEnd = (Date.now() - opEnd < 1800000) ? Date.now() : opEnd;
-                    
-                    const opElapsedMs = finalOpEnd - opStart;
-                    
-                    // Calculate pauses within this specific operation
-                    const opPauses = [
-                        ...orderSessions.flatMap(s => (s.pauses || [])).filter(p => p.userId === packerId).map(p => ({ 
-                            start: new Date(p.startTime).getTime(), 
-                            end: p.endTime ? new Date(p.endTime).getTime() : Date.now() 
+                const pauseIntervals = [
+                    ...data.sessions
+                        .flatMap(s => (s.pauses || []))
+                        .filter(p => p.userId === packerId)
+                        .map(p => ({
+                            start: new Date(p.startTime).getTime(),
+                            end: p.endTime ? new Date(p.endTime).getTime() : Date.now()
                         })),
-                        ...pulses
-                            .filter(p => {
-                                const pulseStart = p.startTime instanceof Date ? p.startTime.getTime() : (p.startTime as any).toDate?.()?.getTime() || new Date(p.startTime).getTime();
-                                return pulseStart >= opStart && pulseStart <= finalOpEnd;
-                            })
-                            .map(p => ({ 
-                                start: p.startTime instanceof Date ? p.startTime.getTime() : (p.startTime as any).toDate?.()?.getTime() || new Date(p.startTime).getTime(), 
-                                end: p.endTime ? (p.endTime instanceof Date ? p.endTime.getTime() : (p.endTime as any).toDate?.()?.getTime() || new Date(p.endTime).getTime()) : Date.now() 
-                            }))
-                    ];
+                    ...pulses
+                        .filter(p => p.type === 'pause' || p.status === 'Pausado' || p.status === 'En Remisión')
+                        .map(p => ({
+                            start: p.startTime instanceof Date ? p.startTime.getTime() : (p.startTime as any).toDate?.()?.getTime() || new Date(p.startTime).getTime(),
+                            end: p.endTime ? (p.endTime instanceof Date ? p.endTime.getTime() : (p.endTime as any).toDate?.()?.getTime() || new Date(p.endTime).getTime()) : Date.now()
+                        }))
+                ].filter(p => !isNaN(p.start) && !isNaN(p.end) && p.end > p.start);
 
-                    opPauses.sort((a,b) => a.start - b.start);
-                    let opPauseMs = 0;
-                    if (opPauses.length > 0) {
-                        let curr = { ...opPauses[0] };
-                        const merged = [];
-                        for (let i = 1; i < opPauses.length; i++) {
-                            if (opPauses[i].start <= curr.end) curr.end = Math.max(curr.end, opPauses[i].end);
-                            else { merged.push(curr); curr = { ...opPauses[i] }; }
+                pauseIntervals.sort((a,b) => a.start - b.start);
+                const mergedPauses: { start: number; end: number }[] = [];
+                if (pauseIntervals.length > 0) {
+                    let current = { ...pauseIntervals[0] };
+                    for (let i = 1; i < pauseIntervals.length; i++) {
+                        if (pauseIntervals[i].start <= current.end) {
+                            current.end = Math.max(current.end, pauseIntervals[i].end);
+                        } else {
+                            mergedPauses.push(current);
+                            current = { ...pauseIntervals[i] };
                         }
-                        merged.push(curr);
-                        
-                        merged.forEach(p => {
-                            const intersectionStart = Math.max(p.start, opStart);
-                            const intersectionEnd = Math.min(p.end, finalOpEnd);
-                            if (intersectionEnd > intersectionStart) opPauseMs += (intersectionEnd - intersectionStart);
-                        });
                     }
+                    mergedPauses.push(current);
+                }
 
-                    totalEffectiveMs += Math.max(0, opElapsedMs - opPauseMs);
-                    units += orderItems.reduce((sum, i) => sum + (i.quantity || 1), 0);
+                let totalPauseMs = 0;
+                mergedPauses.forEach(p => {
+                    const start = Math.max(p.start, firstActivityTime);
+                    const end = Math.min(p.end, sessionEnd);
+                    if (end > start) totalPauseMs += (end - start);
                 });
 
-                const firstScanTime = Math.min(...data.items.map(i => {
-                    const d = (i.scannedAt as any)?.toDate?.() || new Date(i.scannedAt);
-                    return d.getTime();
-                }).filter(t => !isNaN(t) && t >= todayStartTime));
+                const totalEffectiveMs = Math.max(0, (sessionEnd - firstActivityTime) - totalPauseMs);
+                const units = data.items.reduce((sum, i) => sum + (i.quantity || 1), 0);
+                const firstScanTime = scanTimes.length > 0 ? Math.min(...scanTimes) : firstActivityTime;
 
                 const uph = totalEffectiveMs > 0 ? (units / (totalEffectiveMs / 1000)) * 3600 : 0;
                 
