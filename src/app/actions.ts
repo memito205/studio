@@ -2660,13 +2660,13 @@ export async function repairSingleTransferStorageOrder(transferId: string): Prom
         const allDestinationDocs = destinationSnapshot.docs.map(d => convertTimestampsToDates({ id: d.id, ...d.data() }) as TransferEntry);
 
         const groupKey = `${target.numeroTF}__${target.bodegaOrigen}__${target.bodegaDestino}`;
-        const grouped = new Map<string, { docs: TransferEntry[]; representative: TransferEntry }>();
+        const grouped = new Map<string, { docs: TransferEntry[]; representative: TransferEntry; orderValue: number | null }>();
 
         allDestinationDocs.forEach(entry => {
             const key = `${entry.numeroTF}__${entry.bodegaOrigen}__${entry.bodegaDestino}`;
             const existing = grouped.get(key);
             if (!existing) {
-                grouped.set(key, { docs: [entry], representative: entry });
+                grouped.set(key, { docs: [entry], representative: entry, orderValue: parseStorageOrderValue(entry.storageOrder) });
                 return;
             }
             existing.docs.push(entry);
@@ -2675,6 +2675,8 @@ export async function repairSingleTransferStorageOrder(transferId: string): Prom
             if (currentDate.getTime() < existingDate.getTime()) {
                 existing.representative = entry;
             }
+            const parsed = parseStorageOrderValue(entry.storageOrder);
+            if (existing.orderValue === null && parsed !== null) existing.orderValue = parsed;
         });
 
         const targetGroup = grouped.get(groupKey);
@@ -2689,9 +2691,11 @@ export async function repairSingleTransferStorageOrder(transferId: string): Prom
         let lowerBound = 0;
         let upperBound = Number.POSITIVE_INFINITY;
 
+        const afterTargetGroups: Array<{ key: string; docs: TransferEntry[]; orderValue: number }> = [];
+
         grouped.forEach((group, key) => {
             if (key === groupKey) return;
-            const orderValue = parseStorageOrderValue(group.representative.storageOrder);
+            const orderValue = group.orderValue;
             if (orderValue === null) return;
 
             usedValues.add(orderValue);
@@ -2704,7 +2708,10 @@ export async function repairSingleTransferStorageOrder(transferId: string): Prom
                 || (groupDate.getTime() === targetPriorityDate.getTime() && groupTfNumber > targetTfNumber);
 
             if (isBeforeTarget && orderValue > lowerBound) lowerBound = orderValue;
-            if (isAfterTarget && orderValue < upperBound) upperBound = orderValue;
+            if (isAfterTarget) {
+                if (orderValue < upperBound) upperBound = orderValue;
+                afterTargetGroups.push({ key, docs: group.docs, orderValue });
+            }
         });
 
         let candidate = lowerBound + 1;
@@ -2712,21 +2719,59 @@ export async function repairSingleTransferStorageOrder(transferId: string): Prom
             candidate++;
         }
 
-        if (candidate >= upperBound || !Number.isFinite(candidate) || candidate <= 0) {
-            return {
-                success: false,
-                error: 'No se encontró un consecutivo libre que respete el orden cronológico. Ejecute una re-enumeración global si necesita compactar.',
-            };
+        const batch = writeBatch(firestore);
+        let updatedCount = 0;
+        let finalTargetOrder = candidate;
+
+        if (candidate < upperBound && Number.isFinite(candidate) && candidate > 0) {
+            const newOrder = toStorageOrderCode(candidate);
+            targetGroup.docs.forEach(entry => {
+                batch.update(doc(firestore, 'transfers', entry.id), { storageOrder: newOrder });
+                updatedCount++;
+            });
+            finalTargetOrder = candidate;
+        } else {
+            // Fallback strategy:
+            // if there is no direct gap between bounds, create room by shifting only
+            // "after target" groups from the insertion point onward.
+            const insertionBase = Math.max(1, lowerBound + 1);
+            const occupied = new Set<number>(usedValues);
+
+            const groupsToShift = afterTargetGroups
+                .filter(g => g.orderValue >= insertionBase)
+                .sort((a, b) => a.orderValue - b.orderValue);
+
+            groupsToShift.forEach(g => occupied.delete(g.orderValue));
+
+            let insertion = insertionBase;
+            while (occupied.has(insertion)) insertion++;
+
+            finalTargetOrder = insertion;
+            occupied.add(finalTargetOrder);
+
+            const targetOrderCode = toStorageOrderCode(finalTargetOrder);
+            targetGroup.docs.forEach(entry => {
+                batch.update(doc(firestore, 'transfers', entry.id), { storageOrder: targetOrderCode });
+                updatedCount++;
+            });
+
+            let lastAssigned = finalTargetOrder;
+            for (const g of groupsToShift) {
+                let nextValue = Math.max(g.orderValue, lastAssigned + 1);
+                while (occupied.has(nextValue)) nextValue++;
+                occupied.add(nextValue);
+                lastAssigned = nextValue;
+
+                const shiftedCode = toStorageOrderCode(nextValue);
+                g.docs.forEach(entry => {
+                    batch.update(doc(firestore, 'transfers', entry.id), { storageOrder: shiftedCode });
+                    updatedCount++;
+                });
+            }
         }
 
-        const newOrder = toStorageOrderCode(candidate);
-        const batch = writeBatch(firestore);
-        targetGroup.docs.forEach(entry => {
-            batch.update(doc(firestore, 'transfers', entry.id), { storageOrder: newOrder });
-        });
         await batch.commit();
-
-        return { success: true, order: newOrder, updatedCount: targetGroup.docs.length };
+        return { success: true, order: toStorageOrderCode(finalTargetOrder), updatedCount };
     } catch (error: any) {
         console.error('Error repairing single transfer storage order:', error);
         return { success: false, error: error.message || 'Error desconocido reparando el orden FIFO.' };
