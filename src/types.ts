@@ -642,6 +642,7 @@ export interface IncidentLogEntry {
 export type PulseType = 'activity' | 'pause' | 'status_change';
 export type PulseReason = 'Desayuno' | 'Almuerzo' | 'Refrigerio' | 'Baño' | 'Café' | 'Soporte Técnico' | 'Sin Carga de Trabajo' | 'Otro' | 'Pausa Global' | 'Remisión' | 'Fin de Turno';
 export type UserStatus = 'Disponible' | 'En Remisión' | 'Pausado' | 'Inactivo' | 'Desconectado';
+export type PulseModuleContext = 'reception' | 'wholesale' | 'general';
 
 export interface OperationPulse {
     id?: string;
@@ -655,6 +656,7 @@ export interface OperationPulse {
     startTime: Date;
     endTime?: Date;
     isGlobal?: boolean;
+    moduleContext?: PulseModuleContext;
     metadata?: Record<string, any>;
 }
 

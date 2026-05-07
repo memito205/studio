@@ -577,7 +577,7 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
             const todayStartTime = todayStart.getTime();
 
             for (const [packerId, data] of packerMap.entries()) {
-                const pulsesRes = await getUserPulsesForDay(packerId, today);
+                const pulsesRes = await getUserPulsesForDay(packerId, today, 'wholesale');
                 const pulses = pulsesRes.data || [];
                 
                 // Better name retrieval: Priority: Mappings > Pulse Name > Session Name > Default

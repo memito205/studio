@@ -498,7 +498,11 @@ export async function getPulsesByDate(dateStr: string): Promise<{ data?: Operati
     }
 }
 
-export async function getUserPulsesForDay(userId: string, dateStr: string): Promise<{ data?: OperationPulse[]; error?: string }> {
+export async function getUserPulsesForDay(
+    userId: string,
+    dateStr: string,
+    moduleContext?: 'reception' | 'wholesale' | 'general'
+): Promise<{ data?: OperationPulse[]; error?: string }> {
     try {
         const start = Timestamp.fromDate(new Date(dateStr + 'T00:00:00'));
         const end = Timestamp.fromDate(new Date(dateStr + 'T23:59:59'));
@@ -512,7 +516,12 @@ export async function getUserPulsesForDay(userId: string, dateStr: string): Prom
         const querySnapshot = await getDocs(q);
         const pulses = querySnapshot.docs
             .map(doc => ({ id: doc.id, ...convertTimestampsToDates(doc.data()) } as OperationPulse))
-            .filter(p => p.isGlobal || p.userId === userId);
+            .filter(p => {
+                if (!(p.isGlobal || p.userId === userId)) return false;
+                if (!moduleContext) return true;
+                if (p.isGlobal) return true;
+                return p.moduleContext === moduleContext;
+            });
             
         return { data: pulses };
     } catch (error: any) {

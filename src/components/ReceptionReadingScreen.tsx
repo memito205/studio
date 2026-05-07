@@ -38,6 +38,9 @@ interface UserProductivityMetrics {
 const isPauseLikePulse = (pulse: OperationPulse) =>
   pulse.type === 'pause' || pulse.status === 'Pausado' || pulse.status === 'En Remisión';
 
+const isReceptionPulse = (pulse: OperationPulse) =>
+  pulse.isGlobal || pulse.moduleContext === 'reception';
+
 
 export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ operationId, onReturnToOperations }) => {
   const { user, role } = useAuth();
@@ -278,9 +281,9 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
           const grossDurationMs = Math.max(0, endTime - firstScanTime);
 
           // 1. Collect all pause intervals (only pause-like pulses)
-          const pauseLikePulses = allPulses.filter(isPauseLikePulse);
+          const pauseLikePulses = allPulses.filter(p => isPauseLikePulse(p) && isReceptionPulse(p));
           const activePulseFromContext = [globalPulse, currentPulse].find(
-            (p): p is OperationPulse => !!p && isPauseLikePulse(p)
+            (p): p is OperationPulse => !!p && isPauseLikePulse(p) && isReceptionPulse(p)
           );
           const rawIntervals = [
             ...userPauses.map(p => ({ start: parseDate(p.start_time)!, end: p.end_time ? parseDate(p.end_time)! : now })),

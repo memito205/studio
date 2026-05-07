@@ -233,7 +233,7 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
             .filter(p => Number.isFinite(p.start) && Number.isFinite(p.end) && p.end > p.start);
 
         const pulseDate = userFirstActivityTime.toLocaleDateString('sv-SE');
-        const pulseResult = await getUserPulsesForDay(userId, pulseDate);
+        const pulseResult = await getUserPulsesForDay(userId, pulseDate, 'reception');
         const pulsePauseIntervals: PauseInterval[] = (pulseResult.data || [])
             .filter(isPauseLikePulse)
             .map(p => ({

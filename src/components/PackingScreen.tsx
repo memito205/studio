@@ -352,14 +352,14 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             
             // If the current user is the target, we use allPulses from useSuitePulse
             if (user?.uid === targetPackerId) {
-                setPackerPulses(allPulses);
+                setPackerPulses(allPulses.filter(p => p.isGlobal || p.moduleContext === 'wholesale'));
                 return;
             }
  
             // Otherwise (supervisor/admin observing another user's session), fetch the pulses for that user
             setIsFetchingPulses(true);
             const today = new Date().toLocaleDateString('sv-SE'); // e.g. "2024-04-29"
-            const result = await getUserPulsesForDay(targetPackerId, today);
+            const result = await getUserPulsesForDay(targetPackerId, today, 'wholesale');
             if (result.data) {
                 setPackerPulses(result.data);
             }
