@@ -12,8 +12,9 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from './ui/button';
 import { Loader2 } from 'lucide-react';
 import { getPausesForOperation, getScannedItemsByReception, getAllUserProfiles, getUserGoals, getProductivitySettings } from '@/app/reception/actions';
+import { getUserPulsesForDay } from '@/app/actions';
 import { showError } from '@/lib/toast';
-import type { ReceptionOperation, ScannedItem, OperationPause, AppUser, ProductivitySettings, UserGoal, UserProductivity, HourlyOperatorDetail } from '@/types';
+import type { ReceptionOperation, ScannedItem, OperationPause, AppUser, ProductivitySettings, UserGoal, UserProductivity, HourlyOperatorDetail, OperationPulse } from '@/types';
 import { UserProductivityTable } from './UserProductivityTable';
 import { UserHourlyPerformanceTable } from './UserHourlyPerformanceTable';
 import PauseDetailsDialog from './PauseDetailsDialog';
@@ -29,15 +30,47 @@ interface UserHourlyPerformance {
   hourlyProductivity: { [hourKey: string]: HourlyOperatorDetail };
 }
 
+type PauseInterval = { start: number; end: number };
+
+const toMs = (value: any): number | null => {
+  if (!value) return null;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value?.toDate === 'function') return value.toDate().getTime();
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? null : parsed;
+};
+
+const isPauseLikePulse = (pulse: OperationPulse) =>
+  pulse.type === 'pause' || pulse.status === 'Pausado' || pulse.status === 'En Remisión';
+
+const mergeIntervals = (intervals: PauseInterval[]): PauseInterval[] => {
+  const sorted = intervals
+    .filter(i => Number.isFinite(i.start) && Number.isFinite(i.end) && i.end > i.start)
+    .sort((a, b) => a.start - b.start);
+  if (sorted.length === 0) return [];
+
+  const merged: PauseInterval[] = [];
+  let current = { ...sorted[0] };
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].start <= current.end) current.end = Math.max(current.end, sorted[i].end);
+    else {
+      merged.push(current);
+      current = { ...sorted[i] };
+    }
+  }
+  merged.push(current);
+  return merged;
+};
+
 const calculateUserHourlyPerformance = (
   userItems: ScannedItem[],
-  userPauses: OperationPause[],
+  pauseIntervals: PauseInterval[],
   goal: number,
   userFirstActivity: Date,
   sessionEndTime: Date,
 ): { hourlyProductivity: { [hourKey: string]: HourlyOperatorDetail }, allHours: string[] } => {
   const hourlyPerformance: { [hourKey: string]: HourlyOperatorDetail } = {};
-  if (userItems.length === 0 && userPauses.length === 0) return { hourlyProductivity: {}, allHours: [] };
+  if (userItems.length === 0 && pauseIntervals.length === 0) return { hourlyProductivity: {}, allHours: [] };
 
   const startHour = userFirstActivity.getHours();
   const endHour = sessionEndTime.getMinutes() > 0 || sessionEndTime.getSeconds() > 0
@@ -65,9 +98,9 @@ const calculateUserHourlyPerformance = (
       const grossMinutesInHour = (hourEndMs - hourStartMs) / 60000;
       
       let pauseMinutesInHour = 0;
-      userPauses.forEach(p => {
-          const pauseStart = p.start_time.getTime();
-          const pauseEnd = p.end_time?.getTime() ?? sessionEndTime.getTime();
+      pauseIntervals.forEach(p => {
+          const pauseStart = p.start;
+          const pauseEnd = p.end;
           
           const overlapStart = Math.max(hourStartMs, pauseStart);
           const overlapEnd = Math.min(hourEndMs, pauseEnd);
@@ -165,40 +198,58 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
         const userItems = allItems.filter(i => i.user_id === userId);
         const userPauses = allPausesForOperation.filter(p => p.user_id === userId);
 
-        if (userItems.length === 0 && userPauses.length === 0) continue;
+        if (userItems.length === 0) continue;
         
-        const activityTimes = [
-            ...userItems.map(i => new Date(i.scanned_at).getTime()),
-            ...userPauses.map(p => p.start_time.getTime())
-        ].filter(t => !isNaN(t));
+        const scanTimes = userItems
+            .map(i => toMs(i.scanned_at))
+            .filter((t): t is number => t !== null);
 
-        if(activityTimes.length === 0) continue;
+        if (scanTimes.length === 0) continue;
         
-        const userFirstActivityTime = new Date(Math.min(...activityTimes));
+        const firstScanMs = Math.min(...scanTimes);
+        const userFirstActivityTime = new Date(firstScanMs);
         
-        let sessionEndTime = opData.status === 'in_progress' ? new Date() : userFirstActivityTime;
+        const nowMs = Date.now();
+        let sessionEndMs = nowMs;
         if (opData.end_time) {
-            sessionEndTime = new Date(opData.end_time);
-        } else {
-             const lastActivityTimes = [
-                ...userItems.map(i => new Date(i.scanned_at).getTime()),
-                ...userPauses.filter(p => p.end_time).map(p => new Date(p.end_time!).getTime()),
-             ].filter(t => !isNaN(t));
-             if(lastActivityTimes.length > 0) {
-                 sessionEndTime = new Date(Math.max(...lastActivityTimes));
-             }
-             if (opData.status === 'in_progress') {
-                 sessionEndTime = new Date(); // Override to now if still in progress
-             }
+            sessionEndMs = toMs(opData.end_time) ?? nowMs;
+        } else if (opData.status !== 'in_progress' && opData.status !== 'paused') {
+            const lastActivityTimes = [
+                ...scanTimes,
+                ...userPauses
+                    .filter(p => p.end_time)
+                    .map(p => toMs(p.end_time))
+                    .filter((t): t is number => t !== null),
+            ];
+            sessionEndMs = lastActivityTimes.length > 0 ? Math.max(...lastActivityTimes) : firstScanMs;
         }
+        const sessionEndTime = new Date(sessionEndMs);
 
-        const grossDurationMs = sessionEndTime.getTime() - userFirstActivityTime.getTime();
-        
+        const operationPauseIntervals: PauseInterval[] = userPauses
+            .map(p => ({
+                start: toMs(p.start_time) ?? NaN,
+                end: toMs(p.end_time) ?? nowMs,
+            }))
+            .filter(p => Number.isFinite(p.start) && Number.isFinite(p.end) && p.end > p.start);
+
+        const pulseDate = userFirstActivityTime.toLocaleDateString('sv-SE');
+        const pulseResult = await getUserPulsesForDay(userId, pulseDate);
+        const pulsePauseIntervals: PauseInterval[] = (pulseResult.data || [])
+            .filter(isPauseLikePulse)
+            .map(p => ({
+                start: toMs(p.startTime) ?? NaN,
+                end: toMs(p.endTime) ?? nowMs,
+            }))
+            .filter(p => Number.isFinite(p.start) && Number.isFinite(p.end) && p.end > p.start);
+
+        const mergedPauseIntervals = mergeIntervals([...operationPauseIntervals, ...pulsePauseIntervals]);
+        const grossDurationMs = Math.max(0, sessionEndTime.getTime() - userFirstActivityTime.getTime());
+
         let totalPauseDurationMs = 0;
-        userPauses.forEach(p => {
-          const pauseStart = p.start_time.getTime();
-          const pauseEnd = p.end_time?.getTime() ?? sessionEndTime.getTime();
-          totalPauseDurationMs += (pauseEnd - pauseStart);
+        mergedPauseIntervals.forEach(p => {
+          const overlapStart = Math.max(p.start, userFirstActivityTime.getTime());
+          const overlapEnd = Math.min(p.end, sessionEndTime.getTime());
+          if (overlapEnd > overlapStart) totalPauseDurationMs += (overlapEnd - overlapStart);
         });
 
         const effectiveTimeMinutes = Math.max(0, (grossDurationMs - totalPauseDurationMs) / 60000);
@@ -209,7 +260,7 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
         const goal = opData.standard_units_per_hour ?? userGoals?.hourly_productivity_goal ?? settingsResult.data?.standard_per_hour_goal ?? 0;
         const compliance = goal > 0 ? (productivityPerHour / goal) * 100 : 0;
 
-        const { hourlyProductivity, allHours } = calculateUserHourlyPerformance(userItems, userPauses, goal, userFirstActivityTime, sessionEndTime);
+        const { hourlyProductivity, allHours } = calculateUserHourlyPerformance(userItems, mergedPauseIntervals, goal, userFirstActivityTime, sessionEndTime);
         allHours.forEach(hourKey => operationHoursSet.add(hourKey));
         
         hourlyPerformanceData.push({
@@ -223,7 +274,7 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
           userName: userName,
           totalScanned,
           effectiveTimeMinutes,
-          pausesCount: userPauses.length,
+          pausesCount: userPauses.length + pulsePauseIntervals.length,
           productivityPerHour,
           compliance,
           operation_rk_identifier: opData.rk_identifier,

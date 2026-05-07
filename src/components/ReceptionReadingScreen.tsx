@@ -333,7 +333,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
       
       return () => clearInterval(interval);
 
-  }, [user, operation, userScannedItems, allPauses, allPulses]);
+  }, [user, operation, userScannedItems, allPauses, allPulses, isPaused, currentPulse, globalPulse]);
 
 
   const activePackingUnit: PackingUnit | null = useMemo(() => {
