@@ -2590,6 +2590,140 @@ export async function healTransferStorageOrders(): Promise<{ success: boolean; c
     }
 }
 
+const ACTIVE_TRANSFER_STATUSES: TransferStatus[] = [
+    'En Tránsito',
+    'Recolectado en Ruta',
+    'Recibido en Bodega',
+    'Validado Supervisor',
+];
+
+const parseStorageOrderValue = (storageOrder?: string): number | null => {
+    if (!storageOrder) return null;
+    const match = storageOrder.trim().match(/^(\d+)-v(\d+)$/i);
+    if (!match) return null;
+    const primary = Number(match[1]);
+    const lap = Number(match[2]);
+    if (!Number.isFinite(primary) || !Number.isFinite(lap) || primary <= 0 || lap <= 0) return null;
+    return (lap - 1) * 999 + primary;
+};
+
+const toStorageOrderCode = (value: number): string => {
+    const lap = Math.floor((value - 1) / 999) + 1;
+    const primary = ((value - 1) % 999) + 1;
+    return `${primary}-v${lap}`;
+};
+
+const tfNumericValue = (numeroTF?: string): number => {
+    const match = String(numeroTF || '').match(/\d+/);
+    return match ? Number(match[0]) : Number.MAX_SAFE_INTEGER;
+};
+
+/**
+ * Repairs FIFO order for a single transfer group (same TF + origen + destino).
+ * It tries to place the transfer in the smallest free consecutive slot that keeps
+ * chronological order by fecha (and TF numeric value as tie-breaker).
+ */
+export async function repairSingleTransferStorageOrder(transferId: string): Promise<{ success: boolean; order?: string; updatedCount?: number; error?: string }> {
+    try {
+        const targetRef = doc(firestore, 'transfers', transferId);
+        const targetSnap = await getDoc(targetRef);
+        if (!targetSnap.exists()) {
+            return { success: false, error: 'No se encontró la transferencia seleccionada.' };
+        }
+
+        const target = convertTimestampsToDates({ id: targetSnap.id, ...targetSnap.data() }) as TransferEntry;
+        const targetDate = target.fecha instanceof Date ? target.fecha : new Date(target.fecha as any);
+        if (!(targetDate instanceof Date) || Number.isNaN(targetDate.getTime())) {
+            return { success: false, error: 'La transferencia no tiene una fecha válida para recalcular el orden.' };
+        }
+
+        const destination = (target.bodegaDestino || '').trim();
+        if (!destination) {
+            return { success: false, error: 'La transferencia no tiene bodega destino definida.' };
+        }
+
+        const destinationQuery = query(
+            collection(firestore, 'transfers'),
+            where('bodegaDestino', '==', destination),
+            where('status', 'in', ACTIVE_TRANSFER_STATUSES)
+        );
+        const destinationSnapshot = await getDocs(destinationQuery);
+        const allDestinationDocs = destinationSnapshot.docs.map(d => convertTimestampsToDates({ id: d.id, ...d.data() }) as TransferEntry);
+
+        const groupKey = `${target.numeroTF}__${target.bodegaOrigen}__${target.bodegaDestino}`;
+        const grouped = new Map<string, { docs: TransferEntry[]; representative: TransferEntry }>();
+
+        allDestinationDocs.forEach(entry => {
+            const key = `${entry.numeroTF}__${entry.bodegaOrigen}__${entry.bodegaDestino}`;
+            const existing = grouped.get(key);
+            if (!existing) {
+                grouped.set(key, { docs: [entry], representative: entry });
+                return;
+            }
+            existing.docs.push(entry);
+            const existingDate = existing.representative.fecha instanceof Date ? existing.representative.fecha : new Date(existing.representative.fecha as any);
+            const currentDate = entry.fecha instanceof Date ? entry.fecha : new Date(entry.fecha as any);
+            if (currentDate.getTime() < existingDate.getTime()) {
+                existing.representative = entry;
+            }
+        });
+
+        const targetGroup = grouped.get(groupKey);
+        if (!targetGroup) {
+            return { success: false, error: 'No se pudo identificar el grupo de la transferencia para reparar.' };
+        }
+
+        const targetPriorityDate = targetGroup.representative.fecha instanceof Date ? targetGroup.representative.fecha : new Date(targetGroup.representative.fecha as any);
+        const targetTfNumber = tfNumericValue(targetGroup.representative.numeroTF);
+
+        const usedValues = new Set<number>();
+        let lowerBound = 0;
+        let upperBound = Number.POSITIVE_INFINITY;
+
+        grouped.forEach((group, key) => {
+            if (key === groupKey) return;
+            const orderValue = parseStorageOrderValue(group.representative.storageOrder);
+            if (orderValue === null) return;
+
+            usedValues.add(orderValue);
+
+            const groupDate = group.representative.fecha instanceof Date ? group.representative.fecha : new Date(group.representative.fecha as any);
+            const groupTfNumber = tfNumericValue(group.representative.numeroTF);
+            const isBeforeTarget = groupDate.getTime() < targetPriorityDate.getTime()
+                || (groupDate.getTime() === targetPriorityDate.getTime() && groupTfNumber < targetTfNumber);
+            const isAfterTarget = groupDate.getTime() > targetPriorityDate.getTime()
+                || (groupDate.getTime() === targetPriorityDate.getTime() && groupTfNumber > targetTfNumber);
+
+            if (isBeforeTarget && orderValue > lowerBound) lowerBound = orderValue;
+            if (isAfterTarget && orderValue < upperBound) upperBound = orderValue;
+        });
+
+        let candidate = lowerBound + 1;
+        while (usedValues.has(candidate) && candidate < upperBound) {
+            candidate++;
+        }
+
+        if (candidate >= upperBound || !Number.isFinite(candidate) || candidate <= 0) {
+            return {
+                success: false,
+                error: 'No se encontró un consecutivo libre que respete el orden cronológico. Ejecute una re-enumeración global si necesita compactar.',
+            };
+        }
+
+        const newOrder = toStorageOrderCode(candidate);
+        const batch = writeBatch(firestore);
+        targetGroup.docs.forEach(entry => {
+            batch.update(doc(firestore, 'transfers', entry.id), { storageOrder: newOrder });
+        });
+        await batch.commit();
+
+        return { success: true, order: newOrder, updatedCount: targetGroup.docs.length };
+    } catch (error: any) {
+        console.error('Error repairing single transfer storage order:', error);
+        return { success: false, error: error.message || 'Error desconocido reparando el orden FIFO.' };
+    }
+}
+
 
 // --- Transfers Module Actions ---
 export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'status'>[]): Promise<{ success: boolean; error?: string; summary?: { added: number, updated: number, removed: number } }> {

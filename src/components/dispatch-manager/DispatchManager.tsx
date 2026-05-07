@@ -181,7 +181,28 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
         
         const tftMap = new Map<string, TFTItem>();
         allTransfersFromDB.forEach(t => {
-            tftMap.set(t.numeroTF.toUpperCase(), { tft: t.numeroTF, fecha: t.fecha, cantidad: t.cantidad || 1 });
+            const tfKey = t.numeroTF.toUpperCase();
+            const existing = tftMap.get(tfKey);
+            const currentQty = Number(t.cantidad || 0);
+
+            if (!existing) {
+                tftMap.set(tfKey, {
+                    tft: t.numeroTF,
+                    fecha: t.fecha,
+                    cantidad: currentQty > 0 ? currentQty : 1,
+                });
+                return;
+            }
+
+            const existingDate = existing.fecha instanceof Date ? existing.fecha : new Date(existing.fecha);
+            const incomingDate = t.fecha instanceof Date ? t.fecha : new Date(t.fecha as any);
+            const earliestDate = incomingDate.getTime() < existingDate.getTime() ? incomingDate : existingDate;
+
+            tftMap.set(tfKey, {
+                tft: existing.tft || t.numeroTF,
+                fecha: earliestDate,
+                cantidad: Number(existing.cantidad || 0) + (currentQty > 0 ? currentQty : 1),
+            });
         });
 
         const joined = consolidatedMerchandiseData.map(item => {

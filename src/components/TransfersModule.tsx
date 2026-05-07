@@ -12,7 +12,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { TransferEntry, TransferStatus, DeliveryManifest, UserRole, CollectionLog, AppUser, RouteEntry } from '@/types';
-import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders } from '@/app/actions';
+import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders, repairSingleTransferStorageOrder } from '@/app/actions';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -991,6 +991,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     const [transferForLabel, setTransferForLabel] = useState<TransferEntry | null>(null);
     const [isPrinting, setIsPrinting] = useState(false);
     const [printMode, setPrintMode] = useState<'receive' | 'standalone'>('receive');
+    const [repairingTransferId, setRepairingTransferId] = useState<string | null>(null);
 
     const [isLogOpen, setIsLogOpen] = useState(false);
     const [selectedTransferForLog, setSelectedTransferForLog] = useState<TransferEntry | null>(null);
@@ -1093,6 +1094,21 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             toast({ variant: 'destructive', title: 'Error en Reparación', description: result.error });
         }
         setIsHealing(false);
+    };
+
+    const handleRepairStorageOrder = async (transfer: GroupedTransfer) => {
+        setRepairingTransferId(transfer.id);
+        const result = await repairSingleTransferStorageOrder(transfer.id);
+        if (result.success) {
+            toast({
+                title: 'Orden FIFO reparado',
+                description: `Se asignó ${result.order} para ${transfer.numeroTF} (${result.updatedCount || 0} líneas).`,
+            });
+            onRefresh();
+        } else {
+            toast({ variant: 'destructive', title: 'No se pudo reparar el orden', description: result.error });
+        }
+        setRepairingTransferId(null);
     };
 
     const fetchManifestData = useCallback(async () => {
@@ -1619,6 +1635,17 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                                                 <DropdownMenuSeparator />
                                                                 <DropdownMenuItem onSelect={() => setStatusChangeState({ isOpen: true, transfer: t })}>
                                                                     Cambiar Estado Manualmente
+                                                                </DropdownMenuItem>
+                                                                <DropdownMenuItem
+                                                                    onSelect={() => handleRepairStorageOrder(t)}
+                                                                    disabled={repairingTransferId === t.id || t.status === 'Enviado a Destino'}
+                                                                >
+                                                                    {repairingTransferId === t.id ? (
+                                                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                                    ) : (
+                                                                        <RefreshCw className="mr-2 h-4 w-4" />
+                                                                    )}
+                                                                    Reparar Orden FIFO de esta TF
                                                                 </DropdownMenuItem>
                                                                 <DropdownMenuSeparator />
                                                                 <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
