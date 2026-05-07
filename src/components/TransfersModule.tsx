@@ -12,7 +12,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { TransferEntry, TransferStatus, DeliveryManifest, UserRole, CollectionLog, AppUser, RouteEntry } from '@/types';
-import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders, repairSingleTransferStorageOrder } from '@/app/actions';
+import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders, repairSingleTransferStorageOrder, reindexTransferStorageOrdersByDestination } from '@/app/actions';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -1473,28 +1473,28 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                             </AlertDialogContent>
                         </AlertDialog>
 
-                        <AlertDialog>
+                            <AlertDialog>
                             <AlertDialogTrigger asChild>
                                 <Button variant="secondary" size="sm" disabled={isHealing}>
                                     {isHealing ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <ListOrdered className="mr-2 h-4 w-4" />}
-                                    Enumerar FIFO (Registros Actuales)
+                                    Reindexar FIFO por Destino
                                 </Button>
                             </AlertDialogTrigger>
                             <AlertDialogContent>
                                 <AlertDialogHeader>
-                                    <AlertDialogTitle>¿Asignar orden de almacenamiento?</AlertDialogTitle>
+                                    <AlertDialogTitle>¿Reindexar órdenes FIFO por destino?</AlertDialogTitle>
                                     <AlertDialogDescription>
-                                        Esta acción asignará un código de orden (ej. 1-v1) a todas las transferencias activas basado en su fecha. Úselo para inicializar el sistema por primera vez.
+                                        Esta acción reasignará desde cero el orden FIFO por destino SOLO para estados: En Tránsito, Recolectado en Ruta, Recibido en Bodega y Validado Supervisor. No incluye Enviado a Destino ni Entregado en Ruta.
                                     </AlertDialogDescription>
                                 </AlertDialogHeader>
                                 <AlertDialogFooter>
                                     <AlertDialogCancel>Cancelar</AlertDialogCancel>
                                     <AlertDialogAction onClick={async () => {
                                         setIsHealing(true);
-                                        const res = await healTransferStorageOrders();
+                                        const res = await reindexTransferStorageOrdersByDestination();
                                         setIsHealing(false);
                                         if (res.success) {
-                                            toast({ title: 'Éxito', description: `Se asignó orden a ${res.count} registros.` });
+                                            toast({ title: 'Éxito', description: `Reindexación completada: ${res.count} líneas en ${res.destinations || 0} destinos.` });
                                             onRefresh();
                                         } else {
                                             toast({ variant: 'destructive', title: 'Error', description: res.error });

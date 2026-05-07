@@ -2606,6 +2606,106 @@ const ACTIVE_TRANSFER_STATUSES: TransferStatus[] = [
     'Validado Supervisor',
 ];
 
+/**
+ * One-time administrative reindex:
+ * Rebuilds FIFO order from scratch by destination, considering ONLY:
+ * - En Tránsito
+ * - Recolectado en Ruta
+ * - Recibido en Bodega
+ * - Validado Supervisor
+ *
+ * Excludes states like Enviado a Destino / Entregado en Ruta.
+ */
+export async function reindexTransferStorageOrdersByDestination(): Promise<{ success: boolean; count?: number; destinations?: number; error?: string }> {
+    try {
+        const transfersCollection = collection(firestore, 'transfers');
+        const q = query(
+            transfersCollection,
+            where('status', 'in', ACTIVE_TRANSFER_STATUSES)
+        );
+
+        const snapshot = await getDocs(q);
+        const docs = snapshot.docs.map(d => ({ id: d.id, ...convertTimestampsToDates(d.data()) } as TransferEntry));
+        if (docs.length === 0) {
+            return { success: true, count: 0, destinations: 0 };
+        }
+
+        const byDestination = new Map<string, TransferEntry[]>();
+        docs.forEach(entry => {
+            const dest = (entry.bodegaDestino || 'UNKNOWN').trim().toUpperCase();
+            if (!byDestination.has(dest)) byDestination.set(dest, []);
+            byDestination.get(dest)!.push(entry);
+        });
+
+        const updates: Array<{ id: string; storageOrder: string }> = [];
+        const touchedCounters: Record<string, { lastPrimary: number; lastLap: number }> = {};
+
+        byDestination.forEach((entries, destination) => {
+            const grouped = new Map<string, { docs: TransferEntry[]; representative: TransferEntry }>();
+            entries.forEach(entry => {
+                const key = `${entry.numeroTF}__${entry.bodegaOrigen}__${entry.bodegaDestino}`;
+                const existing = grouped.get(key);
+                if (!existing) {
+                    grouped.set(key, { docs: [entry], representative: entry });
+                    return;
+                }
+                existing.docs.push(entry);
+                const existingDate = existing.representative.fecha instanceof Date ? existing.representative.fecha : new Date(existing.representative.fecha as any);
+                const currentDate = entry.fecha instanceof Date ? entry.fecha : new Date(entry.fecha as any);
+                if (currentDate.getTime() < existingDate.getTime()) existing.representative = entry;
+            });
+
+            const sortedGroups = Array.from(grouped.values()).sort((a, b) => {
+                const dateA = a.representative.fecha instanceof Date ? a.representative.fecha : new Date(a.representative.fecha as any);
+                const dateB = b.representative.fecha instanceof Date ? b.representative.fecha : new Date(b.representative.fecha as any);
+                if (dateA.getTime() !== dateB.getTime()) return dateA.getTime() - dateB.getTime();
+                const tfA = tfNumericValue(a.representative.numeroTF);
+                const tfB = tfNumericValue(b.representative.numeroTF);
+                if (tfA !== tfB) return tfA - tfB;
+                return String(a.representative.id).localeCompare(String(b.representative.id));
+            });
+
+            let sequence = 1;
+            sortedGroups.forEach(group => {
+                const orderCode = toStorageOrderCode(sequence);
+                group.docs.forEach(docEntry => {
+                    updates.push({ id: docEntry.id, storageOrder: orderCode });
+                });
+                sequence++;
+            });
+
+            const lastValue = Math.max(0, sequence - 1);
+            const lap = lastValue === 0 ? 1 : Math.floor((lastValue - 1) / 999) + 1;
+            const primary = lastValue === 0 ? 0 : ((lastValue - 1) % 999) + 1;
+            touchedCounters[destination] = { lastPrimary: primary, lastLap: lap };
+        });
+
+        const CHUNK = 450;
+        for (let i = 0; i < updates.length; i += CHUNK) {
+            const batch = writeBatch(firestore);
+            const chunk = updates.slice(i, i + CHUNK);
+            chunk.forEach(update => {
+                batch.update(doc(firestore, 'transfers', update.id), { storageOrder: update.storageOrder });
+            });
+            await batch.commit();
+        }
+
+        const counterRef = doc(firestore, 'counters', 'transfers_fifo_by_dest');
+        const counterDoc = await getDoc(counterRef);
+        const existingCounters = counterDoc.exists() ? counterDoc.data() : {};
+        const mergedCounters = { ...existingCounters };
+        Object.entries(touchedCounters).forEach(([dest, value]) => {
+            mergedCounters[dest] = value;
+        });
+        await setDoc(counterRef, mergedCounters);
+
+        return { success: true, count: updates.length, destinations: Object.keys(touchedCounters).length };
+    } catch (error: any) {
+        console.error('Error reindexing transfer storage orders by destination:', error);
+        return { success: false, error: error.message || 'Error reindexando FIFO por destino.' };
+    }
+}
+
 const parseStorageOrderValue = (storageOrder?: string): number | null => {
     if (!storageOrder) return null;
     const match = storageOrder.trim().match(/^(\d+)-v(\d+)$/i);
