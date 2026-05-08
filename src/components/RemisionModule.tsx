@@ -147,6 +147,7 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                 email: user.email || undefined,
                 type: 'status_change',
                 status: 'En Remisión',
+                moduleContext: 'general',
                 startTime: new Date(),
                 endTime: null
             } as any);
@@ -167,6 +168,7 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                 email: user.email || undefined,
                 type: 'status_change',
                 status: 'Disponible',
+                moduleContext: 'general',
                 startTime: new Date(),
                 endTime: null
             } as any);
@@ -196,6 +198,7 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                 type: 'pause',
                 status: 'Pausado',
                 reason: finalReason as any,
+                moduleContext: 'general',
                 startTime: new Date(),
                 endTime: null,
                 metadata: { fromModule: 'Remisión' }
@@ -217,6 +220,7 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                 email: user.email || undefined,
                 type: 'status_change',
                 status: 'En Remisión',
+                moduleContext: 'general',
                 startTime: new Date(),
                 endTime: null
             } as any);

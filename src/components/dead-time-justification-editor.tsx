@@ -20,7 +20,7 @@ import {
     DialogTitle,
     DialogClose
 } from "@/components/ui/dialog";
-import { 
+import {
     MoreHorizontal, 
     CheckCircle, 
     AlertTriangle, 
@@ -32,7 +32,8 @@ import {
     ArrowRightCircle, 
     UserMinus,
     LayoutGrid,
-    List
+    List,
+    RotateCcw
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -83,6 +84,9 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
   const [endTime, setEndTime] = useState<string>('');
   const [filter, setFilter] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [isRevertDialogOpen, setIsRevertDialogOpen] = useState(false);
+  const [incidentToRevert, setIncidentToRevert] = useState<DeadTimeEntry | null>(null);
+  const [restartTime, setRestartTime] = useState('');
 
   const handleOpenReasonDialog = (incident: DeadTimeEntry) => {
     setSelectedIncident(incident);
@@ -133,6 +137,37 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
     setCustomDuration(undefined);
     setStartTime('');
     setEndTime('');
+  };
+
+  const handleOpenRevertDialog = (incident: DeadTimeEntry) => {
+    setIncidentToRevert(incident);
+    const defaultRestartTime = incident.endTime.toTimeString().substring(0, 5);
+    setRestartTime(defaultRestartTime);
+    setIsRevertDialogOpen(true);
+  };
+
+  const handleConfirmRevert = () => {
+    if (!incidentToRevert || !restartTime) return;
+
+    const incidentStart = incidentToRevert.startTime.toTimeString().substring(0, 5);
+    const incidentEnd = incidentToRevert.endTime.toTimeString().substring(0, 5);
+
+    // Keep the selected time within the incident range.
+    const boundedRestartTime =
+      restartTime < incidentStart ? incidentStart : restartTime > incidentEnd ? incidentEnd : restartTime;
+
+    const newJustifications = { ...justifications };
+    newJustifications[incidentToRevert.id] = {
+      type: 'REASON',
+      reasonText: `Reingreso a labor desde ${boundedRestartTime}`,
+      startTime: incidentStart,
+      endTime: boundedRestartTime,
+    };
+    onJustificationsChange(newJustifications);
+
+    setIsRevertDialogOpen(false);
+    setIncidentToRevert(null);
+    setRestartTime('');
   };
   
   const getClassificationText = (incident: DeadTimeEntry): string => {
@@ -266,8 +301,8 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
                       <ScrollArea className={cn("pr-4", viewMode === 'grid' ? "h-[350px]" : "h-auto")}>
                           <div className="space-y-4">
                               {packerIncidents.map((incident) => (
-                                  <div key={incident.id} className="group relative p-3 rounded-lg border bg-background hover:border-primary/50 transition-all">
-                                      <div className="flex justify-between items-start mb-2">
+                                  <div key={incident.id} className="group relative p-4 rounded-lg border bg-background hover:border-primary/50 transition-all space-y-3">
+                                      <div className="flex justify-between items-start gap-3">
                                           <div className="space-y-1">
                                               <div className="flex items-center text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                                                   <ArrowRightCircle className="h-3 w-3 mr-1 text-primary" />
@@ -280,7 +315,7 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
                                           </div>
                                           <DropdownMenu>
                                               <DropdownMenuTrigger asChild>
-                                                  <Button variant="ghost" size="icon" className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                  <Button variant="ghost" size="icon" className="h-8 w-8 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity shrink-0">
                                                       <MoreHorizontal className="h-4 w-4" />
                                                   </Button>
                                               </DropdownMenuTrigger>
@@ -295,10 +330,15 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
                                                   <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'SHIFT_END')} className="text-destructive font-semibold">
                                                       <UserMinus className="h-4 w-4 mr-2" /> Finalizar Labor
                                                   </DropdownMenuItem>
+                                                  {justifications[incident.id]?.type === 'SHIFT_END' && (
+                                                      <DropdownMenuItem onClick={() => handleOpenRevertDialog(incident)}>
+                                                          <RotateCcw className="h-4 w-4 mr-2" /> Revertir Finalización
+                                                      </DropdownMenuItem>
+                                                  )}
                                               </DropdownMenuContent>
                                           </DropdownMenu>
                                       </div>
-                                      <Badge variant={getStatusVariant(incident.status)} className="w-full justify-start font-medium py-1 px-2 border-none">
+                                      <Badge variant={getStatusVariant(incident.status)} className="w-full justify-start font-medium py-1.5 px-2.5 border-none">
                                           {getStatusIcon(incident.status)}
                                           <span className="truncate ml-1">{getClassificationText(incident)}</span>
                                       </Badge>
@@ -393,6 +433,45 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
                         <Button type="button" variant="ghost">Cancelar</Button>
                     </DialogClose>
                     <Button type="button" onClick={handleSaveReason} className="shadow-md">Guardar Justificación</Button>
+                </DialogFooter>
+            </>
+            )}
+        </DialogContent>
+    </Dialog>
+    <Dialog open={isRevertDialogOpen} onOpenChange={setIsRevertDialogOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+            {incidentToRevert && (
+            <>
+                <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                        <RotateCcw className="h-5 w-5 text-primary" />
+                        Revertir Finalización de Labor
+                    </DialogTitle>
+                    <DialogDescription>
+                        Seleccione la hora desde la que el operario volvió a laborar. Se conservará justificado solo el tramo anterior.
+                    </DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4 py-2">
+                    <div className="space-y-2">
+                        <Label htmlFor="restartTime">Hora de reinicio</Label>
+                        <Input
+                            id="restartTime"
+                            type="time"
+                            value={restartTime}
+                            onChange={(e) => setRestartTime(e.target.value)}
+                        />
+                        <p className="text-[11px] text-muted-foreground">
+                            Rango detectado: {incidentToRevert.startTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {incidentToRevert.endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                    </div>
+                </div>
+                <DialogFooter className="gap-2 sm:gap-0">
+                    <DialogClose asChild>
+                        <Button type="button" variant="ghost">Cancelar</Button>
+                    </DialogClose>
+                    <Button type="button" onClick={handleConfirmRevert} disabled={!restartTime}>
+                        Guardar Reingreso
+                    </Button>
                 </DialogFooter>
             </>
             )}

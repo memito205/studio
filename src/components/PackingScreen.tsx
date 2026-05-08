@@ -532,6 +532,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 email: user.email || undefined,
                 type: 'status_change',
                 status: 'Disponible',
+                moduleContext: 'wholesale',
                 startTime: now,
                 endTime: null
             } as any));
@@ -888,6 +889,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 type: 'pause',
                 status: 'Pausado',
                 reason: pulseReasonMap[reason],
+                moduleContext: 'wholesale',
                 startTime: now,
                 endTime: null,
                 justification // Pass the justification to the backend action
