@@ -16,10 +16,9 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
-  Save
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { format, startOfWeek, endOfWeek, parseISO } from 'date-fns';
+import { format, startOfWeek, endOfWeek } from 'date-fns';
 import { useToast } from '@/hooks/use-toast';
 import { 
     saveExternalServiceRows, 
@@ -42,6 +41,8 @@ interface WeeklyBatch {
       totalQty: number;
       stores: { [store: string]: number };
       storesQty: { [store: string]: number };
+      rate?: number;
+      method?: ExternalServiceRow['metodoPago'] | 'Mixto';
     } 
   };
   ocNumber?: string;
@@ -141,6 +142,26 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
       normalize(r.service) === sNormal
     );
     return match ? (match.method || 'Unidad') : 'Unidad';
+  };
+
+  /** Maps tariff/UI strings (Und, Hr, etc.) and row.metodoPago to canonical billing method. */
+  const normalizeBillingMethod = (
+    raw: string | undefined | null
+  ): ExternalServiceRow['metodoPago'] | null => {
+    if (raw == null || raw === '') return null;
+    const u = normalize(String(raw));
+    if (u.includes('JORNADA') || u === 'DIA' || u.includes('DAY')) return 'Jornada';
+    if (u.includes('HORA') || u === 'HR' || u === 'HRS' || u.includes('HOUR')) return 'Hora';
+    if (u.includes('UNID') || u === 'UND' || u.includes('UNIT')) return 'Unidad';
+    return null;
+  };
+
+  const resolveRowBillingMethod = (row: ExternalServiceRow): ExternalServiceRow['metodoPago'] => {
+    return (
+      normalizeBillingMethod(row.metodoPago as string) ??
+      normalizeBillingMethod(getMethod(row.proveedor, row.servicio)) ??
+      'Unidad'
+    );
   };
 
   const toDateObject = (value: any): Date | null => {
@@ -258,6 +279,8 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
       const serviceName = (row.servicio || 'SERVICIO SIN NOMBRE').toUpperCase();
       const rowValue = Number(row.valorACobrar || 0);
 
+      const rowMethod = resolveRowBillingMethod(row);
+
       if (!b.serviceBreakdown[serviceName]) {
         b.serviceBreakdown[serviceName] = { 
           total: 0, 
@@ -265,8 +288,13 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
           stores: {}, 
           storesQty: {},
           rate: getUnitRate(row.proveedor, row.servicio),
-          method: getMethod(row.proveedor, row.servicio)
+          method: rowMethod,
         };
+      } else {
+        const curMethod = b.serviceBreakdown[serviceName].method;
+        if (curMethod && curMethod !== 'Mixto' && rowMethod !== curMethod) {
+          b.serviceBreakdown[serviceName].method = 'Mixto';
+        }
       }
 
       const rowQty = Number(row.cantidad || 0);
@@ -294,7 +322,11 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
       
       if (row.numeroOC) b.ocNumber = row.numeroOC;
       if (row.numeroFactura) b.invoiceNumber = row.numeroFactura;
-      if (row.valorFactura) b.invoiceValue = (b.invoiceValue || 0) + row.valorFactura;
+      // Batch invoice is one value replicated across rows — never sum (would multiply by row count or concatenate strings).
+      const vf = cleanNumber(row.valorFactura);
+      if (!isNaN(vf) && vf !== 0) {
+        b.invoiceValue = Math.max(b.invoiceValue || 0, vf);
+      }
     });
     
     let result = Object.values(batches);
@@ -302,7 +334,7 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
       result = result.filter(b => b.provider.toLowerCase().includes(filterProvider.toLowerCase()));
     }
     return result.sort((a, b) => b.weekKey.localeCompare(a.weekKey));
-  }, [data, filterProvider]);
+  }, [data, filterProvider, rates]);
 
   const updateRowField = async (id: string, field: keyof ExternalServiceRow, value: any) => {
     const oldRow = data.find(row => row.id === id);
@@ -318,13 +350,19 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
       const newVal = calculateValor(prov, serv, qty);
       if (newVal > 0) {
         updated.valorACobrar = newVal;
-        updated.metodoPago = getMethod(prov, serv) as any;
+        const rawTariffMethod = getMethod(prov, serv);
+        updated.metodoPago =
+          (normalizeBillingMethod(rawTariffMethod) ?? 'Unidad') as ExternalServiceRow['metodoPago'];
       }
     }
 
     if (field === 'valorACobrar' || field === 'valorFactura') {
-      const cobrar = field === 'valorACobrar' ? cleanNumber(value) : (oldRow.valorACobrar || 0);
-      const factura = field === 'valorFactura' ? cleanNumber(value) : (oldRow.valorFactura || 0);
+      if (field === 'valorACobrar') updated.valorACobrar = cleanNumber(value);
+      if (field === 'valorFactura') updated.valorFactura = cleanNumber(value);
+      const cobrar =
+        field === 'valorACobrar' ? cleanNumber(value) : Number(oldRow.valorACobrar || 0);
+      const factura =
+        field === 'valorFactura' ? cleanNumber(value) : cleanNumber(oldRow.valorFactura);
       updated.diferencia = cobrar - factura;
     }
 
@@ -347,18 +385,18 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
   };
 
   const updateBatchField = async (batch: WeeklyBatch, field: keyof ExternalServiceRow, value: any) => {
-    const rowsToUpdate = data.filter(row => getWeekKey(row.fechaServicio) === batch.weekKey && row.proveedor === batch.provider);
-    
-    // Store final updates per row to send to Firestore
+    const coercedValue = field === 'valorFactura' ? cleanNumber(value) : value;
+
     const updatesList: { id: string, data: ExternalServiceRow }[] = [];
 
     setData(prev => prev.map(row => {
       if (getWeekKey(row.fechaServicio) === batch.weekKey && row.proveedor === batch.provider) {
-        const updated = { ...row, [field]: value };
+        const updated = { ...row, [field]: coercedValue };
         
         if (field === 'valorFactura') {
-            const cobrar = updated.valorACobrar || 0;
-            const factura = cleanNumber(value);
+            const cobrar = Number(updated.valorACobrar || 0);
+            const factura = cleanNumber(coercedValue);
+            updated.valorFactura = factura;
             updated.diferencia = cobrar - factura;
         }
 
@@ -368,7 +406,6 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
       return row;
     }));
 
-    // Perform background updates using the explicitly captured updated data
     await Promise.all(updatesList.map(u => updateExternalServiceRow(u.id, u.data)));
   };
 
@@ -809,9 +846,12 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {weeklyBatches.map(batch => {
-                        const diff = batch.totalValue - (batch.invoiceValue || 0);
+                        const invNum = cleanNumber(batch.invoiceValue);
+                        const totalNum = Number(batch.totalValue) || 0;
+                        const diff = totalNum - invNum;
+                        const diffFinite = Number.isFinite(diff);
                         return (
-                          <tr key={`${batch.weekKey}_${batch.provider}`} className={cn("hover:bg-emerald-50/10", diff !== 0 && "bg-red-50/20")}>
+                          <tr key={`${batch.weekKey}_${batch.provider}`} className={cn("hover:bg-emerald-50/10", diffFinite && diff !== 0 && "bg-red-50/20")}>
                             <td className="px-6 py-5">
                                 <div className="flex flex-col">
                                    <span className="bg-slate-800 text-white px-2 py-1 rounded text-[10px] font-black w-fit uppercase">OC: {batch.ocNumber || "FALTA"}</span>
@@ -823,12 +863,12 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
                             <td className="px-6 py-5">
                                 <div className="flex flex-col gap-2">
                                    <input placeholder="N° FACTURA" className="bg-white border-2 border-slate-100 rounded-lg px-2 py-1 text-[10px] font-black focus:border-emerald-500 outline-none w-full" value={batch.invoiceNumber || ''} onChange={(e) => updateBatchField(batch, 'numeroFactura', e.target.value)} />
-                                   <input type="number" placeholder="VALOR FAC" className="bg-white border-2 border-slate-100 rounded-lg px-2 py-1 text-xs font-black focus:border-emerald-500 outline-none w-full" value={batch.invoiceValue || ''} onChange={(e) => updateBatchField(batch, 'valorFactura', e.target.value)} />
+                                   <input type="number" placeholder="VALOR FAC" className="bg-white border-2 border-slate-100 rounded-lg px-2 py-1 text-xs font-black focus:border-emerald-500 outline-none w-full" value={batch.invoiceValue === 0 || batch.invoiceValue === undefined ? '' : batch.invoiceValue} onChange={(e) => updateBatchField(batch, 'valorFactura', e.target.value)} />
                                 </div>
                             </td>
                             <td className="px-6 py-5">
-                               <div className={cn("px-4 py-3 rounded-2xl font-mono font-black text-center border-2", diff === 0 ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-red-50 text-red-600 border-red-200")}>
-                                 {diff === 0 ? "CALZA OK" : `$${diff.toLocaleString()}`}
+                               <div className={cn("px-4 py-3 rounded-2xl font-mono font-black text-center border-2", diffFinite && diff === 0 ? "bg-emerald-50 text-emerald-600 border-emerald-100" : diffFinite ? "bg-red-50 text-red-600 border-red-200" : "bg-amber-50 text-amber-800 border-amber-100")}>
+                                 {!diffFinite ? '—' : diff === 0 ? "CALZA OK" : `$${diff.toLocaleString()}`}
                                </div>
                             </td>
                             <td className="px-6 py-5">
@@ -888,7 +928,14 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
   );
 };
 
-const CardKeyMetric = ({ title, value, quantity, stores, storesQty, total, unitRate, method }: any) => (
+const CardKeyMetric = ({ title, value, quantity, stores, storesQty, total, unitRate, method }: any) => {
+    const qtySuffix =
+      method === 'Unidad' ? 'unds' :
+      method === 'Jornada' ? 'días' :
+      method === 'Hora' ? 'hrs' :
+      method === 'Mixto' ? 'mixto' :
+      'uds/hrs/días';
+    return (
     <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
         <div className="flex justify-between items-start mb-4">
             <h4 className="font-bold text-slate-800">{title}</h4>
@@ -896,7 +943,7 @@ const CardKeyMetric = ({ title, value, quantity, stores, storesQty, total, unitR
         </div>
         <div className="flex items-end gap-2 mb-2">
             <span className="text-2xl font-mono font-black text-slate-700">${value.toLocaleString()}</span>
-            <span className="text-xs text-slate-400 mb-1">({quantity.toLocaleString()} {method === 'Unidad' ? 'unds' : method === 'Jornada' ? 'días' : 'hrs'})</span>
+            <span className="text-xs text-slate-400 mb-1">({quantity.toLocaleString()} {qtySuffix})</span>
         </div>
         {unitRate > 0 && (
           <div className="mb-6">
@@ -913,4 +960,5 @@ const CardKeyMetric = ({ title, value, quantity, stores, storesQty, total, unitR
             ))}
         </div>
     </div>
-);
+    );
+};
