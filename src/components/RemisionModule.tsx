@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { useAuth } from '@/hooks/use-auth-context';
-import { createPulse } from '@/app/actions';
+import { createPulse, loadOperatorMappings } from '@/app/actions';
 import { cn } from '@/lib/utils';
 import { PACKERS } from './suite-app';
 import { 
@@ -61,29 +61,44 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
     // Identity standardization
     const [operationalName, setOperationalName] = useState<string | null>(null);
     const [showIdentityDialog, setShowIdentityDialog] = useState(false);
+    const [masterPackers, setMasterPackers] = useState<string[]>([]);
     
-    const isIdentityReady = Boolean(operationalName || (userName && PACKERS.find(p => p.toUpperCase() === userName.toUpperCase())));
+    const availablePackers = masterPackers.length > 0 ? masterPackers : PACKERS;
+    const isIdentityReady = Boolean(operationalName || (userName && availablePackers.find(p => p.toUpperCase() === userName.toUpperCase())));
 
+    useEffect(() => {
+        const fetchMasterPackers = async () => {
+            const result = await loadOperatorMappings();
+            const names = Object.values(result.data || {})
+                .map(n => String(n || '').trim().toUpperCase())
+                .filter(Boolean);
+            const uniqueSorted = Array.from(new Set(names)).sort((a, b) => a.localeCompare(b));
+            if (uniqueSorted.length > 0) {
+                setMasterPackers(uniqueSorted);
+            }
+        };
+        fetchMasterPackers();
+    }, []);
 
     // Initialize identity
     useEffect(() => {
         if (!userName) return;
 
-        // 1. Check if name is already standardized (in PACKERS)
-        const standardizedName = PACKERS.find(p => p.toUpperCase() === userName.toUpperCase());
+        // 1. Check if name is already standardized in the current master list
+        const standardizedName = availablePackers.find(p => p.toUpperCase() === userName.toUpperCase());
         
         // 2. Check localStorage for previous selection
         const storedName = localStorage.getItem(`op_name_${user?.uid}`);
 
         if (standardizedName) {
             setOperationalName(standardizedName);
-        } else if (storedName && PACKERS.includes(storedName)) {
+        } else if (storedName && availablePackers.includes(storedName)) {
             setOperationalName(storedName);
         } else {
             // No match found, must ask the user
             setShowIdentityDialog(true);
         }
-    }, [userName, user?.uid]);
+    }, [userName, user?.uid, availablePackers]);
 
     const handleConfirmIdentity = (name: string) => {
         setOperationalName(name);
@@ -361,7 +376,7 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                                     <SelectValue placeholder="Seleccione su nombre..." />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    {PACKERS.map(packer => (
+                                    {availablePackers.map(packer => (
                                         <SelectItem key={packer} value={packer}>{packer}</SelectItem>
                                     ))}
                                 </SelectContent>
