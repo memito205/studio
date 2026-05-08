@@ -143,6 +143,34 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
     return match ? (match.method || 'Unidad') : 'Unidad';
   };
 
+  const toDateObject = (value: any): Date | null => {
+    if (!value) return null;
+    if (value instanceof Date) return isNaN(value.getTime()) ? null : value;
+    if (value.seconds) {
+      const d = new Date(value.seconds * 1000);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  const formatDateInputLocal = (value: any): string => {
+    const d = toDateObject(value);
+    if (!d) return '';
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const parseDateInputLocal = (value: string): Date | null => {
+    if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    const [y, m, d] = value.split('-').map(Number);
+    // Use midday local time to avoid timezone/dst edge shifts.
+    const parsed = new Date(y, m - 1, d, 12, 0, 0, 0);
+    return isNaN(parsed.getTime()) ? null : parsed;
+  };
+
   const getWeekRange = (date: any) => {
     try {
       const d = date && date.seconds ? new Date(date.seconds * 1000) : new Date(date);
@@ -627,7 +655,23 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
                     {logisticsData.map(row => (
                       <tr key={row.id} className={cn("hover:bg-blue-50/10", row.estadoCadena === 'Devuelto' && "bg-red-50")}>
                         <td className="px-6 py-4">
-                          <input type="date" className="bg-transparent border border-slate-200 rounded px-1 py-1 text-xs font-bold" value={row.fechaServicio ? format(row.fechaServicio.seconds ? new Date(row.fechaServicio.seconds * 1000) : new Date(row.fechaServicio as any), 'yyyy-MM-dd') : ''} onChange={(e) => updateRowField(row.id, 'fechaServicio', new Date(e.target.value))} />
+                          <input
+                            type="date"
+                            className="bg-transparent border border-slate-200 rounded px-1 py-1 text-xs font-bold"
+                            value={formatDateInputLocal(row.fechaServicio)}
+                            onChange={(e) => {
+                              const parsedDate = parseDateInputLocal(e.target.value);
+                              if (!parsedDate) {
+                                toast({
+                                  variant: 'destructive',
+                                  title: 'Fecha inválida',
+                                  description: 'Seleccione una fecha válida para continuar.'
+                                });
+                                return;
+                              }
+                              updateRowField(row.id, 'fechaServicio', parsedDate);
+                            }}
+                          />
                         </td>
                         <td className="px-6 py-4">
                           <input 
