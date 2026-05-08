@@ -23,7 +23,9 @@ export const AutoJustificationSuggestions: React.FC<AutoJustificationSuggestions
   const [isLoading, setIsLoading] = React.useState(false);
 
   const findSuggestions = async () => {
-    const incidentsToAnalyze = incidents.filter(i => !existingJustifications[i.id]);
+    const incidentsToAnalyze = incidents.filter(
+      i => !existingJustifications[i.id] && i.status === 'No Justificado'
+    );
     if (incidentsToAnalyze.length === 0) {
       alert("No hay pausas sin justificar para analizar.");
       return;

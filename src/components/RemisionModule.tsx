@@ -18,6 +18,7 @@ import {
     CheckCircle2
 } from 'lucide-react';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
+import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import { createPulse, loadOperatorMappings } from '@/app/actions';
 import { cn } from '@/lib/utils';
@@ -54,7 +55,8 @@ const PAUSE_REASONS = [
 
 export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
     const { user, userName } = useAuth();
-    const { currentPulse, isPaused } = useSuitePulse();
+    const { toast } = useToast();
+    const { currentPulse, isPaused, refreshPulses } = useSuitePulse();
     const [elapsedTime, setElapsedTime] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
     
@@ -141,18 +143,26 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
         if (!user || isLoading) return;
         setIsLoading(true);
         try {
-            await createPulse({
+            const result = await createPulse({
                 userId: user.uid,
                 userName: effectiveName,
                 email: user.email || undefined,
                 type: 'status_change',
                 status: 'En Remisión',
                 moduleContext: 'general',
+                metadata: { fromModule: 'Remisión' },
                 startTime: new Date(),
                 endTime: null
             } as any);
-        } catch (error) {
+            if (result?.error) {
+                toast({ variant: 'destructive', title: 'No se pudo iniciar remisión', description: result.error });
+                return;
+            }
+            toast({ title: 'Remisión iniciada', description: 'El tiempo queda registrado correctamente.' });
+            await refreshPulses();
+        } catch (error: any) {
             console.error("Error al iniciar remisión:", error);
+            toast({ variant: 'destructive', title: 'Error al iniciar remisión', description: error?.message || 'Error desconocido' });
         } finally {
             setIsLoading(false);
         }
@@ -162,18 +172,26 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
         if (!user || isLoading) return;
         setIsLoading(true);
         try {
-            await createPulse({
+            const result = await createPulse({
                 userId: user.uid,
                 userName: effectiveName,
                 email: user.email || undefined,
                 type: 'status_change',
                 status: 'Disponible',
                 moduleContext: 'general',
+                metadata: { fromModule: 'Remisión' },
                 startTime: new Date(),
                 endTime: null
             } as any);
-        } catch (error) {
+            if (result?.error) {
+                toast({ variant: 'destructive', title: 'No se pudo finalizar remisión', description: result.error });
+                return;
+            }
+            toast({ title: 'Remisión finalizada', description: 'Estado actualizado a disponible.' });
+            await refreshPulses();
+        } catch (error: any) {
             console.error("Error al finalizar remisión:", error);
+            toast({ variant: 'destructive', title: 'Error al finalizar remisión', description: error?.message || 'Error desconocido' });
         } finally {
             setIsLoading(false);
         }
@@ -191,7 +209,7 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
         
         setIsLoading(true);
         try {
-            await createPulse({
+            const pauseResult = await createPulse({
                 userId: user.uid,
                 userName: effectiveName,
                 email: user.email || undefined,
@@ -203,8 +221,15 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                 endTime: null,
                 metadata: { fromModule: 'Remisión' }
             } as any);
-        } catch (error) {
+            if (pauseResult?.error) {
+                toast({ variant: 'destructive', title: 'No se pudo registrar la pausa', description: pauseResult.error });
+                return;
+            }
+            toast({ title: 'Pausa registrada', description: `Motivo: ${finalReason}` });
+            await refreshPulses();
+        } catch (error: any) {
             console.error("Error al pausar remisión:", error);
+            toast({ variant: 'destructive', title: 'Error al pausar', description: error?.message || 'Error desconocido' });
         } finally {
             setIsLoading(false);
         }
@@ -214,18 +239,26 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
         if (!user || isLoading) return;
         setIsLoading(true);
         try {
-            await createPulse({
+            const result = await createPulse({
                 userId: user.uid,
                 userName: effectiveName,
                 email: user.email || undefined,
                 type: 'status_change',
                 status: 'En Remisión',
                 moduleContext: 'general',
+                metadata: { fromModule: 'Remisión' },
                 startTime: new Date(),
                 endTime: null
             } as any);
-        } catch (error) {
+            if (result?.error) {
+                toast({ variant: 'destructive', title: 'No se pudo reanudar', description: result.error });
+                return;
+            }
+            toast({ title: 'Remisión reanudada', description: 'Sesión activa de nuevo.' });
+            await refreshPulses();
+        } catch (error: any) {
             console.error("Error al reanudar remisión:", error);
+            toast({ variant: 'destructive', title: 'Error al reanudar', description: error?.message || 'Error desconocido' });
         } finally {
             setIsLoading(false);
         }

@@ -42,6 +42,27 @@ import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 
+function stripSyncedJustificationPrefix(text: string): string {
+  return text.replace(/^\[(?:Pulso|Remisión|Global)\]\s*/i, '').trim();
+}
+
+function inferBreakTypeFromIncidentText(text: string | undefined): JustificationType | undefined {
+  const j = stripSyncedJustificationPrefix(text || '').toLowerCase();
+  if (/\bdesayuno\b/.test(j)) return 'BREAKFAST';
+  if (/\balmuerzo\b/.test(j)) return 'LUNCH';
+  if (/\brefrigerio\b/.test(j)) return 'SNACK';
+  return undefined;
+}
+
+function manualBreakLabel(type: JustificationType): string | undefined {
+  switch (type) {
+    case 'BREAKFAST': return 'Desayuno';
+    case 'LUNCH': return 'Almuerzo';
+    case 'SNACK': return 'Refrigerio';
+    default: return undefined;
+  }
+}
+
 interface Props {
   incidents: DeadTimeEntry[];
   justifications: ManualJustifications;
@@ -91,7 +112,11 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
   const handleOpenReasonDialog = (incident: DeadTimeEntry) => {
     setSelectedIncident(incident);
     const currentJustification = justifications[incident.id];
-    setReason(currentJustification?.reasonText || '');
+    let initialReason = currentJustification?.reasonText?.trim() || '';
+    if (!initialReason && incident.justification?.trim()) {
+      initialReason = stripSyncedJustificationPrefix(incident.justification);
+    }
+    setReason(initialReason);
     setCustomDuration(currentJustification?.customDuration);
     
     // Default to the full incident range
@@ -106,11 +131,17 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
   const handleClassificationChange = (incidentId: string, type: JustificationType | 'UNJUSTIFIED') => {
     const newJustifications = { ...justifications };
     if (type === 'UNJUSTIFIED') {
-        delete newJustifications[incidentId];
+        newJustifications[incidentId] = { type: 'PULSE_IGNORE' };
     } else {
         newJustifications[incidentId] = { type };
     }
     onJustificationsChange(newJustifications);
+  };
+
+  const handleClearManualJustification = (incidentId: string) => {
+    const next = { ...justifications };
+    delete next[incidentId];
+    onJustificationsChange(next);
   };
   
   const handleSaveReason = () => {
@@ -118,17 +149,44 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
     
     const newJustifications = { ...justifications };
     const justificationText = reason.trim();
-    if (justificationText || customDuration || startTime || endTime) {
-        newJustifications[selectedIncident.id] = {
-            type: 'REASON',
-            reasonText: justificationText,
-            customDuration: customDuration,
-            startTime: startTime,
-            endTime: endTime
-        };
-    } else {
-        delete newJustifications[selectedIncident.id];
+    const prev = justifications[selectedIncident.id];
+    const inferredFromIncident = inferBreakTypeFromIncidentText(selectedIncident.justification);
+    const inferredFromUserText = inferBreakTypeFromIncidentText(justificationText);
+    const hasRangeOrDuration =
+      (Boolean(startTime?.trim()) && Boolean(endTime?.trim())) || customDuration != null;
+
+    if (!justificationText && !hasRangeOrDuration) {
+      delete newJustifications[selectedIncident.id];
+      onJustificationsChange(newJustifications);
+      setIsDialogOpen(false);
+      setSelectedIncident(null);
+      setReason('');
+      setCustomDuration(undefined);
+      setStartTime('');
+      setEndTime('');
+      return;
     }
+
+    let savedType: JustificationType = 'REASON';
+    if (prev?.type && prev.type !== 'PULSE_IGNORE') {
+      if (prev.type === 'SHIFT_END') savedType = 'SHIFT_END';
+      else if (['BREAKFAST', 'LUNCH', 'SNACK'].includes(prev.type)) savedType = prev.type;
+      else savedType = prev.type;
+    } else if (justificationText && !inferredFromUserText) {
+      savedType = 'REASON';
+    } else if (inferredFromUserText) {
+      savedType = inferredFromUserText;
+    } else if (inferredFromIncident) {
+      savedType = inferredFromIncident;
+    }
+
+    newJustifications[selectedIncident.id] = {
+      type: savedType,
+      reasonText: justificationText || undefined,
+      customDuration,
+      startTime: startTime?.trim() || undefined,
+      endTime: endTime?.trim() || undefined,
+    };
     onJustificationsChange(newJustifications);
     
     setIsDialogOpen(false);
@@ -171,13 +229,21 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
   };
   
   const getClassificationText = (incident: DeadTimeEntry): string => {
+      const manual = justifications[incident.id];
       if (incident.status === 'Justificado') {
-          return incident.justification || 'Justificado';
+          if (incident.justification?.trim()) return incident.justification.trim();
+          if (manual?.reasonText?.trim()) return manual.reasonText.trim();
+          if (manual?.type && ['BREAKFAST', 'LUNCH', 'SNACK'].includes(manual.type)) {
+            const lbl = manualBreakLabel(manual.type);
+            return manual.reasonText?.trim() || (lbl ? `Descanso: ${lbl}` : 'Justificado');
+          }
+          return 'Justificado (sin motivo visible — use Modificar justificación)';
       }
-      if(incident.status === 'Excedente de Descanso'){
-          return 'Excedente de Descanso';
+      if (incident.status === 'Excedente de Descanso') {
+          return incident.justification?.trim() || 'Excedente de Descanso';
       }
-      return "No Justificado";
+      if (manual?.type === 'PULSE_IGNORE') return 'No justificado (pulso ignorado)';
+      return 'No Justificado';
   }
 
   const incidentsToDisplay = useMemo(() => {
@@ -319,14 +385,26 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
                                                       <MoreHorizontal className="h-4 w-4" />
                                                   </Button>
                                               </DropdownMenuTrigger>
-                                              <DropdownMenuContent align="end" className="w-[200px]">
-                                                  <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'UNJUSTIFIED')}>Marcar como No Justificado</DropdownMenuItem>
+                                              <DropdownMenuContent align="end" className="w-[240px]">
+                                                  <DropdownMenuItem onClick={() => handleOpenReasonDialog(incident)}>
+                                                      {(justifications[incident.id] || incident.status === 'Justificado')
+                                                          ? 'Modificar justificación…'
+                                                          : 'Justificar con razón…'}
+                                                  </DropdownMenuItem>
+                                                  {justifications[incident.id]?.type === 'PULSE_IGNORE' ? (
+                                                      <DropdownMenuItem onClick={() => handleClearManualJustification(incident.id)}>
+                                                          Restaurar sincronización con pulso
+                                                      </DropdownMenuItem>
+                                                  ) : (
+                                                      <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'UNJUSTIFIED')}>
+                                                          No justificado (ignorar pulso automático)
+                                                      </DropdownMenuItem>
+                                                  )}
                                                   <Separator className="my-1" />
                                                   <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'BREAKFAST')}>Asignar a Desayuno</DropdownMenuItem>
                                                   <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'LUNCH')}>Asignar a Almuerzo</DropdownMenuItem>
                                                   <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'SNACK')}>Asignar a Refrigerio</DropdownMenuItem>
                                                   <Separator className="my-1" />
-                                                  <DropdownMenuItem onClick={() => handleOpenReasonDialog(incident)}>Justificar con Razón...</DropdownMenuItem>
                                                   <DropdownMenuItem onClick={() => handleClassificationChange(incident.id, 'SHIFT_END')} className="text-destructive font-semibold">
                                                       <UserMinus className="h-4 w-4 mr-2" /> Finalizar Labor
                                                   </DropdownMenuItem>

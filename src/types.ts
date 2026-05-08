@@ -596,7 +596,7 @@ export type ManualProductClassifications = {
     };
 };
 
-export type JustificationType = 'REASON' | 'BREAKFAST' | 'LUNCH' | 'SNACK' | 'SHIFT_END';
+export type JustificationType = 'REASON' | 'BREAKFAST' | 'LUNCH' | 'SNACK' | 'SHIFT_END' | 'PULSE_IGNORE';
 
 export type ManualJustifications = {
     [deadTimeId: string]: {
@@ -651,7 +651,8 @@ export interface OperationPulse {
     email?: string;
     type: PulseType;
     status: UserStatus;
-    reason?: PulseReason;
+    reason?: PulseReason | string;
+    justification?: string;
     details?: string;
     startTime: Date;
     endTime?: Date;

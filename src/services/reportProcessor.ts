@@ -322,6 +322,27 @@ function detectAllPauses(
 }
 
 
+function breakTypeSpanish(type: JustificationType): string {
+    switch (type) {
+        case 'BREAKFAST': return 'Desayuno';
+        case 'LUNCH': return 'Almuerzo';
+        case 'SNACK': return 'Refrigerio';
+        default: return String(type);
+    }
+}
+
+/** Pulses elegibles para el módulo de empaque (suite): no mezclar con mayoristas/recepción. */
+function filterPulsesForPackingRemision(operationPulses: OperationPulse[]): OperationPulse[] {
+    return operationPulses.filter(p => {
+        if (p.moduleContext === 'wholesale' || p.moduleContext === 'reception') return false;
+        if (p.isGlobal) return true;
+        if (p.metadata?.fromModule === 'Remisión') return true;
+        // Retrocompat: sesiones de remisión antes de metadata explícita
+        if (p.status === 'En Remisión' && p.type === 'status_change') return true;
+        return false;
+    });
+}
+
 export function applyJustifications(
   incidents: DeadTimeEntry[],
   justifications: ManualJustifications,
@@ -330,6 +351,8 @@ export function applyJustifications(
     const finalIncidents: DeadTimeEntry[] = [];
     const processQueue = [...incidents];
     const processedIds = new Set<string>();
+
+    const packingPulses = filterPulsesForPackingRemision(operationPulses);
 
     const breakDurations: { [key in JustificationType]?: number } = {
         BREAKFAST: 15,
@@ -412,37 +435,49 @@ export function applyJustifications(
                 }
             }
         }
+
+        if (justification?.type === 'PULSE_IGNORE') {
+            finalIncidents.push({ ...incident, status: 'No Justificado', justification: undefined });
+            continue;
+        }
         
         // --- Pulse Sync Logic ---
-        // If no manual justification, check if user had a pulse registered
+        // Si no hay justificación manual, alinear con pulsos de Remisión / pausa global (no otros módulos).
         if (!justification) {
-            const pulse = operationPulses.find(p => {
+            const pulse = packingPulses.find(p => {
                 if (!p.isGlobal && p.userName?.toUpperCase() !== incident.packerName.toUpperCase()) return false;
+                if (p.type === 'status_change' && p.status === 'En Remisión') return false;
                 
                 const pulseStart = p.startTime.getTime();
                 const pulseEnd = p.endTime?.getTime() || Date.now();
                 const incidentStart = incident.startTime.getTime();
                 const incidentEnd = incident.endTime.getTime();
                 
-                // Check for significant overlap (at least 1 minute)
                 const overlapStart = Math.max(pulseStart, incidentStart);
                 const overlapEnd = Math.min(pulseEnd, incidentEnd);
                 return (overlapEnd - overlapStart) >= 60000;
             });
             
             if (pulse) {
-                // Map status/reason to JustificationType
                 let type: JustificationType = 'REASON';
-                let reasonText = pulse.reason || 'Sincronizado';
-                
-                if (pulse.reason === 'Desayuno') type = 'BREAKFAST';
-                else if (pulse.reason === 'Almuerzo') type = 'LUNCH';
-                else if (pulse.reason === 'Refrigerio') type = 'SNACK';
-                else if (pulse.reason === 'Fin de Turno') type = 'SHIFT_END';
+                const rawReason = [pulse.justification, pulse.reason, pulse.details]
+                    .find(v => v != null && String(v).trim() !== '');
+                const baseReason = rawReason != null ? String(rawReason).trim() : '';
+                const rl = baseReason.toLowerCase();
+
+                if (rl.startsWith('desayuno')) type = 'BREAKFAST';
+                else if (rl.startsWith('almuerzo')) type = 'LUNCH';
+                else if (rl.startsWith('refrigerio')) type = 'SNACK';
+                else if (rl.includes('fin de turno')) type = 'SHIFT_END';
+
+                let displayReason = baseReason || 'Registro sincronizado';
+                if (pulse.isGlobal) displayReason = `[Global] ${displayReason}`;
+                else if (pulse.metadata?.fromModule === 'Remisión') displayReason = `[Remisión] ${displayReason}`;
+                else displayReason = `[Pulso] ${displayReason}`;
                 
                 justification = {
                     type,
-                    reasonText: pulse.isGlobal ? `[Global] ${reasonText}` : `[Pulso] ${reasonText}`,
+                    reasonText: displayReason,
                 };
             }
         }
@@ -553,20 +588,21 @@ export function applyJustifications(
             }
 
             if (packerBreakUsage.get(incident.packerName)!.has(justification.type)) {
-                 finalIncidents.push({ ...incident, status: 'No Justificado', justification: `Intento de usar ${justification.type} de nuevo` });
+                 finalIncidents.push({ ...incident, status: 'No Justificado', justification: `Intento de usar ${breakTypeSpanish(justification.type)} de nuevo` });
             } else {
                 packerBreakUsage.get(incident.packerName)!.add(justification.type);
                 const breakDuration = breakDurations[justification.type]!;
                 const justifiedDuration = Math.min(incident.duration, breakDuration);
                 const justifiedEndTime = new Date(incident.startTime.getTime() + justifiedDuration * 60000);
 
+                const breakLabel = breakTypeSpanish(justification.type);
                 const justifiedPart: DeadTimeEntry = {
                     ...incident,
                     id: `${incident.id}-justified`,
                     endTime: justifiedEndTime,
                     duration: Math.round(justifiedDuration),
                     status: 'Justificado',
-                    justification: `Descanso: ${justification.type}`,
+                    justification: justification.reasonText || `Descanso: ${breakLabel}`,
                 };
 
                 const remainingPart: DeadTimeEntry | undefined = justifiedDuration < incident.duration ? {
@@ -575,7 +611,7 @@ export function applyJustifications(
                     startTime: justifiedEndTime,
                     duration: Math.round(incident.duration - justifiedDuration),
                     status: 'Excedente de Descanso',
-                    justification: `Excedente de ${justification.type}`,
+                    justification: `Excedente de ${breakLabel}`,
                 } : undefined;
                 
                 handleSplit(justifiedPart, remainingPart);

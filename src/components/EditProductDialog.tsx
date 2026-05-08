@@ -18,14 +18,26 @@ import { Textarea } from '@/components/ui/textarea';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { useToast } from '@/hooks/use-toast';
 import { updateProduct } from '@/app/reception/actions';
-import type { ReceptionProduct } from '@/types';
+import type { ReceptionProduct, ProductDatabaseItem } from '@/types';
 
 interface EditProductDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  product: ReceptionProduct;
+  product: ReceptionProduct | ProductDatabaseItem;
   onSave: () => void;
   children?: React.ReactNode;
+}
+
+function barcodeFromProduct(p: ReceptionProduct | ProductDatabaseItem): string {
+  const db = p as ProductDatabaseItem;
+  const rx = p as ReceptionProduct;
+  return String(db.codigoBarras || rx.barcode || '').trim();
+}
+
+function docIdFromProduct(p: ReceptionProduct | ProductDatabaseItem): string {
+  const db = p as ProductDatabaseItem;
+  const rx = p as ReceptionProduct;
+  return String(p.id || db.codigoBarras || rx.barcode || '').trim();
 }
 
 const formSchema = z.object({
@@ -45,46 +57,60 @@ export const EditProductDialog: React.FC<EditProductDialogProps> = ({
   children,
 }) => {
   const { toast } = useToast();
+  const brandOrType =
+    product.merchandise_type?.trim() ||
+    product.marca?.trim() ||
+    '';
+
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      name: product.name || '',
-      barcode: product.barcode || '',
-      description: product.description || '',
-      reference: product.reference || '',
-      size: product.size || '',
-      merchandise_type: product.merchandise_type || '',
+      name: product.name || product.item || '',
+      barcode: barcodeFromProduct(product),
+      description: product.description || product.item || '',
+      reference: product.reference || product.referencia || '',
+      size: product.size || product.talla || '',
+      merchandise_type: brandOrType,
     },
   });
 
   useEffect(() => {
     if (open && product) {
+      const mt =
+        product.merchandise_type?.trim() ||
+        product.marca?.trim() ||
+        '';
       form.reset({
-        name: product.name || '',
-        barcode: product.barcode || '',
-        description: product.description || '',
-        reference: product.reference || '',
-        size: product.size || '',
-        merchandise_type: product.merchandise_type || '',
+        name: product.name || product.item || '',
+        barcode: barcodeFromProduct(product),
+        description: product.description || product.item || '',
+        reference: product.reference || product.referencia || '',
+        size: product.size || product.talla || '',
+        merchandise_type: mt,
       });
     }
   }, [open, product, form]);
 
   const onSubmit = async (values: z.infer<typeof formSchema>) => {
     try {
-      if (!product.id) {
+      const docIdCheck = docIdFromProduct(product);
+      if (!docIdCheck) {
         toast({ variant: 'destructive', title: 'Error', description: 'ID de producto no encontrado para la edición.' });
         return;
       }
+      const brandVal = values.merchandise_type?.trim() || null;
+
       const updatedProductData: Partial<Omit<ReceptionProduct, 'id' | 'barcode' | 'created_at' | 'updated_at' | 'user_id'>> = {
         name: values.name,
         description: values.description || null,
         reference: values.reference || null,
         size: values.size || null,
-        merchandise_type: values.merchandise_type || null,
+        merchandise_type: brandVal,
+        // Catálogo maestro (empaque): classifyProduct lee `marca`; antes solo se guardaba merchandise_type.
+        marca: brandVal,
       };
 
-      const result = await updateProduct(product.id, updatedProductData);
+      const result = await updateProduct(docIdCheck, updatedProductData);
       
       if (result.success) {
         toast({ title: 'Éxito', description: 'Producto actualizado correctamente.' });
@@ -180,9 +206,9 @@ export const EditProductDialog: React.FC<EditProductDialogProps> = ({
               name="merchandise_type"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Tipo de Mercancía (Opcional)</FormLabel>
+                  <FormLabel>Marca</FormLabel>
                   <FormControl>
-                    <Input placeholder="Ej: Ropa, Electrónica" {...field} />
+                    <Input placeholder="Ej: NIKE, ADIDAS, IMPORTADA…" {...field} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

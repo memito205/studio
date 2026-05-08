@@ -203,7 +203,8 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
         currentPulse,
         globalPulse,
         allPulses: allPulsesDay,
-        isPaused: !!globalPulse || currentPulse?.status === 'Pausado' || currentPulse?.status === 'En Remisión',
+        // En Remisión es trabajo activo en remisión, no una pausa (si no, el timer y el estado UI fallan).
+        isPaused: !!globalPulse || currentPulse?.status === 'Pausado',
         isInRemision: currentPulse?.status === 'En Remisión',
         status: currentPulse?.status || 'Disponible',
         loading,

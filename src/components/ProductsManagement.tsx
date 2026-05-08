@@ -112,13 +112,18 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
         return;
     }
 
+    const brand =
+      mainProductDetails.merchandise_type?.trim() ||
+      mainProductDetails.marca?.trim() ||
+      null;
     const productToCreate: Omit<Product, 'id' | 'created_at' | 'updated_at' | 'user_id'> = {
         name: mainProductDetails.name || mainProductDetails.item || '',
         barcode: alternateBarcode.trim(),
         description: mainProductDetails.description || null,
         reference: mainProductDetails.reference || mainProductDetails.referencia || '',
         size: mainProductDetails.size || mainProductDetails.talla || '',
-        merchandise_type: mainProductDetails.merchandise_type || mainProductDetails.marca || null,
+        merchandise_type: brand,
+        marca: brand,
         location: mainProductDetails.location || null,
     };
     
@@ -250,12 +255,22 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
     setIsLoading(false);
   }
 
-  const onProductUpdated = () => {
-    if (mainProductDetails?.codigoBarras) {
-      handleLookupMainProduct('barcode');
+  const onProductUpdated = useCallback(async () => {
+    const code =
+      mainProductDetails?.codigoBarras ||
+      (mainProductDetails as Product | undefined)?.barcode;
+    if (!code?.trim()) {
+      setIsEditDialogOpen(false);
+      return;
+    }
+    setIsLoading(true);
+    const result = await lookupBarcode(code.trim());
+    setIsLoading(false);
+    if (result.status === 'success' && result.item) {
+      setMainProductDetails(result.item as Product);
     }
     setIsEditDialogOpen(false);
-  }
+  }, [mainProductDetails]);
 
   return (
     <>
