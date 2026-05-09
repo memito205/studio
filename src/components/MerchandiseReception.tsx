@@ -325,6 +325,10 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
                 <ArrowLeft className="mr-2 h-4 w-4" />
                 Volver a la Suite
               </Button>
+              <Button variant="outline" onClick={() => setView('reception_samples_audit')} title="Cruce escaneos de recepción con control de muestras">
+                <ClipboardCheck className="mr-2 h-4 w-4" />
+                Cruce muestras
+              </Button>
                <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                         <Button variant="outline">
@@ -339,11 +343,9 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
                           <DropdownMenuItem onSelect={onNavigateToNoveltyManagement}><ClipboardList className="mr-2 h-4 w-4"/> Gestionar Novedades </DropdownMenuItem>
                         )}
                         <DropdownMenuItem onSelect={() => setView('reference_traceability')}><Compass className="mr-2 h-4 w-4"/> Trazabilidad por Referencia </DropdownMenuItem>
-                        {(role === 'admin' || role === 'supervisor') && (
-                          <DropdownMenuItem onSelect={() => setView('reception_samples_audit')}>
-                            <ClipboardCheck className="mr-2 h-4 w-4" /> Cruce recepción ↔ muestras
-                          </DropdownMenuItem>
-                        )}
+                        <DropdownMenuItem onSelect={() => setView('reception_samples_audit')}>
+                          <ClipboardCheck className="mr-2 h-4 w-4" /> Cruce recepción ↔ muestras
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuLabel>Analíticas</DropdownMenuLabel>
                         <DropdownMenuItem onSelect={onNavigateToDashboard}> <BarChartHorizontal className="mr-2 h-4 w-4"/> Ver Dashboard </DropdownMenuItem>
