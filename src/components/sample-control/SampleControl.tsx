@@ -5,12 +5,13 @@
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Database, ShieldCheck, History, Eye, Loader2, FlaskConical } from 'lucide-react';
+import { ArrowLeft, Database, ShieldCheck, History, Eye, Loader2, FlaskConical, Boxes } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SampleVerification } from './SampleVerification';
 import { AdminDataManagement } from './AdminDataManagement';
 import { SampleFollowUpReport } from './SampleFollowUpReport';
+import { ReceptionSamplesAuditReport } from '@/components/ReceptionSamplesAuditReport';
 import type { SavedSampleVerification } from '@/types';
 import { loadSampleVerifications } from '@/app/actions';
 import { useToast } from '@/hooks/use-toast';
@@ -149,9 +150,10 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
         
         {isAdminOrSupervisor ? (
           <Tabs defaultValue="verification" className="w-full">
-              <TabsList className="grid w-full grid-cols-2 md:grid-cols-4 gap-1 h-auto py-2">
+              <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-1 h-auto py-2">
                   <TabsTrigger value="verification"><ShieldCheck className="mr-2 h-4 w-4" />Verificación</TabsTrigger>
                   <TabsTrigger value="followUp"><FlaskConical className="mr-2 h-4 w-4" />Seguimiento nuevas</TabsTrigger>
+                  <TabsTrigger value="receptionAudit"><Boxes className="mr-2 h-4 w-4" />vs Recepción</TabsTrigger>
                   <TabsTrigger value="admin"><Database className="mr-2 h-4 w-4" />Administración</TabsTrigger>
                   <TabsTrigger value="history"><History className="mr-2 h-4 w-4" />Historial</TabsTrigger>
               </TabsList>
@@ -160,6 +162,9 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
               </TabsContent>
               <TabsContent value="followUp" className="mt-6">
                   <SampleFollowUpReport />
+              </TabsContent>
+              <TabsContent value="receptionAudit" className="mt-6">
+                  <ReceptionSamplesAuditReport />
               </TabsContent>
               <TabsContent value="admin" className="mt-6">
                   <AdminDataManagement />

@@ -5,7 +5,7 @@ import React, { useState, useEffect, useCallback, ChangeEvent, useMemo } from 'r
 import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
-import { ArrowLeft, PlusCircle, BarChartHorizontal, MapPin, ClipboardList, Boxes, BookUser, ArrowDownUp, ArrowRight, Upload, Settings, AlarmClockOff, FileCheck2, Send, Loader2, Tag, Compass } from 'lucide-react';
+import { ArrowLeft, PlusCircle, BarChartHorizontal, MapPin, ClipboardList, Boxes, BookUser, ArrowDownUp, ArrowRight, Upload, Settings, AlarmClockOff, FileCheck2, Send, Loader2, Tag, Compass, ClipboardCheck } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -41,6 +41,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { ScrollArea, ScrollBar } from './ui/scroll-area';
 import { LabelingPreparationScreen } from './LabelingPreparationScreen';
 import { ReferenceTraceability } from './ReferenceTraceability'; // Import the new component
+import { ReceptionSamplesAuditReport } from './ReceptionSamplesAuditReport';
 
 
 const DataPreviewTable: React.FC<{ data: CsvRow[] }> = ({ data }) => {
@@ -88,7 +89,7 @@ interface MerchandiseReceptionProps {
 }
 
 type OperationStatusFilter = 'active' | 'history';
-type ReceptionView = 'operations_list' | 'labeling_prep' | 'reference_traceability';
+type ReceptionView = 'operations_list' | 'labeling_prep' | 'reference_traceability' | 'reception_samples_audit';
 
 
 export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({ 
@@ -304,6 +305,12 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
   if (view === 'reference_traceability') {
     return <ReferenceTraceability onReturn={handleReturnToOperationsList} />;
   }
+
+  if (view === 'reception_samples_audit') {
+    return (
+      <ReceptionSamplesAuditReport onReturn={handleReturnToOperationsList} />
+    );
+  }
   
   return (
     <div className="space-y-8">
@@ -332,6 +339,11 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
                           <DropdownMenuItem onSelect={onNavigateToNoveltyManagement}><ClipboardList className="mr-2 h-4 w-4"/> Gestionar Novedades </DropdownMenuItem>
                         )}
                         <DropdownMenuItem onSelect={() => setView('reference_traceability')}><Compass className="mr-2 h-4 w-4"/> Trazabilidad por Referencia </DropdownMenuItem>
+                        {(role === 'admin' || role === 'supervisor') && (
+                          <DropdownMenuItem onSelect={() => setView('reception_samples_audit')}>
+                            <ClipboardCheck className="mr-2 h-4 w-4" /> Cruce recepción ↔ muestras
+                          </DropdownMenuItem>
+                        )}
                         <DropdownMenuSeparator />
                         <DropdownMenuLabel>Analíticas</DropdownMenuLabel>
                         <DropdownMenuItem onSelect={onNavigateToDashboard}> <BarChartHorizontal className="mr-2 h-4 w-4"/> Ver Dashboard </DropdownMenuItem>
