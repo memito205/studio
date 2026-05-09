@@ -15,6 +15,7 @@ import { exportToXlsx } from '@/services/export';
 import {
   getReceptionSamplesAuditReport,
   type ReceptionSampleAuditRow,
+  type ReceptionSamplesAuditStats,
 } from '@/app/receptionSampleAuditActions';
 import { RECEPTION_SAMPLE_AUDIT_START_ISO } from '@/lib/receptionSampleAudit';
 
@@ -52,6 +53,7 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
   const [rows, setRows] = useState<ReceptionSampleAuditRow[]>([]);
   const [cutoffIso, setCutoffIso] = useState<string>(RECEPTION_SAMPLE_AUDIT_START_ISO);
   const [pagesHint, setPagesHint] = useState<number | undefined>();
+  const [stats, setStats] = useState<ReceptionSamplesAuditStats | null>(null);
   const [filter, setFilter] = useState<RowFilter>('all');
   const [search, setSearch] = useState('');
 
@@ -59,16 +61,18 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
     setLoading(true);
     try {
       const res = await getReceptionSamplesAuditReport();
-      if (!res.success || !res.rows) {
+      if (!res.success) {
         throw new Error(res.error || 'No se pudo cargar el reporte.');
       }
-      setRows(res.rows);
-      if (res.cutoffIso) setCutoffIso(res.cutoffIso);
+      setRows(res.rows ?? []);
+      setCutoffIso(res.cutoffIso ?? RECEPTION_SAMPLE_AUDIT_START_ISO);
       setPagesHint(res.scannedPages);
+      setStats(res.stats ?? null);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Error desconocido';
       toast({ variant: 'destructive', title: 'Error', description: msg });
       setRows([]);
+      setStats(null);
     } finally {
       setLoading(false);
     }
@@ -141,9 +145,33 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                 escaneos anterior al corte no entra en este cruce; otros reportes siguen mostrando todo el
                 historial.
               </p>
-              {pagesHint != null && (
-                <p className="text-xs text-muted-foreground">
-                  Paginación Firestore (scannedItems): {pagesHint} lote(s) consultado(s).
+              <p className="text-xs text-muted-foreground">
+                Firebase cobra sobre todo por <strong>lecturas de documentos</strong>. Aquí la parte más pesada
+                suele ser recorrer los escaneos desde la fecha de corte; ya no se descarga toda la colección
+                de TF ni todo el historial de verificaciones, solo lo relacionado con esas referencias o fechas.
+              </p>
+              {stats && (
+                <p className="text-xs text-muted-foreground border-l-2 border-muted pl-2 space-y-0.5">
+                  <span className="block">
+                    Última actualización — lecturas aprox.:{' '}
+                    <strong>{stats.scannedItemDocsRead.toLocaleString()}</strong> docs{' '}
+                    <span className="text-muted-foreground">(recepción)</span>
+                    {' + '}
+                    <strong>{stats.verificationDocsRead.toLocaleString()}</strong>{' '}
+                    <span className="text-muted-foreground">(verificaciones ≥ corte)</span>
+                    {' + '}
+                    <strong>{stats.deliveryDocsRead.toLocaleString()}</strong>{' '}
+                    <span className="text-muted-foreground">(entregas TF coincidentes)</span>
+                    {pagesHint != null ? (
+                      <>
+                        {' · '}
+                        {pagesHint} ronda(s) de paginación en escaneos
+                      </>
+                    ) : null}
+                    . Además hay lecturas por comprobación de existencia en{' '}
+                    <code className="bg-muted px-1 rounded">sampleReferences</code> (≈ proporcional al número de
+                    referencias distintas).
+                  </span>
                 </p>
               )}
             </CardDescription>

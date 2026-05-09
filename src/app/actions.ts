@@ -2528,6 +2528,31 @@ export async function loadSampleVerifications(): Promise<{ success: boolean; dat
     }
 }
 
+/** Solo verificaciones con createdAt ≥ since (menos lecturas que cargar todo el historial). */
+export async function loadSampleVerificationsSince(
+    since: Date
+): Promise<{ success: boolean; data?: SavedSampleVerification[]; error?: string }> {
+    try {
+        const ts = Timestamp.fromDate(since);
+        const q = query(
+            collection(firestore, 'sampleVerifications'),
+            where('createdAt', '>=', ts),
+            orderBy('createdAt', 'desc')
+        );
+        const querySnapshot = await getDocs(q);
+        const sessions = querySnapshot.docs.map((doc) =>
+            convertTimestampsToDates({ id: doc.id, ...doc.data() }) as SavedSampleVerification
+        );
+        return { success: true, data: sessions };
+    } catch (error: any) {
+        console.error('Error loading sample verifications since date:', error);
+        return {
+            success: false,
+            error: `No se pudieron cargar verificaciones desde la fecha: ${error.message}`,
+        };
+    }
+}
+
 
 // --- FIFO Ordering for Transfers ---
 /**
