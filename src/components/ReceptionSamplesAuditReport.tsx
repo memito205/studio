@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ArrowLeft, ClipboardCheck, Download, Loader2, RefreshCw } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ClipboardCheck, Download, Loader2, RefreshCw } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { format, parseISO } from 'date-fns';
@@ -18,6 +18,43 @@ import {
   type ReceptionSamplesAuditStats,
 } from '@/app/receptionSampleAuditActions';
 import { RECEPTION_SAMPLE_AUDIT_START_ISO } from '@/lib/receptionSampleAudit';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+
+function ReceptionOperationsCell({
+  ids,
+  labels,
+}: {
+  ids: string[];
+  labels: string[];
+}) {
+  const n = ids.length;
+  if (n === 0) {
+    return <span className="text-muted-foreground text-xs">—</span>;
+  }
+  if (n === 1) {
+    return <span className="font-mono text-xs">{labels[0]}</span>;
+  }
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" className="h-8 gap-1 font-normal max-w-[200px]">
+          <span className="truncate text-xs">{labels.length} operaciones</span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-80 p-3" align="start">
+        <p className="text-xs font-medium text-muted-foreground mb-2">Recepciones (RK) donde llegó la referencia</p>
+        <ul className="text-sm space-y-1.5 max-h-60 overflow-y-auto">
+          {labels.map((lbl, i) => (
+            <li key={ids[i]} className="font-mono text-xs border-b border-border/40 pb-1 last:border-0 last:pb-0">
+              {lbl}
+            </li>
+          ))}
+        </ul>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 export interface ReceptionSamplesAuditReportProps {
   /** Si viene desde Recepción, botón volver al listado de operaciones */
@@ -114,8 +151,7 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
     exportToXlsx(
       filteredRows.map((r) => ({
         Referencia: r.reference,
-        'Cantidad recepción (desde corte)': r.receptionQtySinceCutoff,
-        'Líneas escaneo': r.receptionScanLinesSinceCutoff,
+        'Operaciones RK': r.receptionOperationLabels.join('; '),
         'Validación guardada (≥ corte)': r.hasVerificationSinceCutoff ? 'Sí' : 'No',
         'Muestra en BD (foto)': r.inSampleDatabase ? 'Sí' : 'No',
         'TF entrega registrado': r.hasTransferDelivery ? 'Sí' : 'No',
@@ -137,13 +173,12 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
             </CardTitle>
             <CardDescription className="max-w-3xl space-y-2">
               <p>
-                Por cada referencia <strong>contada en recepción</strong> desde{' '}
-                <strong>{cutoffLabel}</strong> (UTC, configurable en código), se revisa si apareció en una{' '}
-                <strong>verificación guardada</strong> con fecha igual o posterior a esa marca, si existe{' '}
-                <strong>muestra en base</strong> (foto en BD) y si hay <strong>TF de entrega</strong> en{' '}
-                <code className="text-xs bg-muted px-1 rounded">sampleDeliveries</code>. El histórico de
-                escaneos anterior al corte no entra en este cruce; otros reportes siguen mostrando todo el
-                historial.
+                Lista de <strong>referencias distintas</strong> vistas en recepción desde{' '}
+                <strong>{cutoffLabel}</strong> (UTC, configurable en código), con validación de muestras, foto en
+                BD, TF en <code className="text-xs bg-muted px-1 rounded">sampleDeliveries</code> y número de
+                operación RK (si hay varias recepciones, se despliegan con el botón). El ritmo del reporte depende
+                sobre todo de cuántos <strong>documentos escaneados</strong> existan desde esa fecha; quitar
+                cantidades en pantalla no reduce esas lecturas.
               </p>
               <p className="text-xs text-muted-foreground">
                 Firebase cobra sobre todo por <strong>lecturas de documentos</strong>. Aquí la parte más pesada
@@ -162,6 +197,9 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                     {' + '}
                     <strong>{stats.deliveryDocsRead.toLocaleString()}</strong>{' '}
                     <span className="text-muted-foreground">(entregas TF coincidentes)</span>
+                    {' + '}
+                    <strong>{stats.receptionOperationDocsRead.toLocaleString()}</strong>{' '}
+                    <span className="text-muted-foreground">(operaciones RK)</span>
                     {pagesHint != null ? (
                       <>
                         {' · '}
@@ -257,8 +295,7 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                 <TableHeader>
                   <TableRow>
                     <TableHead>Referencia</TableHead>
-                    <TableHead className="text-right">Cant. recepción</TableHead>
-                    <TableHead className="text-right">Líneas</TableHead>
+                    <TableHead>Operación recepción</TableHead>
                     <TableHead className="text-center">Validación</TableHead>
                     <TableHead className="text-center">BD muestras</TableHead>
                     <TableHead className="text-center">TF entrega</TableHead>
@@ -269,8 +306,9 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                   {filteredRows.map((r) => (
                     <TableRow key={r.reference}>
                       <TableCell className="font-mono">{r.reference}</TableCell>
-                      <TableCell className="text-right">{r.receptionQtySinceCutoff}</TableCell>
-                      <TableCell className="text-right">{r.receptionScanLinesSinceCutoff}</TableCell>
+                      <TableCell className="max-w-[220px]">
+                        <ReceptionOperationsCell ids={r.receptionOperationIds} labels={r.receptionOperationLabels} />
+                      </TableCell>
                       <TableCell className="text-center">
                         {r.hasVerificationSinceCutoff ? (
                           <Badge variant="success">Sí</Badge>
