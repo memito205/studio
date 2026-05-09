@@ -7,6 +7,9 @@
  * - Preferido: subcolección referenceStats (1 doc ≈ 1 referencia por operación), ya mantenida al escanear.
  * - Por fechas: collectionGroup(referenceStats) filtrando por last_scanned_at (se escribe en cada escaneo nuevo).
  * - Opcional legacyFullScan: recorrer cada línea de scannedItems (miles de lecturas).
+ *
+ * TF / entrega: además de sampleDeliveries se fusionan las entradas en results[].deliveryHistory de
+ * sampleVerifications (misma lógica que SampleVerification para Adidas: TF virtual = nombre de sesión + fecha).
  */
 
 import { firestore } from '@/services/firebase';
@@ -98,6 +101,43 @@ function accumulateScan(refToOpIds: Map<string, Set<string>>, data: ScannedItem)
   accumulateRefOp(refToOpIds, ref, rid);
 }
 
+function asSampleDeliveryDate(d: SampleDelivery): Date {
+  const raw = d.deliveryDate as unknown;
+  if (raw instanceof Date && !Number.isNaN(raw.getTime())) return raw;
+  if (typeof raw === 'string' || typeof raw === 'number') return new Date(raw);
+  return new Date(0);
+}
+
+/**
+ * Entregas guardadas solo dentro de la verificación (p. ej. Adidas: al guardar se inyecta deliveryHistory con
+ * transferNumber = nombre de la sesión y deliveryDate = momento de validación; no se escribe en sampleDeliveries).
+ */
+function mergeDeliveriesFromSavedVerificationResults(
+  deliveriesByRef: Map<string, SampleDelivery[]>,
+  sessions: SavedSampleVerification[],
+  allowedRefs: Set<string>
+): number {
+  let mergedEntries = 0;
+  for (const session of sessions) {
+    for (const res of session.results || []) {
+      const nr = normalizeReceptionReference(res.reference || '');
+      if (!nr || nr === 'UNKNOWN' || !allowedRefs.has(nr)) continue;
+      const hist = res.deliveryHistory;
+      if (!hist?.length) continue;
+      const arr = deliveriesByRef.get(nr) || [];
+      for (const d of hist) {
+        arr.push({
+          ...d,
+          deliveryDate: asSampleDeliveryDate(d),
+        });
+        mergedEntries += 1;
+      }
+      deliveriesByRef.set(nr, arr);
+    }
+  }
+  return mergedEntries;
+}
+
 export interface ReceptionSampleAuditRow {
   reference: string;
   hasVerificationSinceCutoff: boolean;
@@ -116,6 +156,8 @@ export interface ReceptionSamplesAuditStats {
   deliveryDocsRead: number;
   receptionOperationDocsRead: number;
   queryRounds: number;
+  /** Líneas fusionadas desde deliveryHistory en verificaciones (TF virtual / Adidas, etc.) */
+  verificationDeliveryHistoryEntries?: number;
 }
 
 export interface ReceptionSamplesAuditScanContext {
@@ -340,6 +382,7 @@ export async function getReceptionSamplesAuditReport(
           deliveryDocsRead: 0,
           receptionOperationDocsRead: 0,
           queryRounds,
+          verificationDeliveryHistoryEntries: 0,
         },
       };
     }
@@ -378,6 +421,13 @@ export async function getReceptionSamplesAuditReport(
       arr.push(del);
       deliveriesByRef.set(k, arr);
     });
+
+    const refKeySet = new Set(refKeys);
+    const verificationDeliveryHistoryEntries = mergeDeliveriesFromSavedVerificationResults(
+      deliveriesByRef,
+      verRes.data,
+      refKeySet
+    );
 
     const validatedRefs = new Set<string>();
     verRes.data.forEach((v: SavedSampleVerification) => {
@@ -431,6 +481,7 @@ export async function getReceptionSamplesAuditReport(
         deliveryDocsRead,
         receptionOperationDocsRead,
         queryRounds,
+        verificationDeliveryHistoryEntries,
       },
     };
   } catch (e: any) {

@@ -352,16 +352,19 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
               <p>
                 Referencias distintas según el <strong>alcance de escaneos</strong> que elijas abajo, cruzadas con
                 validación de muestras (sesiones guardadas desde{' '}
-                <strong>{validationCutoffLabel}</strong>), foto en BD y TF en{' '}
-                <code className="text-xs bg-muted px-1 rounded">sampleDeliveries</code>.
+                <strong>{validationCutoffLabel}</strong>), foto en BD y TF reales o virtuales (colección{' '}
+                <code className="text-xs bg-muted px-1 rounded">sampleDeliveries</code> más historial en la verificación
+                guardada).
               </p>
               {scanScopeDescription ? (
                 <p className="text-sm border-l-2 border-primary/30 pl-2">{scanScopeDescription}</p>
               ) : null}
               <p className="text-xs text-muted-foreground">
                 Por defecto el alcance de recepción usa el índice ya guardado por referencia (
-                <code className="text-xs bg-muted px-1 rounded">referenceStats</code>), no cada línea escaneada. Opcional:
-                modo histórico por fechas para datos muy antiguos sin <code className="text-xs bg-muted px-1 rounded">last_scanned_at</code>.
+                <code className="text-xs bg-muted px-1 rounded">referenceStats</code>), no cada línea escaneada. Las TF del
+                cruce incluyen <code className="text-xs bg-muted px-1 rounded">sampleDeliveries</code> y el{' '}
+                <strong>historial guardado en la verificación</strong> (Adidas: entrega virtual con número de TF =
+                nombre de la sesión y fecha de guardado).
               </p>
               {stats && (
                 <p className="text-xs text-muted-foreground border-l-2 border-muted pl-2 space-y-0.5">
@@ -386,7 +389,18 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                         {pagesHint} ronda(s) paginación
                       </>
                     ) : null}
-                    . También <code className="bg-muted px-1 rounded">sampleReferences</code>.
+                    {' · '}
+                    También <code className="bg-muted px-1 rounded">sampleReferences</code>
+                    {(stats.verificationDeliveryHistoryEntries ?? 0) > 0 ? (
+                      <>
+                        {' · '}
+                        <strong>{stats.verificationDeliveryHistoryEntries}</strong>{' '}
+                        <span className="text-muted-foreground">
+                          líneas en historial de verificación (TF virtual Adidas, etc.)
+                        </span>
+                      </>
+                    ) : null}
+                    .
                   </span>
                 </p>
               )}
