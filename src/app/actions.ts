@@ -2387,6 +2387,44 @@ export async function getSampleReferenceById(referenceId: string): Promise<{ suc
     }
 }
 
+/** Existencia en sampleReferences por ID de documento (clave normalizada mayúsculas para coincidir con verificaciones). */
+export async function getSampleReferencesExistence(
+    referenceIds: string[]
+): Promise<{ success: boolean; data?: Record<string, boolean>; error?: string }> {
+    try {
+        const uniq = [
+            ...new Set(
+                referenceIds
+                    .map((r) => String(r || '').trim().toUpperCase())
+                    .filter(Boolean)
+            ),
+        ];
+        const result: Record<string, boolean> = {};
+        uniq.forEach((id) => {
+            result[id] = false;
+        });
+
+        const CHUNK = 30;
+        const coll = collection(firestore, 'sampleReferences');
+
+        for (let i = 0; i < uniq.length; i += CHUNK) {
+            const chunk = uniq.slice(i, i + CHUNK);
+            if (chunk.length === 0) continue;
+
+            const q = query(coll, where(documentId(), 'in', chunk));
+            const snapshot = await getDocs(q);
+            snapshot.docs.forEach((d) => {
+                result[d.id.trim().toUpperCase()] = true;
+            });
+        }
+
+        return { success: true, data: result };
+    } catch (error: any) {
+        console.error('Error getSampleReferencesExistence:', error);
+        return { success: false, error: error.message };
+    }
+}
+
 export async function saveSampleDeliveries(deliveries: Omit<SampleDelivery, 'id'>[]): Promise<{ success: boolean; error?: string; processedCount: number }> {
     if (!deliveries || deliveries.length === 0) {
         return { success: false, error: "No se proporcionaron entregas para guardar.", processedCount: 0 };

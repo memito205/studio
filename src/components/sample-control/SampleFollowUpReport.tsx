@@ -1,0 +1,308 @@
+"use client";
+
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Badge } from '@/components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Loader2, RefreshCw, Download, FlaskConical } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
+import { format } from 'date-fns';
+import { es } from 'date-fns/locale';
+import type { SavedSampleVerification, SampleDelivery } from '@/types';
+import {
+  loadSampleVerifications,
+  getSampleReferencesExistence,
+  loadAllSampleDeliveries,
+} from '@/app/actions';
+import { exportToXlsx } from '@/services/export';
+
+function normRef(r: string) {
+  return String(r || '')
+    .trim()
+    .toUpperCase();
+}
+
+function deliveriesForReference(all: SampleDelivery[], refNorm: string): SampleDelivery[] {
+  return all.filter((d) => normRef(d.reference) === refNorm);
+}
+
+type FollowUpRow = {
+  verificationId: string;
+  verificationName: string;
+  verificationDate: Date;
+  reference: string;
+  refNorm: string;
+  inSampleDbNow: boolean;
+  hasRealTf: boolean;
+  transferNumbers: string;
+  lastDeliveryDate: string;
+};
+
+export const SampleFollowUpReport: React.FC = () => {
+  const { toast } = useToast();
+  const [loading, setLoading] = useState(false);
+  const [rows, setRows] = useState<FollowUpRow[]>([]);
+  const [filterVerificationId, setFilterVerificationId] = useState<string>('all');
+
+  const buildRows = useCallback(
+    async (verifications: SavedSampleVerification[], allDeliveries: SampleDelivery[]) => {
+      const baseRows: {
+        verificationId: string;
+        verificationName: string;
+        verificationDate: Date;
+        refNorm: string;
+      }[] = [];
+
+      for (const v of verifications) {
+        const fromSnapshot =
+          v.newSampleReferencesAtRun && v.newSampleReferencesAtRun.length > 0
+            ? v.newSampleReferencesAtRun.map(normRef)
+            : v.results
+                .filter((r) => r.status === 'Muestra Nueva Requerida')
+                .map((r) => normRef(r.reference));
+
+        const uniqueInVerification = [...new Set(fromSnapshot.filter(Boolean))];
+        uniqueInVerification.forEach((refNorm) => {
+          baseRows.push({
+            verificationId: v.id,
+            verificationName: v.name,
+            verificationDate: new Date(v.createdAt),
+            refNorm,
+          });
+        });
+      }
+
+      if (baseRows.length === 0) {
+        return [] as FollowUpRow[];
+      }
+
+      const allRefs = [...new Set(baseRows.map((b) => b.refNorm))];
+      const existenceRes = await getSampleReferencesExistence(allRefs);
+      if (!existenceRes.success || !existenceRes.data) {
+        throw new Error(existenceRes.error || 'No se pudo consultar la base de muestras.');
+      }
+      const existence = existenceRes.data;
+
+      const out: FollowUpRow[] = baseRows.map((b) => {
+        const dlist = deliveriesForReference(allDeliveries, b.refNorm).sort(
+          (a, c) => new Date(c.deliveryDate).getTime() - new Date(a.deliveryDate).getTime()
+        );
+        const hasRealTf = dlist.length > 0;
+        const transferNumbers = dlist.map((d) => d.transferNumber).join('; ') || '—';
+        const last = dlist[0]?.deliveryDate
+          ? format(new Date(dlist[0].deliveryDate), 'dd/MM/yyyy', { locale: es })
+          : '—';
+
+        return {
+          verificationId: b.verificationId,
+          verificationName: b.verificationName,
+          verificationDate: b.verificationDate,
+          reference: b.refNorm,
+          refNorm: b.refNorm,
+          inSampleDbNow: !!existence[b.refNorm],
+          hasRealTf,
+          transferNumbers,
+          lastDeliveryDate: last,
+        };
+      });
+
+      return out.sort((a, b) => {
+        const t = b.verificationDate.getTime() - a.verificationDate.getTime();
+        if (t !== 0) return t;
+        return a.refNorm.localeCompare(b.refNorm);
+      });
+    },
+    []
+  );
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [verRes, delRes] = await Promise.all([loadSampleVerifications(), loadAllSampleDeliveries()]);
+
+      if (!verRes.success || !verRes.data) {
+        throw new Error(verRes.error || 'No se pudieron cargar las verificaciones.');
+      }
+      if (!delRes.success || !delRes.data) {
+        throw new Error(delRes.error || 'No se pudieron cargar las entregas (TF).');
+      }
+
+      const built = await buildRows(verRes.data, delRes.data);
+      setRows(built);
+    } catch (e: any) {
+      toast({ variant: 'destructive', title: 'Error', description: e.message });
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [buildRows, toast]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const filteredRows = useMemo(() => {
+    if (filterVerificationId === 'all') return rows;
+    return rows.filter((r) => r.verificationId === filterVerificationId);
+  }, [rows, filterVerificationId]);
+
+  const summary = useMemo(() => {
+    const set = filteredRows;
+    const total = set.length;
+    const inDb = set.filter((r) => r.inSampleDbNow).length;
+    const withTf = set.filter((r) => r.hasRealTf).length;
+    const pendingBoth = set.filter((r) => !r.inSampleDbNow && !r.hasRealTf).length;
+    return { total, inDb, withTf, pendingBoth };
+  }, [filteredRows]);
+
+  const verificationOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    rows.forEach((r) => map.set(r.verificationId, r.verificationName));
+    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  }, [rows]);
+
+  const handleExport = () => {
+    if (filteredRows.length === 0) {
+      toast({ variant: 'destructive', title: 'Sin datos', description: 'No hay filas para exportar.' });
+      return;
+    }
+    exportToXlsx(
+      filteredRows.map((r) => ({
+        Verificación: r.verificationName,
+        'Fecha verificación': format(r.verificationDate, 'PPp', { locale: es }),
+        Referencia: r.reference,
+        'En base muestras (foto) ahora': r.inSampleDbNow ? 'Sí' : 'No',
+        'TF registrado (entregas reales)': r.hasRealTf ? 'Sí' : 'No',
+        'Números TF': r.transferNumbers,
+        'Última fecha entrega': r.lastDeliveryDate,
+      })),
+      'seguimiento_muestras_nuevas'
+    );
+    toast({ title: 'Exportado', description: 'Archivo generado.' });
+  };
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1">
+            <CardTitle className="flex items-center gap-2">
+              <FlaskConical className="h-5 w-5 text-primary" />
+              Seguimiento de muestras nuevas
+            </CardTitle>
+            <CardDescription>
+              Cruza las referencias que en su momento salieron como <strong>Muestra nueva requerida</strong> con el
+              estado <em>actual</em>: si ya están en la base de muestras (foto) y si tienen entregas reales con TF en{' '}
+              <code className="text-xs bg-muted px-1 rounded">sampleDeliveries</code>. No modifica verificaciones
+              existentes; las nuevas guardan la lista explícita al momento del guardado.
+            </CardDescription>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+              {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+              Actualizar
+            </Button>
+            <Button variant="secondary" size="sm" onClick={handleExport} disabled={loading || filteredRows.length === 0}>
+              <Download className="mr-2 h-4 w-4" />
+              Exportar Excel
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            <div className="rounded-lg border p-3 bg-muted/30">
+              <div className="text-muted-foreground text-xs">Filas (filtro)</div>
+              <div className="text-2xl font-bold">{summary.total}</div>
+            </div>
+            <div className="rounded-lg border p-3 bg-muted/30">
+              <div className="text-muted-foreground text-xs">Ya en base muestras</div>
+              <div className="text-2xl font-bold text-green-600">{summary.inDb}</div>
+            </div>
+            <div className="rounded-lg border p-3 bg-muted/30">
+              <div className="text-muted-foreground text-xs">Con TF registrado</div>
+              <div className="text-2xl font-bold text-blue-600">{summary.withTf}</div>
+            </div>
+            <div className="rounded-lg border p-3 bg-muted/30">
+              <div className="text-muted-foreground text-xs">Sin foto ni TF</div>
+              <div className="text-2xl font-bold text-amber-600">{summary.pendingBoth}</div>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-center max-w-md">
+            <span className="text-sm text-muted-foreground shrink-0">Filtrar por verificación</span>
+            <Select value={filterVerificationId} onValueChange={setFilterVerificationId}>
+              <SelectTrigger>
+                <SelectValue placeholder="Todas" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todas las verificaciones</SelectItem>
+                {verificationOptions.map(([id, name]) => (
+                  <SelectItem key={id} value={id}>
+                    {name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {loading ? (
+            <div className="flex justify-center py-16">
+              <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
+            </div>
+          ) : filteredRows.length === 0 ? (
+            <p className="text-center text-muted-foreground py-12">
+              No hay referencias marcadas como muestra nueva en el historial, o el filtro no devuelve resultados.
+            </p>
+          ) : (
+            <div className="border rounded-md overflow-x-auto max-h-[65vh] overflow-y-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Verificación</TableHead>
+                    <TableHead>Fecha</TableHead>
+                    <TableHead>Referencia</TableHead>
+                    <TableHead className="text-center">En BD muestras</TableHead>
+                    <TableHead className="text-center">TF real</TableHead>
+                    <TableHead>Números TF</TableHead>
+                    <TableHead>Última entrega</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredRows.map((r, idx) => (
+                    <TableRow key={`${r.verificationId}-${r.refNorm}-${idx}`}>
+                      <TableCell className="font-medium max-w-[180px] truncate" title={r.verificationName}>
+                        {r.verificationName}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-xs">
+                        {format(r.verificationDate, 'PPp', { locale: es })}
+                      </TableCell>
+                      <TableCell className="font-mono">{r.reference}</TableCell>
+                      <TableCell className="text-center">
+                        {r.inSampleDbNow ? (
+                          <Badge variant="success">Sí</Badge>
+                        ) : (
+                          <Badge variant="secondary">No</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {r.hasRealTf ? (
+                          <Badge variant="default">Sí</Badge>
+                        ) : (
+                          <Badge variant="outline">No</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="max-w-[220px] text-xs break-words">{r.transferNumbers}</TableCell>
+                      <TableCell className="text-xs whitespace-nowrap">{r.lastDeliveryDate}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+};

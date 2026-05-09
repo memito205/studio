@@ -23,6 +23,7 @@ import { UnexpectedItemDialog } from './UnexpectedItemDialog';
 import { Button } from '@/components/ui/button';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { cn } from '@/lib/utils';
+import { normalizeReceptionReference, normalizeReceptionSize } from '@/lib/receptionReference';
 
 
 interface ReceptionReadingScreenProps {
@@ -177,7 +178,9 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
           setCurrentReferenceStats(null);
           return;
       }
-      const safeRefId = (currentScannedProductDetails.referencia || currentScannedProductDetails.reference || 'UNKNOWN').trim().replace(/\//g, '-');
+      const safeRefId = normalizeReceptionReference(
+        currentScannedProductDetails.referencia || currentScannedProductDetails.reference || ''
+      );
       const statsRef = doc(firestore, 'receptionOperations', operationId, 'referenceStats', safeRefId);
       
       const unsubscribeStats = onSnapshot(statsRef, (docSnap) => {
@@ -370,14 +373,16 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
 
     let unitToUse = activePackingUnit;
     // --- START: SINGLE REFERENCE VALIDATION ---
-    const productRef = (product.referencia || product.reference || '').trim();
-    const productSize = (product.talla || product.size || '').trim();
+    const rawRef = (product.referencia || product.reference || '').trim();
+    const productRef = rawRef ? normalizeReceptionReference(rawRef) : '';
+    const rawSize = (product.talla || product.size || '').trim();
+    const productSize = rawSize ? normalizeReceptionSize(rawSize) : '';
     const productName = (product.item || product.name || '').trim();
 
     if (unitToUse) {
         const itemsInActiveUnit = userScannedItems.filter(item => item.packing_unit_id === unitToUse?.firestoreId);
         if (itemsInActiveUnit.length > 0) {
-            const expectedReference = itemsInActiveUnit[0].reference.trim();
+            const expectedReference = normalizeReceptionReference(itemsInActiveUnit[0].reference);
 
             if (productRef !== expectedReference) {
                 setMixedReferenceError({ show: true, expected: expectedReference, scanned: productRef });
@@ -407,10 +412,10 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
         
         // FALLBACK: If barcode not in expected (alternate code), find by Reference + Size
         if (!expectedItemData && productRef && productSize) {
-            expectedItemData = expectedItems.find(item => {
-                const itemRef = (item.reference || (item as any).referencia || '').trim().toUpperCase();
-                const itemSize = (item.size || (item as any).talla || '').trim().toUpperCase();
-                return itemRef === productRef.toUpperCase() && itemSize === productSize.toUpperCase();
+            expectedItemData = expectedItems.find(expItem => {
+                const expRef = normalizeReceptionReference(expItem.reference || (expItem as any).referencia || '');
+                const expSize = normalizeReceptionSize(expItem.size || (expItem as any).talla || '');
+                return expRef === productRef && expSize === productSize;
             });
         }
 
@@ -419,7 +424,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
             packing_unit_id: unitToUse.firestoreId,
             barcode: product.codigoBarras,
             user_id: user.uid,
-            reference: productRef || 'N/A',
+            reference: productRef || 'UNKNOWN',
             talla: productSize || 'N/A',
             item: productName || 'N/A',
             location_id: expectedItemData?.location || undefined

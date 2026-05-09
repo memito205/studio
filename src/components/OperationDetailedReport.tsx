@@ -16,6 +16,7 @@ import type { ReceptionOperation, DetailedReportItem, ScannedItem, ItemNovelty, 
 import { Badge } from '@/components/ui/badge';
 import { exportToXlsx } from '@/services/export';
 import { cn } from '@/lib/utils';
+import { normalizeReceptionReference, normalizeReceptionSize } from '@/lib/receptionReference';
 import PackingUnitDetailsDialog from '@/components/PackingUnitDetailsDialog';
 import { showError } from '@/lib/toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'; // Import Tabs
@@ -105,8 +106,8 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
                 breakdown: [],
                 productDetails: {
                     item: item.item || 'N/A',
-                    reference: item.reference || 'N/A',
-                    size: item.talla || 'N/A'
+                    reference: item.reference ? normalizeReceptionReference(item.reference) : 'N/A',
+                    size: item.talla ? normalizeReceptionSize(item.talla) : 'N/A'
                 }
             };
             scannedDataMap.set(item.barcode, entry);
@@ -136,12 +137,24 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
         
         const dbProductDetails = productDetailsMap.get(barcode);
         const fallbackDetails = scannedInfo?.productDetails || expectedItem;
+        const rawRef =
+          dbProductDetails?.referencia ||
+          dbProductDetails?.reference ||
+          (fallbackDetails as ReceptionExpectedItem)?.reference ||
+          (scannedInfo?.productDetails.reference) ||
+          '';
+        const rawSize =
+          dbProductDetails?.talla ||
+          dbProductDetails?.size ||
+          (fallbackDetails as ReceptionExpectedItem)?.size ||
+          (scannedInfo?.productDetails.size) ||
+          '';
 
         return {
             barcode: barcode,
             productName: dbProductDetails?.item || fallbackDetails?.item || 'Producto Inesperado',
-            reference: dbProductDetails?.reference || fallbackDetails?.reference || 'N/A',
-            size: dbProductDetails?.size || fallbackDetails?.talla || 'N/A',
+            reference: rawRef ? normalizeReceptionReference(rawRef) : 'N/A',
+            size: rawSize ? normalizeReceptionSize(rawSize) : 'N/A',
             expectedQuantity: expectedQty,
             scannedQuantity: scannedQty,
             difference: difference,
@@ -157,26 +170,33 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
     if (operation.expectedItems) {
       operation.expectedItems.forEach(item => {
         if (item.reference && item.location) {
-          locationMapByReference.set(item.reference.trim(), item.location);
+          locationMapByReference.set(normalizeReceptionReference(item.reference), item.location);
         }
       });
     }
 
     detailedItems.forEach(item => {
-        const key = item.reference; // Use reference as the key
-        let entry = consolidatedMap.get(key);
+        // Sin referencia válida: no fusionar filas distintas por el mismo placeholder "N/A"
+        const groupKey =
+          item.reference !== 'N/A'
+            ? item.reference
+            : `_SIN_REF_${item.barcode}`;
+        let entry = consolidatedMap.get(groupKey);
 
         if (!entry) {
             entry = {
-                reference: key,
+                reference: item.reference,
                 productName: item.productName,
                 expectedQuantity: 0,
                 scannedQuantity: 0,
                 difference: 0,
-                location: locationMapByReference.get(key.trim()) || 'N/A',
+                location:
+                  item.reference !== 'N/A'
+                    ? locationMapByReference.get(item.reference) || 'N/A'
+                    : 'N/A',
                 packingUnitBreakdown: []
             };
-            consolidatedMap.set(key, entry);
+            consolidatedMap.set(groupKey, entry);
         }
         entry.expectedQuantity += item.expectedQuantity;
         entry.scannedQuantity += item.scannedQuantity;

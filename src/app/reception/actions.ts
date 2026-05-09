@@ -8,6 +8,7 @@ import { parseISO } from 'date-fns';
 import { startOfDay, endOfDay, isWithinInterval } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { normalizeHeader, parseFlexibleDate, excelSerialDateToJSDate, findCaseInsensitiveKey } from '@/lib/parsingUtils';
+import { normalizeReceptionReference, normalizeReceptionSize, receptionRefSizeKey } from '@/lib/receptionReference';
 import type { ReceptionOperation, ScannedItem, ItemNovelty, PackingUnit, Location, CsvRow, ReceptionExpectedItem, ReceptionProduct, AlternateBarcodeUploadRow, AppUser, OperationPause, ProductivitySettings, UserGoal, PackedItem, ProductDatabaseItem, DiscardedRecord, LabelingOperation, LabelingActivityLog, LabelingActivityType, LabelingOperationStatus, PackingScanResult, ExternalVendor, LabelingDashboardData, LabelingSummaryKPIs, LabelingEmployeePerformance } from '@/types';
 
 
@@ -497,7 +498,7 @@ export async function exportBasicOperationReport(operationId: string): Promise<{
     const locationMapForThisOperation = new Map<string, string>();
     expectedItems.forEach(item => {
         if (item.reference && item.location) {
-            locationMapForThisOperation.set(item.reference.trim(), item.location);
+            locationMapForThisOperation.set(normalizeReceptionReference(item.reference), item.location);
         }
     });
 
@@ -521,8 +522,15 @@ export async function exportBasicOperationReport(operationId: string): Promise<{
 
     expectedItems.forEach(item => {
       const product = productMap.get(item.barcode);
-      const key = `${item.reference}-${item.size}`;
-      const existing = allItems.get(key) || { expected: 0, scanned: 0, ref: item.reference, talla: item.size, name: product?.item || item.item, barcodes: new Set() };
+      const key = receptionRefSizeKey(item.reference, item.size);
+      const existing = allItems.get(key) || {
+        expected: 0,
+        scanned: 0,
+        ref: normalizeReceptionReference(item.reference),
+        talla: normalizeReceptionSize(item.size),
+        name: product?.item || item.item,
+        barcodes: new Set<string>(),
+      };
       existing.expected += item.expected_quantity;
       existing.barcodes.add(item.barcode);
       allItems.set(key, existing);
@@ -530,11 +538,18 @@ export async function exportBasicOperationReport(operationId: string): Promise<{
 
     scannedItems.forEach(item => {
       const product = productMap.get(item.barcode);
-      const key = `${item.reference}-${item.talla}`;
-      const existing = allItems.get(key) || { expected: 0, scanned: 0, ref: item.reference, talla: item.talla, name: product?.item || item.item, barcodes: new Set() };
+      const key = receptionRefSizeKey(item.reference, item.talla);
+      const existing = allItems.get(key) || {
+        expected: 0,
+        scanned: 0,
+        ref: normalizeReceptionReference(item.reference),
+        talla: normalizeReceptionSize(item.talla),
+        name: product?.item || item.item,
+        barcodes: new Set<string>(),
+      };
       existing.scanned += item.quantity;
-      if (!existing.ref) existing.ref = item.reference;
-      if (!existing.talla) existing.talla = item.talla;
+      if (!existing.ref) existing.ref = normalizeReceptionReference(item.reference);
+      if (!existing.talla) existing.talla = normalizeReceptionSize(item.talla);
       if (!existing.name) existing.name = product?.item || item.item;
       existing.barcodes.add(item.barcode);
       allItems.set(key, existing);
@@ -563,7 +578,7 @@ export async function exportBasicOperationReport(operationId: string): Promise<{
     const consolidatedData = Array.from(consolidatedMap.entries()).map(([ref, data]) => ({
       'Referencia': ref,
       'Nombre Producto': data.name,
-      'Ubicación': locationMapForThisOperation.get(ref.trim()) || 'N/A',
+      'Ubicación': locationMapForThisOperation.get(ref) || 'N/A',
       'Total Esperado': data.expected,
       'Total Leído': data.scanned,
       'Diferencia Total': data.scanned - data.expected,
@@ -594,16 +609,18 @@ export async function exportBasicOperationReport(operationId: string): Promise<{
         const box = packingUnitIdMap.get(item.packing_unit_id);
         if (!box) return;
 
-        const key = `${box.id}-${item.reference}-${item.talla}`;
+        const normRef = normalizeReceptionReference(item.reference);
+        const normSize = normalizeReceptionSize(item.talla);
+        const key = `${box.id}-${normRef}-${normSize}`;
         let entry = traceabilityMap.get(key);
         
         if (!entry) {
             entry = {
                 'Numero de Caja': box.id,
                 'Destino': box.destination || 'N/A',
-                'Referencia': item.reference,
-                'Talla': item.talla,
-                'Ubicacion': locationMapForThisOperation.get(item.reference.trim()) || 'N/A',
+                'Referencia': normRef,
+                'Talla': normSize,
+                'Ubicacion': locationMapForThisOperation.get(normRef) || 'N/A',
                 'Cantidad por Talla': 0,
                 'Total Unidades en Caja': packingUnitTotals.get(box.id) || 0,
             };
@@ -1011,7 +1028,7 @@ export async function deletePackingUnitAndContents(unitFirestoreId: string): Pro
                 const qty = itemData.quantity || 1;
                 totalQuantityDeleted += qty;
                 
-                const safeRefId = (itemData.reference || 'UNKNOWN').trim().replace(/\//g, '-');
+                const safeRefId = normalizeReceptionReference(itemData.reference);
                 refStatsMap.set(safeRefId, (refStatsMap.get(safeRefId) || 0) + qty);
                 
                 transaction.delete(itemDoc.ref);
@@ -1143,7 +1160,7 @@ export async function addScannedItem(itemData: Omit<ScannedItem, 'id' | 'quantit
             transaction.update(receptionRef, { totalScannedQuantity: increment(1) });
             
             // --- PATRON CONTADOR: Firebase Optimization ---
-            const safeRefId = (itemData.reference || 'UNKNOWN').trim().replace(/\//g, '-');
+            const safeRefId = normalizeReceptionReference(itemData.reference);
             const statsRef = doc(firestore, 'receptionOperations', itemData.reception_id, 'referenceStats', safeRefId);
             transaction.set(statsRef, {
                 reference: safeRefId,
@@ -1179,7 +1196,7 @@ export async function updateScannedItem(itemId: string, updates: Partial<Scanned
             transaction.update(receptionRef, { totalScannedQuantity: increment(quantityDifference) });
             
             // --- PATRON CONTADOR: Firebase Optimization ---
-            const safeRefId = (oldData.reference || 'UNKNOWN').trim().replace(/\//g, '-');
+            const safeRefId = normalizeReceptionReference(oldData.reference);
             const statsRef = doc(firestore, 'receptionOperations', oldData.reception_id, 'referenceStats', safeRefId);
             transaction.set(statsRef, {
                 totalScanned: increment(quantityDifference)
@@ -1212,7 +1229,7 @@ export async function deleteScannedItem(itemId: string): Promise<{ success: bool
             transaction.update(receptionRef, { totalScannedQuantity: increment(-(itemData.quantity || 1)) });
             
             // --- PATRON CONTADOR: Firebase Optimization ---
-            const safeRefId = (itemData.reference || 'UNKNOWN').trim().replace(/\//g, '-');
+            const safeRefId = normalizeReceptionReference(itemData.reference);
             const statsRef = doc(firestore, 'receptionOperations', itemData.reception_id, 'referenceStats', safeRefId);
             
             // Check if there are other items of the same reference in the same box
@@ -1262,7 +1279,7 @@ export async function bulkDeleteScannedItems(itemIds: string[]): Promise<{ succe
                 currentReceptionId = data.reception_id;
                 totalQuantityRemoved += data.quantity;
                 
-                const safeRefId = (data.reference || 'UNKNOWN').trim().replace(/\//g, '-');
+                const safeRefId = normalizeReceptionReference(data.reference);
                 diffMap.set(safeRefId, (diffMap.get(safeRefId) || 0) + data.quantity);
 
                 batch.delete(itemRef);
@@ -2075,7 +2092,7 @@ export async function repairReceptionStats(operationId: string): Promise<{ succe
         const refMap = new Map<string, { totalScanned: number, packingUnits: Set<string> }>();
         
         scannedItems.forEach(item => {
-            const safeRefId = (item.reference || 'UNKNOWN').trim().replace(/\//g, '-');
+            const safeRefId = normalizeReceptionReference(item.reference);
             if (!refMap.has(safeRefId)) {
                 refMap.set(safeRefId, { totalScanned: 0, packingUnits: new Set() });
             }

@@ -1371,6 +1371,8 @@ export interface SavedSampleVerification {
   savedById: string;
   savedBy: string;
   results: ComparisonResult[];
+  /** Referencias que en la corrida estaban como "Muestra nueva requerida" antes de ajustes al guardar (p. ej. Adidas). Permite seguimiento sin cambiar el resultado guardado. */
+  newSampleReferencesAtRun?: string[];
   stats: {
     total: number;
     scanned: number;

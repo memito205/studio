@@ -244,6 +244,10 @@ export const SampleVerification: React.FC<SampleVerificationProps> = ({ onVerifi
         const isAdidasVerification = verificationName.toUpperCase().startsWith('AD') || verificationName.toUpperCase().includes('ADIDAS');
         const verificationDate = new Date();
 
+        const newSampleReferencesAtRun = comparisonResults
+            .filter((res) => res.status === 'Muestra Nueva Requerida')
+            .map((res) => res.reference.trim().toUpperCase());
+
         const finalResultsToSave = comparisonResults.map(res => {
             if (isAdidasVerification && res.status === 'Muestra Nueva Requerida') {
                 const virtualDelivery: SampleDelivery = {
@@ -289,6 +293,7 @@ export const SampleVerification: React.FC<SampleVerificationProps> = ({ onVerifi
             savedById: user.uid,
             savedBy: user.displayName || user.email || 'N/A',
             results: finalResultsToSave,
+            newSampleReferencesAtRun,
             stats: {
                 total: finalResultsToSave.length,
                 scanned: finalResultsToSave.filter(r => r.status === 'En Base de Datos').length,

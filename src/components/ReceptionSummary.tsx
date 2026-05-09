@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { ProductDatabaseItem, ReceptionOperation, ScannedItem, ReceptionExpectedItem, PackingUnit } from '@/types';
 import { cn } from '@/lib/utils';
+import { normalizeReceptionReference } from '@/lib/receptionReference';
 import { CheckCircle, AlertTriangle, Target, Percent, Package, Boxes } from 'lucide-react';
 
 // Define the possible variant types for the Badge component
@@ -55,8 +56,9 @@ export const ReceptionSummary: React.FC<ReceptionSummaryProps> = ({
     const currentReference = currentScannedProductDetails?.referencia || currentScannedProductDetails?.reference;
     if (!currentReference || !expectedItems) return { expectedQuantityForCurrentReference: 0 };
 
+    const refKey = normalizeReceptionReference(currentReference);
     const totalExpected = expectedItems
-      .filter(item => (item.reference || '').trim() === currentReference.trim())
+      .filter(item => normalizeReceptionReference(item.reference || '') === refKey)
       .reduce((sum, item) => sum + item.expected_quantity, 0);
       
     return { expectedQuantityForCurrentReference: totalExpected };
