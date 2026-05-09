@@ -400,6 +400,13 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                         </span>
                       </>
                     ) : null}
+                    {(stats.adidasSyntheticTfFilled ?? 0) > 0 ? (
+                      <>
+                        {' · '}
+                        <strong>{stats.adidasSyntheticTfFilled}</strong>{' '}
+                        <span className="text-muted-foreground">TF Adidas inferidas (sin historial persistido)</span>
+                      </>
+                    ) : null}
                     .
                   </span>
                 </p>

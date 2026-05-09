@@ -30,7 +30,12 @@ import {
 } from 'firebase/firestore';
 import { normalizeReceptionReference } from '@/lib/receptionReference';
 import { RECEPTION_SAMPLE_AUDIT_START_ISO } from '@/lib/receptionSampleAudit';
-import type { ReceptionOperation, ScannedItem, SavedSampleVerification, SampleDelivery } from '@/types';
+import type {
+  ReceptionOperation,
+  SavedSampleVerification,
+  SampleDelivery,
+  ScannedItem,
+} from '@/types';
 import {
   loadSampleVerificationsSince,
   getSampleReferencesExistence,
@@ -138,6 +143,67 @@ function mergeDeliveriesFromSavedVerificationResults(
   return mergedEntries;
 }
 
+/** Misma heurística que SampleVerification al guardar (nombre sesión AD… / ADIDAS). */
+function isAdidasVerificationSessionName(name: string): boolean {
+  const n = name.trim().toUpperCase();
+  return n.startsWith('AD') || n.includes('ADIDAS');
+}
+
+function sessionMentionsRef(session: SavedSampleVerification, refNorm: string): boolean {
+  const inResults =
+    session.results?.some((r) => normalizeReceptionReference(r.reference) === refNorm) ?? false;
+  const inNew =
+    session.newSampleReferencesAtRun?.some((x) => normalizeReceptionReference(x) === refNorm) ??
+    false;
+  return inResults || inNew;
+}
+
+/**
+ * Si la verificación Adidas incluyó la ref pero no quedó deliveryHistory persistido (histórico, flujos raros),
+ * replica la TF virtual que sí habría generado el guardado en SampleVerification.
+ */
+function applyAdidasSyntheticTfGapFill(
+  deliveriesByRef: Map<string, SampleDelivery[]>,
+  sessions: SavedSampleVerification[],
+  refKeys: string[],
+  validatedRefs: Set<string>,
+  cutoffMs: number
+): number {
+  let added = 0;
+  const adidasSessions = sessions
+    .filter((s) => s.name && isAdidasVerificationSessionName(s.name))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  if (adidasSessions.length === 0) return 0;
+
+  for (const ref of refKeys) {
+    if (!validatedRefs.has(ref)) continue;
+    const list = deliveriesByRef.get(ref) || [];
+    const hasTf = list.some((d) => String(d.transferNumber || '').trim());
+    if (hasTf) continue;
+
+    for (const session of adidasSessions) {
+      const created = new Date(session.createdAt).getTime();
+      if (created < cutoffMs) continue;
+      if (!sessionMentionsRef(session, ref)) continue;
+
+      list.push({
+        id: `synthetic-adidas-${ref}-${session.id}`,
+        reference: ref,
+        transferNumber: session.name,
+        deliveryDate: new Date(session.createdAt),
+        sourceWarehouse: 'VERIFICACIÓN MANUAL',
+        destinationWarehouse: 'FOTOGRAFIA',
+      });
+      deliveriesByRef.set(ref, list);
+      added += 1;
+      break;
+    }
+  }
+
+  return added;
+}
+
 export interface ReceptionSampleAuditRow {
   reference: string;
   hasVerificationSinceCutoff: boolean;
@@ -158,6 +224,8 @@ export interface ReceptionSamplesAuditStats {
   queryRounds: number;
   /** Líneas fusionadas desde deliveryHistory en verificaciones (TF virtual / Adidas, etc.) */
   verificationDeliveryHistoryEntries?: number;
+  /** TF virtual Adidas inferida cuando había validación + sesión AD pero sin historial persistido */
+  adidasSyntheticTfFilled?: number;
 }
 
 export interface ReceptionSamplesAuditScanContext {
@@ -383,6 +451,7 @@ export async function getReceptionSamplesAuditReport(
           receptionOperationDocsRead: 0,
           queryRounds,
           verificationDeliveryHistoryEntries: 0,
+          adidasSyntheticTfFilled: 0,
         },
       };
     }
@@ -443,6 +512,14 @@ export async function getReceptionSamplesAuditReport(
       });
     });
 
+    const adidasSyntheticTfFilled = applyAdidasSyntheticTfGapFill(
+      deliveriesByRef,
+      verRes.data,
+      refKeys,
+      validatedRefs,
+      cutoffMs
+    );
+
     const rows: ReceptionSampleAuditRow[] = refKeys.map((ref) => {
       const opIdsSet = refToOpIds.get(ref) || new Set();
       const opIds = [...opIdsSet].sort((a, b) => a.localeCompare(b));
@@ -482,6 +559,7 @@ export async function getReceptionSamplesAuditReport(
         receptionOperationDocsRead,
         queryRounds,
         verificationDeliveryHistoryEntries,
+        adidasSyntheticTfFilled,
       },
     };
   } catch (e: any) {
