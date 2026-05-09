@@ -3,17 +3,18 @@
 /**
  * Cruce recepción ↔ control de muestras.
  *
- * Modos:
- * - Rango de fechas sobre scanned_at (reduce lecturas si el rango es corto).
- * - Una operación: solo scannedItems con reception_id == operación (sin filtrar por fechas en Firestore).
- *
- * La columna "validación ≥ corte" sigue usando RECEPTION_SAMPLE_AUDIT_START_ISO para createdAt de verificaciones.
+ * Lista de referencias:
+ * - Preferido: subcolección referenceStats (1 doc ≈ 1 referencia por operación), ya mantenida al escanear.
+ * - Por fechas: collectionGroup(referenceStats) filtrando por last_scanned_at (se escribe en cada escaneo nuevo).
+ * - Opcional legacyFullScan: recorrer cada línea de scannedItems (miles de lecturas).
  */
 
 import { firestore } from '@/services/firebase';
 import {
   collection,
+  collectionGroup,
   doc,
+  documentId,
   getDoc,
   getDocs,
   limit,
@@ -33,16 +34,16 @@ import {
   getSampleDeliveriesByReferences,
 } from '@/app/actions';
 
-const SCANNED_PAGE_SIZE = 1800;
+const LEGACY_SCAN_PAGE_SIZE = 1800;
+const REF_STATS_PAGE_SIZE = 450;
 const RECEPTION_OP_LOOKUP_PARALLEL = 48;
 
 export type ReceptionSamplesAuditQueryParams = {
-  /** Inicio del rango (inclusive), ISO 8601 */
   scanDateFromIso?: string;
-  /** Fin del rango (inclusive), ISO 8601 */
   scanDateToIso?: string;
-  /** Si viene informado, solo esta recepción (ignora scanDate*) */
   receptionOperationId?: string | null;
+  /** Solo modo fechas: recorrer scannedItems línea a línea (muy costoso en lecturas) */
+  legacyFullScan?: boolean;
 };
 
 async function mapReceptionOpIdsToRkLabels(opIds: string[]): Promise<Map<string, string>> {
@@ -72,20 +73,29 @@ async function mapReceptionOpIdsToRkLabels(opIds: string[]): Promise<Map<string,
   return out;
 }
 
-function accumulateScan(
-  refToOpIds: Map<string, Set<string>>,
-  data: ScannedItem
-): void {
-  const ref = normalizeReceptionReference(data.reference || '');
-  if (!ref || ref === 'UNKNOWN') return;
-  const rid = String(data.reception_id || '').trim();
-  if (!rid) return;
-  let set = refToOpIds.get(ref);
+function receptionOperationIdFromStatsDoc(docSnap: QueryDocumentSnapshot<DocumentData>): string | null {
+  const rid = docSnap.data().reception_id;
+  if (typeof rid === 'string' && rid.trim()) return rid.trim();
+  const parts = docSnap.ref.path.split('/');
+  const i = parts.indexOf('receptionOperations');
+  if (i !== -1 && parts[i + 1]) return parts[i + 1];
+  return null;
+}
+
+function accumulateRefOp(refToOpIds: Map<string, Set<string>>, refNorm: string, opId: string): void {
+  if (!refNorm || refNorm === 'UNKNOWN' || !opId) return;
+  let set = refToOpIds.get(refNorm);
   if (!set) {
     set = new Set<string>();
-    refToOpIds.set(ref, set);
+    refToOpIds.set(refNorm, set);
   }
-  set.add(rid);
+  set.add(opId);
+}
+
+function accumulateScan(refToOpIds: Map<string, Set<string>>, data: ScannedItem): void {
+  const ref = normalizeReceptionReference(data.reference || '');
+  const rid = String(data.reception_id || '').trim();
+  accumulateRefOp(refToOpIds, ref, rid);
 }
 
 export interface ReceptionSampleAuditRow {
@@ -99,22 +109,99 @@ export interface ReceptionSampleAuditRow {
 }
 
 export interface ReceptionSamplesAuditStats {
-  scannedItemDocsRead: number;
+  /** Docs leídos para armar la lista de referencias (referenceStats o scannedItems si legado) */
+  receptionRefSourceDocsRead: number;
+  usedLegacyFullScan: boolean;
   verificationDocsRead: number;
   deliveryDocsRead: number;
   receptionOperationDocsRead: number;
-  scannedQueryRounds: number;
+  queryRounds: number;
 }
 
 export interface ReceptionSamplesAuditScanContext {
   type: 'date_range' | 'operation';
-  /** Solo modo fecha */
   dateFromIso?: string;
   dateToIso?: string;
-  /** Solo modo operación */
   receptionOperationId?: string;
+  usedLegacyFullScan?: boolean;
 }
 
+/** Índice referenceStats de una sola operación (≈ referencias distintas). */
+async function loadRefMapFromReferenceStatsForOperation(opId: string): Promise<{
+  refToOpIds: Map<string, Set<string>>;
+  docsRead: number;
+  rounds: number;
+}> {
+  const refToOpIds = new Map<string, Set<string>>();
+  let rounds = 0;
+  let docsRead = 0;
+  let lastDoc: QueryDocumentSnapshot<DocumentData> | undefined;
+  const coll = collection(firestore, 'receptionOperations', opId, 'referenceStats');
+
+  while (true) {
+    const base = [orderBy(documentId()), limit(REF_STATS_PAGE_SIZE)];
+    const q = lastDoc ? query(coll, ...base, startAfter(lastDoc)) : query(coll, ...base);
+    const snap = await getDocs(q);
+    rounds += 1;
+    docsRead += snap.size;
+    if (snap.empty) break;
+
+    snap.docs.forEach((d) => {
+      const data = d.data();
+      const total = typeof data.totalScanned === 'number' ? data.totalScanned : 0;
+      if (total <= 0) return;
+      const ref = normalizeReceptionReference(String(data.reference ?? d.id ?? ''));
+      accumulateRefOp(refToOpIds, ref, opId);
+    });
+
+    lastDoc = snap.docs[snap.docs.length - 1];
+    if (snap.size < REF_STATS_PAGE_SIZE) break;
+  }
+
+  return { refToOpIds, docsRead, rounds };
+}
+
+/** Todas las operaciones: stats con último escaneo en el rango (requiere last_scanned_at en docs). */
+async function loadRefMapFromReferenceStatsDateRange(
+  scanDateFromIso: string,
+  scanDateToIso: string
+): Promise<{ refToOpIds: Map<string, Set<string>>; docsRead: number; rounds: number }> {
+  const refToOpIds = new Map<string, Set<string>>();
+  let rounds = 0;
+  let docsRead = 0;
+  let lastDoc: QueryDocumentSnapshot<DocumentData> | undefined;
+  const cg = collectionGroup(firestore, 'referenceStats');
+
+  while (true) {
+    const constraints = [
+      where('last_scanned_at', '>=', scanDateFromIso),
+      where('last_scanned_at', '<=', scanDateToIso),
+      orderBy('last_scanned_at'),
+      limit(REF_STATS_PAGE_SIZE),
+    ];
+    const q = lastDoc ? query(cg, ...constraints, startAfter(lastDoc)) : query(cg, ...constraints);
+    const snap = await getDocs(q);
+    rounds += 1;
+    docsRead += snap.size;
+    if (snap.empty) break;
+
+    snap.docs.forEach((d) => {
+      const data = d.data();
+      const total = typeof data.totalScanned === 'number' ? data.totalScanned : 0;
+      if (total <= 0) return;
+      const ref = normalizeReceptionReference(String(data.reference ?? d.id ?? ''));
+      const op = receptionOperationIdFromStatsDoc(d);
+      if (op) accumulateRefOp(refToOpIds, ref, op);
+    });
+
+    lastDoc = snap.docs[snap.docs.length - 1];
+    if (snap.size < REF_STATS_PAGE_SIZE) break;
+  }
+
+  return { refToOpIds, docsRead, rounds };
+}
+
+/** Legado: una lectura por línea de scannedItems. */
 async function paginateScannedItems(opts: {
   receptionOperationId?: string | null;
   scanDateFromIso: string;
@@ -135,12 +222,12 @@ async function paginateScannedItems(opts: {
     const coll = collection(firestore, 'scannedItems');
 
     const baseConstraints = opId
-      ? [where('reception_id', '==', opId), orderBy('scanned_at'), limit(SCANNED_PAGE_SIZE)]
+      ? [where('reception_id', '==', opId), orderBy('scanned_at'), limit(LEGACY_SCAN_PAGE_SIZE)]
       : [
           where('scanned_at', '>=', opts.scanDateFromIso),
           where('scanned_at', '<=', opts.scanDateToIso),
           orderBy('scanned_at'),
-          limit(SCANNED_PAGE_SIZE),
+          limit(LEGACY_SCAN_PAGE_SIZE),
         ];
 
     const q = lastDoc
@@ -157,7 +244,7 @@ async function paginateScannedItems(opts: {
     });
 
     lastDoc = snap.docs[snap.docs.length - 1];
-    if (snap.size < SCANNED_PAGE_SIZE) break;
+    if (snap.size < LEGACY_SCAN_PAGE_SIZE) break;
   }
 
   return { refToOpIds, scannedItemDocsRead, scannedQueryRounds };
@@ -167,7 +254,6 @@ export async function getReceptionSamplesAuditReport(
   params?: ReceptionSamplesAuditQueryParams
 ): Promise<{
   success: boolean;
-  /** Corte de validaciones de muestras (regla de negocio fija) */
   cutoffIso?: string;
   validationCutoffIso?: string;
   scanContext?: ReceptionSamplesAuditScanContext;
@@ -208,11 +294,35 @@ export async function getReceptionSamplesAuditReport(
       };
     }
 
-    const { refToOpIds, scannedItemDocsRead, scannedQueryRounds } = await paginateScannedItems({
-      receptionOperationId: opId || undefined,
-      scanDateFromIso: scanDateFromIso || '',
-      scanDateToIso: scanDateToIso || '',
-    });
+    let refToOpIds = new Map<string, Set<string>>();
+    let receptionRefSourceDocsRead = 0;
+    let queryRounds = 0;
+    let usedLegacyFullScan = false;
+
+    if (opId) {
+      const r = await loadRefMapFromReferenceStatsForOperation(opId);
+      refToOpIds = r.refToOpIds;
+      receptionRefSourceDocsRead = r.docsRead;
+      queryRounds = r.rounds;
+    } else if (params?.legacyFullScan) {
+      usedLegacyFullScan = true;
+      const r = await paginateScannedItems({
+        scanDateFromIso: scanDateFromIso || '',
+        scanDateToIso: scanDateToIso || '',
+      });
+      refToOpIds = r.refToOpIds;
+      receptionRefSourceDocsRead = r.scannedItemDocsRead;
+      queryRounds = r.scannedQueryRounds;
+    } else {
+      const r = await loadRefMapFromReferenceStatsDateRange(scanDateFromIso!, scanDateToIso!);
+      refToOpIds = r.refToOpIds;
+      receptionRefSourceDocsRead = r.docsRead;
+      queryRounds = r.rounds;
+    }
+
+    if (!opId) {
+      scanContext = { ...scanContext, usedLegacyFullScan };
+    }
 
     const refKeys = [...refToOpIds.keys()].sort((a, b) => a.localeCompare(b));
     if (refKeys.length === 0) {
@@ -222,13 +332,14 @@ export async function getReceptionSamplesAuditReport(
         validationCutoffIso,
         scanContext,
         rows: [],
-        scannedPages: scannedQueryRounds,
+        scannedPages: queryRounds,
         stats: {
-          scannedItemDocsRead,
+          receptionRefSourceDocsRead,
+          usedLegacyFullScan,
           verificationDocsRead: 0,
           deliveryDocsRead: 0,
           receptionOperationDocsRead: 0,
-          scannedQueryRounds,
+          queryRounds,
         },
       };
     }
@@ -283,7 +394,8 @@ export async function getReceptionSamplesAuditReport(
     });
 
     const rows: ReceptionSampleAuditRow[] = refKeys.map((ref) => {
-      const opIds = [...(refToOpIds.get(ref) || [])].sort((a, b) => a.localeCompare(b));
+      const opIdsSet = refToOpIds.get(ref) || new Set();
+      const opIds = [...opIdsSet].sort((a, b) => a.localeCompare(b));
       const labels = opIds.map((id) => opLabelMap.get(id) || id);
 
       const dlist = (deliveriesByRef.get(ref) || []).slice().sort((a, b) => {
@@ -311,13 +423,14 @@ export async function getReceptionSamplesAuditReport(
       validationCutoffIso,
       scanContext,
       rows,
-      scannedPages: scannedQueryRounds,
+      scannedPages: queryRounds,
       stats: {
-        scannedItemDocsRead,
+        receptionRefSourceDocsRead,
+        usedLegacyFullScan,
         verificationDocsRead,
         deliveryDocsRead,
         receptionOperationDocsRead,
-        scannedQueryRounds,
+        queryRounds,
       },
     };
   } catch (e: any) {
@@ -326,7 +439,7 @@ export async function getReceptionSamplesAuditReport(
       return {
         success: false,
         error:
-          'Firestore necesita un índice compuesto. Para rango de fechas: scannedItems (scanned_at). Para una operación: scannedItems (reception_id + scanned_at). Revise el enlace en la consola de Firebase.',
+          'Firestore necesita un índice compuesto. Por fechas con índice: collectionGroup referenceStats (campo last_scanned_at). Legado escaneos: scanned_at o reception_id+scanned_at. Revise el enlace en la consola de Firebase.',
       };
     }
     return { success: false, error: e?.message || 'Error al generar el cruce recepción–muestras.' };

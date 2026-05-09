@@ -7,6 +7,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
 import { ArrowLeft, CalendarRange, ChevronDown, ClipboardCheck, Download, Loader2, RefreshCw, Warehouse } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
@@ -122,6 +124,8 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
   const [stats, setStats] = useState<ReceptionSamplesAuditStats | null>(null);
   const [filter, setFilter] = useState<RowFilter>('all');
   const [search, setSearch] = useState('');
+  /** Solo por fechas: recorrer scannedItems (costoso). Por defecto se usa índice referenceStats + last_scanned_at */
+  const [legacyFullScan, setLegacyFullScan] = useState(false);
 
   const applyServerReport = useCallback(
     (res: Awaited<ReturnType<typeof getReceptionSamplesAuditReport>>) => {
@@ -144,6 +148,7 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
         const res = await getReceptionSamplesAuditReport({
           scanDateFromIso: localDayStartIso(fromYmd),
           scanDateToIso: localDayEndIso(toYmd),
+          legacyFullScan,
         });
         applyServerReport(res);
       } catch (e: unknown) {
@@ -156,7 +161,7 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
         setLoading(false);
       }
     },
-    [applyServerReport, toast]
+    [applyServerReport, toast, legacyFullScan]
   );
 
   const refreshByOperation = useCallback(
@@ -230,14 +235,16 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
       const rk = op?.rk_identifier?.trim() || scanContext.receptionOperationId;
       return (
         <>
-          Escaneos solo de la operación <strong className="font-mono">{rk}</strong>
+          Referencias desde el índice ligero{' '}
+          <code className="text-xs bg-muted px-1 rounded">referenceStats</code> de la operación{' '}
+          <strong className="font-mono">{rk}</strong>
           {op?.supplier ? (
             <>
               {' '}
               (<span className="text-muted-foreground">{op.supplier}</span>)
             </>
-          ) : null}
-          .
+          ) : null}{' '}
+          (~una lectura Firebase por referencia distinta, no por cada escaneo).
         </>
       );
     }
@@ -246,7 +253,19 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
       const b = format(parseISO(scanContext.dateToIso!), 'PP', { locale: es });
       return (
         <>
-          Escaneos entre <strong>{a}</strong> y <strong>{b}</strong> (hora local del equipo → ISO en servidor).
+          Entre <strong>{a}</strong> y <strong>{b}</strong>
+          {scanContext.usedLegacyFullScan ? (
+            <>
+              : modo <strong>histórico</strong> (se leyó cada documento en <code className="text-xs bg-muted px-1 rounded">scannedItems</code>
+              ).
+            </>
+          ) : (
+            <>
+              : lista armada con collectionGroup en <code className="text-xs bg-muted px-1 rounded">referenceStats</code>{' '}
+              filtrando por <code className="text-xs bg-muted px-1 rounded">last_scanned_at</code>. Referencias sin esa
+              marca solo aparecen si activa el modo histórico o hasta que vuelvan a escanearse.
+            </>
+          )}
         </>
       );
     } catch {
@@ -263,7 +282,7 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
     try {
       const a = format(parseISO(scanContext.dateFromIso!), 'yyyy-MM-dd', { locale: es });
       const b = format(parseISO(scanContext.dateToIso!), 'yyyy-MM-dd', { locale: es });
-      return `${a} → ${b}`;
+      return scanContext.usedLegacyFullScan ? `${a} → ${b} (histórico scannedItems)` : `${a} → ${b} (referenceStats)`;
     } catch {
       return 'rango';
     }
@@ -340,31 +359,34 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                 <p className="text-sm border-l-2 border-primary/30 pl-2">{scanScopeDescription}</p>
               ) : null}
               <p className="text-xs text-muted-foreground">
-                Firebase cobra por lecturas de documentos: en modo fechas depende del rango; en modo operación solo los
-                escaneos de esa recepción (sin filtrar por calendario en consulta).
+                Por defecto el alcance de recepción usa el índice ya guardado por referencia (
+                <code className="text-xs bg-muted px-1 rounded">referenceStats</code>), no cada línea escaneada. Opcional:
+                modo histórico por fechas para datos muy antiguos sin <code className="text-xs bg-muted px-1 rounded">last_scanned_at</code>.
               </p>
               {stats && (
                 <p className="text-xs text-muted-foreground border-l-2 border-muted pl-2 space-y-0.5">
                   <span className="block">
-                    Última corrida — lecturas aprox.:{' '}
-                    <strong>{stats.scannedItemDocsRead.toLocaleString()}</strong> docs{' '}
-                    <span className="text-muted-foreground">(recepción)</span>
+                    Última corrida — lista referencias recepción:{' '}
+                    <strong>{stats.receptionRefSourceDocsRead.toLocaleString()}</strong>{' '}
+                    <span className="text-muted-foreground">
+                      docs ({stats.usedLegacyFullScan ? 'legado scannedItems' : 'índice referenceStats'})
+                    </span>
                     {' + '}
                     <strong>{stats.verificationDocsRead.toLocaleString()}</strong>{' '}
-                    <span className="text-muted-foreground">(verificaciones ≥ corte)</span>
+                    <span className="text-muted-foreground">(verificaciones)</span>
                     {' + '}
                     <strong>{stats.deliveryDocsRead.toLocaleString()}</strong>{' '}
                     <span className="text-muted-foreground">(entregas TF)</span>
                     {' + '}
                     <strong>{stats.receptionOperationDocsRead.toLocaleString()}</strong>{' '}
-                    <span className="text-muted-foreground">(operaciones RK)</span>
+                    <span className="text-muted-foreground">(RK)</span>
                     {pagesHint != null ? (
                       <>
                         {' · '}
-                        {pagesHint} ronda(s) paginación escaneos
+                        {pagesHint} ronda(s) paginación
                       </>
                     ) : null}
-                    . Más lecturas en <code className="bg-muted px-1 rounded">sampleReferences</code>.
+                    . También <code className="bg-muted px-1 rounded">sampleReferences</code>.
                   </span>
                 </p>
               )}
@@ -416,6 +438,21 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                 <Button type="button" size="sm" onClick={() => void refreshByDates(dateFrom, dateTo)} disabled={loading}>
                   Generar con fechas
                 </Button>
+              </div>
+              <div className="flex items-start gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 max-w-2xl">
+                <Checkbox
+                  id="legacy-scan-reads"
+                  checked={legacyFullScan}
+                  onCheckedChange={(v) => setLegacyFullScan(v === true)}
+                />
+                <Label htmlFor="legacy-scan-reads" className="text-xs leading-snug cursor-pointer font-normal space-y-1">
+                  <span className="font-medium text-foreground">Modo histórico (muchas lecturas)</span>
+                  <span className="block text-muted-foreground">
+                    Recorrer cada documento en <code className="bg-muted px-1 rounded">scannedItems</code>. Solo útil si
+                    faltan referencias en el índice o no hay <code className="bg-muted px-1 rounded">last_scanned_at</code>{' '}
+                    guardado todavía.
+                  </span>
+                </Label>
               </div>
               <p className="text-xs text-muted-foreground">
                 Por defecto al abrir el reporte se carga la <strong>semana calendario actual</strong> (lunes a domingo,

@@ -1162,11 +1162,17 @@ export async function addScannedItem(itemData: Omit<ScannedItem, 'id' | 'quantit
             // --- PATRON CONTADOR: Firebase Optimization ---
             const safeRefId = normalizeReceptionReference(itemData.reference);
             const statsRef = doc(firestore, 'receptionOperations', itemData.reception_id, 'referenceStats', safeRefId);
-            transaction.set(statsRef, {
-                reference: safeRefId,
-                totalScanned: increment(1),
-                packingUnits: arrayUnion(itemData.packing_unit_id)
-            }, { merge: true });
+            transaction.set(
+                statsRef,
+                {
+                    reference: safeRefId,
+                    reception_id: itemData.reception_id,
+                    last_scanned_at: newItem.scanned_at,
+                    totalScanned: increment(1),
+                    packingUnits: arrayUnion(itemData.packing_unit_id),
+                },
+                { merge: true }
+            );
         });
 
         return { success: true };
@@ -1198,9 +1204,15 @@ export async function updateScannedItem(itemId: string, updates: Partial<Scanned
             // --- PATRON CONTADOR: Firebase Optimization ---
             const safeRefId = normalizeReceptionReference(oldData.reference);
             const statsRef = doc(firestore, 'receptionOperations', oldData.reception_id, 'referenceStats', safeRefId);
-            transaction.set(statsRef, {
-                totalScanned: increment(quantityDifference)
-            }, { merge: true });
+            transaction.set(
+                statsRef,
+                {
+                    reception_id: oldData.reception_id,
+                    last_scanned_at: new Date().toISOString(),
+                    totalScanned: increment(quantityDifference),
+                },
+                { merge: true }
+            );
         }
   
         // Update the scanned item document
