@@ -1,15 +1,13 @@
 'use server';
 
 /**
- * Cruce entre ítems contados en recepción (desde fecha de corte) y estado en control de muestras.
+ * Cruce recepción ↔ control de muestras.
  *
- * Optimización de lecturas Firestore:
- * - Solo escaneos desde la fecha de corte (necesario para saber qué referencias pasaron por recepción).
- * - Entregas TF: solo referencias presentes (getSampleDeliveriesByReferences).
- * - Verificaciones: solo sesiones con createdAt ≥ corte (loadSampleVerificationsSince).
- * - Operaciones RK: solo IDs únicos vistos en escaneos → getDoc por operación (muchas menos que ítems escaneados).
+ * Modos:
+ * - Rango de fechas sobre scanned_at (reduce lecturas si el rango es corto).
+ * - Una operación: solo scannedItems con reception_id == operación (sin filtrar por fechas en Firestore).
  *
- * Nota: Quitar columnas de cantidad no reduce lecturas de scannedItems; cada escaneo sigue siendo un documento leído.
+ * La columna "validación ≥ corte" sigue usando RECEPTION_SAMPLE_AUDIT_START_ISO para createdAt de verificaciones.
  */
 
 import { firestore } from '@/services/firebase';
@@ -38,6 +36,15 @@ import {
 const SCANNED_PAGE_SIZE = 1800;
 const RECEPTION_OP_LOOKUP_PARALLEL = 48;
 
+export type ReceptionSamplesAuditQueryParams = {
+  /** Inicio del rango (inclusive), ISO 8601 */
+  scanDateFromIso?: string;
+  /** Fin del rango (inclusive), ISO 8601 */
+  scanDateToIso?: string;
+  /** Si viene informado, solo esta recepción (ignora scanDate*) */
+  receptionOperationId?: string | null;
+};
+
 async function mapReceptionOpIdsToRkLabels(opIds: string[]): Promise<Map<string, string>> {
   const unique = [...new Set(opIds.filter(Boolean))];
   const out = new Map<string, string>();
@@ -65,86 +72,155 @@ async function mapReceptionOpIdsToRkLabels(opIds: string[]): Promise<Map<string,
   return out;
 }
 
+function accumulateScan(
+  refToOpIds: Map<string, Set<string>>,
+  data: ScannedItem
+): void {
+  const ref = normalizeReceptionReference(data.reference || '');
+  if (!ref || ref === 'UNKNOWN') return;
+  const rid = String(data.reception_id || '').trim();
+  if (!rid) return;
+  let set = refToOpIds.get(ref);
+  if (!set) {
+    set = new Set<string>();
+    refToOpIds.set(ref, set);
+  }
+  set.add(rid);
+}
+
 export interface ReceptionSampleAuditRow {
   reference: string;
   hasVerificationSinceCutoff: boolean;
   inSampleDatabase: boolean;
   hasTransferDelivery: boolean;
   transferNumbers: string;
-  /** IDs Firestore de operaciones donde hubo al menos un escaneo desde el corte */
   receptionOperationIds: string[];
-  /** rk_identifier (o fallback id) por cada receptionOperationIds */
   receptionOperationLabels: string[];
 }
 
-/** Lecturas de documentos relevantes para esta corrida (aprox. facturación Firebase). */
 export interface ReceptionSamplesAuditStats {
   scannedItemDocsRead: number;
   verificationDocsRead: number;
   deliveryDocsRead: number;
-  /** getDoc en receptionOperations por operación distinta */
   receptionOperationDocsRead: number;
   scannedQueryRounds: number;
 }
 
-export async function getReceptionSamplesAuditReport(): Promise<{
+export interface ReceptionSamplesAuditScanContext {
+  type: 'date_range' | 'operation';
+  /** Solo modo fecha */
+  dateFromIso?: string;
+  dateToIso?: string;
+  /** Solo modo operación */
+  receptionOperationId?: string;
+}
+
+async function paginateScannedItems(opts: {
+  receptionOperationId?: string | null;
+  scanDateFromIso: string;
+  scanDateToIso: string;
+}): Promise<{
+  refToOpIds: Map<string, Set<string>>;
+  scannedItemDocsRead: number;
+  scannedQueryRounds: number;
+}> {
+  const refToOpIds = new Map<string, Set<string>>();
+  let lastDoc: QueryDocumentSnapshot<DocumentData> | undefined;
+  let scannedQueryRounds = 0;
+  let scannedItemDocsRead = 0;
+
+  const opId = opts.receptionOperationId?.trim();
+
+  while (true) {
+    const coll = collection(firestore, 'scannedItems');
+
+    const baseConstraints = opId
+      ? [where('reception_id', '==', opId), orderBy('scanned_at'), limit(SCANNED_PAGE_SIZE)]
+      : [
+          where('scanned_at', '>=', opts.scanDateFromIso),
+          where('scanned_at', '<=', opts.scanDateToIso),
+          orderBy('scanned_at'),
+          limit(SCANNED_PAGE_SIZE),
+        ];
+
+    const q = lastDoc
+      ? query(coll, ...baseConstraints, startAfter(lastDoc))
+      : query(coll, ...baseConstraints);
+
+    const snap = await getDocs(q);
+    scannedQueryRounds += 1;
+    scannedItemDocsRead += snap.size;
+    if (snap.empty) break;
+
+    snap.docs.forEach((docSnap) => {
+      accumulateScan(refToOpIds, docSnap.data() as ScannedItem);
+    });
+
+    lastDoc = snap.docs[snap.docs.length - 1];
+    if (snap.size < SCANNED_PAGE_SIZE) break;
+  }
+
+  return { refToOpIds, scannedItemDocsRead, scannedQueryRounds };
+}
+
+export async function getReceptionSamplesAuditReport(
+  params?: ReceptionSamplesAuditQueryParams
+): Promise<{
   success: boolean;
+  /** Corte de validaciones de muestras (regla de negocio fija) */
   cutoffIso?: string;
+  validationCutoffIso?: string;
+  scanContext?: ReceptionSamplesAuditScanContext;
   rows?: ReceptionSampleAuditRow[];
   error?: string;
   scannedPages?: number;
   stats?: ReceptionSamplesAuditStats;
 }> {
   try {
-    const cutoffIso = RECEPTION_SAMPLE_AUDIT_START_ISO;
-    const cutoffMs = Date.parse(cutoffIso);
-    const sinceDate = new Date(cutoffIso);
+    const validationCutoffIso = RECEPTION_SAMPLE_AUDIT_START_ISO;
+    const cutoffMs = Date.parse(validationCutoffIso);
+    const sinceDate = new Date(validationCutoffIso);
 
-    /** Referencia normalizada → conjunto de reception_id */
-    const refToOpIds = new Map<string, Set<string>>();
+    const opId = params?.receptionOperationId?.trim();
+    let scanDateFromIso = params?.scanDateFromIso?.trim();
+    let scanDateToIso = params?.scanDateToIso?.trim();
 
-    let lastDoc: QueryDocumentSnapshot<DocumentData> | undefined;
-    let scannedQueryRounds = 0;
-    let scannedItemDocsRead = 0;
+    let scanContext: ReceptionSamplesAuditScanContext;
 
-    while (true) {
-      const baseConstraints = [
-        where('scanned_at', '>=', cutoffIso),
-        orderBy('scanned_at'),
-        limit(SCANNED_PAGE_SIZE),
-      ];
-      const q = lastDoc
-        ? query(collection(firestore, 'scannedItems'), ...baseConstraints, startAfter(lastDoc))
-        : query(collection(firestore, 'scannedItems'), ...baseConstraints);
-
-      const snap = await getDocs(q);
-      scannedQueryRounds += 1;
-      scannedItemDocsRead += snap.size;
-      if (snap.empty) break;
-
-      snap.docs.forEach((docSnap) => {
-        const d = docSnap.data() as ScannedItem;
-        const ref = normalizeReceptionReference(d.reference || '');
-        if (!ref || ref === 'UNKNOWN') return;
-        const rid = String(d.reception_id || '').trim();
-        if (!rid) return;
-        let set = refToOpIds.get(ref);
-        if (!set) {
-          set = new Set<string>();
-          refToOpIds.set(ref, set);
-        }
-        set.add(rid);
-      });
-
-      lastDoc = snap.docs[snap.docs.length - 1];
-      if (snap.size < SCANNED_PAGE_SIZE) break;
+    if (opId) {
+      scanContext = { type: 'operation', receptionOperationId: opId };
+      scanDateFromIso = '';
+      scanDateToIso = '';
+    } else {
+      if (!scanDateFromIso || !scanDateToIso) {
+        return {
+          success: false,
+          error: 'Indique fecha desde / hasta o una operación de recepción.',
+        };
+      }
+      if (scanDateFromIso > scanDateToIso) {
+        return { success: false, error: 'La fecha inicial no puede ser posterior a la fecha final.' };
+      }
+      scanContext = {
+        type: 'date_range',
+        dateFromIso: scanDateFromIso,
+        dateToIso: scanDateToIso,
+      };
     }
+
+    const { refToOpIds, scannedItemDocsRead, scannedQueryRounds } = await paginateScannedItems({
+      receptionOperationId: opId || undefined,
+      scanDateFromIso: scanDateFromIso || '',
+      scanDateToIso: scanDateToIso || '',
+    });
 
     const refKeys = [...refToOpIds.keys()].sort((a, b) => a.localeCompare(b));
     if (refKeys.length === 0) {
       return {
         success: true,
-        cutoffIso,
+        cutoffIso: validationCutoffIso,
+        validationCutoffIso,
+        scanContext,
         rows: [],
         scannedPages: scannedQueryRounds,
         stats: {
@@ -231,7 +307,9 @@ export async function getReceptionSamplesAuditReport(): Promise<{
 
     return {
       success: true,
-      cutoffIso,
+      cutoffIso: validationCutoffIso,
+      validationCutoffIso,
+      scanContext,
       rows,
       scannedPages: scannedQueryRounds,
       stats: {
@@ -248,7 +326,7 @@ export async function getReceptionSamplesAuditReport(): Promise<{
       return {
         success: false,
         error:
-          'Firestore necesita un índice (scannedItems con scanned_at, o sampleVerifications con createdAt). Revise la consola de Firebase o cree los índices compuestos sugeridos.',
+          'Firestore necesita un índice compuesto. Para rango de fechas: scannedItems (scanned_at). Para una operación: scannedItems (reception_id + scanned_at). Revise el enlace en la consola de Firebase.',
       };
     }
     return { success: false, error: e?.message || 'Error al generar el cruce recepción–muestras.' };

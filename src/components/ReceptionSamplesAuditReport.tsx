@@ -6,19 +6,39 @@ import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ArrowLeft, ChevronDown, ClipboardCheck, Download, Loader2, RefreshCw } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { ArrowLeft, CalendarRange, ChevronDown, ClipboardCheck, Download, Loader2, RefreshCw, Warehouse } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
-import { format, parseISO } from 'date-fns';
+import { endOfWeek, format, parseISO, startOfWeek } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { exportToXlsx } from '@/services/export';
 import {
   getReceptionSamplesAuditReport,
   type ReceptionSampleAuditRow,
+  type ReceptionSamplesAuditScanContext,
   type ReceptionSamplesAuditStats,
 } from '@/app/receptionSampleAuditActions';
 import { RECEPTION_SAMPLE_AUDIT_START_ISO } from '@/lib/receptionSampleAudit';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { loadReceptionOperations } from '@/app/reception/actions';
+import type { ReceptionOperation } from '@/types';
+
+function defaultWeekYmDs(): { fromYmd: string; toYmd: string } {
+  const ws = startOfWeek(new Date(), { weekStartsOn: 1 });
+  const we = endOfWeek(new Date(), { weekStartsOn: 1 });
+  return { fromYmd: format(ws, 'yyyy-MM-dd'), toYmd: format(we, 'yyyy-MM-dd') };
+}
+
+function localDayStartIso(dateYmd: string): string {
+  const [y, m, d] = dateYmd.split('-').map(Number);
+  return new Date(y, m - 1, d, 0, 0, 0, 0).toISOString();
+}
+
+function localDayEndIso(dateYmd: string): string {
+  const [y, m, d] = dateYmd.split('-').map(Number);
+  return new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
+}
 
 function ReceptionOperationsCell({
   ids,
@@ -57,7 +77,6 @@ function ReceptionOperationsCell({
 }
 
 export interface ReceptionSamplesAuditReportProps {
-  /** Si viene desde Recepción, botón volver al listado de operaciones */
   onReturn?: () => void;
 }
 
@@ -86,46 +105,169 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
   onReturn,
 }) => {
   const { toast } = useToast();
+  const initialWeek = useMemo(() => defaultWeekYmDs(), []);
+
   const [loading, setLoading] = useState(false);
+  const [reportTab, setReportTab] = useState<'dates' | 'operation'>('dates');
+  const [dateFrom, setDateFrom] = useState(initialWeek.fromYmd);
+  const [dateTo, setDateTo] = useState(initialWeek.toYmd);
+  const [selectedOpId, setSelectedOpId] = useState<string>('');
+  const [operations, setOperations] = useState<ReceptionOperation[]>([]);
+  const [loadingOps, setLoadingOps] = useState(false);
+
   const [rows, setRows] = useState<ReceptionSampleAuditRow[]>([]);
-  const [cutoffIso, setCutoffIso] = useState<string>(RECEPTION_SAMPLE_AUDIT_START_ISO);
+  const [validationCutoffIso, setValidationCutoffIso] = useState(RECEPTION_SAMPLE_AUDIT_START_ISO);
+  const [scanContext, setScanContext] = useState<ReceptionSamplesAuditScanContext | null>(null);
   const [pagesHint, setPagesHint] = useState<number | undefined>();
   const [stats, setStats] = useState<ReceptionSamplesAuditStats | null>(null);
   const [filter, setFilter] = useState<RowFilter>('all');
   const [search, setSearch] = useState('');
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await getReceptionSamplesAuditReport();
+  const applyServerReport = useCallback(
+    (res: Awaited<ReturnType<typeof getReceptionSamplesAuditReport>>) => {
       if (!res.success) {
         throw new Error(res.error || 'No se pudo cargar el reporte.');
       }
       setRows(res.rows ?? []);
-      setCutoffIso(res.cutoffIso ?? RECEPTION_SAMPLE_AUDIT_START_ISO);
+      setValidationCutoffIso(res.validationCutoffIso ?? res.cutoffIso ?? RECEPTION_SAMPLE_AUDIT_START_ISO);
+      setScanContext(res.scanContext ?? null);
       setPagesHint(res.scannedPages);
       setStats(res.stats ?? null);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Error desconocido';
-      toast({ variant: 'destructive', title: 'Error', description: msg });
-      setRows([]);
-      setStats(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [toast]);
+    },
+    []
+  );
+
+  const refreshByDates = useCallback(
+    async (fromYmd: string, toYmd: string) => {
+      setLoading(true);
+      try {
+        const res = await getReceptionSamplesAuditReport({
+          scanDateFromIso: localDayStartIso(fromYmd),
+          scanDateToIso: localDayEndIso(toYmd),
+        });
+        applyServerReport(res);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'Error desconocido';
+        toast({ variant: 'destructive', title: 'Error', description: msg });
+        setRows([]);
+        setStats(null);
+        setScanContext(null);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applyServerReport, toast]
+  );
+
+  const refreshByOperation = useCallback(
+    async (opId: string) => {
+      if (!opId.trim()) {
+        toast({
+          variant: 'destructive',
+          title: 'Operación requerida',
+          description: 'Seleccione una operación de recepción.',
+        });
+        return;
+      }
+      setLoading(true);
+      try {
+        const res = await getReceptionSamplesAuditReport({
+          receptionOperationId: opId.trim(),
+        });
+        applyServerReport(res);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'Error desconocido';
+        toast({ variant: 'destructive', title: 'Error', description: msg });
+        setRows([]);
+        setStats(null);
+        setScanContext(null);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applyServerReport, toast]
+  );
 
   useEffect(() => {
-    load();
-  }, [load]);
+    void refreshByDates(initialWeek.fromYmd, initialWeek.toYmd);
+    // Solo montaje: semana actual calculada una vez (evita bucles si refreshByDates cambia identidad).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const cutoffLabel = useMemo(() => {
+  useEffect(() => {
+    if (reportTab !== 'operation') return;
+    let cancelled = false;
+    setLoadingOps(true);
+    void loadReceptionOperations().then((res) => {
+      if (cancelled) return;
+      if (res.success && res.data?.operations) {
+        const sorted = [...res.data.operations].sort(
+          (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+        setOperations(sorted);
+      } else if (!res.success) {
+        toast({ variant: 'destructive', title: 'Operaciones', description: res.error || 'No se pudieron cargar.' });
+      }
+      setLoadingOps(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [reportTab, toast]);
+
+  const validationCutoffLabel = useMemo(() => {
     try {
-      return format(parseISO(cutoffIso), 'PPP', { locale: es });
+      return format(parseISO(validationCutoffIso), 'PPP', { locale: es });
     } catch {
-      return cutoffIso;
+      return validationCutoffIso;
     }
-  }, [cutoffIso]);
+  }, [validationCutoffIso]);
+
+  const scanScopeDescription = useMemo(() => {
+    if (!scanContext) return null;
+    if (scanContext.type === 'operation') {
+      const op = operations.find((o) => o.id === scanContext.receptionOperationId);
+      const rk = op?.rk_identifier?.trim() || scanContext.receptionOperationId;
+      return (
+        <>
+          Escaneos solo de la operación <strong className="font-mono">{rk}</strong>
+          {op?.supplier ? (
+            <>
+              {' '}
+              (<span className="text-muted-foreground">{op.supplier}</span>)
+            </>
+          ) : null}
+          .
+        </>
+      );
+    }
+    try {
+      const a = format(parseISO(scanContext.dateFromIso!), 'PP', { locale: es });
+      const b = format(parseISO(scanContext.dateToIso!), 'PP', { locale: es });
+      return (
+        <>
+          Escaneos entre <strong>{a}</strong> y <strong>{b}</strong> (hora local del equipo → ISO en servidor).
+        </>
+      );
+    } catch {
+      return <>Rango de fechas aplicado en servidor.</>;
+    }
+  }, [scanContext, operations]);
+
+  const excelContextLabel = useMemo(() => {
+    if (!scanContext) return '';
+    if (scanContext.type === 'operation') {
+      const op = operations.find((o) => o.id === scanContext.receptionOperationId);
+      return op?.rk_identifier || scanContext.receptionOperationId || '';
+    }
+    try {
+      const a = format(parseISO(scanContext.dateFromIso!), 'yyyy-MM-dd', { locale: es });
+      const b = format(parseISO(scanContext.dateToIso!), 'yyyy-MM-dd', { locale: es });
+      return `${a} → ${b}`;
+    } catch {
+      return 'rango';
+    }
+  }, [scanContext, operations]);
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toUpperCase();
@@ -150,6 +292,7 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
     }
     exportToXlsx(
       filteredRows.map((r) => ({
+        Contexto_escaneo: excelContextLabel,
         Referencia: r.reference,
         'Operaciones RK': r.receptionOperationLabels.join('; '),
         'Validación guardada (≥ corte)': r.hasVerificationSinceCutoff ? 'Sí' : 'No',
@@ -160,6 +303,21 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
       'cruce_recepcion_muestras'
     );
     toast({ title: 'Exportado', description: 'Archivo generado.' });
+  };
+
+  const handlePrimaryRefresh = () => {
+    if (reportTab === 'operation') {
+      void refreshByOperation(selectedOpId);
+    } else {
+      void refreshByDates(dateFrom, dateTo);
+    }
+  };
+
+  const applyThisWeek = () => {
+    const { fromYmd, toYmd } = defaultWeekYmDs();
+    setDateFrom(fromYmd);
+    setDateTo(toYmd);
+    void refreshByDates(fromYmd, toYmd);
   };
 
   return (
@@ -173,22 +331,22 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
             </CardTitle>
             <CardDescription className="max-w-3xl space-y-2">
               <p>
-                Lista de <strong>referencias distintas</strong> vistas en recepción desde{' '}
-                <strong>{cutoffLabel}</strong> (UTC, configurable en código), con validación de muestras, foto en
-                BD, TF en <code className="text-xs bg-muted px-1 rounded">sampleDeliveries</code> y número de
-                operación RK (si hay varias recepciones, se despliegan con el botón). El ritmo del reporte depende
-                sobre todo de cuántos <strong>documentos escaneados</strong> existan desde esa fecha; quitar
-                cantidades en pantalla no reduce esas lecturas.
+                Referencias distintas según el <strong>alcance de escaneos</strong> que elijas abajo, cruzadas con
+                validación de muestras (sesiones guardadas desde{' '}
+                <strong>{validationCutoffLabel}</strong>), foto en BD y TF en{' '}
+                <code className="text-xs bg-muted px-1 rounded">sampleDeliveries</code>.
               </p>
+              {scanScopeDescription ? (
+                <p className="text-sm border-l-2 border-primary/30 pl-2">{scanScopeDescription}</p>
+              ) : null}
               <p className="text-xs text-muted-foreground">
-                Firebase cobra sobre todo por <strong>lecturas de documentos</strong>. Aquí la parte más pesada
-                suele ser recorrer los escaneos desde la fecha de corte; ya no se descarga toda la colección
-                de TF ni todo el historial de verificaciones, solo lo relacionado con esas referencias o fechas.
+                Firebase cobra por lecturas de documentos: en modo fechas depende del rango; en modo operación solo los
+                escaneos de esa recepción (sin filtrar por calendario en consulta).
               </p>
               {stats && (
                 <p className="text-xs text-muted-foreground border-l-2 border-muted pl-2 space-y-0.5">
                   <span className="block">
-                    Última actualización — lecturas aprox.:{' '}
+                    Última corrida — lecturas aprox.:{' '}
                     <strong>{stats.scannedItemDocsRead.toLocaleString()}</strong> docs{' '}
                     <span className="text-muted-foreground">(recepción)</span>
                     {' + '}
@@ -196,19 +354,17 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                     <span className="text-muted-foreground">(verificaciones ≥ corte)</span>
                     {' + '}
                     <strong>{stats.deliveryDocsRead.toLocaleString()}</strong>{' '}
-                    <span className="text-muted-foreground">(entregas TF coincidentes)</span>
+                    <span className="text-muted-foreground">(entregas TF)</span>
                     {' + '}
                     <strong>{stats.receptionOperationDocsRead.toLocaleString()}</strong>{' '}
                     <span className="text-muted-foreground">(operaciones RK)</span>
                     {pagesHint != null ? (
                       <>
                         {' · '}
-                        {pagesHint} ronda(s) de paginación en escaneos
+                        {pagesHint} ronda(s) paginación escaneos
                       </>
                     ) : null}
-                    . Además hay lecturas por comprobación de existencia en{' '}
-                    <code className="bg-muted px-1 rounded">sampleReferences</code> (≈ proporcional al número de
-                    referencias distintas).
+                    . Más lecturas en <code className="bg-muted px-1 rounded">sampleReferences</code>.
                   </span>
                 </p>
               )}
@@ -221,7 +377,7 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                 Volver
               </Button>
             )}
-            <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+            <Button variant="outline" size="sm" onClick={handlePrimaryRefresh} disabled={loading}>
               {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
               Actualizar
             </Button>
@@ -232,6 +388,82 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          <Tabs value={reportTab} onValueChange={(v) => setReportTab(v as 'dates' | 'operation')} className="w-full">
+            <TabsList className="grid w-full max-w-md grid-cols-2">
+              <TabsTrigger value="dates" className="gap-2">
+                <CalendarRange className="h-4 w-4" />
+                Por fechas
+              </TabsTrigger>
+              <TabsTrigger value="operation" className="gap-2">
+                <Warehouse className="h-4 w-4" />
+                Por operación
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="dates" className="mt-4 space-y-3">
+              <div className="flex flex-col sm:flex-row flex-wrap gap-3 sm:items-end">
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs text-muted-foreground">Desde</span>
+                  <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-[160px]" />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs text-muted-foreground">Hasta</span>
+                  <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-[160px]" />
+                </div>
+                <Button type="button" variant="secondary" size="sm" onClick={applyThisWeek}>
+                  Semana actual
+                </Button>
+                <Button type="button" size="sm" onClick={() => void refreshByDates(dateFrom, dateTo)} disabled={loading}>
+                  Generar con fechas
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Por defecto al abrir el reporte se carga la <strong>semana calendario actual</strong> (lunes a domingo,
+                según la zona horaria del navegador).
+              </p>
+            </TabsContent>
+
+            <TabsContent value="operation" className="mt-4 space-y-3">
+              <div className="flex flex-col sm:flex-row gap-3 sm:items-end max-w-2xl">
+                <div className="flex flex-col gap-1 flex-1 min-w-[240px]">
+                  <span className="text-xs text-muted-foreground">Operación de recepción</span>
+                  <Select
+                    value={selectedOpId}
+                    onValueChange={(v) => {
+                      setSelectedOpId(v);
+                    }}
+                    disabled={loadingOps || operations.length === 0}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={loadingOps ? 'Cargando…' : 'Elegir por fecha de creación'} />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-72 overflow-y-auto">
+                      {operations.map((op) => {
+                        const line = `${format(new Date(op.created_at), 'dd/MM/yyyy HH:mm', { locale: es })} · ${op.rk_identifier} · ${op.supplier}`;
+                        return (
+                          <SelectItem key={op.id} value={op.id} title={line}>
+                            {line.length > 96 ? `${line.slice(0, 93)}…` : line}
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void refreshByOperation(selectedOpId)}
+                  disabled={loading || !selectedOpId}
+                >
+                  Generar para esta operación
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Lista ordenada por <strong>fecha de creación</strong> de la operación (más reciente primero).
+              </p>
+            </TabsContent>
+          </Tabs>
+
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
             <div className="rounded-lg border p-3 bg-muted/30">
               <div className="text-muted-foreground text-xs">Referencias (filtro)</div>
@@ -287,7 +519,7 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
             </div>
           ) : filteredRows.length === 0 ? (
             <p className="text-center text-muted-foreground py-12">
-              No hay filas que cumplan el filtro, o no hay escaneos en recepción desde la fecha de corte.
+              No hay filas que cumplan el filtro, o no hay escaneos en el alcance seleccionado.
             </p>
           ) : (
             <div className="border rounded-md overflow-x-auto max-h-[65vh] overflow-y-auto">
