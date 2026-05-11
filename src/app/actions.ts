@@ -554,12 +554,11 @@ export async function getUserPulsesForDay(
     options?: { globalPulses?: OperationPulse[] }
 ): Promise<{ data?: OperationPulse[]; error?: string }> {
     try {
-        const [globalRes, userRes] = await Promise.all([
+        const globalRes: { data?: OperationPulse[]; error?: string } =
             options?.globalPulses != null
-                ? Promise.resolve({ data: options.globalPulses } as { data: OperationPulse[] })
-                : getGlobalPulsesForDay(dateStr),
-            getUserPulsesForUserDay(userId, dateStr, moduleContext),
-        ]);
+                ? { data: options.globalPulses }
+                : await getGlobalPulsesForDay(dateStr);
+        const userRes = await getUserPulsesForUserDay(userId, dateStr, moduleContext);
 
         if (globalRes.error) return { error: globalRes.error };
         if (userRes.error) return { error: userRes.error };
@@ -570,8 +569,9 @@ export async function getUserPulsesForDay(
         const seen = new Set<string>();
         const merged: OperationPulse[] = [];
         for (const p of [...globals, ...users]) {
-            if (seen.has(p.id)) continue;
-            seen.add(p.id);
+            const key = p.id ?? `noid-${p.userId}-${String(p.startTime)}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
             merged.push(p);
         }
 
