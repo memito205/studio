@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useState, useCallback, ReactNode, useMemo } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
 import { firestore } from '@/services/firebase';
 import { collection, query, where, onSnapshot, limit, orderBy, Timestamp, getDocs } from 'firebase/firestore';
 import { createPulse } from '@/app/actions';
@@ -33,21 +33,12 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
     const [allPulsesDay, setAllPulsesDay] = useState<OperationPulse[]>([]);
     const [loading, setLoading] = useState(true);
 
-    // Helper to get a "Freshness" date (last 18 hours or start of day)
-    const freshStartTime = useMemo(() => {
-        const d = new Date();
-        d.setHours(d.getHours() - 18);
-        return d;
-    }, []);
-
-    // 1. Listen to Global Active Pulse (Only if fresh)
+    // 1. Listen to Global Active Pulse
     useEffect(() => {
         const q = query(
             collection(firestore, 'operation_pulses'),
             where('isGlobal', '==', true),
             where('endTime', '==', null),
-            where('startTime', '>=', Timestamp.fromDate(freshStartTime)),
-            orderBy('startTime', 'desc'),
             limit(1)
         );
 
@@ -70,9 +61,9 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
         );
 
         return () => unsubscribe();
-    }, [freshStartTime]);
+    }, []);
 
-    // 2. Listen to User's Current Active Pulse (Only if fresh)
+    // 2. Listen to User's Current Active Pulse
     useEffect(() => {
         if (!user?.uid) {
             setLoading(false);
@@ -83,8 +74,6 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
             collection(firestore, 'operation_pulses'),
             where('userId', '==', user.uid),
             where('endTime', '==', null),
-            where('startTime', '>=', Timestamp.fromDate(freshStartTime)),
-            orderBy('startTime', 'desc'),
             limit(1)
         );
 
@@ -108,7 +97,7 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
         );
 
         return () => unsubscribe();
-    }, [user?.uid, freshStartTime]);
+    }, [user?.uid]);
 
     // 3. Get ALL past pulses of the day for real-time productivity (One time fetch)
     const fetchPulsesOfDay = useCallback(async () => {

@@ -143,7 +143,16 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
     };
 
     const handleStartRemision = async () => {
-        if (!user || isLoading) return;
+        if (!user) {
+            toast({ variant: 'destructive', title: 'Sesión no disponible', description: 'Debe iniciar sesión nuevamente.' });
+            return;
+        }
+        if (isLoading) return;
+        if (!isIdentityReady) {
+            setShowIdentityDialog(true);
+            toast({ title: 'Seleccione identidad', description: 'Primero confirme su nombre operativo para iniciar remisión.' });
+            return;
+        }
         setIsLoading(true);
         try {
             const result = await createPulse({
@@ -303,13 +312,7 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                                     <Button 
                                         size="lg" 
                                         className="w-full h-16 text-xl font-bold gap-3 transition-all active:scale-95 shadow-md hover:shadow-xl bg-indigo-600 hover:bg-indigo-700"
-                                        onClick={() => {
-                                            if (!isIdentityReady) {
-                                                setShowIdentityDialog(true);
-                                                return;
-                                            }
-                                            handleStartRemision();
-                                        }}
+                                        onClick={handleStartRemision}
                                         disabled={isLoading}
                                     >
                                         <Play size={24} /> Iniciar Remisión
