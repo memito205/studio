@@ -135,8 +135,12 @@ export const SampleFollowUpReport: React.FC = () => {
       const allRefs = [...baseRefSet];
 
       const [existenceRes, delRes] = await Promise.all([
-        allRefs.length ? getSampleReferencesExistence(allRefs) : Promise.resolve({ success: true as const, data: {} }),
-        allRefs.length ? getSampleDeliveriesByReferences(allRefs) : Promise.resolve({ success: true as const, data: [] }),
+        allRefs.length
+          ? getSampleReferencesExistence(allRefs)
+          : Promise.resolve({ success: true, data: {} } as Awaited<ReturnType<typeof getSampleReferencesExistence>>),
+        allRefs.length
+          ? getSampleDeliveriesByReferences(allRefs)
+          : Promise.resolve({ success: true, data: [] } as Awaited<ReturnType<typeof getSampleDeliveriesByReferences>>),
       ]);
 
       if (!existenceRes.success || !existenceRes.data) {
