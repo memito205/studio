@@ -13,7 +13,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { WholesaleOrder, WholesaleOrderDetail, OrderStatus, ProductDatabaseItem, PackingSession, PreprintedLabel, PackedItem, OperationPulse } from '@/types';
-import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrder, getPackedItemsForDate, getUserPulsesForDay, loadOperatorMappings } from '@/app/actions';
+import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrders, getPackedItemsForDate, getUserPulsesForDay, getGlobalPulsesForDay, loadOperatorMappings } from '@/app/actions';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
 import { exportToXlsx } from '@/services/export';
@@ -204,23 +204,18 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
   const { toast } = useToast();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   
-  // Optimization: Fetch all packed items at once when the component mounts or orders change.
+  // Ítems empaquetados: una consulta por lote de pedidos (orderId in), no una por pedido.
   useEffect(() => {
     const fetchAllPackedItems = async () => {
-        const orderIds = orders.map(o => o.id);
-        const allItems: PackedItem[] = [];
-        // This is not ideal, but necessary without a "get all" function.
-        for (const orderId of orderIds) {
-            const result = await getPackedItemsForOrder(orderId);
-            if (result.data) {
-                allItems.push(...result.data);
-            }
+        const orderIds = orders.map((o) => o.id);
+        if (orderIds.length === 0) {
+            setAllPackedItems([]);
+            return;
         }
-        setAllPackedItems(allItems);
+        const result = await getPackedItemsForOrders(orderIds);
+        setAllPackedItems(result.data ?? []);
     };
-    if (orders.length > 0) {
-        fetchAllPackedItems();
-    }
+    void fetchAllPackedItems();
   }, [orders]);
 
   const handleOpenPrintDialog = (order: WholesaleOrder) => {
@@ -538,18 +533,21 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
         setIsLoading(true);
         try {
             const today = new Date().toLocaleDateString('sv-SE');
-            const [sessionsRes, itemsRes, mappingsRes] = await Promise.all([
+            const [sessionsRes, itemsRes, mappingsRes, globalPulsesRes] = await Promise.all([
                 loadAllPackingSessions(),
                 getPackedItemsForDate(today),
-                loadOperatorMappings()
+                loadOperatorMappings(),
+                getGlobalPulsesForDay(today),
             ]);
 
             if (sessionsRes.error) throw new Error(sessionsRes.error);
             if (itemsRes.error) throw new Error(itemsRes.error);
+            if (globalPulsesRes.error) throw new Error(globalPulsesRes.error);
 
             const sessions = sessionsRes.data || [];
             const allItems = itemsRes.data || [];
             const mappings = mappingsRes.data || {};
+            const cachedGlobalPulses = globalPulsesRes.data || [];
 
             // Group by packer
             const packerMap = new Map<string, { id: string, name: string, items: PackedItem[], sessions: PackingSession[] }>();
@@ -577,7 +575,9 @@ const PackingProductivityDialog: React.FC<{ isOpen: boolean; onOpenChange: (open
             const todayStartTime = todayStart.getTime();
 
             for (const [packerId, data] of packerMap.entries()) {
-                const pulsesRes = await getUserPulsesForDay(packerId, today, 'wholesale');
+                const pulsesRes = await getUserPulsesForDay(packerId, today, 'wholesale', {
+                    globalPulses: cachedGlobalPulses,
+                });
                 const pulses = pulsesRes.data || [];
                 
                 // Better name retrieval: Priority: Mappings > Pulse Name > Session Name > Default

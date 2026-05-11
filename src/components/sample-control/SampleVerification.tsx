@@ -89,7 +89,7 @@ export const SampleVerification: React.FC<SampleVerificationProps> = ({ onVerifi
             // Step 1: Fetch all data sources in parallel
             const [deliveriesResult, savedVerificationsResult, ...refExistenceResults] = await Promise.all([
                 getSampleDeliveriesByReferences(refsToVerify),
-                loadSampleVerifications(), // Fetch saved verifications to find virtual deliveries
+                loadSampleVerifications({ maxSessions: 2500 }), // Sesiones recientes: TF virtuales en historial guardado
                 ...refsToVerify.map(ref => getSampleReferenceById(ref)) // Check for photos
             ]);
 

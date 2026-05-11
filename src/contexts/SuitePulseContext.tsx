@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState, useCallback, ReactNode, useMemo } from 'react';
 import { firestore } from '@/services/firebase';
-import { collection, query, where, onSnapshot, limit, Timestamp, getDocs } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, limit, orderBy, Timestamp, getDocs } from 'firebase/firestore';
 import { createPulse } from '@/app/actions';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
@@ -107,16 +107,21 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
         const startOfToday = new Date();
         startOfToday.setHours(0, 0, 0, 0);
 
+        const dayStart = Timestamp.fromDate(startOfToday);
         const qGlobal = query(
             collection(firestore, 'operation_pulses'),
             where('isGlobal', '==', true),
-            where('startTime', '>=', Timestamp.fromDate(startOfToday))
+            where('startTime', '>=', dayStart),
+            orderBy('startTime', 'desc'),
+            limit(400)
         );
 
         const qUser = query(
             collection(firestore, 'operation_pulses'),
             where('userId', '==', user.uid),
-            where('startTime', '>=', Timestamp.fromDate(startOfToday))
+            where('startTime', '>=', dayStart),
+            orderBy('startTime', 'desc'),
+            limit(400)
         );
 
         try {

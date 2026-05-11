@@ -498,7 +498,29 @@ export async function getPulsesByDate(dateStr: string): Promise<{ data?: Operati
     }
 }
 
-export async function getUserPulsesForDay(
+/** Pulsos globales del día (consulta acotada; antes se leían todos los pulsos de todos los usuarios del día). */
+export async function getGlobalPulsesForDay(dateStr: string): Promise<{ data?: OperationPulse[]; error?: string }> {
+    try {
+        const start = Timestamp.fromDate(new Date(dateStr + 'T00:00:00'));
+        const end = Timestamp.fromDate(new Date(dateStr + 'T23:59:59'));
+        const q = query(
+            collection(firestore, 'operation_pulses'),
+            where('isGlobal', '==', true),
+            where('startTime', '>=', start),
+            where('startTime', '<=', end)
+        );
+        const querySnapshot = await getDocs(q);
+        const pulses = querySnapshot.docs.map(
+            (d) => ({ id: d.id, ...convertTimestampsToDates(d.data()) } as OperationPulse)
+        );
+        return { data: pulses };
+    } catch (error: any) {
+        return { error: `Error loading global pulses: ${error.message}` };
+    }
+}
+
+/** Solo pulsos de un usuario en el rango del día (sin globales). */
+export async function getUserPulsesForUserDay(
     userId: string,
     dateStr: string,
     moduleContext?: 'reception' | 'wholesale' | 'general'
@@ -506,23 +528,60 @@ export async function getUserPulsesForDay(
     try {
         const start = Timestamp.fromDate(new Date(dateStr + 'T00:00:00'));
         const end = Timestamp.fromDate(new Date(dateStr + 'T23:59:59'));
-        
         const q = query(
             collection(firestore, 'operation_pulses'),
+            where('userId', '==', userId),
             where('startTime', '>=', start),
             where('startTime', '<=', end)
         );
-        
         const querySnapshot = await getDocs(q);
         const pulses = querySnapshot.docs
-            .map(doc => ({ id: doc.id, ...convertTimestampsToDates(doc.data()) } as OperationPulse))
-            .filter(p => {
-                if (!(p.isGlobal || p.userId === userId)) return false;
+            .map((docSnap) => ({ id: docSnap.id, ...convertTimestampsToDates(docSnap.data()) } as OperationPulse))
+            .filter((p) => {
                 if (!moduleContext) return true;
-                if (p.isGlobal) return true;
                 return p.moduleContext === moduleContext;
             });
-            
+        return { data: pulses };
+    } catch (error: any) {
+        return { error: `Error loading user pulses: ${error.message}` };
+    }
+}
+
+export async function getUserPulsesForDay(
+    userId: string,
+    dateStr: string,
+    moduleContext?: 'reception' | 'wholesale' | 'general',
+    options?: { globalPulses?: OperationPulse[] }
+): Promise<{ data?: OperationPulse[]; error?: string }> {
+    try {
+        const [globalRes, userRes] = await Promise.all([
+            options?.globalPulses != null
+                ? Promise.resolve({ data: options.globalPulses } as { data: OperationPulse[] })
+                : getGlobalPulsesForDay(dateStr),
+            getUserPulsesForUserDay(userId, dateStr, moduleContext),
+        ]);
+
+        if (globalRes.error) return { error: globalRes.error };
+        if (userRes.error) return { error: userRes.error };
+
+        const globals = (globalRes.data || []).filter((p) => p.isGlobal);
+        const users = userRes.data || [];
+
+        const seen = new Set<string>();
+        const merged: OperationPulse[] = [];
+        for (const p of [...globals, ...users]) {
+            if (seen.has(p.id)) continue;
+            seen.add(p.id);
+            merged.push(p);
+        }
+
+        const pulses = merged.filter((p) => {
+            if (!(p.isGlobal || p.userId === userId)) return false;
+            if (!moduleContext) return true;
+            if (p.isGlobal) return true;
+            return p.moduleContext === moduleContext;
+        });
+
         return { data: pulses };
     } catch (error: any) {
         return { error: `Error loading user pulses: ${error.message}` };
@@ -1462,6 +1521,31 @@ export async function getPackedItemsForOrder(orderId: string): Promise<{ data?: 
         return { data: items };
     } catch (error: any) {
         console.error("Error getting packed items:", error);
+        return { error: error.message };
+    }
+}
+
+const PACKED_ITEMS_ORDER_IN_CHUNK = 30;
+
+/** Una lectura por documento empaquetado (igual que N llamadas a getPackedItemsForOrder), pero muchas menos consultas/rondas. */
+export async function getPackedItemsForOrders(orderIds: string[]): Promise<{ data?: PackedItem[]; error?: string }> {
+    try {
+        const unique = [...new Set(orderIds.map((id) => String(id || '').trim()).filter(Boolean))];
+        if (unique.length === 0) {
+            return { data: [] };
+        }
+        const all: PackedItem[] = [];
+        for (let i = 0; i < unique.length; i += PACKED_ITEMS_ORDER_IN_CHUNK) {
+            const chunk = unique.slice(i, i + PACKED_ITEMS_ORDER_IN_CHUNK);
+            const q = query(collection(firestore, 'packedItems'), where('orderId', 'in', chunk));
+            const querySnapshot = await getDocs(q);
+            querySnapshot.docs.forEach((docSnap) => {
+                all.push(convertTimestampsToDates({ id: docSnap.id, ...docSnap.data() }) as PackedItem);
+            });
+        }
+        return { data: all };
+    } catch (error: any) {
+        console.error('Error getting packed items for orders:', error);
         return { error: error.message };
     }
 }
@@ -2452,6 +2536,10 @@ export async function saveSampleDeliveries(deliveries: Omit<SampleDelivery, 'id'
     }
 }
 
+/**
+ * Carga **toda** la colección sampleDeliveries (1 lectura por documento).
+ * Evitar en UI; preferir getSampleDeliveriesByReferences con las referencias necesarias.
+ */
 export async function loadAllSampleDeliveries(): Promise<{ success: boolean; data?: SampleDelivery[]; error?: string }> {
     try {
         const querySnapshot = await getDocs(collection(firestore, "sampleDeliveries"));
@@ -2514,35 +2602,77 @@ export async function saveSampleVerification(sessionData: Omit<SavedSampleVerifi
   }
 }
 
-export async function loadSampleVerifications(): Promise<{ success: boolean; data?: SavedSampleVerification[]; error?: string }> {
+const SAMPLE_VERIFICATION_PAGE_SIZE = 450;
+const DEFAULT_SAMPLE_VERIFICATION_SESSION_CAP = 2000;
+const MAX_SAMPLE_VERIFICATION_SESSION_CAP = 8000;
+
+export type LoadSampleVerificationsOptions = {
+    /**
+     * Máximo de sesiones recientes (createdAt desc). Antes se leía toda la colección (miles de lecturas por clic).
+     * Valores altos solo para pantallas que lo necesiten explícitamente.
+     */
+    maxSessions?: number;
+};
+
+export async function loadSampleVerifications(
+    options?: LoadSampleVerificationsOptions
+): Promise<{ success: boolean; data?: SavedSampleVerification[]; error?: string }> {
     try {
-        const q = query(collection(firestore, "sampleVerifications"), orderBy("createdAt", "desc"));
+        const cap = Math.min(
+            Math.max(options?.maxSessions ?? DEFAULT_SAMPLE_VERIFICATION_SESSION_CAP, 1),
+            MAX_SAMPLE_VERIFICATION_SESSION_CAP
+        );
+        const q = query(
+            collection(firestore, 'sampleVerifications'),
+            orderBy('createdAt', 'desc'),
+            limit(cap)
+        );
         const querySnapshot = await getDocs(q);
-        const sessions = querySnapshot.docs.map(doc => {
-            return convertTimestampsToDates({ id: doc.id, ...doc.data() }) as SavedSampleVerification;
-        });
+        const sessions = querySnapshot.docs.map((docSnap) =>
+            convertTimestampsToDates({ id: docSnap.id, ...docSnap.data() }) as SavedSampleVerification
+        );
         return { success: true, data: sessions };
     } catch (error: any) {
-        console.error("Error loading sample verifications:", error);
+        console.error('Error loading sample verifications:', error);
         return { success: false, error: `Failed to load sample verifications: ${error.message}` };
     }
 }
 
-/** Solo verificaciones con createdAt ≥ since (menos lecturas que cargar todo el historial). */
+/** Solo verificaciones con createdAt ≥ since; paginado (mismo total de lecturas que un solo get masivo, pero más estable en memoria). */
 export async function loadSampleVerificationsSince(
-    since: Date
+    since: Date,
+    options?: { maxTotalSessions?: number }
 ): Promise<{ success: boolean; data?: SavedSampleVerification[]; error?: string }> {
     try {
         const ts = Timestamp.fromDate(since);
-        const q = query(
-            collection(firestore, 'sampleVerifications'),
-            where('createdAt', '>=', ts),
-            orderBy('createdAt', 'desc')
-        );
-        const querySnapshot = await getDocs(q);
-        const sessions = querySnapshot.docs.map((doc) =>
-            convertTimestampsToDates({ id: doc.id, ...doc.data() }) as SavedSampleVerification
-        );
+        const maxTotal = options?.maxTotalSessions;
+        const sessions: SavedSampleVerification[] = [];
+        let lastDoc: QueryDocumentSnapshot<DocumentData> | undefined;
+
+        while (true) {
+            if (maxTotal != null && sessions.length >= maxTotal) break;
+
+            const pageSize = Math.min(
+                SAMPLE_VERIFICATION_PAGE_SIZE,
+                maxTotal != null ? Math.max(0, maxTotal - sessions.length) : SAMPLE_VERIFICATION_PAGE_SIZE
+            );
+            if (pageSize <= 0) break;
+
+            const coll = collection(firestore, 'sampleVerifications');
+            const base = [where('createdAt', '>=', ts), orderBy('createdAt', 'desc'), limit(pageSize)];
+            const q = lastDoc ? query(coll, ...base, startAfter(lastDoc)) : query(coll, ...base);
+
+            const querySnapshot = await getDocs(q);
+            if (querySnapshot.empty) break;
+
+            querySnapshot.docs.forEach((docSnap) => {
+                sessions.push(convertTimestampsToDates({ id: docSnap.id, ...docSnap.data() }) as SavedSampleVerification);
+            });
+
+            lastDoc = querySnapshot.docs[querySnapshot.docs.length - 1];
+            if (querySnapshot.size < pageSize) break;
+        }
+
         return { success: true, data: sessions };
     } catch (error: any) {
         console.error('Error loading sample verifications since date:', error);

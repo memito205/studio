@@ -233,6 +233,25 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
     if (scanContext.type === 'operation') {
       const op = operations.find((o) => o.id === scanContext.receptionOperationId);
       const rk = op?.rk_identifier?.trim() || scanContext.receptionOperationId;
+      if (scanContext.operationUsedScannedItemsFallback) {
+        return (
+          <>
+            Esta operación no tenía filas en{' '}
+            <code className="text-xs bg-muted px-1 rounded">referenceStats</code> (típico de recepciones anteriores al
+            índice). La lista se armó leyendo{' '}
+            <code className="text-xs bg-muted px-1 rounded">scannedItems</code> filtrados por{' '}
+            <code className="text-xs bg-muted px-1 rounded">reception_id</code> de{' '}
+            <strong className="font-mono">{rk}</strong>
+            {op?.supplier ? (
+              <>
+                {' '}
+                (<span className="text-muted-foreground">{op.supplier}</span>)
+              </>
+            ) : null}
+            .
+          </>
+        );
+      }
       return (
         <>
           Referencias desde el índice ligero{' '}
@@ -277,7 +296,8 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
     if (!scanContext) return '';
     if (scanContext.type === 'operation') {
       const op = operations.find((o) => o.id === scanContext.receptionOperationId);
-      return op?.rk_identifier || scanContext.receptionOperationId || '';
+      const base = op?.rk_identifier || scanContext.receptionOperationId || '';
+      return scanContext.operationUsedScannedItemsFallback ? `${base} (scannedItems)` : base;
     }
     try {
       const a = format(parseISO(scanContext.dateFromIso!), 'yyyy-MM-dd', { locale: es });
@@ -372,7 +392,11 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                     Última corrida — lista referencias recepción:{' '}
                     <strong>{stats.receptionRefSourceDocsRead.toLocaleString()}</strong>{' '}
                     <span className="text-muted-foreground">
-                      docs ({stats.usedLegacyFullScan ? 'legado scannedItems' : 'índice referenceStats'})
+                      docs (
+                      {stats.usedLegacyFullScan || stats.operationScannedItemsFallback
+                        ? 'legado scannedItems'
+                        : 'índice referenceStats'}
+                      {stats.operationScannedItemsFallback ? ', operación sin índice' : ''})
                     </span>
                     {' + '}
                     <strong>{stats.verificationDocsRead.toLocaleString()}</strong>{' '}

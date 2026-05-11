@@ -76,6 +76,7 @@ const OperatorMappingsManager = dynamic(() => import('@/components/OperatorMappi
 const ServiceConciliation = dynamic(() => import('@/components/ServiceConciliation').then(mod => mod.ServiceConciliation), { loading: () => <LoadingSpinner /> });
 const TransferNovelties = dynamic(() => import('@/components/TransferNovelties').then(mod => mod.TransferNovelties), { loading: () => <LoadingSpinner /> });
 const RemisionModule = dynamic(() => import('./RemisionModule').then(mod => mod.RemisionModule), { loading: () => <LoadingSpinner /> });
+const CyclicInventoryModule = dynamic(() => import('@/components/CyclicInventoryModule').then(mod => mod.CyclicInventoryModule), { loading: () => <LoadingSpinner /> });
 
 
 type Theme = 'light' | 'dark';
@@ -583,6 +584,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const handleNavigateToServiceConciliation = () => setAppStep('service_conciliation');
   const handleNavigateToTransferNovelties = () => setAppStep('transfer_novelties');
   const handleNavigateToRemisionModule = () => setAppStep('remision');
+  const handleNavigateToCyclicInventory = () => setAppStep('cyclic_inventory');
 
   const handleStartPacking = async (order: WholesaleOrder) => {
       if (!user) {
@@ -727,6 +729,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToServiceConciliation={handleNavigateToServiceConciliation}
                 onNavigateToTransferNovelties={handleNavigateToTransferNovelties}
                 onNavigateToRemisionModule={handleNavigateToRemisionModule}
+                onNavigateToCyclicInventory={handleNavigateToCyclicInventory}
             />;
           case 'upload': return <FileUpload onProcessFile={handleFileProcess} isLoading={isLoading} onGoToHistorical={handleGoToHistorical} onReturnToSuite={handleReturnToSuite} reportDate={reportDate} onDateChange={setReportDate} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} />;
           case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} isSavingJustifications={isSavingJustifications} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} referenceGoals={referenceGoals} onReferenceGoalsChange={setReferenceGoals} />;
@@ -770,6 +773,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           case 'logistics_platform': return <LogisticsPlatform onReturn={handleReturnToSuite} />;
           case 'service_conciliation': return <ServiceConciliation onReturn={handleReturnToSuite} />;
           case 'remision': return <RemisionModule onReturn={handleReturnToSuite} />;
+          case 'cyclic_inventory': return <CyclicInventoryModule onReturnToSuite={handleReturnToSuite} />;
           case 'routes': return <RoutesModule onReturnToSuite={handleReturnToSuite} />;
           case 'dashboards': return <DashboardsModule onReturnToSuite={handleNavigateToDashboardsEcommerceMenu} />;
           case 'dashboards_main_menu': return <DashboardsMainMenu onNavigateEcommerce={handleNavigateToDashboardsEcommerceMenu} onNavigateBodega={handleNavigateToDashboardsBodegaMenu} onReturnToSuite={handleReturnToSuite} />;
@@ -822,6 +826,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToServiceConciliation={handleNavigateToServiceConciliation}
                 onNavigateToTransferNovelties={() => setAppStep('transfer_novelties' as any)}
                 onNavigateToRemisionModule={handleNavigateToRemisionModule}
+                onNavigateToCyclicInventory={handleNavigateToCyclicInventory}
             />;
       }
     }

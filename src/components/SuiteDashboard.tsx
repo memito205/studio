@@ -2,7 +2,7 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle, Timer } from 'lucide-react';
+import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle, Timer, ClipboardList } from 'lucide-react';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -65,6 +65,7 @@ interface SuiteDashboardProps {
     onNavigateToServiceConciliation: () => void;
     onNavigateToTransferNovelties: () => void;
     onNavigateToRemisionModule: () => void;
+    onNavigateToCyclicInventory: () => void;
 }
 
 export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({ 
@@ -88,7 +89,8 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToLogisticsPlatform,
     onNavigateToServiceConciliation,
     onNavigateToTransferNovelties,
-    onNavigateToRemisionModule
+    onNavigateToRemisionModule,
+    onNavigateToCyclicInventory
 }) => {
     const { role } = useAuth();
     const { toast } = useToast();
@@ -142,6 +144,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             description: "Gestione pedidos a gran escala, clientes mayoristas y listas de precios especiales.",
             actionText: "Acceder",
             onAction: onNavigateToWholesaleModule,
+            roles: ['admin', 'supervisor', 'operator']
+        },
+        {
+            key: 'cyclic_inventory',
+            icon: ClipboardList,
+            title: "Inventario cíclico",
+            description: "Cargue referencias con cantidad esperada y ubicación; el operario registra el físico y ve faltante, sobrante o cuadrado.",
+            actionText: "Acceder",
+            onAction: onNavigateToCyclicInventory,
             roles: ['admin', 'supervisor', 'operator']
         },
         {

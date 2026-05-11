@@ -976,7 +976,32 @@ export interface BagOperation {
     createdByName?: string;
 }
 
-export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'service_conciliation' | 'remision' | 'transfer_novelties';
+export type CyclicInventoryRunStatus = 'active' | 'closed';
+
+export interface CyclicInventoryRun {
+  id: string;
+  name: string;
+  warehouseLabel?: string;
+  status: CyclicInventoryRunStatus;
+  createdAt: string | Date;
+  createdBy?: string;
+  createdByName?: string;
+  closedAt?: string | Date | null;
+}
+
+export interface CyclicInventoryLine {
+  id: string;
+  runId: string;
+  reference: string;
+  size: string;
+  location: string;
+  expectedQty: number;
+  countedQty: number | null;
+  countedAt?: string | Date | null;
+  countedBy?: string | null;
+}
+
+export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory';
 
 // Types for Merchandise Reception
 export interface ReceptionOperation {

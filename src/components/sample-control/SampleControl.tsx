@@ -107,7 +107,7 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
   const fetchSavedVerifications = React.useCallback(async () => {
     if (!isAdminOrSupervisor) return;
     setIsLoadingSaved(true);
-    const result = await loadSampleVerifications();
+    const result = await loadSampleVerifications({ maxSessions: 3500 });
     if (result.success && result.data) {
         setSavedVerifications(result.data);
     } else {

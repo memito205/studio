@@ -14,7 +14,7 @@ import type { SavedSampleVerification, SampleDelivery } from '@/types';
 import {
   loadSampleVerifications,
   getSampleReferencesExistence,
-  loadAllSampleDeliveries,
+  getSampleDeliveriesByReferences,
 } from '@/app/actions';
 import { exportToXlsx } from '@/services/export';
 
@@ -47,7 +47,11 @@ export const SampleFollowUpReport: React.FC = () => {
   const [filterVerificationId, setFilterVerificationId] = useState<string>('all');
 
   const buildRows = useCallback(
-    async (verifications: SavedSampleVerification[], allDeliveries: SampleDelivery[]) => {
+    async (
+      verifications: SavedSampleVerification[],
+      existence: Record<string, boolean>,
+      allDeliveries: SampleDelivery[]
+    ) => {
       const baseRows: {
         verificationId: string;
         verificationName: string;
@@ -77,13 +81,6 @@ export const SampleFollowUpReport: React.FC = () => {
       if (baseRows.length === 0) {
         return [] as FollowUpRow[];
       }
-
-      const allRefs = [...new Set(baseRows.map((b) => b.refNorm))];
-      const existenceRes = await getSampleReferencesExistence(allRefs);
-      if (!existenceRes.success || !existenceRes.data) {
-        throw new Error(existenceRes.error || 'No se pudo consultar la base de muestras.');
-      }
-      const existence = existenceRes.data;
 
       const out: FollowUpRow[] = baseRows.map((b) => {
         const dlist = deliveriesForReference(allDeliveries, b.refNorm).sort(
@@ -120,16 +117,36 @@ export const SampleFollowUpReport: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [verRes, delRes] = await Promise.all([loadSampleVerifications(), loadAllSampleDeliveries()]);
-
+      const verRes = await loadSampleVerifications({ maxSessions: 4500 });
       if (!verRes.success || !verRes.data) {
         throw new Error(verRes.error || 'No se pudieron cargar las verificaciones.');
       }
+
+      const baseRefSet = new Set<string>();
+      for (const v of verRes.data) {
+        const fromSnapshot =
+          v.newSampleReferencesAtRun && v.newSampleReferencesAtRun.length > 0
+            ? v.newSampleReferencesAtRun.map(normRef)
+            : v.results
+                .filter((r) => r.status === 'Muestra Nueva Requerida')
+                .map((r) => normRef(r.reference));
+        [...new Set(fromSnapshot.filter(Boolean))].forEach((r) => baseRefSet.add(r));
+      }
+      const allRefs = [...baseRefSet];
+
+      const [existenceRes, delRes] = await Promise.all([
+        allRefs.length ? getSampleReferencesExistence(allRefs) : Promise.resolve({ success: true as const, data: {} }),
+        allRefs.length ? getSampleDeliveriesByReferences(allRefs) : Promise.resolve({ success: true as const, data: [] }),
+      ]);
+
+      if (!existenceRes.success || !existenceRes.data) {
+        throw new Error(existenceRes.error || 'No se pudo consultar la base de muestras.');
+      }
       if (!delRes.success || !delRes.data) {
-        throw new Error(delRes.error || 'No se pudieron cargar las entregas (TF).');
+        throw new Error(delRes.error || 'No se pudieron cargar las entregas (TF) por referencia.');
       }
 
-      const built = await buildRows(verRes.data, delRes.data);
+      const built = await buildRows(verRes.data, existenceRes.data, delRes.data);
       setRows(built);
     } catch (e: any) {
       toast({ variant: 'destructive', title: 'Error', description: e.message });
@@ -196,7 +213,9 @@ export const SampleFollowUpReport: React.FC = () => {
               Cruza las referencias que en su momento salieron como <strong>Muestra nueva requerida</strong> con el
               estado <em>actual</em>: si ya están en la base de muestras (foto) y si tienen entregas reales con TF en{' '}
               <code className="text-xs bg-muted px-1 rounded">sampleDeliveries</code>. No modifica verificaciones
-              existentes; las nuevas guardan la lista explícita al momento del guardado.
+              existentes; las nuevas guardan la lista explícita al momento del guardado. Para ahorrar lecturas en
+              Firebase, solo se consideran las verificaciones más recientes (tope configurable en código) y las TF se
+              consultan solo para las referencias que aparecen en ese conjunto.
             </CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">

@@ -226,6 +226,8 @@ export interface ReceptionSamplesAuditStats {
   verificationDeliveryHistoryEntries?: number;
   /** TF virtual Adidas inferida cuando había validación + sesión AD pero sin historial persistido */
   adidasSyntheticTfFilled?: number;
+  /** Por operación: referenceStats vacío y se usaron scannedItems de esa OP */
+  operationScannedItemsFallback?: boolean;
 }
 
 export interface ReceptionSamplesAuditScanContext {
@@ -234,6 +236,10 @@ export interface ReceptionSamplesAuditScanContext {
   dateToIso?: string;
   receptionOperationId?: string;
   usedLegacyFullScan?: boolean;
+  /**
+   * Por operación: la subcolección referenceStats no tenía filas (operaciones antiguas); la lista salió de scannedItems.
+   */
+  operationUsedScannedItemsFallback?: boolean;
 }
 
 /** Índice referenceStats de una sola operación (≈ referencias distintas). */
@@ -409,11 +415,32 @@ export async function getReceptionSamplesAuditReport(
     let queryRounds = 0;
     let usedLegacyFullScan = false;
 
+    let operationScannedItemsFallback = false;
+
     if (opId) {
       const r = await loadRefMapFromReferenceStatsForOperation(opId);
       refToOpIds = r.refToOpIds;
       receptionRefSourceDocsRead = r.docsRead;
       queryRounds = r.rounds;
+
+      /** Operaciones previas al índice referenceStats por escaneo: solo existían líneas en scannedItems */
+      if (refToOpIds.size === 0) {
+        const legacy = await paginateScannedItems({
+          receptionOperationId: opId,
+          scanDateFromIso: '',
+          scanDateToIso: '',
+        });
+        if (legacy.refToOpIds.size > 0) {
+          refToOpIds = legacy.refToOpIds;
+          receptionRefSourceDocsRead = legacy.scannedItemDocsRead;
+          queryRounds = legacy.scannedQueryRounds;
+          operationScannedItemsFallback = true;
+          scanContext = {
+            ...scanContext,
+            operationUsedScannedItemsFallback: true,
+          };
+        }
+      }
     } else if (params?.legacyFullScan) {
       usedLegacyFullScan = true;
       const r = await paginateScannedItems({
@@ -452,6 +479,7 @@ export async function getReceptionSamplesAuditReport(
           queryRounds,
           verificationDeliveryHistoryEntries: 0,
           adidasSyntheticTfFilled: 0,
+          operationScannedItemsFallback: false,
         },
       };
     }
@@ -560,6 +588,7 @@ export async function getReceptionSamplesAuditReport(
         queryRounds,
         verificationDeliveryHistoryEntries,
         adidasSyntheticTfFilled,
+        operationScannedItemsFallback,
       },
     };
   } catch (e: any) {
