@@ -56,7 +56,7 @@ const PAUSE_REASONS = [
 export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
     const { user, userName } = useAuth();
     const { toast } = useToast();
-    const { currentPulse, isPaused, refreshPulses } = useSuitePulse();
+    const { currentPulse, refreshPulses } = useSuitePulse();
     const [elapsedTime, setElapsedTime] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
     
@@ -110,10 +110,13 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
 
     const effectiveName = operationalName || userName || 'Operario';
 
-    const isInRemision = currentPulse?.status === 'En Remisión' && !isPaused;
-    const isRemisionPaused = currentPulse?.status === 'En Remisión' && isPaused;
+    /** Pulso activo del usuario: no mezclar con isPaused global (pausa de piso) — eso dejaba la UI en "SIN INICIAR" con remisión ya creada. */
+    const isInRemision = currentPulse?.status === 'En Remisión';
+    const isRemisionPaused =
+        currentPulse?.status === 'Pausado' &&
+        (currentPulse?.metadata as { fromModule?: string } | undefined)?.fromModule === 'Remisión';
 
-    // Timer logic
+    // Timer: solo corre con pulso "En Remisión"; en pausa de remisión no reiniciar a 00:00:00
     useEffect(() => {
         let timer: NodeJS.Timeout;
         if (isInRemision && currentPulse?.startTime) {
@@ -121,11 +124,11 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
             timer = setInterval(() => {
                 setElapsedTime(Date.now() - start);
             }, 1000);
-        } else if (!currentPulse || currentPulse.status !== 'En Remisión') {
+        } else if (!currentPulse || (!isRemisionPaused && currentPulse.status !== 'En Remisión')) {
             setElapsedTime(0);
         }
         return () => clearInterval(timer);
-    }, [isInRemision, currentPulse]);
+    }, [isInRemision, isRemisionPaused, currentPulse]);
 
     const formatDuration = (ms: number) => {
         const seconds = Math.floor((ms / 1000) % 60);
@@ -368,7 +371,7 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                                     variant="outline"
                                     className="h-20 flex flex-col items-center justify-center gap-2 border-2 hover:border-indigo-300 hover:bg-indigo-50 transition-all font-bold"
                                     onClick={() => handlePause(reason.id)}
-                                    disabled={isLoading || isRemisionPaused}
+                                    disabled={isLoading || !isInRemision || isRemisionPaused}
                                 >
                                     <reason.icon className={reason.color} size={24} />
                                     <span className="text-xs uppercase">{reason.label}</span>

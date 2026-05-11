@@ -262,6 +262,7 @@ export async function getCurrentPulse(userId: string): Promise<{ data?: Operatio
             collection(firestore, 'operation_pulses'),
             where('userId', '==', userId),
             where('endTime', '==', null),
+            orderBy('startTime', 'desc'),
             limit(1)
         );
         const querySnapshot = await getDocs(q);

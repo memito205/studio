@@ -47,10 +47,13 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
             where('isGlobal', '==', true),
             where('endTime', '==', null),
             where('startTime', '>=', Timestamp.fromDate(freshStartTime)),
+            orderBy('startTime', 'desc'),
             limit(1)
         );
 
-        const unsubscribe = onSnapshot(q, (snapshot) => {
+        const unsubscribe = onSnapshot(
+            q,
+            (snapshot) => {
             if (!snapshot.empty) {
                 const docData = snapshot.docs[0].data();
                 setGlobalPulseState({ 
@@ -62,7 +65,9 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
             } else {
                 setGlobalPulseState(null);
             }
-        });
+        },
+            (err) => console.error('[SuitePulse] Global pulse listener:', err)
+        );
 
         return () => unsubscribe();
     }, [freshStartTime]);
@@ -79,10 +84,13 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
             where('userId', '==', user.uid),
             where('endTime', '==', null),
             where('startTime', '>=', Timestamp.fromDate(freshStartTime)),
+            orderBy('startTime', 'desc'),
             limit(1)
         );
 
-        const unsubscribe = onSnapshot(q, (snapshot) => {
+        const unsubscribe = onSnapshot(
+            q,
+            (snapshot) => {
             if (!snapshot.empty) {
                 const docData = snapshot.docs[0].data();
                 setCurrentPulse({ 
@@ -95,7 +103,9 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
                 setCurrentPulse(null);
             }
             setLoading(false);
-        });
+        },
+            (err) => console.error('[SuitePulse] User pulse listener:', err)
+        );
 
         return () => unsubscribe();
     }, [user?.uid, freshStartTime]);
