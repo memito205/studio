@@ -110,25 +110,44 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
 
     const effectiveName = operationalName || userName || 'Operario';
 
-    /** Pulso activo del usuario: no mezclar con isPaused global (pausa de piso) — eso dejaba la UI en "SIN INICIAR" con remisión ya creada. */
-    const isInRemision = currentPulse?.status === 'En Remisión';
-    const isRemisionPaused =
-        currentPulse?.status === 'Pausado' &&
-        (currentPulse?.metadata as { fromModule?: string } | undefined)?.fromModule === 'Remisión';
+    const pulseMeta = (currentPulse?.metadata as { fromModule?: string; remisionStartIso?: string } | undefined) || undefined;
+    const isPulseFromRemision = pulseMeta?.fromModule === 'Remisión';
 
-    // Timer: solo corre con pulso "En Remisión"; en pausa de remisión no reiniciar a 00:00:00
+    /** Sesión de remisión activa si el pulso activo actual pertenece al módulo (En Remisión o Pausado). */
+    const isInRemision = isPulseFromRemision && currentPulse?.status === 'En Remisión';
+    const isRemisionPaused = isPulseFromRemision && currentPulse?.status === 'Pausado';
+    const isRemisionSessionActive = isInRemision || isRemisionPaused;
+
+    const [remisionStartIso, setRemisionStartIso] = useState<string>('');
+    useEffect(() => {
+        if (!user?.uid) return;
+        const key = `remision_start_${user.uid}`;
+        const fromPulse = pulseMeta?.remisionStartIso;
+        const fromStorage = localStorage.getItem(key) || '';
+        const next = fromPulse || fromStorage;
+        if (next && next !== remisionStartIso) setRemisionStartIso(next);
+        // limpiar si ya no hay sesión activa
+        if (!isRemisionSessionActive && fromStorage) {
+            localStorage.removeItem(key);
+            if (remisionStartIso) setRemisionStartIso('');
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [user?.uid, currentPulse?.id, isRemisionSessionActive, pulseMeta?.remisionStartIso]);
+
+    // Timer: corre durante toda la sesión (activa o pausada) usando remisionStartIso persistido.
     useEffect(() => {
         let timer: NodeJS.Timeout;
-        if (isInRemision && currentPulse?.startTime) {
-            const start = new Date(currentPulse.startTime).getTime();
+        const startIso = remisionStartIso || (isInRemision && currentPulse?.startTime ? new Date(currentPulse.startTime).toISOString() : '');
+        if (isRemisionSessionActive && startIso) {
+            const start = new Date(startIso).getTime();
             timer = setInterval(() => {
                 setElapsedTime(Date.now() - start);
             }, 1000);
-        } else if (!currentPulse || (!isRemisionPaused && currentPulse.status !== 'En Remisión')) {
+        } else if (!isRemisionSessionActive) {
             setElapsedTime(0);
         }
         return () => clearInterval(timer);
-    }, [isInRemision, isRemisionPaused, currentPulse]);
+    }, [isRemisionSessionActive, remisionStartIso, isInRemision, currentPulse]);
 
     const formatDuration = (ms: number) => {
         const seconds = Math.floor((ms / 1000) % 60);
@@ -155,6 +174,7 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
         }
         setIsLoading(true);
         try {
+            const startIso = new Date().toISOString();
             const result = await createPulse({
                 userId: user.uid,
                 userName: effectiveName,
@@ -162,7 +182,7 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                 type: 'status_change',
                 status: 'En Remisión',
                 moduleContext: 'general',
-                metadata: { fromModule: 'Remisión' },
+                metadata: { fromModule: 'Remisión', remisionStartIso: startIso },
                 startTime: new Date(),
                 endTime: null
             } as any);
@@ -171,6 +191,8 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                 return;
             }
             toast({ title: 'Remisión iniciada', description: 'El tiempo queda registrado correctamente.' });
+            localStorage.setItem(`remision_start_${user.uid}`, startIso);
+            setRemisionStartIso(startIso);
             await refreshPulses();
         } catch (error: any) {
             console.error("Error al iniciar remisión:", error);
@@ -200,6 +222,8 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                 return;
             }
             toast({ title: 'Remisión finalizada', description: 'Estado actualizado a disponible.' });
+            localStorage.removeItem(`remision_start_${user.uid}`);
+            setRemisionStartIso('');
             await refreshPulses();
         } catch (error: any) {
             console.error("Error al finalizar remisión:", error);
@@ -221,6 +245,7 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
         
         setIsLoading(true);
         try {
+            const startIso = remisionStartIso || new Date().toISOString();
             const pauseResult = await createPulse({
                 userId: user.uid,
                 userName: effectiveName,
@@ -231,13 +256,15 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                 moduleContext: 'general',
                 startTime: new Date(),
                 endTime: null,
-                metadata: { fromModule: 'Remisión' }
+                metadata: { fromModule: 'Remisión', remisionStartIso: startIso }
             } as any);
             if (pauseResult?.error) {
                 toast({ variant: 'destructive', title: 'No se pudo registrar la pausa', description: pauseResult.error });
                 return;
             }
             toast({ title: 'Pausa registrada', description: `Motivo: ${finalReason}` });
+            localStorage.setItem(`remision_start_${user.uid}`, startIso);
+            setRemisionStartIso(startIso);
             await refreshPulses();
         } catch (error: any) {
             console.error("Error al pausar remisión:", error);
@@ -251,6 +278,7 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
         if (!user || isLoading) return;
         setIsLoading(true);
         try {
+            const startIso = remisionStartIso || new Date().toISOString();
             const result = await createPulse({
                 userId: user.uid,
                 userName: effectiveName,
@@ -258,7 +286,7 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                 type: 'status_change',
                 status: 'En Remisión',
                 moduleContext: 'general',
-                metadata: { fromModule: 'Remisión' },
+                metadata: { fromModule: 'Remisión', remisionStartIso: startIso },
                 startTime: new Date(),
                 endTime: null
             } as any);
@@ -267,6 +295,8 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                 return;
             }
             toast({ title: 'Remisión reanudada', description: 'Sesión activa de nuevo.' });
+            localStorage.setItem(`remision_start_${user.uid}`, startIso);
+            setRemisionStartIso(startIso);
             await refreshPulses();
         } catch (error: any) {
             console.error("Error al reanudar remisión:", error);
@@ -355,9 +385,9 @@ export const RemisionModule: React.FC<RemisionModuleProps> = ({ onReturn }) => {
                     </Card>
 
                     {/* Pauses Card */}
-                    <Card className={cn(
+                            <Card className={cn(
                         "shadow-lg transition-opacity duration-300",
-                        (!isInRemision && !isRemisionPaused) && "opacity-50 pointer-events-none"
+                        (!isRemisionSessionActive) && "opacity-50 pointer-events-none"
                     )}>
                         <CardHeader>
                             <CardTitle className="text-xl font-bold flex items-center gap-2">

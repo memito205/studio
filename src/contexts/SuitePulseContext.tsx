@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
 import { firestore } from '@/services/firebase';
-import { collection, query, where, onSnapshot, limit, orderBy, Timestamp, getDocs } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, Timestamp, getDocs, orderBy, limit } from 'firebase/firestore';
 import { createPulse } from '@/app/actions';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
@@ -33,29 +33,45 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
     const [allPulsesDay, setAllPulsesDay] = useState<OperationPulse[]>([]);
     const [loading, setLoading] = useState(true);
 
-    // 1. Listen to Global Active Pulse
+    function toStartMs(p: any): number {
+        const v = p?.startTime;
+        try {
+            if (!v) return 0;
+            if (typeof v?.toDate === 'function') return v.toDate().getTime();
+            if (v instanceof Date) return v.getTime();
+            const ms = new Date(v).getTime();
+            return Number.isFinite(ms) ? ms : 0;
+        } catch {
+            return 0;
+        }
+    }
+
+    // 1. Listen to Global Active Pulse (puede haber 0 o 1; si hay más, escoger el más reciente)
     useEffect(() => {
         const q = query(
             collection(firestore, 'operation_pulses'),
             where('isGlobal', '==', true),
-            where('endTime', '==', null),
-            limit(1)
+            where('endTime', '==', null)
         );
 
         const unsubscribe = onSnapshot(
             q,
             (snapshot) => {
-            if (!snapshot.empty) {
-                const docData = snapshot.docs[0].data();
-                setGlobalPulseState({ 
-                    id: snapshot.docs[0].id, 
+                if (snapshot.empty) {
+                    setGlobalPulseState(null);
+                    return;
+                }
+                const sorted = snapshot.docs
+                    .slice()
+                    .sort((a, b) => toStartMs(b.data()) - toStartMs(a.data()));
+                const best = sorted[0];
+                const docData = best.data();
+                setGlobalPulseState({
+                    id: best.id,
                     ...docData,
-                    startTime: docData.startTime?.toDate(),
-                    endTime: docData.endTime?.toDate() || null
+                    startTime: docData.startTime?.toDate?.() ?? docData.startTime,
+                    endTime: docData.endTime?.toDate?.() ?? docData.endTime ?? null,
                 } as OperationPulse);
-            } else {
-                setGlobalPulseState(null);
-            }
         },
             (err) => console.error('[SuitePulse] Global pulse listener:', err)
         );
@@ -63,7 +79,7 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
         return () => unsubscribe();
     }, []);
 
-    // 2. Listen to User's Current Active Pulse
+    // 2. Listen to User's Current Active Pulse (si hay más de 1 activo por bug, tomar el más reciente)
     useEffect(() => {
         if (!user?.uid) {
             setLoading(false);
@@ -73,25 +89,29 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
         const q = query(
             collection(firestore, 'operation_pulses'),
             where('userId', '==', user.uid),
-            where('endTime', '==', null),
-            limit(1)
+            where('endTime', '==', null)
         );
 
         const unsubscribe = onSnapshot(
             q,
             (snapshot) => {
-            if (!snapshot.empty) {
-                const docData = snapshot.docs[0].data();
-                setCurrentPulse({ 
-                    id: snapshot.docs[0].id, 
+                if (snapshot.empty) {
+                    setCurrentPulse(null);
+                    setLoading(false);
+                    return;
+                }
+                const sorted = snapshot.docs
+                    .slice()
+                    .sort((a, b) => toStartMs(b.data()) - toStartMs(a.data()));
+                const best = sorted[0];
+                const docData = best.data();
+                setCurrentPulse({
+                    id: best.id,
                     ...docData,
-                    startTime: docData.startTime?.toDate(),
-                    endTime: docData.endTime?.toDate() || null
+                    startTime: docData.startTime?.toDate?.() ?? docData.startTime,
+                    endTime: docData.endTime?.toDate?.() ?? docData.endTime ?? null,
                 } as OperationPulse);
-            } else {
-                setCurrentPulse(null);
-            }
-            setLoading(false);
+                setLoading(false);
         },
             (err) => console.error('[SuitePulse] User pulse listener:', err)
         );
