@@ -6,6 +6,7 @@ import { FileUpload } from './bag-distribution/FileUpload';
 import ItemDashboard from './bag-distribution/ItemDashboard';
 import AnalyticsDashboard from './bag-distribution/AnalyticsDashboard';
 import DistributionDashboard from './bag-distribution/DistributionDashboard';
+import { ForecastRunsHistoryPanel } from './bag-distribution/ForecastRunsHistoryPanel';
 import ComparisonDashboard from './bag-distribution/ComparisonDashboard';
 import { Spinner } from './bag-distribution/common/Spinner';
 import { processSingleFile, aggregateData } from '@/services/fileProcessor';
@@ -22,7 +23,7 @@ import { TrendingUpIcon } from './bag-distribution/icons/TrendingUpIcon';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
 import { Switch } from './ui/switch';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, History } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { buildForecastRunPayload, historyRangeFromProcessedRows } from '@/lib/forecastSnapshot';
 import { saveForecastRunSnapshot } from '@/app/forecast-snapshot-actions';
@@ -45,7 +46,9 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'data' | 'forecast' | 'analytics' | 'distribution' | 'comparative'>('data');
+  const [activeTab, setActiveTab] = useState<
+    'data' | 'forecast' | 'analytics' | 'distribution' | 'comparative' | 'history'
+  >('data');
   const [itemDashboardActiveTab, setItemDashboardActiveTab] = useState<'data' | 'forecast'>('data');
 
   useEffect(() => {
@@ -344,9 +347,9 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
           </div>
         )}
 
-        { (processedData || allProcessedRowsData.length > 0 ) && (
-        <div className="flex border-b border-slate-700 mb-6 flex-wrap">
+        <div className="flex border-b border-slate-700 mb-6 flex-wrap gap-y-1">
             <button
+                type="button"
                 onClick={() => setActiveTab('data')}
                 disabled={!processedData || uniqueItemCodes.length === 0}
                 className={`py-3 px-4 sm:px-6 font-medium text-sm transition-colors ${activeTab === 'data' ? 'border-b-2 border-sky-500 text-sky-400' : 'text-slate-400 hover:text-sky-300'} ${(!processedData || uniqueItemCodes.length === 0) ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -355,6 +358,7 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
                 Inventario
             </button>
             <button
+                type="button"
                 onClick={() => setActiveTab('forecast')}
                 disabled={forecastResults.length === 0 && (!processedData || uniqueItemCodes.length === 0)}
                 className={`py-3 px-4 sm:px-6 font-medium text-sm transition-colors ${activeTab === 'forecast' ? 'border-b-2 border-sky-500 text-sky-400' : 'text-slate-400 hover:text-sky-300'} ${(forecastResults.length === 0 && (!processedData || uniqueItemCodes.length === 0)) ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -363,6 +367,7 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
                 Pronósticos
             </button>
             <button
+                type="button"
                 onClick={() => setActiveTab('analytics')}
                 disabled={!canShowAnalyticsOrDistribution}
                 className={`py-3 px-4 sm:px-6 font-medium text-sm transition-colors ${activeTab === 'analytics' ? 'border-b-2 border-sky-500 text-sky-400' : 'text-slate-400 hover:text-sky-300'} ${!canShowAnalyticsOrDistribution ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -371,6 +376,7 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
                 Analítica
             </button>
             <button
+                type="button"
                 onClick={() => setActiveTab('comparative')}
                 disabled={!canShowAnalyticsOrDistribution}
                 className={`py-3 px-4 sm:px-6 font-medium text-sm transition-colors ${activeTab === 'comparative' ? 'border-b-2 border-sky-500 text-sky-400' : 'text-slate-400 hover:text-sky-300'} ${!canShowAnalyticsOrDistribution ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -379,6 +385,7 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
                 Comparativo
             </button>
             <button
+                type="button"
                 onClick={() => setActiveTab('distribution')}
                 disabled={!canShowAnalyticsOrDistribution || forecastResults.length === 0}
                 className={`py-3 px-4 sm:px-6 font-medium text-sm transition-colors ${activeTab === 'distribution' ? 'border-b-2 border-sky-500 text-sky-400' : 'text-slate-400 hover:text-sky-300'} ${(!canShowAnalyticsOrDistribution || forecastResults.length === 0) ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -386,8 +393,15 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
                 <DistributionIcon className="inline-block w-5 h-5 mr-1 sm:mr-2" />
                 Distribución
             </button>
+            <button
+                type="button"
+                onClick={() => setActiveTab('history')}
+                className={`py-3 px-4 sm:px-6 font-medium text-sm transition-colors ${activeTab === 'history' ? 'border-b-2 border-sky-500 text-sky-400' : 'text-slate-400 hover:text-sky-300'}`}
+            >
+                <History className="inline-block w-5 h-5 mr-1 sm:mr-2" />
+                Historial
+            </button>
         </div>
-        )}
 
         {isLoading && (
           <div className="fixed inset-0 bg-slate-900 bg-opacity-75 flex items-center justify-center z-50">
@@ -495,6 +509,8 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
                 </p>
             </div>
         )}
+
+        {activeTab === 'history' && <ForecastRunsHistoryPanel />}
     </div>
   );
 };
