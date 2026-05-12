@@ -49,8 +49,8 @@ function normSize(s: string) {
   return String(s || '').trim();
 }
 
-function lineCompositeKey(reference: string, size: string, location: string): string {
-  return `${normRef(reference)}|${normSize(size)}|${normLoc(location)}`;
+function lineRefLocKey(reference: string, location: string): string {
+  return `${normRef(reference)}|${normLoc(location)}`;
 }
 
 async function deleteAllLinesForDate(inventoryDate: string): Promise<void> {
@@ -67,7 +67,7 @@ async function deleteAllLinesForDate(inventoryDate: string): Promise<void> {
 
 type LatestCountState = { countedQty: number; countedAt: Timestamp; countedBy: string };
 
-/** Último conteo por ref|talla|ubicación a partir de la colección inmutable (no se borra al reimportar). */
+/** Último conteo por ref + ubicación (v1 sin talla) desde la colección inmutable. */
 async function fetchLatestCountStatePerKey(inventoryDate: string): Promise<Map<string, LatestCountState>> {
   const latest = new Map<string, LatestCountState>();
   const col = collection(firestore, COUNT_RECORDS_COL);
@@ -86,7 +86,7 @@ async function fetchLatestCountStatePerKey(inventoryDate: string): Promise<Map<s
     if (snap.empty) break;
     for (const d of snap.docs) {
       const x = d.data();
-      const key = lineCompositeKey(String(x.reference ?? ''), String(x.size ?? ''), String(x.location ?? ''));
+      const key = lineRefLocKey(String(x.reference ?? ''), String(x.location ?? ''));
       const ca = x.countedAt as Timestamp | undefined;
       const t = ca?.toMillis?.() ?? 0;
       const prev = latest.get(key);
@@ -127,7 +127,7 @@ async function mergeLatestCountsOntoLines(inventoryDate: string): Promise<void> 
     let n = 0;
     for (const d of snap.docs) {
       const data = d.data();
-      const key = lineCompositeKey(String(data.reference ?? ''), String(data.size ?? ''), String(data.location ?? ''));
+      const key = lineRefLocKey(String(data.reference ?? ''), String(data.location ?? ''));
       const st = latest.get(key);
       if (!st) continue;
       batch.update(d.ref, {
@@ -146,7 +146,7 @@ async function mergeLatestCountsOntoLines(inventoryDate: string): Promise<void> 
 
 /**
  * Reemplaza las líneas de inventario esperado del día. Los conteos no se borran: viven en `cyclicInventoryCountRecords`
- * y se vuelven a aplicar a las líneas nuevas por referencia/talla/ubicación.
+ * y se vuelven a aplicar a las líneas nuevas por referencia y ubicación (v1 sin talla).
  */
 export async function importCyclicInventoryForDate(input: {
   inventoryDate: string;
@@ -179,18 +179,30 @@ export async function importCyclicInventoryForDate(input: {
       return { success: false, error: 'No hay filas válidas para importar.' };
     }
 
+    const merged = new Map<string, { reference: string; location: string; expectedQty: number }>();
+    for (const row of normalized) {
+      const k = lineRefLocKey(row.reference, row.location);
+      const cur = merged.get(k);
+      if (!cur) {
+        merged.set(k, { reference: row.reference, location: row.location, expectedQty: row.expectedQty });
+      } else {
+        cur.expectedQty += row.expectedQty;
+      }
+    }
+    const consolidatedRows = [...merged.values()];
+
     await deleteAllLinesForDate(dateKey);
 
     let imported = 0;
-    for (let i = 0; i < normalized.length; i += LINES_BATCH) {
-      const chunk = normalized.slice(i, i + LINES_BATCH);
+    for (let i = 0; i < consolidatedRows.length; i += LINES_BATCH) {
+      const chunk = consolidatedRows.slice(i, i + LINES_BATCH);
       const batch = writeBatch(firestore);
       for (const row of chunk) {
         const lineRef = doc(collection(firestore, LINES_COL));
         batch.set(lineRef, {
           inventoryDate: dateKey,
           reference: row.reference,
-          size: row.size,
+          size: '',
           location: row.location,
           expectedQty: row.expectedQty,
           countedQty: null,
@@ -250,6 +262,58 @@ export async function listCyclicInventoryDayMeta(max = 60): Promise<{
   }
 }
 
+function countedAtMillis(v: string | Date | null | undefined): number {
+  if (v === null || v === undefined || v === '') return -1;
+  const t = typeof v === 'string' ? new Date(v).getTime() : v instanceof Date ? v.getTime() : -1;
+  return Number.isNaN(t) ? -1 : t;
+}
+
+/** Una fila por referencia + ubicación: suma esperados y conserva el conteo más reciente del grupo. */
+function consolidateLinesByRefLoc(raw: CyclicInventoryLine[]): CyclicInventoryLine[] {
+  const groups = new Map<string, { ids: string[]; lines: CyclicInventoryLine[] }>();
+  for (const line of raw) {
+    const key = lineRefLocKey(line.reference, line.location);
+    if (!groups.has(key)) {
+      groups.set(key, { ids: [], lines: [] });
+    }
+    const g = groups.get(key)!;
+    g.ids.push(line.id);
+    g.lines.push(line);
+  }
+
+  const out: CyclicInventoryLine[] = [];
+  for (const g of groups.values()) {
+    const sumExpected = g.lines.reduce((s, l) => s + Math.max(0, Math.floor(Number(l.expectedQty) || 0)), 0);
+    let bestQty: number | null = null;
+    let bestAt = -1;
+    let bestCountedBy: string | null = null;
+    let bestCountedAt: string | Date | null | undefined = null;
+    for (const l of g.lines) {
+      if (l.countedQty === null || l.countedQty === undefined) continue;
+      const m = countedAtMillis(l.countedAt);
+      if (m > bestAt) {
+        bestAt = m;
+        bestQty = l.countedQty;
+        bestCountedBy = l.countedBy ?? null;
+        bestCountedAt = l.countedAt;
+      }
+    }
+    const sortedLines = [...g.lines].sort((a, b) => a.id.localeCompare(b.id));
+    const primary = sortedLines[0];
+    out.push({
+      ...primary,
+      expectedQty: sumExpected,
+      size: '',
+      countedQty: bestQty,
+      countedAt: bestCountedAt ?? null,
+      countedBy: bestCountedBy,
+      consolidatedLineIds: g.ids.length > 1 ? g.ids : undefined,
+    });
+  }
+  out.sort((a, b) => `${a.reference}|${a.location}`.localeCompare(`${b.reference}|${b.location}`));
+  return out;
+}
+
 export async function getCyclicInventoryLinesForDate(inventoryDate: string): Promise<{
   success: boolean;
   data?: CyclicInventoryLine[];
@@ -266,11 +330,8 @@ export async function getCyclicInventoryLinesForDate(inventoryDate: string): Pro
       const raw = convertTimestampsToDates({ id: d.id, ...d.data() } as Record<string, unknown>);
       return raw as unknown as CyclicInventoryLine;
     });
-    data.sort((a, b) => {
-      const ra = `${a.reference}|${a.location}|${a.size}`.localeCompare(`${b.reference}|${b.location}|${b.size}`);
-      return ra;
-    });
-    return { success: true, data };
+    const consolidated = consolidateLinesByRefLoc(data);
+    return { success: true, data: consolidated };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Error al cargar líneas.';
     if (String(msg).includes('failed-precondition')) {
@@ -285,46 +346,72 @@ export async function getCyclicInventoryLinesForDate(inventoryDate: string): Pro
 }
 
 export async function saveCyclicInventoryLineCount(input: {
-  lineId: string;
+  lineIds: string[];
   countedQty: number;
   countedBy: string;
   countedByName?: string;
 }): Promise<{ success: boolean; error?: string }> {
   try {
-    const lineId = input.lineId?.trim();
-    if (!lineId) return { success: false, error: 'lineId requerido.' };
+    const ids = [...new Set((input.lineIds || []).map((x) => String(x).trim()).filter(Boolean))];
+    if (ids.length === 0) {
+      return { success: false, error: 'Línea no identificada.' };
+    }
     const n = Math.max(0, Math.floor(Number(input.countedQty)));
-    const lineRef = doc(firestore, LINES_COL, lineId);
     const recRef = doc(collection(firestore, COUNT_RECORDS_COL));
     const now = Timestamp.now();
 
     await runTransaction(firestore, async (tx) => {
-      const lineSnap = await tx.get(lineRef);
-      if (!lineSnap.exists()) {
-        throw new Error('Línea no encontrada.');
+      const lineRefs = ids.map((id) => doc(firestore, LINES_COL, id));
+      const snaps = [];
+      for (const lr of lineRefs) {
+        snaps.push(await tx.get(lr));
       }
-      const d = lineSnap.data() as Record<string, unknown>;
-      const inv = String(d.inventoryDate ?? '');
+      for (const s of snaps) {
+        if (!s.exists()) {
+          throw new Error('Línea no encontrada.');
+        }
+      }
+      const first = snaps[0].data() as Record<string, unknown>;
+      const inv = String(first.inventoryDate ?? '');
       if (!isValidInventoryDateKey(inv)) {
         throw new Error('Línea sin fecha de inventario válida.');
       }
-      tx.update(lineRef, {
-        countedQty: n,
-        countedAt: now,
-        countedBy: input.countedBy,
-      });
-      tx.set(recRef, {
+      const wantRef = normRef(String(first.reference ?? ''));
+      const wantLoc = normLoc(String(first.location ?? ''));
+      let sumExpected = 0;
+      for (let i = 0; i < snaps.length; i++) {
+        const d = snaps[i].data() as Record<string, unknown>;
+        if (String(d.inventoryDate ?? '') !== inv) {
+          throw new Error('Las líneas no comparten la misma fecha de inventario.');
+        }
+        if (normRef(String(d.reference ?? '')) !== wantRef || normLoc(String(d.location ?? '')) !== wantLoc) {
+          throw new Error('Las líneas no comparten la misma referencia y ubicación.');
+        }
+        sumExpected += Math.max(0, Math.floor(Number(d.expectedQty) || 0));
+      }
+      for (const lr of lineRefs) {
+        tx.update(lr, {
+          countedQty: n,
+          countedAt: now,
+          countedBy: input.countedBy,
+        });
+      }
+      const recordPayload: Record<string, unknown> = {
         inventoryDate: inv,
-        reference: normRef(String(d.reference ?? '')),
-        size: normSize(String(d.size ?? '')),
-        location: normLoc(String(d.location ?? '')),
-        expectedQtyAtSave: Math.max(0, Math.floor(Number(d.expectedQty) || 0)),
+        reference: wantRef,
+        size: '',
+        location: wantLoc,
+        expectedQtyAtSave: sumExpected,
         countedQty: n,
         countedAt: now,
         countedBy: input.countedBy,
         countedByName: (input.countedByName || '').trim(),
-        lineId,
-      });
+        lineId: ids[0],
+      };
+      if (ids.length > 1) {
+        recordPayload.consolidatedLineIds = ids;
+      }
+      tx.set(recRef, recordPayload);
     });
 
     return { success: true };

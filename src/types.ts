@@ -997,6 +997,8 @@ export interface CyclicInventoryLine {
   countedQty: number | null;
   countedAt?: string | Date | null;
   countedBy?: string | null;
+  /** Si hay varias filas Firestore con la misma ref + ubicación, aquí van todos los ids (v1: conteo consolidado). */
+  consolidatedLineIds?: string[];
 }
 
 /** Registro inmutable de un conteo (no se borra al reimportar el inventario del día). */
@@ -1013,6 +1015,8 @@ export interface CyclicInventoryCountRecord {
   countedBy: string;
   countedByName?: string;
   lineId: string;
+  /** Presente si el guardado aplicó a varias líneas (misma ref + ubicación). */
+  consolidatedLineIds?: string[];
 }
 
 export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory';
