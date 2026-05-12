@@ -14,13 +14,12 @@ import {
 import { firestore } from '@/services/firebase';
 import { safeParseForecastRunPayload } from '@/lib/forecastSnapshot/validateForecastRunPayload';
 import type { ForecastRunPayloadV1 } from '@/lib/forecastSnapshot/types';
-
-/** Colección Firestore: corridas de pronóstico + distribución (insumos/bolsas), solo resumen. */
-export const SUPPLY_FORECAST_RUNS_COL = 'supplyForecastRuns';
-
-export type SaveForecastRunSnapshotResult =
-  | { success: true; id: string }
-  | { success: false; error: string };
+import {
+  SUPPLY_FORECAST_RUNS_COL,
+  type GetForecastRunResult,
+  type ListForecastRunsResult,
+  type SaveForecastRunSnapshotResult,
+} from '@/lib/forecastSnapshot/supplyForecastRunsMeta';
 
 /**
  * Persiste un payload ya armado (p. ej. con `buildForecastRunPayload`).
@@ -64,10 +63,6 @@ export async function saveForecastRunSnapshot(payload: unknown): Promise<SaveFor
   }
 }
 
-export type ListForecastRunsResult =
-  | { success: true; items: { id: string; generationDateIso: string; itemCount: number; persistedAtMs: number }[] }
-  | { success: false; error: string };
-
 /** Lista las corridas más recientes (para historial / depuración). */
 export async function listSupplyForecastRuns(max: number = 30): Promise<ListForecastRunsResult> {
   try {
@@ -109,10 +104,6 @@ export async function listSupplyForecastRuns(max: number = 30): Promise<ListFore
     return { success: false, error: msg };
   }
 }
-
-export type GetForecastRunResult =
-  | { success: true; id: string; data: Record<string, unknown> }
-  | { success: false; error: string };
 
 export async function getSupplyForecastRun(id: string): Promise<GetForecastRunResult> {
   try {
