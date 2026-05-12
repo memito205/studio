@@ -207,7 +207,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             description: "Planifique y optimice las rutas de entrega y recolección.",
             actionText: "Acceder",
             onAction: onNavigateToRoutesModule,
-            roles: ['admin', 'supervisor', 'operator']
+            roles: ['admin']
         },
         {
             key: 'sample_control',
@@ -243,7 +243,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             description: "Analice y gestione indicadores de bodega, procesos, descansos y rutas de forma centralizada.",
             actionText: "Acceder",
             onAction: onNavigateToLogisticsPlatform,
-            roles: ['admin', 'office', 'supervisor']
+            roles: ['admin']
         },
         {
             key: 'service_conciliation',
@@ -252,7 +252,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             description: "Gestione la conciliación de servicios con proveedores externos (Logística, Compras, Contabilidad).",
             actionText: "Acceder",
             onAction: onNavigateToServiceConciliation,
-            roles: ['admin', 'office', 'supervisor']
+            roles: ['admin', 'office']
         },
         {
             key: 'remision_module',
@@ -297,7 +297,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             description: "Reparto equitativo inteligente de mercancías apoyado con inteligencia artificial.",
             actionText: "Acceder",
             onAction: onNavigateToDistributorModule,
-            roles: ['admin', 'office']
+            roles: ['admin']
         },
         {
             key: 'external_portal',
@@ -315,7 +315,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             description: "Vista de Kiosko optimizada para pantallas grandes, actualizando automáticamente.",
             actionText: "Abrir Modo TV",
             onAction: () => window.open('/tv-ecommerce', '_blank'),
-            roles: ['admin', 'office', 'supervisor', 'operator']
+            roles: ['admin']
         }
     ];
 
