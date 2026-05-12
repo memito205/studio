@@ -976,22 +976,20 @@ export interface BagOperation {
     createdByName?: string;
 }
 
-export type CyclicInventoryRunStatus = 'active' | 'closed';
-
-export interface CyclicInventoryRun {
+/** Metadatos del inventario cargado por día (id = yyyy-MM-dd). */
+export interface CyclicInventoryDayMeta {
   id: string;
-  name: string;
-  warehouseLabel?: string;
-  status: CyclicInventoryRunStatus;
-  createdAt: string | Date;
-  createdBy?: string;
-  createdByName?: string;
-  closedAt?: string | Date | null;
+  lastUploadedAt: string | Date;
+  lastUploadedBy?: string;
+  lastUploadedByName?: string;
+  lastFileName?: string;
+  lineCount?: number;
 }
 
 export interface CyclicInventoryLine {
   id: string;
-  runId: string;
+  /** Fecha del inventario base (mismo día que el archivo subido). */
+  inventoryDate: string;
   reference: string;
   size: string;
   location: string;
@@ -999,6 +997,22 @@ export interface CyclicInventoryLine {
   countedQty: number | null;
   countedAt?: string | Date | null;
   countedBy?: string | null;
+}
+
+/** Registro inmutable de un conteo (no se borra al reimportar el inventario del día). */
+export interface CyclicInventoryCountRecord {
+  id: string;
+  inventoryDate: string;
+  reference: string;
+  size: string;
+  location: string;
+  /** Cantidad esperada al momento de guardar el conteo. */
+  expectedQtyAtSave: number;
+  countedQty: number;
+  countedAt: string | Date;
+  countedBy: string;
+  countedByName?: string;
+  lineId: string;
 }
 
 export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory';

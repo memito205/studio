@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { ArrowLeft, ClipboardList, Loader2, RefreshCw, Upload } from 'lucide-react';
+import { ArrowLeft, ClipboardList, FileSearch, Loader2, RefreshCw, Upload } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,21 +10,44 @@ import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
-import type { CyclicInventoryLine, CyclicInventoryRun } from '@/types';
+import type { CyclicInventoryCountRecord, CyclicInventoryDayMeta, CyclicInventoryLine } from '@/types';
 import { findCaseInsensitiveKey, parseRobustNumber } from '@/lib/parsingUtils';
 import { getCyclicCountDiff } from '@/lib/cyclicInventoryDiff';
+import { isValidInventoryDateKey } from '@/lib/cyclicInventoryDate';
 import {
-  closeCyclicInventoryRun,
-  createCyclicInventoryRun,
-  getCyclicInventoryLines,
-  importCyclicInventoryLines,
-  listCyclicInventoryRuns,
+  getCyclicInventoryLinesForDate,
+  importCyclicInventoryForDate,
+  listCyclicInventoryCountRecordsForReport,
+  listCyclicInventoryDayMeta,
   saveCyclicInventoryLineCount,
 } from '@/app/cyclicInventoryActions';
+
+function ymdDaysAgo(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function todayYmdLocal(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function formatCountedAt(value: string | Date | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '—';
+  const d = typeof value === 'string' ? new Date(value) : value;
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' });
+}
 
 function readCell(row: Record<string, unknown>, ...aliases: string[]): string {
   const key = findCaseInsensitiveKey(row, ...aliases);
@@ -61,61 +84,57 @@ function parseImportRows(raw: unknown[]): { reference: string; size: string; loc
 export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = ({ onReturnToSuite }) => {
   const { user, role } = useAuth();
   const { toast } = useToast();
-  const [runs, setRuns] = useState<CyclicInventoryRun[]>([]);
-  const [loadingRuns, setLoadingRuns] = useState(false);
-  const [selectedRunId, setSelectedRunId] = useState<string>('');
+  const [inventoryDate, setInventoryDate] = useState(() => todayYmdLocal());
+  const [recentDays, setRecentDays] = useState<CyclicInventoryDayMeta[]>([]);
+  const [loadingDays, setLoadingDays] = useState(false);
   const [lines, setLines] = useState<CyclicInventoryLine[]>([]);
   const [loadingLines, setLoadingLines] = useState(false);
   const [filterRef, setFilterRef] = useState('');
   const [filterLoc, setFilterLoc] = useState('');
   const [onlyPending, setOnlyPending] = useState(false);
-
-  const [newRunName, setNewRunName] = useState('');
-  const [newRunWarehouse, setNewRunWarehouse] = useState('');
-  const [creatingRun, setCreatingRun] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [newRunIdForImport, setNewRunIdForImport] = useState<string | null>(null);
+
+  const [reportDateFrom, setReportDateFrom] = useState(() => ymdDaysAgo(30));
+  const [reportDateTo, setReportDateTo] = useState(() => todayYmdLocal());
+  const [reportFilterRef, setReportFilterRef] = useState('');
+  const [reportFilterLoc, setReportFilterLoc] = useState('');
+  const [reportRows, setReportRows] = useState<CyclicInventoryCountRecord[]>([]);
+  const [loadingReport, setLoadingReport] = useState(false);
 
   const canAdmin = role === 'admin' || role === 'supervisor';
 
-  const loadRuns = useCallback(async () => {
-    setLoadingRuns(true);
+  const loadRecentDays = useCallback(async () => {
+    setLoadingDays(true);
     try {
-      const res = await listCyclicInventoryRuns(50);
+      const res = await listCyclicInventoryDayMeta(60);
       if (!res.success || !res.data) {
-        throw new Error(res.error || 'No se pudieron cargar los conteos.');
+        throw new Error(res.error || 'No se pudieron cargar los días recientes.');
       }
-      setRuns(res.data);
+      setRecentDays(res.data);
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
-        title: 'Error',
+        title: 'Días recientes',
         description: e instanceof Error ? e.message : 'Error desconocido',
       });
     } finally {
-      setLoadingRuns(false);
+      setLoadingDays(false);
     }
   }, [toast]);
 
   useEffect(() => {
-    void loadRuns();
-  }, [loadRuns]);
-
-  useEffect(() => {
-    if (selectedRunId) return;
-    if (runs.length === 0) return;
-    const firstActive = runs.find((r) => r.status === 'active') || runs[0];
-    setSelectedRunId(firstActive.id);
-  }, [runs, selectedRunId]);
+    void loadRecentDays();
+  }, [loadRecentDays]);
 
   const loadLines = useCallback(async () => {
-    if (!selectedRunId) {
+    const dateKey = inventoryDate.trim();
+    if (!isValidInventoryDateKey(dateKey)) {
       setLines([]);
       return;
     }
     setLoadingLines(true);
     try {
-      const res = await getCyclicInventoryLines(selectedRunId);
+      const res = await getCyclicInventoryLinesForDate(dateKey);
       if (!res.success || !res.data) {
         throw new Error(res.error || 'No se pudieron cargar las líneas.');
       }
@@ -130,11 +149,40 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     } finally {
       setLoadingLines(false);
     }
-  }, [selectedRunId, toast]);
+  }, [inventoryDate, toast]);
 
   useEffect(() => {
     void loadLines();
   }, [loadLines]);
+
+  const loadReport = useCallback(async () => {
+    setLoadingReport(true);
+    try {
+      const res = await listCyclicInventoryCountRecordsForReport({
+        dateFrom: reportDateFrom.trim(),
+        dateTo: reportDateTo.trim(),
+        referenceContains: reportFilterRef.trim() || undefined,
+        locationContains: reportFilterLoc.trim() || undefined,
+        maxRecords: 1200,
+      });
+      if (!res.success || !res.data) {
+        throw new Error(res.error || 'No se pudo cargar el reporte.');
+      }
+      setReportRows(res.data);
+      if (res.data.length === 0) {
+        toast({ title: 'Reporte', description: 'No hay registros con ese criterio.' });
+      }
+    } catch (e: unknown) {
+      toast({
+        variant: 'destructive',
+        title: 'Reporte',
+        description: e instanceof Error ? e.message : 'Error',
+      });
+      setReportRows([]);
+    } finally {
+      setLoadingReport(false);
+    }
+  }, [reportDateFrom, reportDateTo, reportFilterRef, reportFilterLoc, toast]);
 
   const filteredLines = useMemo(() => {
     const fr = filterRef.trim().toUpperCase();
@@ -147,51 +195,30 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     });
   }, [lines, filterRef, filterLoc, onlyPending]);
 
-  const handleCreateRun = async () => {
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!user?.uid) {
       toast({ variant: 'destructive', title: 'Sesión', description: 'Inicie sesión.' });
       return;
     }
-    if (!newRunName.trim()) {
-      toast({ variant: 'destructive', title: 'Nombre', description: 'Indique un nombre para el conteo.' });
-      return;
-    }
-    setCreatingRun(true);
-    try {
-      const res = await createCyclicInventoryRun({
-        name: newRunName.trim(),
-        warehouseLabel: newRunWarehouse.trim(),
-        createdBy: user.uid,
-        createdByName: user.displayName || user.email || '',
-      });
-      if (!res.success || !res.id) {
-        throw new Error(res.error || 'No se pudo crear el conteo.');
-      }
-      toast({ title: 'Conteo creado', description: 'Ahora puede importar el archivo Excel.' });
-      setNewRunIdForImport(res.id);
-      setNewRunName('');
-      setNewRunWarehouse('');
-      await loadRuns();
-      setSelectedRunId(res.id);
-    } catch (e: unknown) {
-      toast({
-        variant: 'destructive',
-        title: 'Error',
-        description: e instanceof Error ? e.message : 'Error',
-      });
-    } finally {
-      setCreatingRun(false);
-    }
-  };
-
-  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const runId = newRunIdForImport || selectedRunId;
-    if (!runId) {
-      toast({ variant: 'destructive', title: 'Conteo', description: 'Seleccione o cree un conteo activo primero.' });
+    const dateKey = inventoryDate.trim();
+    if (!isValidInventoryDateKey(dateKey)) {
+      toast({ variant: 'destructive', title: 'Fecha', description: 'Seleccione una fecha válida (AAAA-MM-DD).' });
       return;
     }
     const file = e.target.files?.[0];
     if (!file) return;
+
+    const hasLines = lines.length > 0;
+    if (
+      hasLines &&
+      !confirm(
+        '¿Actualizar el inventario esperado de esta fecha? Las cantidades esperadas vendrán del nuevo Excel. Los conteos ya registrados no se borran: quedan en el historial y se vuelven a aplicar a las líneas por referencia, talla y ubicación.'
+      )
+    ) {
+      if (e.target) e.target.value = '';
+      return;
+    }
+
     setImporting(true);
     try {
       const buf = await file.arrayBuffer();
@@ -202,13 +229,19 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       if (rows.length === 0) {
         throw new Error('No se encontraron filas válidas. Use columnas: Referencia, Talla, Ubicación, Cantidad esperada.');
       }
-      const res = await importCyclicInventoryLines({ runId, lines: rows });
+      const res = await importCyclicInventoryForDate({
+        inventoryDate: dateKey,
+        lines: rows,
+        uploadedBy: user.uid,
+        uploadedByName: user.displayName || user.email || '',
+        fileName: file.name,
+      });
       if (!res.success) {
         throw new Error(res.error || 'Error al importar.');
       }
-      toast({ title: 'Importación lista', description: `Se cargaron ${res.imported ?? 0} líneas.` });
-      setNewRunIdForImport(null);
+      toast({ title: 'Inventario del día cargado', description: `Se importaron ${res.imported ?? 0} líneas para ${dateKey}.` });
       await loadLines();
+      await loadRecentDays();
     } catch (err: unknown) {
       toast({
         variant: 'destructive',
@@ -228,7 +261,12 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       toast({ variant: 'destructive', title: 'Cantidad', description: 'Ingrese un número entero ≥ 0.' });
       return;
     }
-    const res = await saveCyclicInventoryLineCount({ lineId: line.id, countedQty: n, countedBy: user.uid });
+    const res = await saveCyclicInventoryLineCount({
+      lineId: line.id,
+      countedQty: n,
+      countedBy: user.uid,
+      countedByName: user.displayName || user.email || '',
+    });
     if (!res.success) {
       toast({ variant: 'destructive', title: 'Guardar', description: res.error || 'Error' });
       return;
@@ -245,18 +283,6 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
           : x
       )
     );
-  };
-
-  const handleCloseRun = async () => {
-    if (!selectedRunId) return;
-    if (!confirm('¿Cerrar este conteo? Los operarios ya no podrán editar líneas en este run.')) return;
-    const res = await closeCyclicInventoryRun(selectedRunId);
-    if (!res.success) {
-      toast({ variant: 'destructive', title: 'Cerrar', description: res.error });
-      return;
-    }
-    toast({ title: 'Conteo cerrado' });
-    await loadRuns();
   };
 
   const diffBadge = (line: CyclicInventoryLine) => {
@@ -284,7 +310,9 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
           <div>
             <h1 className="text-2xl font-bold">Inventario cíclico</h1>
             <p className="text-sm text-muted-foreground">
-              Compare cantidad esperada vs física: cuadrado, faltante o sobrante. Cada guardado queda fechado en base de datos.
+              Cada día se sube el inventario esperado (Excel). El operario elige la fecha, busca por referencia o ubicación y
+              registra el físico. Cada guardado queda en historial inmutable para auditoría. En el reporte puede filtrar por fechas,
+              referencia y ubicación.
             </p>
           </div>
         </div>
@@ -297,7 +325,11 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       <Tabs defaultValue="conteo" className="w-full">
         <TabsList>
           <TabsTrigger value="conteo">Conteo</TabsTrigger>
-          {canAdmin ? <TabsTrigger value="nuevo">Nuevo conteo / importar</TabsTrigger> : null}
+          <TabsTrigger value="reporte">
+            <FileSearch className="mr-2 h-4 w-4 inline" />
+            Reporte de conteos
+          </TabsTrigger>
+          {canAdmin ? <TabsTrigger value="subir">Subir inventario del día</TabsTrigger> : null}
         </TabsList>
 
         <TabsContent value="conteo" className="space-y-4 mt-4">
@@ -305,41 +337,49 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
             <CardHeader>
               <CardTitle>Ejecutar conteo</CardTitle>
               <CardDescription>
-                Seleccione el conteo activo, filtre por referencia o ubicación e ingrese la cantidad física. El resultado se
-                calcula al instante respecto a la esperada.
+                Elija la fecha del inventario que está contando (la misma del archivo cargado ese día). Filtre por referencia o
+                ubicación e ingrese la cantidad física.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex flex-wrap gap-4 items-end">
-                <div className="space-y-2 min-w-[220px]">
-                  <Label>Conteo</Label>
-                  <Select
-                    value={selectedRunId}
-                    onValueChange={(v) => setSelectedRunId(v)}
-                    disabled={loadingRuns || runs.length === 0}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder={loadingRuns ? 'Cargando…' : 'Seleccione'} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {runs.map((r) => (
-                        <SelectItem key={r.id} value={r.id}>
-                          {r.name} — {r.status === 'active' ? 'Activo' : 'Cerrado'}{' '}
-                          {r.warehouseLabel ? `(${r.warehouseLabel})` : ''}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                <div className="space-y-2">
+                  <Label htmlFor="inv-date-conteo">Fecha del inventario</Label>
+                  <Input
+                    id="inv-date-conteo"
+                    type="date"
+                    value={inventoryDate}
+                    onChange={(e) => setInventoryDate(e.target.value)}
+                    className="w-44"
+                  />
                 </div>
-                <Button type="button" variant="secondary" size="sm" onClick={() => void loadRuns()} disabled={loadingRuns}>
-                  <RefreshCw className={`mr-2 h-4 w-4 ${loadingRuns ? 'animate-spin' : ''}`} />
-                  Actualizar lista
-                </Button>
                 <Button type="button" variant="outline" size="sm" onClick={() => void loadLines()} disabled={loadingLines}>
                   <RefreshCw className={`mr-2 h-4 w-4 ${loadingLines ? 'animate-spin' : ''}`} />
                   Recargar líneas
                 </Button>
               </div>
+
+              {recentDays.length > 0 ? (
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground">Días con carga reciente</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {recentDays.slice(0, 12).map((d) => (
+                      <Button
+                        key={d.id}
+                        type="button"
+                        variant={d.id === inventoryDate ? 'default' : 'outline'}
+                        size="sm"
+                        className="h-8 font-mono text-xs"
+                        onClick={() => setInventoryDate(d.id)}
+                      >
+                        {d.id}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              ) : loadingDays ? (
+                <p className="text-xs text-muted-foreground">Cargando días recientes…</p>
+              ) : null}
 
               <div className="flex flex-wrap gap-3 items-end">
                 <div className="space-y-2">
@@ -369,38 +409,37 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                       <TableRow>
                         <TableHead>Referencia</TableHead>
                         <TableHead className="text-right">Esperada</TableHead>
+                        <TableHead>Talla</TableHead>
                         <TableHead>Ubicación</TableHead>
                         <TableHead className="w-36">Físico</TableHead>
+                        <TableHead className="whitespace-nowrap min-w-[120px]">Guardado</TableHead>
                         <TableHead>Resultado</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {filteredLines.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
-                            No hay líneas o ninguna coincide con el filtro.
+                          <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
+                            No hay líneas para esta fecha o ninguna coincide con el filtro. Pida a un supervisor que suba el Excel
+                            del día.
                           </TableCell>
                         </TableRow>
                       ) : (
-                        filteredLines.map((line) => {
-                          const selectedRun = runs.find((r) => r.id === selectedRunId);
-                          const readOnly = selectedRun?.status === 'closed';
-                          return (
-                            <TableRow key={line.id}>
-                              <TableCell className="font-mono text-sm">{line.reference}</TableCell>
-                              <TableCell className="text-right font-medium">{line.expectedQty}</TableCell>
-                              <TableCell className="text-sm text-muted-foreground">{line.location || '—'}</TableCell>
-                              <TableCell>
-                                <CountInput
-                                  line={line}
-                                  disabled={readOnly}
-                                  onSave={(v) => void handleSaveCount(line, v)}
-                                />
-                              </TableCell>
-                              <TableCell>{diffBadge(line)}</TableCell>
-                            </TableRow>
-                          );
-                        })
+                        filteredLines.map((line) => (
+                          <TableRow key={line.id}>
+                            <TableCell className="font-mono text-sm">{line.reference}</TableCell>
+                            <TableCell className="text-right font-medium">{line.expectedQty}</TableCell>
+                            <TableCell className="text-sm text-muted-foreground">{line.size || '—'}</TableCell>
+                            <TableCell className="text-sm text-muted-foreground">{line.location || '—'}</TableCell>
+                            <TableCell>
+                              <CountInput line={line} onSave={(v) => void handleSaveCount(line, v)} />
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                              {formatCountedAt(line.countedAt)}
+                            </TableCell>
+                            <TableCell>{diffBadge(line)}</TableCell>
+                          </TableRow>
+                        ))
                       )}
                     </TableBody>
                   </Table>
@@ -410,48 +449,167 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
           </Card>
         </TabsContent>
 
+        <TabsContent value="reporte" className="space-y-4 mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Reporte de conteos registrados</CardTitle>
+              <CardDescription>
+                Historial inmutable: cada fila es un guardado con su fecha y hora. Filtre por rango de fechas del inventario y,
+                opcionalmente, por texto en referencia o ubicación.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-4 items-end">
+                <div className="space-y-2">
+                  <Label htmlFor="rep-from">Fecha inventario desde</Label>
+                  <Input
+                    id="rep-from"
+                    type="date"
+                    value={reportDateFrom}
+                    onChange={(e) => setReportDateFrom(e.target.value)}
+                    className="w-44"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="rep-to">Fecha inventario hasta</Label>
+                  <Input
+                    id="rep-to"
+                    type="date"
+                    value={reportDateTo}
+                    onChange={(e) => setReportDateTo(e.target.value)}
+                    className="w-44"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Referencia contiene</Label>
+                  <Input
+                    value={reportFilterRef}
+                    onChange={(e) => setReportFilterRef(e.target.value)}
+                    placeholder="Opcional"
+                    className="w-40"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Ubicación contiene</Label>
+                  <Input
+                    value={reportFilterLoc}
+                    onChange={(e) => setReportFilterLoc(e.target.value)}
+                    placeholder="Opcional"
+                    className="w-40"
+                  />
+                </div>
+                <Button type="button" onClick={() => void loadReport()} disabled={loadingReport}>
+                  {loadingReport ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileSearch className="mr-2 h-4 w-4" />}
+                  Buscar
+                </Button>
+              </div>
+
+              {loadingReport ? (
+                <div className="flex justify-center py-12">
+                  <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <div className="rounded-md border overflow-x-auto max-h-[60vh] overflow-y-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Fecha inv.</TableHead>
+                        <TableHead>Referencia</TableHead>
+                        <TableHead>Talla</TableHead>
+                        <TableHead>Ubicación</TableHead>
+                        <TableHead className="text-right">Esperada (al guardar)</TableHead>
+                        <TableHead className="text-right">Físico</TableHead>
+                        <TableHead className="whitespace-nowrap">Registrado</TableHead>
+                        <TableHead>Usuario</TableHead>
+                        <TableHead>Vs esperada</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {reportRows.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                            Pulse Buscar para cargar registros (por defecto últimos 30 días).
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        reportRows.map((r) => {
+                          const { status, label } = getCyclicCountDiff(r.expectedQtyAtSave, r.countedQty);
+                          const variant =
+                            status === 'cuadrado'
+                              ? 'success'
+                              : status === 'pending'
+                                ? 'secondary'
+                                : status === 'faltante'
+                                  ? 'destructive'
+                                  : 'warning';
+                          return (
+                            <TableRow key={r.id}>
+                              <TableCell className="font-mono text-xs whitespace-nowrap">{r.inventoryDate}</TableCell>
+                              <TableCell className="font-mono text-sm">{r.reference}</TableCell>
+                              <TableCell className="text-sm text-muted-foreground">{r.size || '—'}</TableCell>
+                              <TableCell className="text-sm text-muted-foreground">{r.location || '—'}</TableCell>
+                              <TableCell className="text-right">{r.expectedQtyAtSave}</TableCell>
+                              <TableCell className="text-right font-medium">{r.countedQty}</TableCell>
+                              <TableCell className="text-xs whitespace-nowrap">{formatCountedAt(r.countedAt)}</TableCell>
+                              <TableCell className="text-xs max-w-[140px] truncate" title={r.countedByName || r.countedBy}>
+                                {r.countedByName || r.countedBy || '—'}
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant={variant} className="whitespace-nowrap">
+                                  {label}
+                                </Badge>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+              {reportRows.length > 0 ? (
+                <p className="text-xs text-muted-foreground">Mostrando hasta {reportRows.length} registros (límite de consulta).</p>
+              ) : null}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         {canAdmin ? (
-          <TabsContent value="nuevo" className="space-y-4 mt-4">
+          <TabsContent value="subir" className="space-y-4 mt-4">
             <Card>
               <CardHeader>
-                <CardTitle>Crear conteo e importar plantilla</CardTitle>
+                <CardTitle>Subir inventario del día</CardTitle>
                 <CardDescription>
-                  Excel: columnas reconocidas (cualquier orden): <strong>Referencia</strong>, <strong>Talla</strong> (se
-                  guarda; en pantalla de conteo v1 solo ref / esperada / ubicación), <strong>Ubicación</strong> (puede
-                  vacío), <strong>Cantidad esperada</strong> (también: Esperada, Stock, Inventario, Existencia).
+                  Indique la fecha a la que corresponde el archivo (normalmente hoy). El Excel reemplaza las líneas de inventario
+                  esperado de esa fecha. Los conteos registrados no se eliminan: se guardan en historial y, si la referencia/talla/ubicación
+                  coincide tras la importación, se muestran de nuevo en la grilla de conteo.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4 max-w-xl">
                 <div className="space-y-2">
-                  <Label>Nombre del conteo</Label>
-                  <Input value={newRunName} onChange={(e) => setNewRunName(e.target.value)} placeholder="Ej: Cíclico bodega principal 12/05/2026" />
+                  <Label htmlFor="inv-date-upload">Fecha del inventario</Label>
+                  <Input
+                    id="inv-date-upload"
+                    type="date"
+                    value={inventoryDate}
+                    onChange={(e) => setInventoryDate(e.target.value)}
+                    className="w-44"
+                  />
                 </div>
-                <div className="space-y-2">
-                  <Label>Bodega / contexto (opcional)</Label>
-                  <Input value={newRunWarehouse} onChange={(e) => setNewRunWarehouse(e.target.value)} placeholder="Ej: Principal" />
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" asChild disabled={importing}>
+                    <label className="cursor-pointer">
+                      <Upload className="mr-2 h-4 w-4 inline" />
+                      {importing ? 'Importando…' : 'Elegir archivo Excel'}
+                      <input type="file" accept=".xlsx,.xls" className="hidden" onChange={(ev) => void handleImportFile(ev)} />
+                    </label>
+                  </Button>
                 </div>
-                <Button onClick={() => void handleCreateRun()} disabled={creatingRun}>
-                  {creatingRun ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  Crear conteo vacío
-                </Button>
-                <div className="space-y-2 pt-4 border-t">
-                  <Label>Importar Excel al conteo seleccionado arriba (o al recién creado)</Label>
-                  <div className="flex items-center gap-2">
-                    <Button variant="outline" asChild disabled={importing || (!selectedRunId && !newRunIdForImport)}>
-                      <label className="cursor-pointer">
-                        <Upload className="mr-2 h-4 w-4 inline" />
-                        {importing ? 'Importando…' : 'Elegir archivo'}
-                        <input type="file" accept=".xlsx,.xls" className="hidden" onChange={(ev) => void handleImportFile(ev)} />
-                      </label>
-                    </Button>
-                    {(newRunIdForImport || selectedRunId) && (
-                      <span className="text-xs text-muted-foreground font-mono">Run: {newRunIdForImport || selectedRunId}</span>
-                    )}
-                  </div>
-                </div>
-                <Button variant="destructive" size="sm" onClick={() => void handleCloseRun()} disabled={!selectedRunId}>
-                  Cerrar conteo seleccionado
-                </Button>
+                <p className="text-xs text-muted-foreground">
+                  Columnas Excel: <strong>Referencia</strong>, <strong>Talla</strong>, <strong>Ubicación</strong>,{' '}
+                  <strong>Cantidad esperada</strong> (también: Esperada, Stock, Inventario, Existencia). Use la pestaña Reporte de
+                  conteos para auditar todos los guardados.
+                </p>
               </CardContent>
             </Card>
           </TabsContent>
@@ -463,9 +621,8 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
 
 const CountInput: React.FC<{
   line: CyclicInventoryLine;
-  disabled: boolean;
   onSave: (value: string) => void;
-}> = ({ line, disabled, onSave }) => {
+}> = ({ line, onSave }) => {
   const [val, setVal] = useState(
     line.countedQty !== null && line.countedQty !== undefined ? String(line.countedQty) : ''
   );
@@ -477,7 +634,6 @@ const CountInput: React.FC<{
       <Input
         className="h-8 w-24"
         inputMode="numeric"
-        disabled={disabled}
         value={val}
         onChange={(e) => setVal(e.target.value)}
         onBlur={() => {
@@ -486,7 +642,7 @@ const CountInput: React.FC<{
           onSave(val);
         }}
       />
-      <Button type="button" size="sm" variant="secondary" className="h-8 px-2" disabled={disabled} onClick={() => onSave(val)}>
+      <Button type="button" size="sm" variant="secondary" className="h-8 px-2" onClick={() => onSave(val)}>
         OK
       </Button>
     </div>
