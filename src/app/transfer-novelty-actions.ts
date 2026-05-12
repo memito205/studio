@@ -5,6 +5,50 @@ import { firestore } from '@/services/firebase';
 import type { TransferNovelty } from '@/types';
 import { createActivityLog } from './actions';
 
+/** Serializa fechas de Firestore a ISO para el cliente (evita `Invalid time value` en date-fns). */
+function firestoreDateToIso(v: unknown): string | null {
+  if (v == null) return null;
+  if (v instanceof Date) {
+    return Number.isNaN(v.getTime()) ? null : v.toISOString();
+  }
+  if (typeof v === 'object' && v !== null && typeof (v as { toDate?: () => Date }).toDate === 'function') {
+    try {
+      const d = (v as { toDate: () => Date }).toDate();
+      return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    } catch {
+      return null;
+    }
+  }
+  const sec =
+    typeof v === 'object' && v !== null
+      ? (v as { seconds?: number; _seconds?: number }).seconds ??
+        (v as { _seconds?: number })._seconds
+      : undefined;
+  if (typeof sec === 'number' && Number.isFinite(sec)) {
+    const d = new Date(sec * 1000);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  if (typeof v === 'string' || typeof v === 'number') {
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  return null;
+}
+
+function mapNoveltyDoc(docSnap: { id: string; data: () => Record<string, unknown> }): TransferNovelty {
+  const raw = docSnap.data();
+  const createdAt = firestoreDateToIso(raw.createdAt);
+  const fechaEntregaTienda = firestoreDateToIso(raw.fechaEntregaTienda);
+  const fechaReporteTienda = firestoreDateToIso(raw.fechaReporteTienda);
+  return {
+    ...(raw as unknown as TransferNovelty),
+    id: docSnap.id,
+    createdAt: createdAt ?? '',
+    fechaEntregaTienda: fechaEntregaTienda ?? '',
+    fechaReporteTienda: fechaReporteTienda ?? '',
+  };
+}
+
 export async function isEntryOnTime(deliveryDate: any, reportDate: any) {
   const d1 = new Date(deliveryDate);
   const d2 = new Date(reportDate);
@@ -51,10 +95,7 @@ export async function getTransferNovelties() {
   try {
     const q = query(collection(firestore, "transferNovelties"), orderBy("createdAt", "desc"));
     const snapshot = await getDocs(q);
-    const data = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-    })) as TransferNovelty[];
+    const data = snapshot.docs.map((d) => mapNoveltyDoc(d));
     return { data };
   } catch (error: any) {
     console.error("Error fetching transfer novelties:", error);
@@ -82,10 +123,7 @@ export async function getTransferNoveltiesByDateRange(startDate: Date, endDate: 
       orderBy("createdAt", "desc")
     );
     const snapshot = await getDocs(q);
-    const data = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-    })) as TransferNovelty[];
+    const data = snapshot.docs.map((d) => mapNoveltyDoc(d));
     return { data };
   } catch (error: any) {
     console.error("Error fetching transfer novelties by range:", error);

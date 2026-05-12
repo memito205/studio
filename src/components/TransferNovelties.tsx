@@ -48,6 +48,42 @@ import {
     Cell
 } from 'recharts';
 
+function toValidDate(input: unknown): Date | null {
+    if (input == null || input === '') return null;
+    if (input instanceof Date) {
+        return Number.isNaN(input.getTime()) ? null : input;
+    }
+    if (typeof input === 'object' && input !== null && typeof (input as { toDate?: () => Date }).toDate === 'function') {
+        try {
+            const d = (input as { toDate: () => Date }).toDate();
+            return Number.isNaN(d.getTime()) ? null : d;
+        } catch {
+            return null;
+        }
+    }
+    const sec =
+        typeof input === 'object' && input !== null
+            ? (input as { seconds?: number; _seconds?: number }).seconds ??
+              (input as { _seconds?: number })._seconds
+            : undefined;
+    if (typeof sec === 'number' && Number.isFinite(sec)) {
+        const d = new Date(sec * 1000);
+        return Number.isNaN(d.getTime()) ? null : d;
+    }
+    const d = new Date(input as string | number);
+    return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatDateSafe(input: unknown, fmt: string, fallback = '—'): string {
+    const d = toValidDate(input);
+    if (!d) return fallback;
+    try {
+        return format(d, fmt, { locale: es });
+    } catch {
+        return fallback;
+    }
+}
+
 interface TransferNoveltiesProps {
     onBack: () => void;
 }
@@ -145,13 +181,15 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
     // Dashboard Data Calculations
     const stats = useMemo(() => {
         const total = novelties.length;
-        const enTiempoCount = novelties.filter(n => n.enTiempo).length;
+        const enTiempoCount = novelties.filter((n) => !!n.enTiempo).length;
         const onTimePercentage = total > 0 ? (enTiempoCount / total) * 100 : 0;
 
         // Tendencias por fecha (últimos 15 registros para demo)
-        const trends = novelties.reduce((acc: any[], curr) => {
-            const date = format(new Date(curr.createdAt), 'dd MMM');
-            const existing = acc.find(a => a.name === date);
+        const trends = novelties.reduce((acc: { name: string; value: number }[], curr) => {
+            const d = toValidDate(curr.createdAt);
+            if (!d) return acc;
+            const date = format(d, 'dd MMM', { locale: es });
+            const existing = acc.find((a) => a.name === date);
             if (existing) existing.value++;
             else acc.push({ name: date, value: 1 });
             return acc;
@@ -357,7 +395,7 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                                     {novelties.map((n) => (
                                         <TableRow key={n.id}>
                                             <TableCell className="text-xs">
-                                                {format(new Date(n.fechaReporteTienda), 'dd/MM/yyyy')}
+                                                {formatDateSafe(n.fechaReporteTienda, 'dd/MM/yyyy')}
                                             </TableCell>
                                             <TableCell>
                                                 <div className="font-medium">{n.numeroTF}</div>

@@ -174,7 +174,11 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
              const combined = [...globalPulses, ...userPulses];
              const unique = combined.filter((p, index, self) => 
                 index === self.findIndex((t) => t.id === p.id)
-             ).sort((a,b) => a.startTime.getTime() - b.startTime.getTime());
+             ).sort((a, b) => {
+                const ta = a.startTime instanceof Date ? a.startTime.getTime() : toStartMs(a as unknown as Record<string, unknown>);
+                const tb = b.startTime instanceof Date ? b.startTime.getTime() : toStartMs(b as unknown as Record<string, unknown>);
+                return (Number.isFinite(ta) ? ta : 0) - (Number.isFinite(tb) ? tb : 0);
+             });
              
              setAllPulsesDay(unique);
         } catch (error) {
