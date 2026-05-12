@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildForecastRunPayload } from './buildForecastRunPayload';
+import { parseForecastRunPayload } from './validateForecastRunPayload';
 import { FORECAST_SNAPSHOT_SCHEMA_VERSION } from './types';
 import type { DistributionResult, ItemForecast } from '@/types';
 
@@ -130,5 +131,32 @@ describe('buildForecastRunPayload', () => {
       itemForecasts: [item],
     });
     expect(payload.forecastByItem[0].lines[0].adjustedValue).toBeNull();
+  });
+
+  it('el resultado de build pasa validación Zod (roundtrip)', () => {
+    const payload = buildForecastRunPayload({
+      generationDate: baseGeneration,
+      itemForecasts: [minimalItemForecast()],
+      distributionResults: [
+        {
+          bodega: 'B1',
+          itemCode: '9619',
+          currentBodegaInventory: 100,
+          forecastedDemandForCoverage: 400,
+          targetInventoryForCoverage: 400,
+          currentInventoryCoverageDays: 2.5,
+          quantityToSend: 300,
+          notes: 'Test',
+          calculationTrace: {
+            coverageDays: 15,
+            effectiveBodegaDailyForecast_AjsAdjusted: 26.67,
+            calculationMethod: 'Participación Histórica',
+            bodegaShare: 0.12,
+            bodegaAjsPercentage: 5,
+          },
+        },
+      ],
+    });
+    expect(() => parseForecastRunPayload(payload)).not.toThrow();
   });
 });
