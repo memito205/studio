@@ -377,6 +377,8 @@ export interface TransferNovelty {
     codigoUnidad: string;
     fechaEntregaTienda: Date | string;
     fechaReporteTienda: Date | string;
+    /** Día operativo de la transferencia (para alinear con totales TF diarios). Opcional en registros antiguos. */
+    fechaTf?: Date | string;
     almacen: string;
     justificacion?: string;
     tfLegalizacion?: string;

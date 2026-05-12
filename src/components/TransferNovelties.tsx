@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -30,17 +30,23 @@ import {
     TrendingUp,
     Users,
     Store,
-    PieChart as PieChartIcon
+    PieChart as PieChartIcon,
+    Upload
 } from 'lucide-react';
 import { 
     saveTransferNovelty, 
     getTransferNovelties, 
-    updateTransferNoveltyStatus 
+    updateTransferNoveltyStatus,
+    listTransferDailyTfCounts,
+    upsertTransferDailyTfCounts,
+    applyFechaTfFromMatches,
 } from '@/app/transfer-novelty-actions';
 import { loadOperatorMappings } from '@/app/actions';
 import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType } from '@/types';
-import { format } from 'date-fns';
+import { format, parse, subDays } from 'date-fns';
 import { es } from 'date-fns/locale';
+import * as XLSX from 'xlsx';
+import { findCaseInsensitiveKey, parseFlexibleDate, parseRobustNumber } from '@/lib/parsingUtils';
 import { 
     BarChart, 
     Bar, 
@@ -93,6 +99,146 @@ function formatDateSafe(input: unknown, fmt: string, fallback = '—'): string {
     }
 }
 
+/** Clave calendario AAAA-MM-DD: respeta cadenas ya guardadas y evita desfases por UTC en ISO. */
+const ISO_YMD = /^\d{4}-\d{2}-\d{2}$/;
+
+function calendarKeyFromNoveltyField(value: unknown): string | null {
+    if (value == null || value === '') return null;
+    if (typeof value === 'string') {
+        const s = value.trim();
+        if (ISO_YMD.test(s)) return s;
+    }
+    const d = toValidDate(value);
+    if (!d) return null;
+    return format(d, 'yyyy-MM-dd');
+}
+
+/** Día en que la tienda reportó la novedad (no usa `createdAt` si ya hay fecha de reporte). */
+function noveltyReportDateKey(n: TransferNovelty): string | null {
+    const k = calendarKeyFromNoveltyField(n.fechaReporteTienda);
+    if (k) return k;
+    return calendarKeyFromNoveltyField(n.createdAt);
+}
+
+function noveltyTfDateKey(n: TransferNovelty): string | null {
+    return calendarKeyFromNoveltyField(n.fechaTf);
+}
+
+/** Para cruzar con totales TF diarios: día operativo de la TF; si falta, día de reporte de novedad. */
+function noveltyOperationalDayKey(n: TransferNovelty): string | null {
+    return noveltyTfDateKey(n) ?? noveltyReportDateKey(n);
+}
+
+function parseTfDailyExcelRows(json: unknown[]): { dateKey: string; totalTfs: number }[] {
+    const merged = new Map<string, number>();
+    for (const raw of json) {
+        if (!raw || typeof raw !== 'object') continue;
+        const row = raw as Record<string, unknown>;
+        const dateCol =
+            findCaseInsensitiveKey(row, 'fecha', 'date', 'dia', 'día', 'fecha_dia', 'fecha dia') ||
+            findCaseInsensitiveKey(row, 'Fecha');
+        const totalCol =
+            findCaseInsensitiveKey(
+                row,
+                'total_tf',
+                'total_tfs',
+                'total_tf_dia',
+                'total',
+                'tfs',
+                'tf',
+                'cantidad_tf',
+                'transferencias',
+                'num_tf',
+                'cuenta_tf',
+                'tf_del_dia'
+            ) || findCaseInsensitiveKey(row, 'Total');
+        if (!dateCol || !totalCol) continue;
+        const dateRaw = row[dateCol];
+        const parsedDate =
+            dateRaw instanceof Date && !Number.isNaN(dateRaw.getTime())
+                ? dateRaw
+                : parseFlexibleDate(String(dateRaw ?? ''));
+        if (!parsedDate || Number.isNaN(parsedDate.getTime())) continue;
+        const dateKey = format(parsedDate, 'yyyy-MM-dd');
+        const numRaw = row[totalCol];
+        const totalTfs = Math.max(
+            0,
+            Math.floor(parseRobustNumber(String(numRaw ?? '')) || Number(numRaw) || 0)
+        );
+        merged.set(dateKey, totalTfs);
+    }
+    return [...merged.entries()].map(([dateKey, totalTfs]) => ({ dateKey, totalTfs }));
+}
+
+/** Excel: columnas TF + fecha (opcional almacén para desambiguar). */
+function parseTfFechaMapRows(json: unknown[]): { numeroTF: string; fechaKey: string; almacen?: string }[] {
+    const out: { numeroTF: string; fechaKey: string; almacen?: string }[] = [];
+    for (const raw of json) {
+        if (!raw || typeof raw !== 'object') continue;
+        const row = raw as Record<string, unknown>;
+        const tfCol =
+            findCaseInsensitiveKey(
+                row,
+                'numero_tf',
+                'numerotf',
+                'numero tf',
+                'n_tf',
+                'n tf',
+                'tf',
+                'transfer',
+                'remision',
+                'remisión'
+            ) || findCaseInsensitiveKey(row, 'TF');
+        const fechaCol =
+            findCaseInsensitiveKey(row, 'fecha_tf', 'fecha tf', 'fecha_transfer', 'fecha', 'date', 'dia', 'día') ||
+            findCaseInsensitiveKey(row, 'Fecha');
+        const almCol = findCaseInsensitiveKey(row, 'almacen', 'tienda', 'destino', 'bodega', 'sucursal');
+        if (!tfCol || !fechaCol) continue;
+        const tfVal = String(row[tfCol] ?? '').trim();
+        if (!tfVal) continue;
+        const dateRaw = row[fechaCol];
+        const parsedDate =
+            dateRaw instanceof Date && !Number.isNaN(dateRaw.getTime())
+                ? dateRaw
+                : parseFlexibleDate(String(dateRaw ?? ''));
+        if (!parsedDate || Number.isNaN(parsedDate.getTime())) continue;
+        const fechaKey = format(parsedDate, 'yyyy-MM-dd');
+        const almRaw = almCol ? String(row[almCol] ?? '').trim() : '';
+        out.push({ numeroTF: tfVal, fechaKey, ...(almRaw ? { almacen: almRaw } : {}) });
+    }
+    return out;
+}
+
+type EffDailyPoint = {
+    dateKey: string;
+    name: string;
+    efectividad: number;
+    totalTfs: number;
+    novedades: number;
+};
+
+function TfEffectDailyTooltip({
+    active,
+    payload,
+}: {
+    active?: boolean;
+    payload?: { payload: EffDailyPoint }[];
+}) {
+    if (!active || !payload?.[0]) return null;
+    const p = payload[0].payload;
+    return (
+        <div className="rounded-md border bg-background px-3 py-2 text-xs shadow-md">
+            <p className="font-medium">{p.dateKey}</p>
+            <p>Total TF del día: {p.totalTfs}</p>
+            <p>Novedades (día operativo): {p.novedades}</p>
+            <p className="text-muted-foreground text-[11px] mt-1">
+                Cuenta por fecha TF si está informada; si no, por fecha de reporte.
+            </p>
+            <p className="mt-1 font-semibold">Efectividad: {p.efectividad}%</p>
+        </div>
+    );
+}
+
 interface TransferNoveltiesProps {
     onBack: () => void;
 }
@@ -110,7 +256,13 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
         tfLegalizacion: '',
         comentariosAdmin: '',
         estado: 'Reportado' as TransferNoveltyStatus,
+        fechaReporteTienda: '',
+        fechaTf: '',
     });
+    const [tfDailyStats, setTfDailyStats] = useState<{ dateKey: string; totalTfs: number }[]>([]);
+    const [importingTf, setImportingTf] = useState(false);
+    const [importingTfMap, setImportingTfMap] = useState(false);
+    const [overwriteTfMap, setOverwriteTfMap] = useState(false);
 
     // Form state
     const [formData, setFormData] = useState({
@@ -121,6 +273,7 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
         codigoUnidad: '',
         fechaEntregaTienda: '',
         fechaReporteTienda: format(new Date(), 'yyyy-MM-dd'),
+        fechaTf: format(new Date(), 'yyyy-MM-dd'),
         almacen: '',
         justificacion: ''
     });
@@ -146,6 +299,22 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
         }
     };
 
+    const loadTfDaily = useCallback(async () => {
+        const to = format(new Date(), 'yyyy-MM-dd');
+        const from = format(subDays(new Date(), 500), 'yyyy-MM-dd');
+        const res = await listTransferDailyTfCounts(from, to);
+        if (res.success && res.data) {
+            setTfDailyStats(res.data);
+        } else if (res.error) {
+            console.warn('[TransferNovelties] TF diarios:', res.error);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (activeTab !== 'dashboard') return;
+        void loadTfDaily();
+    }, [activeTab, loadTfDaily]);
+
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
         const { name, value } = e.target;
         setFormData(prev => ({ ...prev, [name]: value }));
@@ -165,8 +334,9 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                 ...formData,
                 packerName: operators[formData.packerId] || 'Desconocido',
                 estado: 'Reportado',
-                fechaEntregaTienda: new Date(formData.fechaEntregaTienda),
-                fechaReporteTienda: new Date(formData.fechaReporteTienda),
+                fechaEntregaTienda: parse(formData.fechaEntregaTienda, 'yyyy-MM-dd', new Date()),
+                fechaReporteTienda: parse(formData.fechaReporteTienda, 'yyyy-MM-dd', new Date()),
+                fechaTf: parse(formData.fechaTf, 'yyyy-MM-dd', new Date()),
                 enTiempo: true // Will be recalculated by server
             });
 
@@ -180,6 +350,7 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                     codigoUnidad: '',
                     fechaEntregaTienda: '',
                     fechaReporteTienda: format(new Date(), 'yyyy-MM-dd'),
+                    fechaTf: format(new Date(), 'yyyy-MM-dd'),
                     almacen: '',
                     justificacion: ''
                 });
@@ -201,18 +372,108 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
         const enTiempoCount = novelties.filter((n) => !!n.enTiempo).length;
         const onTimePercentage = total > 0 ? (enTiempoCount / total) * 100 : 0;
 
-        // Tendencias por fecha (últimos 15 registros para demo)
-        const trends = novelties.reduce((acc: { name: string; value: number }[], curr) => {
-            const d = toValidDate(curr.createdAt);
-            if (!d) return acc;
-            const date = format(d, 'dd MMM', { locale: es });
-            const existing = acc.find((a) => a.name === date);
-            if (existing) existing.value++;
-            else acc.push({ name: date, value: 1 });
-            return acc;
-        }, []).slice(-10);
+        const novByDayReport: Record<string, number> = {};
+        const novByDayTf: Record<string, number> = {};
+        const novByOperationalDay: Record<string, number> = {};
+        for (const n of novelties) {
+            const kr = noveltyReportDateKey(n);
+            if (kr) novByDayReport[kr] = (novByDayReport[kr] || 0) + 1;
+            const kt = noveltyTfDateKey(n);
+            if (kt) novByDayTf[kt] = (novByDayTf[kt] || 0) + 1;
+            const ko = noveltyOperationalDayKey(n);
+            if (ko) novByOperationalDay[ko] = (novByOperationalDay[ko] || 0) + 1;
+        }
 
-        // Top Empacadores
+        const unionDaily = new Set([...Object.keys(novByDayReport), ...Object.keys(novByDayTf)]);
+        const trendsDual = [...unionDaily]
+            .sort((a, b) => a.localeCompare(b))
+            .slice(-21)
+            .map((dateKey) => ({
+                name: format(parse(dateKey, 'yyyy-MM-dd', new Date()), 'dd MMM', { locale: es }),
+                dateKey,
+                porFechaReporte: novByDayReport[dateKey] ?? 0,
+                porFechaTf: novByDayTf[dateKey] ?? 0,
+            }));
+
+        const novByMonthReport: Record<string, number> = {};
+        for (const n of novelties) {
+            const k = noveltyReportDateKey(n);
+            if (!k) continue;
+            const mk = k.slice(0, 7);
+            novByMonthReport[mk] = (novByMonthReport[mk] || 0) + 1;
+        }
+        const novByMonthTf: Record<string, number> = {};
+        for (const n of novelties) {
+            const k = noveltyTfDateKey(n);
+            if (!k) continue;
+            const mk = k.slice(0, 7);
+            novByMonthTf[mk] = (novByMonthTf[mk] || 0) + 1;
+        }
+        const monthKeys = new Set([...Object.keys(novByMonthReport), ...Object.keys(novByMonthTf)]);
+        const monthlyTrendsDual = [...monthKeys]
+            .sort((a, b) => a.localeCompare(b))
+            .slice(-18)
+            .map((key) => ({
+                name: format(parse(`${key}-01`, 'yyyy-MM-dd', new Date()), 'MMM yyyy', { locale: es }),
+                key,
+                porReporte: novByMonthReport[key] ?? 0,
+                porTf: novByMonthTf[key] ?? 0,
+            }));
+
+        const tfMap = Object.fromEntries(tfDailyStats.map((x) => [x.dateKey, x.totalTfs]));
+        const dailyEffectivenessRaw: {
+            dateKey: string;
+            name: string;
+            efectividad: number;
+            totalTfs: number;
+            novedades: number;
+        }[] = [];
+        for (const dateKey of Object.keys(tfMap).sort()) {
+            const tot = tfMap[dateKey];
+            if (!tot || tot <= 0) continue;
+            const nov = novByOperationalDay[dateKey] || 0;
+            const eff = ((tot - nov) / tot) * 100;
+            dailyEffectivenessRaw.push({
+                dateKey,
+                name: format(parse(dateKey, 'yyyy-MM-dd', new Date()), 'dd/MM', { locale: es }),
+                efectividad: Math.max(0, Math.min(100, Math.round(eff * 10) / 10)),
+                totalTfs: tot,
+                novedades: nov,
+            });
+        }
+        const dailyEffectivenessChart = dailyEffectivenessRaw.slice(-45);
+
+        const monthTfAgg: Record<string, { tf: number; nov: number }> = {};
+        for (const row of dailyEffectivenessRaw) {
+            const mk = row.dateKey.slice(0, 7);
+            if (!monthTfAgg[mk]) monthTfAgg[mk] = { tf: 0, nov: 0 };
+            monthTfAgg[mk].tf += row.totalTfs;
+            monthTfAgg[mk].nov += row.novedades;
+        }
+        const monthEffDailyAvg: Record<string, { sum: number; n: number }> = {};
+        for (const row of dailyEffectivenessRaw) {
+            const mk = row.dateKey.slice(0, 7);
+            if (!monthEffDailyAvg[mk]) monthEffDailyAvg[mk] = { sum: 0, n: 0 };
+            monthEffDailyAvg[mk].sum += row.efectividad;
+            monthEffDailyAvg[mk].n += 1;
+        }
+        const monthlyEffectiveness = Object.entries(monthTfAgg)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .slice(-18)
+            .map(([key, v]) => {
+                const effAgg = v.tf > 0 ? ((v.tf - v.nov) / v.tf) * 100 : 0;
+                const avg = monthEffDailyAvg[key];
+                const promedioDias = avg && avg.n > 0 ? Math.round((avg.sum / avg.n) * 10) / 10 : 0;
+                return {
+                    name: format(parse(`${key}-01`, 'yyyy-MM-dd', new Date()), 'MMM yyyy', { locale: es }),
+                    efectividadAgregada: Math.max(0, Math.min(100, Math.round(effAgg * 10) / 10)),
+                    efectividadPromedioDias: promedioDias,
+                    totalTfs: v.tf,
+                    novedades: v.nov,
+                    diasConTf: avg?.n ?? 0,
+                };
+            });
+
         const packerData = novelties.reduce((acc: Record<string, number>, curr) => {
             const name = curr.packerName || 'Otro';
             acc[name] = (acc[name] || 0) + 1;
@@ -220,17 +481,25 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
         }, {});
         const packerChart = Object.entries(packerData)
             .map(([name, count]) => ({ name, count }))
-            .sort((a,b) => b.count - a.count)
+            .sort((a, b) => b.count - a.count)
             .slice(0, 5);
 
-        // Mix Novedades
         const mixData = [
-            { name: 'Sobrantes', value: novelties.filter(n => n.tipo === 'Sobrante').length, color: '#10b981' },
-            { name: 'Faltantes', value: novelties.filter(n => n.tipo === 'Faltante').length, color: '#ef4444' }
+            { name: 'Sobrantes', value: novelties.filter((n) => n.tipo === 'Sobrante').length, color: '#10b981' },
+            { name: 'Faltantes', value: novelties.filter((n) => n.tipo === 'Faltante').length, color: '#ef4444' },
         ];
 
-        return { total, onTimePercentage, trends, packerChart, mixData };
-    }, [novelties]);
+        return {
+            total,
+            onTimePercentage,
+            trendsDual,
+            monthlyTrendsDual,
+            dailyEffectivenessChart,
+            monthlyEffectiveness,
+            packerChart,
+            mixData,
+        };
+    }, [novelties, tfDailyStats]);
 
     const openManageDialog = (n: TransferNovelty) => {
         setSelectedNovelty(n);
@@ -238,6 +507,8 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
             tfLegalizacion: (n.tfLegalizacion || '').trim(),
             comentariosAdmin: (n.comentariosAdmin || '').trim(),
             estado: n.estado || 'Reportado',
+            fechaReporteTienda: calendarKeyFromNoveltyField(n.fechaReporteTienda) || '',
+            fechaTf: calendarKeyFromNoveltyField(n.fechaTf) || '',
         });
         setManageOpen(true);
     };
@@ -254,12 +525,22 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
             });
             return;
         }
+        if (!manageForm.fechaReporteTienda.trim()) {
+            toast({
+                variant: 'destructive',
+                title: 'Fecha de reporte',
+                description: 'Indique la fecha de reporte de la novedad en tienda.',
+            });
+            return;
+        }
         setIsLoading(true);
         try {
             const res = await updateTransferNoveltyStatus(selectedNovelty.id, {
                 tfLegalizacion: tf,
                 comentariosAdmin: manageForm.comentariosAdmin.trim(),
                 estado: manageForm.estado,
+                fechaReporteTienda: manageForm.fechaReporteTienda.trim(),
+                fechaTf: manageForm.fechaTf.trim() ? manageForm.fechaTf.trim() : null,
             });
             if (!res.success) {
                 throw new Error('error' in res && res.error ? String(res.error) : 'No se pudo guardar');
@@ -283,6 +564,78 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
         selectedNovelty?.tipo === 'Sobrante'
             ? 'Sobrante: indique el TF con el que se envió o legalizó el exceso (la transferencia donde “viajó” el sobrante).'
             : 'Faltante: indique el TF con el que la tienda carga o reporta la mercancia faltante / reposición.';
+
+    const handleTfDailyFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setImportingTf(true);
+        try {
+            const buf = await file.arrayBuffer();
+            const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const json = XLSX.utils.sheet_to_json(sheet) as unknown[];
+            const rows = parseTfDailyExcelRows(json);
+            if (rows.length === 0) {
+                throw new Error(
+                    'No se detectaron filas. Incluya columnas reconocibles: Fecha (o Fecha día) y Total TF / Total / TFs / Transferencias.'
+                );
+            }
+            const res = await upsertTransferDailyTfCounts(rows);
+            if (!res.success) {
+                throw new Error(res.error || 'Error al guardar');
+            }
+            toast({
+                title: 'Totales TF importados',
+                description: `Se guardaron ${res.upserted ?? rows.length} días. Efectividad = (TF del día − novedades ese día) / TF del día.`,
+            });
+            await loadTfDaily();
+        } catch (err: unknown) {
+            toast({
+                variant: 'destructive',
+                title: 'Importación TF diarios',
+                description: err instanceof Error ? err.message : 'Error',
+            });
+        } finally {
+            setImportingTf(false);
+            if (e.target) e.target.value = '';
+        }
+    };
+
+    const handleTfFechaMapFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setImportingTfMap(true);
+        try {
+            const buf = await file.arrayBuffer();
+            const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const json = XLSX.utils.sheet_to_json(sheet) as unknown[];
+            const rows = parseTfFechaMapRows(json);
+            if (rows.length === 0) {
+                throw new Error(
+                    'No se detectaron filas. Use columnas: TF (numero_tf, tf, …) y Fecha / fecha_tf. Opcional: almacén/tienda para desambiguar.'
+                );
+            }
+            const res = await applyFechaTfFromMatches(rows, { overwriteExisting: overwriteTfMap });
+            if (!res.success) {
+                throw new Error(res.error || 'Error al aplicar fechas');
+            }
+            toast({
+                title: 'Fechas TF aplicadas',
+                description: `Se actualizaron ${res.updated ?? 0} novedades. Las gráficas por fecha TF y la efectividad usarán esos días.`,
+            });
+            await loadData();
+        } catch (err: unknown) {
+            toast({
+                variant: 'destructive',
+                title: 'Importación TF → fecha',
+                description: err instanceof Error ? err.message : 'Error',
+            });
+        } finally {
+            setImportingTfMap(false);
+            if (e.target) e.target.value = '';
+        }
+    };
 
     return (
         <div className="space-y-6">
@@ -393,7 +746,7 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                                             />
                                         </div>
                                     </div>
-                                    <div className="grid grid-cols-2 gap-4">
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                                         <div className="grid gap-2">
                                             <Label htmlFor="fechaEntregaTienda">Fecha Entrega Tienda</Label>
                                             <Input 
@@ -406,7 +759,7 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                                             />
                                         </div>
                                         <div className="grid gap-2">
-                                            <Label htmlFor="fechaReporteTienda">Fecha Reporte Novedad</Label>
+                                            <Label htmlFor="fechaReporteTienda">Fecha reporte novedad</Label>
                                             <Input 
                                                 id="fechaReporteTienda" 
                                                 name="fechaReporteTienda" 
@@ -415,6 +768,21 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                                                 onChange={handleInputChange}
                                                 required
                                             />
+                                        </div>
+                                        <div className="grid gap-2">
+                                            <Label htmlFor="fechaTf">Fecha de la TF (operativa)</Label>
+                                            <Input
+                                                id="fechaTf"
+                                                name="fechaTf"
+                                                type="date"
+                                                value={formData.fechaTf}
+                                                onChange={handleInputChange}
+                                                required
+                                            />
+                                            <p className="text-xs text-muted-foreground">
+                                                Día en que se realizó o aplica la transferencia; alinea tendencias y efectividad con
+                                                el archivo de TF diarios. Si coincide con el reporte, use la misma fecha.
+                                            </p>
                                         </div>
                                     </div>
                                     <div className="grid gap-2">
@@ -455,7 +823,8 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                                 <TableHeader>
                                     <TableRow>
                                         <TableHead>TF gestión</TableHead>
-                                        <TableHead>Fecha Reporte</TableHead>
+                                        <TableHead>Fecha reporte</TableHead>
+                                        <TableHead>Fecha TF</TableHead>
                                         <TableHead>TF / Almacén</TableHead>
                                         <TableHead>Tipo / Cant</TableHead>
                                         <TableHead>Empacador</TableHead>
@@ -472,6 +841,9 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                                             </TableCell>
                                             <TableCell className="text-xs">
                                                 {formatDateSafe(n.fechaReporteTienda, 'dd/MM/yyyy')}
+                                            </TableCell>
+                                            <TableCell className="text-xs">
+                                                {formatDateSafe(n.fechaTf, 'dd/MM/yyyy')}
                                             </TableCell>
                                             <TableCell>
                                                 <div className="font-medium">{n.numeroTF}</div>
@@ -503,7 +875,7 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                                     ))}
                                     {novelties.length === 0 && (
                                         <TableRow>
-                                            <TableCell colSpan={8} className="text-center py-10 text-muted-foreground">
+                                            <TableCell colSpan={9} className="text-center py-10 text-muted-foreground">
                                                 No hay novedades registradas.
                                             </TableCell>
                                         </TableRow>
@@ -548,11 +920,87 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                                     Tipo Predominante <PieChartIcon className="h-4 w-4" />
                                 </CardTitle>
                                 <div className="text-2xl font-bold">
-                                    {stats.mixData[0].value > stats.mixData[1].value ? 'Sobrante' : 'Faltante'}
+                                    {stats.mixData[0].value === stats.mixData[1].value
+                                        ? 'Empate'
+                                        : stats.mixData[0].value > stats.mixData[1].value
+                                          ? 'Sobrante'
+                                          : 'Faltante'}
                                 </div>
                             </CardHeader>
                         </Card>
                     </div>
+
+                    <Card className="mb-6">
+                        <CardHeader>
+                            <CardTitle className="text-base">Datos para efectividad y fechas TF</CardTitle>
+                            <CardDescription>
+                                <strong>Totales TF diarios:</strong> una fila por día (fecha + total TF).{' '}
+                                <strong>Mapeo TF → fecha:</strong> opcional; rellena el campo <em>Fecha de la TF</em> en
+                                novedades existentes según el número de TF (y almacén si lo incluye en el archivo).
+                            </CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-6">
+                            <div className="flex flex-wrap items-center gap-3">
+                                <input
+                                    id="tf-daily-upload"
+                                    type="file"
+                                    accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    className="hidden"
+                                    onChange={(e) => void handleTfDailyFile(e)}
+                                    disabled={importingTf || importingTfMap}
+                                />
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    disabled={importingTf || importingTfMap}
+                                    onClick={() => document.getElementById('tf-daily-upload')?.click()}
+                                    className="inline-flex items-center gap-2"
+                                >
+                                    <Upload className="h-4 w-4" />
+                                    {importingTf ? 'Importando…' : 'Importar Excel de TF diarios'}
+                                </Button>
+                                <span className="text-sm text-muted-foreground">
+                                    {tfDailyStats.length > 0
+                                        ? `${tfDailyStats.length} días con totales TF en Firestore.`
+                                        : 'Sin totales TF; la efectividad aparece tras importar.'}
+                                </span>
+                            </div>
+                            <div className="border-t pt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                                <input
+                                    id="tf-fecha-map-upload"
+                                    type="file"
+                                    accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    className="hidden"
+                                    onChange={(e) => void handleTfFechaMapFile(e)}
+                                    disabled={importingTf || importingTfMap}
+                                />
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    disabled={importingTf || importingTfMap}
+                                    onClick={() => document.getElementById('tf-fecha-map-upload')?.click()}
+                                    className="inline-flex items-center gap-2"
+                                >
+                                    <Upload className="h-4 w-4" />
+                                    {importingTfMap ? 'Aplicando…' : 'Importar mapeo TF → fecha'}
+                                </Button>
+                                <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        className="rounded border border-input"
+                                        checked={overwriteTfMap}
+                                        onChange={(e) => setOverwriteTfMap(e.target.checked)}
+                                    />
+                                    Sobrescribir <span className="font-mono">fechaTf</span> ya guardada
+                                </label>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                                Efectividad diaria/mensual: <span className="font-mono">(TF − novedades) / TF</span> usando el{' '}
+                                <strong>día operativo</strong> (fecha TF si existe; si no, fecha de reporte). Las fechas de
+                                registro se guardan con medianoche local para evitar correr un día en el gráfico.
+                            </p>
+                        </CardContent>
+                    </Card>
 
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <Card>
@@ -599,20 +1047,169 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                             </CardContent>
                         </Card>
 
-                        <Card className="lg:col-span-2">
+                        <Card>
                             <CardHeader>
-                                <CardTitle className="text-base">Tendencia Diaria de Reportes</CardTitle>
+                                <CardTitle className="text-base">Tendencia mensual de novedades</CardTitle>
+                                <CardDescription>
+                                    Barras por mes: según <strong>fecha de reporte</strong> (azul) y según{' '}
+                                    <strong>fecha de la TF</strong> (violeta), cuando está informada.
+                                </CardDescription>
                             </CardHeader>
                             <CardContent className="h-[300px]">
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <LineChart data={stats.trends}>
-                                        <CartesianGrid strokeDasharray="3 3" />
-                                        <XAxis dataKey="name" />
-                                        <YAxis />
-                                        <Tooltip />
-                                        <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
-                                    </LineChart>
-                                </ResponsiveContainer>
+                                {stats.monthlyTrendsDual.length === 0 ? (
+                                    <p className="text-sm text-muted-foreground py-8 text-center">Sin datos de novedades.</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <BarChart data={stats.monthlyTrendsDual}>
+                                            <CartesianGrid strokeDasharray="3 3" />
+                                            <XAxis dataKey="name" interval={0} angle={-25} textAnchor="end" height={56} />
+                                            <YAxis allowDecimals={false} />
+                                            <Tooltip />
+                                            <Legend />
+                                            <Bar dataKey="porReporte" fill="#6366f1" name="Por fecha reporte" radius={[4, 4, 0, 0]} />
+                                            <Bar dataKey="porTf" fill="#8b5cf6" name="Por fecha TF" radius={[4, 4, 0, 0]} />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </CardContent>
+                        </Card>
+
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="text-base">Efectividad diaria (TF)</CardTitle>
+                                <CardDescription>
+                                    Últimos días con total TF importado. Cada punto:{' '}
+                                    <span className="font-mono">(TF − novedades) / TF</span> donde las novedades se cuentan por{' '}
+                                    <strong>día operativo</strong> (fecha TF si existe; si no, fecha de reporte).
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="h-[300px]">
+                                {stats.dailyEffectivenessChart.length === 0 ? (
+                                    <p className="text-sm text-muted-foreground py-8 text-center">
+                                        Importe totales TF por día para comparar con las novedades y ver la curva diaria.
+                                    </p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <LineChart data={stats.dailyEffectivenessChart}>
+                                            <CartesianGrid strokeDasharray="3 3" />
+                                            <XAxis dataKey="name" />
+                                            <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
+                                            <Tooltip content={<TfEffectDailyTooltip />} />
+                                            <Line
+                                                type="monotone"
+                                                dataKey="efectividad"
+                                                name="Efectividad"
+                                                stroke="#0ea5e9"
+                                                strokeWidth={2}
+                                                dot={{ r: 3 }}
+                                            />
+                                        </LineChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </CardContent>
+                        </Card>
+
+                        <Card className="lg:col-span-2">
+                            <CardHeader>
+                                <CardTitle className="text-base">Tendencia diaria de novedades</CardTitle>
+                                <CardDescription>
+                                    Hasta 21 días con actividad: línea <strong>azul</strong> por fecha de reporte en tienda; línea{' '}
+                                    <strong>naranja</strong> por fecha de la TF (solo novedades con ese campo o rellenado por
+                                    importación).
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="h-[300px]">
+                                {stats.trendsDual.length === 0 ? (
+                                    <p className="text-sm text-muted-foreground py-8 text-center">Sin novedades para graficar.</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <LineChart data={stats.trendsDual}>
+                                            <CartesianGrid strokeDasharray="3 3" />
+                                            <XAxis dataKey="name" />
+                                            <YAxis allowDecimals={false} />
+                                            <Tooltip />
+                                            <Legend />
+                                            <Line
+                                                type="monotone"
+                                                dataKey="porFechaReporte"
+                                                name="Por fecha reporte"
+                                                stroke="#3b82f6"
+                                                strokeWidth={2}
+                                                dot={{ r: 3 }}
+                                            />
+                                            <Line
+                                                type="monotone"
+                                                dataKey="porFechaTf"
+                                                name="Por fecha TF"
+                                                stroke="#f97316"
+                                                strokeWidth={2}
+                                                dot={{ r: 3 }}
+                                            />
+                                        </LineChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </CardContent>
+                        </Card>
+
+                        <Card className="lg:col-span-2">
+                            <CardHeader>
+                                <CardTitle className="text-base">Efectividad mensual</CardTitle>
+                                <CardDescription>
+                                    <span className="font-mono text-foreground">Verde</span>:{' '}
+                                    <span className="font-mono">(Σ TF − Σ novedades) / Σ TF</span> del mes (solo días con total TF
+                                    importado). <span className="font-mono text-foreground">Ámbar</span>: promedio simple del % diario
+                                    de esos mismos días.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="h-[300px]">
+                                {stats.monthlyEffectiveness.length === 0 ? (
+                                    <p className="text-sm text-muted-foreground py-8 text-center">
+                                        Sin días con total TF; importe el Excel de TF diarios.
+                                    </p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <BarChart data={stats.monthlyEffectiveness}>
+                                            <CartesianGrid strokeDasharray="3 3" />
+                                            <XAxis dataKey="name" interval={0} angle={-20} textAnchor="end" height={52} />
+                                            <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
+                                            <Tooltip
+                                                content={({ active, payload }) => {
+                                                    if (!active || !payload?.length) return null;
+                                                    const p = payload[0].payload as {
+                                                        totalTfs?: number;
+                                                        novedades?: number;
+                                                        diasConTf?: number;
+                                                        efectividadAgregada?: number;
+                                                        efectividadPromedioDias?: number;
+                                                    };
+                                                    return (
+                                                        <div className="rounded-md border bg-background px-3 py-2 text-xs shadow-md">
+                                                            <p className="font-medium">{payload[0].payload.name}</p>
+                                                            <p>Σ mes — TF: {p.totalTfs ?? 0}, novedades: {p.novedades ?? 0}</p>
+                                                            <p>Agregada: {p.efectividadAgregada ?? 0}%</p>
+                                                            <p>
+                                                                Prom. días ({p.diasConTf ?? 0} días): {p.efectividadPromedioDias ?? 0}%
+                                                            </p>
+                                                        </div>
+                                                    );
+                                                }}
+                                            />
+                                            <Legend />
+                                            <Bar
+                                                dataKey="efectividadAgregada"
+                                                fill="#14b8a6"
+                                                name="Agregada (Σ mes)"
+                                                radius={[4, 4, 0, 0]}
+                                            />
+                                            <Bar
+                                                dataKey="efectividadPromedioDias"
+                                                fill="#f59e0b"
+                                                name="Promedio % diarios"
+                                                radius={[4, 4, 0, 0]}
+                                            />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
                             </CardContent>
                         </Card>
                     </div>
@@ -657,6 +1254,27 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                                 onChange={(e) => setManageForm((p) => ({ ...p, comentariosAdmin: e.target.value }))}
                                 placeholder="Acuerdos con tienda, observaciones de bodega, etc."
                             />
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="grid gap-2">
+                                <Label htmlFor="dlgFechaReporte">Fecha reporte novedad</Label>
+                                <Input
+                                    id="dlgFechaReporte"
+                                    type="date"
+                                    value={manageForm.fechaReporteTienda}
+                                    onChange={(e) => setManageForm((p) => ({ ...p, fechaReporteTienda: e.target.value }))}
+                                />
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="dlgFechaTf">Fecha de la TF</Label>
+                                <Input
+                                    id="dlgFechaTf"
+                                    type="date"
+                                    value={manageForm.fechaTf}
+                                    onChange={(e) => setManageForm((p) => ({ ...p, fechaTf: e.target.value }))}
+                                />
+                                <p className="text-xs text-muted-foreground">Vacío quita la fecha TF en Firestore.</p>
+                            </div>
                         </div>
                         <div className="grid gap-2">
                             <Label>Estado</Label>
