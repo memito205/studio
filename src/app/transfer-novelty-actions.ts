@@ -103,14 +103,18 @@ export async function getTransferNovelties() {
   }
 }
 
-export async function updateTransferNoveltyStatus(id: string, updates: any) {
+export async function updateTransferNoveltyStatus(id: string, updates: Record<string, unknown>) {
   try {
-    const docRef = doc(firestore, "transferNovelties", id);
-    await updateDoc(docRef, { ...updates, updatedAt: Timestamp.now() });
+    const docRef = doc(firestore, 'transferNovelties', id);
+    const cleaned = Object.fromEntries(
+      Object.entries(updates).filter(([, v]) => v !== undefined)
+    ) as Record<string, unknown>;
+    await updateDoc(docRef, { ...cleaned, updatedAt: Timestamp.now() });
     return { success: true };
-  } catch (error: any) {
-    console.error("Error updating transfer novelty:", error);
-    return { success: false, error: error.message };
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : 'Error al actualizar';
+    console.error('Error updating transfer novelty:', error);
+    return { success: false, error: msg };
   }
 }
 

@@ -9,6 +9,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { 
     AlertCircle, 
@@ -94,6 +103,14 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
     const [operators, setOperators] = useState<Record<string, string>>({});
     const [isLoading, setIsLoading] = useState(false);
     const { toast } = useToast();
+
+    const [manageOpen, setManageOpen] = useState(false);
+    const [selectedNovelty, setSelectedNovelty] = useState<TransferNovelty | null>(null);
+    const [manageForm, setManageForm] = useState({
+        tfLegalizacion: '',
+        comentariosAdmin: '',
+        estado: 'Reportado' as TransferNoveltyStatus,
+    });
 
     // Form state
     const [formData, setFormData] = useState({
@@ -214,6 +231,58 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
 
         return { total, onTimePercentage, trends, packerChart, mixData };
     }, [novelties]);
+
+    const openManageDialog = (n: TransferNovelty) => {
+        setSelectedNovelty(n);
+        setManageForm({
+            tfLegalizacion: (n.tfLegalizacion || '').trim(),
+            comentariosAdmin: (n.comentariosAdmin || '').trim(),
+            estado: n.estado || 'Reportado',
+        });
+        setManageOpen(true);
+    };
+
+    const handleSaveManage = async () => {
+        if (!selectedNovelty?.id) return;
+        const tf = manageForm.tfLegalizacion.trim();
+        if (manageForm.estado === 'Justificado' && !tf) {
+            toast({
+                variant: 'destructive',
+                title: 'TF de carga / legalización',
+                description:
+                    'Para cerrar como Justificado debe indicar el número de TF con el que se gestionó la mercancía (sobrante o faltante).',
+            });
+            return;
+        }
+        setIsLoading(true);
+        try {
+            const res = await updateTransferNoveltyStatus(selectedNovelty.id, {
+                tfLegalizacion: tf,
+                comentariosAdmin: manageForm.comentariosAdmin.trim(),
+                estado: manageForm.estado,
+            });
+            if (!res.success) {
+                throw new Error('error' in res && res.error ? String(res.error) : 'No se pudo guardar');
+            }
+            toast({ title: 'Gestión guardada', description: 'Los datos de la novedad fueron actualizados.' });
+            setManageOpen(false);
+            setSelectedNovelty(null);
+            await loadData();
+        } catch (e: unknown) {
+            toast({
+                variant: 'destructive',
+                title: 'Error',
+                description: e instanceof Error ? e.message : 'Error al guardar',
+            });
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const tfGestionHint =
+        selectedNovelty?.tipo === 'Sobrante'
+            ? 'Sobrante: indique el TF con el que se envió o legalizó el exceso (la transferencia donde “viajó” el sobrante).'
+            : 'Faltante: indique el TF con el que la tienda carga o reporta la mercancia faltante / reposición.';
 
     return (
         <div className="space-y-6">
@@ -372,7 +441,10 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                         <CardHeader className="flex flex-row items-center justify-between space-y-0">
                             <div>
                                 <CardTitle>Historico de Novedades</CardTitle>
-                                <CardDescription>Gestiona y justifica los sobrantes/faltantes reportados.</CardDescription>
+                                <CardDescription>
+                                    Cada fila es una novedad reportada. Use <strong>Gestionar</strong> para registrar el TF con el
+                                    que se cargó el sobrante o el faltante y avanzar el estado hasta <strong>Justificado</strong>.
+                                </CardDescription>
                             </div>
                             <div className="flex gap-2">
                                 <Button variant="outline" size="sm" onClick={loadData}>Actualizar</Button>
@@ -382,6 +454,7 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                             <Table>
                                 <TableHeader>
                                     <TableRow>
+                                        <TableHead>TF gestión</TableHead>
                                         <TableHead>Fecha Reporte</TableHead>
                                         <TableHead>TF / Almacén</TableHead>
                                         <TableHead>Tipo / Cant</TableHead>
@@ -394,6 +467,9 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                                 <TableBody>
                                     {novelties.map((n) => (
                                         <TableRow key={n.id}>
+                                            <TableCell className="font-mono text-xs max-w-[100px] truncate" title={n.tfLegalizacion || ''}>
+                                                {n.tfLegalizacion?.trim() ? n.tfLegalizacion : '—'}
+                                            </TableCell>
                                             <TableCell className="text-xs">
                                                 {formatDateSafe(n.fechaReporteTienda, 'dd/MM/yyyy')}
                                             </TableCell>
@@ -419,13 +495,15 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                                                 <Badge variant="secondary">{n.estado}</Badge>
                                             </TableCell>
                                             <TableCell className="text-right">
-                                                <Button variant="ghost" size="sm">Ver Detalle</Button>
+                                                <Button variant="ghost" size="sm" onClick={() => openManageDialog(n)}>
+                                                    Gestionar
+                                                </Button>
                                             </TableCell>
                                         </TableRow>
                                     ))}
                                     {novelties.length === 0 && (
                                         <TableRow>
-                                            <TableCell colSpan={7} className="text-center py-10 text-muted-foreground">
+                                            <TableCell colSpan={8} className="text-center py-10 text-muted-foreground">
                                                 No hay novedades registradas.
                                             </TableCell>
                                         </TableRow>
@@ -540,6 +618,78 @@ export const TransferNovelties: React.FC<TransferNoveltiesProps> = ({ onBack }) 
                     </div>
                 </TabsContent>
             </Tabs>
+
+            <Dialog open={manageOpen} onOpenChange={setManageOpen}>
+                <DialogContent className="sm:max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle>Gestionar novedad</DialogTitle>
+                        <DialogDescription>
+                            {selectedNovelty ? (
+                                <>
+                                    <span className="block mt-2">
+                                        TF reportado: <strong>{selectedNovelty.numeroTF}</strong> · {selectedNovelty.almacen} ·{' '}
+                                        <Badge variant={selectedNovelty.tipo === 'Faltante' ? 'destructive' : 'success'}>
+                                            {selectedNovelty.tipo}
+                                        </Badge>{' '}
+                                        <span className="font-mono">({selectedNovelty.cantidad})</span>
+                                    </span>
+                                    <span className="block text-xs text-muted-foreground mt-2">{tfGestionHint}</span>
+                                </>
+                            ) : null}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-4 py-2">
+                        <div className="grid gap-2">
+                            <Label htmlFor="tfLegalizacion">TF de carga / legalización</Label>
+                            <Input
+                                id="tfLegalizacion"
+                                value={manageForm.tfLegalizacion}
+                                onChange={(e) => setManageForm((p) => ({ ...p, tfLegalizacion: e.target.value }))}
+                                placeholder="Ej: 63120"
+                            />
+                        </div>
+                        <div className="grid gap-2">
+                            <Label htmlFor="comentariosAdmin">Notas de gestión</Label>
+                            <Textarea
+                                id="comentariosAdmin"
+                                rows={3}
+                                value={manageForm.comentariosAdmin}
+                                onChange={(e) => setManageForm((p) => ({ ...p, comentariosAdmin: e.target.value }))}
+                                placeholder="Acuerdos con tienda, observaciones de bodega, etc."
+                            />
+                        </div>
+                        <div className="grid gap-2">
+                            <Label>Estado</Label>
+                            <Select
+                                value={manageForm.estado}
+                                onValueChange={(val) =>
+                                    setManageForm((p) => ({ ...p, estado: val as TransferNoveltyStatus }))
+                                }
+                            >
+                                <SelectTrigger>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="Reportado">Reportado</SelectItem>
+                                    <SelectItem value="En Justificación">En justificación</SelectItem>
+                                    <SelectItem value="Justificado">Justificado (cerrado)</SelectItem>
+                                </SelectContent>
+                            </Select>
+                            <p className="text-xs text-muted-foreground">
+                                <strong>Justificado</strong> exige el TF de carga/legalización arriba.
+                            </p>
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button type="button" variant="outline" onClick={() => setManageOpen(false)} disabled={isLoading}>
+                            Cancelar
+                        </Button>
+                        <Button type="button" onClick={() => void handleSaveManage()} disabled={isLoading}>
+                            {isLoading ? 'Guardando…' : 'Guardar gestión'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 };
