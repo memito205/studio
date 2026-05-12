@@ -109,3 +109,6 @@ export const MAX_CV_FOR_DIRECT_FORECAST = 1.0;
 // Constantes obsoletas que se eliminan para evitar confusión
 // export const HIGH_SEASON_MONTHS: number[] = [1, 5, 6, 10, 11, 12];
 // export const MANUAL_SEASONAL_ADJUSTMENT_FACTOR = 1.20;
+
+/** Etiqueta guardada en snapshots de corrida (pronóstico + distribución) para auditoría de versión de motor. */
+export const FORECAST_SNAPSHOT_ENGINE_LABEL = 'forecastingEngine@v1-snapshot';

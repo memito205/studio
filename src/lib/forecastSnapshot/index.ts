@@ -16,3 +16,4 @@ export {
   parseForecastRunPayload,
   safeParseForecastRunPayload,
 } from './validateForecastRunPayload';
+export { historyRangeFromProcessedRows } from './historyRangeFromProcessedRows';
