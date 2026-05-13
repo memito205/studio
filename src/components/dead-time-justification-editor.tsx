@@ -150,20 +150,18 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
     onJustificationsChange(next);
   };
 
-  /** Quita justificación manual errónea o, si solo venía de pulso automático, marca ignorar pulso. */
+  /** Quita justificación manual (cualquier tipo, incl. ignorar pulso) o marca PULSE_IGNORE si solo venía de pulso automático. */
   const handleRemoveJustification = (incident: DeadTimeEntry) => {
     const baseId = baseDeadTimeId(incident.id);
     const next = { ...justifications };
-    const manualHere = next[incident.id];
-    const manualBase = baseId !== incident.id ? next[baseId] : undefined;
-    const hadManual =
-      (manualHere && manualHere.type !== 'PULSE_IGNORE') ||
-      (manualBase && manualBase.type !== 'PULSE_IGNORE');
 
-    if (manualHere) delete next[incident.id];
-    if (baseId !== incident.id && manualBase) delete next[baseId];
+    const hadKeyHere = justifications[incident.id] !== undefined;
+    const hadKeyBase = baseId !== incident.id && justifications[baseId] !== undefined;
 
-    if (hadManual) {
+    if (hadKeyHere) delete next[incident.id];
+    if (hadKeyBase) delete next[baseId];
+
+    if (hadKeyHere || hadKeyBase) {
       onJustificationsChange(next);
       return;
     }
@@ -176,11 +174,8 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
 
   const canOfferRemoveJustification = (incident: DeadTimeEntry): boolean => {
     const baseId = baseDeadTimeId(incident.id);
-    const m = justifications[incident.id];
-    const mb = baseId !== incident.id ? justifications[baseId] : undefined;
-    if (m?.type === 'PULSE_IGNORE' || mb?.type === 'PULSE_IGNORE') return false;
-    if (m && m.type !== 'PULSE_IGNORE') return true;
-    if (mb && mb.type !== 'PULSE_IGNORE') return true;
+    if (justifications[incident.id] !== undefined) return true;
+    if (baseId !== incident.id && justifications[baseId] !== undefined) return true;
     return incident.status === 'Justificado' || incident.status === 'Excedente de Descanso';
   };
   
