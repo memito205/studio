@@ -27,6 +27,13 @@ interface DashboardProps {
   initialState?: { year: number, filters: Filters } | null;
 }
 
+/** Línea de flete en referencia: cuenta en KPIs globales pero no en tops de producto (marca/género/grupo/ref). */
+function isFreightReferenceRow(d: Transaction): boolean {
+  return String(d.reference ?? "").trim().toUpperCase() === "FLETE";
+}
+
+const TOP_CATEGORIES_EXCLUDING_FREIGHT: FilterCategory[] = ["reference", "brand", "gender", "group"];
+
 const calculateTopItems = (
     category: FilterCategory,
     allFilters: Filters,
@@ -35,7 +42,7 @@ const calculateTopItems = (
     const { [category]: _, ...otherFilters } = allFilters;
     const activeFilterKeys = Object.keys(otherFilters) as FilterCategory[];
 
-    const dataForThisTable = sourceData.filter(d => {
+    let dataForThisTable = sourceData.filter(d => {
         if (activeFilterKeys.length === 0) return true;
         return activeFilterKeys.every(key => {
             const filterValues = otherFilters[key];
@@ -44,6 +51,10 @@ const calculateTopItems = (
             return transactionValue ? filterValues.includes(String(transactionValue)) : false;
         });
     });
+
+    if (TOP_CATEGORIES_EXCLUDING_FREIGHT.includes(category)) {
+        dataForThisTable = dataForThisTable.filter((d) => !isFreightReferenceRow(d));
+    }
 
     const itemMap = new Map<string, { quantity: number; value: number }>();
     dataForThisTable
@@ -150,6 +161,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, onStateChange, initi
     };
   }, [fullyFilteredData.currentYearData]);
 
+  /** Base para % Part. en tops de producto: mismas devoluciones filtradas que el KPI, sin líneas FLETE. */
+  const totalReturnsExcludingFreightForProductTops = useMemo(() => {
+    return fullyFilteredData.currentYearData
+      .filter((d) => d.type === TransactionType.Return && !isFreightReferenceRow(d))
+      .reduce((s, d) => s + d.value, 0);
+  }, [fullyFilteredData.currentYearData]);
+
   const topReturnReasons = useMemo(() => calculateTopItems('returnReason', filters, yearFilteredData.currentYearData), [filters, yearFilteredData.currentYearData]);
   const topReturnedBrands = useMemo(() => calculateTopItems('brand', filters, yearFilteredData.currentYearData), [filters, yearFilteredData.currentYearData]);
   const topReturnedGenders = useMemo(() => calculateTopItems('gender', filters, yearFilteredData.currentYearData), [filters, yearFilteredData.currentYearData]);
@@ -226,11 +244,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, onStateChange, initi
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <TopItemsTable title="Top 10 Motivos de Devolución" data={topReturnReasons} totalValue={kpiData.totalReturns} filterCategory="returnReason" onFilterChange={handleFilterChange} activeFilters={filters} />
-                    <TopItemsTable title="Top 10 Marcas Devueltas" data={topReturnedBrands} totalValue={kpiData.totalReturns} filterCategory="brand" onFilterChange={handleFilterChange} activeFilters={filters} />
-                    <TopItemsTable title="Top 10 Géneros Devueltos" data={topReturnedGenders} totalValue={kpiData.totalReturns} filterCategory="gender" onFilterChange={handleFilterChange} activeFilters={filters} />
-                    <TopItemsTable title="Top 10 Grupos Devueltos" data={topReturnedGroups} totalValue={kpiData.totalReturns} filterCategory="group" onFilterChange={handleFilterChange} activeFilters={filters} />
+                    <TopItemsTable title="Top 10 Marcas Devueltas" data={topReturnedBrands} totalValue={totalReturnsExcludingFreightForProductTops} filterCategory="brand" onFilterChange={handleFilterChange} activeFilters={filters} />
+                    <TopItemsTable title="Top 10 Géneros Devueltos" data={topReturnedGenders} totalValue={totalReturnsExcludingFreightForProductTops} filterCategory="gender" onFilterChange={handleFilterChange} activeFilters={filters} />
+                    <TopItemsTable title="Top 10 Grupos Devueltos" data={topReturnedGroups} totalValue={totalReturnsExcludingFreightForProductTops} filterCategory="group" onFilterChange={handleFilterChange} activeFilters={filters} />
                     <TopItemsTable title="Top 10 PDV / Grupos Devueltos" data={topReturnedPdvs} totalValue={kpiData.totalReturns} filterCategory="pdv" onFilterChange={handleFilterChange} activeFilters={filters} />
-                    <TopItemsTable title="Top 10 Referencias Devueltas" data={topReturnedReferences} totalValue={kpiData.totalReturns} filterCategory="reference" onFilterChange={handleFilterChange} activeFilters={filters} />
+                    <TopItemsTable title="Top 10 Referencias Devueltas" data={topReturnedReferences} totalValue={totalReturnsExcludingFreightForProductTops} filterCategory="reference" onFilterChange={handleFilterChange} activeFilters={filters} />
                 </div>
             </div>
         </div>
@@ -253,11 +271,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, onStateChange, initi
             <div className="print-page-break p-4 flex justify-center"><ComparativeTrendChart currentYearData={fullyFilteredData.currentYearData} previousYearData={fullyFilteredData.previousYearData} currentYear={selectedYear} type={ChartType.Sales} isPrinting={true} /></div>
             <div className="print-page-break p-4 flex justify-center"><ComparativeTrendChart currentYearData={fullyFilteredData.currentYearData} previousYearData={fullyFilteredData.previousYearData} currentYear={selectedYear} type={ChartType.Returns} isPrinting={true} /></div>
             <div className="print-page-break p-4"><TopItemsTable title="Top 10 Motivos de Devolución" data={topReturnReasons} totalValue={kpiData.totalReturns} filterCategory="returnReason" onFilterChange={handleFilterChange} activeFilters={filters} isPrinting={true} /></div>
-            <div className="print-page-break p-4"><TopItemsTable title="Top 10 Marcas Devueltas" data={topReturnedBrands} totalValue={kpiData.totalReturns} filterCategory="brand" onFilterChange={handleFilterChange} activeFilters={filters} isPrinting={true} /></div>
-            <div className="print-page-break p-4"><TopItemsTable title="Top 10 Géneros Devueltos" data={topReturnedGenders} totalValue={kpiData.totalReturns} filterCategory="gender" onFilterChange={handleFilterChange} activeFilters={filters} isPrinting={true} /></div>
-            <div className="print-page-break p-4"><TopItemsTable title="Top 10 Grupos Devueltos" data={topReturnedGroups} totalValue={kpiData.totalReturns} filterCategory="group" onFilterChange={handleFilterChange} activeFilters={filters} isPrinting={true} /></div>
+            <div className="print-page-break p-4"><TopItemsTable title="Top 10 Marcas Devueltas" data={topReturnedBrands} totalValue={totalReturnsExcludingFreightForProductTops} filterCategory="brand" onFilterChange={handleFilterChange} activeFilters={filters} isPrinting={true} /></div>
+            <div className="print-page-break p-4"><TopItemsTable title="Top 10 Géneros Devueltos" data={topReturnedGenders} totalValue={totalReturnsExcludingFreightForProductTops} filterCategory="gender" onFilterChange={handleFilterChange} activeFilters={filters} isPrinting={true} /></div>
+            <div className="print-page-break p-4"><TopItemsTable title="Top 10 Grupos Devueltos" data={topReturnedGroups} totalValue={totalReturnsExcludingFreightForProductTops} filterCategory="group" onFilterChange={handleFilterChange} activeFilters={filters} isPrinting={true} /></div>
             <div className="print-page-break p-4"><TopItemsTable title="Top 10 PDV / Grupos Devueltos" data={topReturnedPdvs} totalValue={kpiData.totalReturns} filterCategory="pdv" onFilterChange={handleFilterChange} activeFilters={filters} isPrinting={true} /></div>
-            <div className="p-4"><TopItemsTable title="Top 10 Referencias Devueltas" data={topReturnedReferences} totalValue={kpiData.totalReturns} filterCategory="reference" onFilterChange={handleFilterChange} activeFilters={filters} isPrinting={true} /></div>
+            <div className="p-4"><TopItemsTable title="Top 10 Referencias Devueltas" data={topReturnedReferences} totalValue={totalReturnsExcludingFreightForProductTops} filterCategory="reference" onFilterChange={handleFilterChange} activeFilters={filters} isPrinting={true} /></div>
         </div>
     </>
   );
