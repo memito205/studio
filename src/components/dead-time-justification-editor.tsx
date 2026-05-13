@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { DeadTimeEntry, ManualJustifications, JustificationType } from '@/types';
+import { findManualJustificationKeysForDeadTime } from '@/services/reportProcessor';
 import { AutoJustificationSuggestions } from './auto-justification-suggestions';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -150,33 +151,24 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
     onJustificationsChange(next);
   };
 
-  /** Quita justificación manual (cualquier tipo, incl. ignorar pulso) o marca PULSE_IGNORE si solo venía de pulso automático. */
+  /** Quita todas las claves manuales que el motor asocia a este tramo; si solo quedaba justificación por pulso, marca ignorar. */
   const handleRemoveJustification = (incident: DeadTimeEntry) => {
-    const baseId = baseDeadTimeId(incident.id);
+    const keys = findManualJustificationKeysForDeadTime(incident, justifications);
     const next = { ...justifications };
-
-    const hadKeyHere = justifications[incident.id] !== undefined;
-    const hadKeyBase = baseId !== incident.id && justifications[baseId] !== undefined;
-
-    if (hadKeyHere) delete next[incident.id];
-    if (hadKeyBase) delete next[baseId];
-
-    if (hadKeyHere || hadKeyBase) {
+    let changed = false;
+    for (const k of keys) {
+      delete next[k];
+      changed = true;
+    }
+    if (changed) {
       onJustificationsChange(next);
       return;
     }
-
     if (incident.status === 'Justificado' || incident.status === 'Excedente de Descanso') {
+      const baseId = baseDeadTimeId(incident.id);
       next[baseId] = { type: 'PULSE_IGNORE' };
       onJustificationsChange(next);
     }
-  };
-
-  const canOfferRemoveJustification = (incident: DeadTimeEntry): boolean => {
-    const baseId = baseDeadTimeId(incident.id);
-    if (justifications[incident.id] !== undefined) return true;
-    if (baseId !== incident.id && justifications[baseId] !== undefined) return true;
-    return incident.status === 'Justificado' || incident.status === 'Excedente de Descanso';
   };
   
   const handleSaveReason = () => {
@@ -426,15 +418,13 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
                                                           ? 'Modificar justificación…'
                                                           : 'Justificar con razón…'}
                                                   </DropdownMenuItem>
-                                                  {canOfferRemoveJustification(incident) && (
-                                                      <DropdownMenuItem
-                                                          onClick={() => handleRemoveJustification(incident)}
-                                                          className="text-destructive focus:text-destructive"
-                                                      >
-                                                          <Trash2 className="h-4 w-4 mr-2" />
-                                                          Eliminar justificación
-                                                      </DropdownMenuItem>
-                                                  )}
+                                                  <DropdownMenuItem
+                                                      onClick={() => handleRemoveJustification(incident)}
+                                                      className="text-destructive focus:text-destructive"
+                                                  >
+                                                      <Trash2 className="h-4 w-4 mr-2" />
+                                                      Eliminar justificación
+                                                  </DropdownMenuItem>
                                                   {justifications[incident.id]?.type === 'PULSE_IGNORE' ? (
                                                       <DropdownMenuItem onClick={() => handleClearManualJustification(incident.id)}>
                                                           Restaurar sincronización con pulso
