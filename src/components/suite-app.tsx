@@ -3,10 +3,11 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { flushSync } from 'react-dom';
 import dynamic from 'next/dynamic';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
-import type { ProcessedReportData, ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ReferenceCorrections, UniqueReference, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, ChatMessage, SmartAlert, ActionPlan, Annotations, TaggedReport, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, PackingUnit, PackingSession, AppStep, ReceptionOperation, JustificationType, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReportSummary, CreditCalculationResult, DispatchSessionInfo, RouteEntry, TransferEntry, EcommerceOrder, DelayedOrderLog, OperationPulse, ReferenceGoals } from '@/types';
+import type { ProcessedReportData, ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ManualJustificationsUpdate, ReferenceCorrections, UniqueReference, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, ChatMessage, SmartAlert, ActionPlan, Annotations, TaggedReport, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, PackingUnit, PackingSession, AppStep, ReceptionOperation, JustificationType, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReportSummary, CreditCalculationResult, DispatchSessionInfo, RouteEntry, TransferEntry, EcommerceOrder, DelayedOrderLog, OperationPulse, ReferenceGoals } from '@/types';
 import { processReport, getSanitizedData, extractUniqueReferences, extractPackersFromReport, preProcessDeadTimes, classifyProduct } from '@/services/reportProcessor';
 import { handleExecutiveSummary, handleRootCauseAnalysis, handleGenerateSmartAlerts, handleGetJustificationSuggestions, saveReportToHistory, loadHistoricalReports, updateOrderStatus, savePackingSession, loadWholesaleOrders, getPackingSession, loadAllPackingSessions, consolidateDailyReports, previewConsolidatedReport, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, loadFullReportSnapshots, loadOperatorMappings, saveJustificationsForDay, loadJustificationsByDate } from '@/app/actions';
 import { getProductsByBarcodes } from '@/app/reception/actions';
@@ -676,10 +677,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   };
     
   const handleAcceptSuggestion = (incidentId: string, type: JustificationType) => {
-    handleManualJustificationsChange({
-        ...manualJustifications,
-        [incidentId]: { type }
-    });
+    handleManualJustificationsChange((prev) => ({ ...prev, [incidentId]: { type } }));
   };
 
   const handleReloadJustificationsFromServer = useCallback(async () => {
@@ -692,18 +690,30 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
     setIncidentLog(log);
   };
   
-  const handleManualJustificationsChange = async (newJustifications: ManualJustifications) => {
-    setManualJustifications(newJustifications);
-    if (reportDate) {
-        setIsSavingJustifications(true);
-        // Silent background save
-        const result = await saveJustificationsForDay(reportDate, newJustifications);
-        setIsSavingJustifications(false);
-        if (result.error) {
-            console.error("Auto-save failed:", result.error);
+  const handleManualJustificationsChange = useCallback(async (update: ManualJustificationsUpdate) => {
+    let snapshot: ManualJustifications | null = null;
+    flushSync(() => {
+      setManualJustifications((prev) => {
+        const next = typeof update === 'function' ? update(prev) : update;
+        if (next === prev) {
+          snapshot = null;
+          return prev;
         }
+        snapshot = next;
+        return next;
+      });
+    });
+    if (!reportDate || !snapshot) return;
+    setIsSavingJustifications(true);
+    try {
+      const result = await saveJustificationsForDay(reportDate, snapshot);
+      if (result.error) {
+        console.error('Auto-save failed:', result.error);
+      }
+    } finally {
+      setIsSavingJustifications(false);
     }
-  }
+  }, [reportDate]);
 
   const renderContent = () => {
       switch(appStep) {

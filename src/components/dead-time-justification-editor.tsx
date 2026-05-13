@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useMemo } from 'react';
-import { DeadTimeEntry, ManualJustifications, JustificationType } from '@/types';
+import { DeadTimeEntry, ManualJustifications, ManualJustificationsUpdate, JustificationType } from '@/types';
 import { findManualJustificationKeysForDeadTime } from '@/services/reportProcessor';
 import { AutoJustificationSuggestions } from './auto-justification-suggestions';
 import { Button } from '@/components/ui/button';
@@ -73,7 +73,7 @@ function baseDeadTimeId(incidentId: string): string {
 interface Props {
   incidents: DeadTimeEntry[];
   justifications: ManualJustifications;
-  onJustificationsChange: (justifications: ManualJustifications) => void;
+  onJustificationsChange: (update: ManualJustificationsUpdate) => void;
   onAcceptSuggestion: (incidentId: string, type: JustificationType) => void;
   isSaving?: boolean;
 }
@@ -136,86 +136,87 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
   };
 
   const handleClassificationChange = (incidentId: string, type: JustificationType | 'UNJUSTIFIED') => {
-    const newJustifications = { ...justifications };
-    if (type === 'UNJUSTIFIED') {
+    onJustificationsChange((prev) => {
+      const newJustifications = { ...prev };
+      if (type === 'UNJUSTIFIED') {
         newJustifications[incidentId] = { type: 'PULSE_IGNORE' };
-    } else {
+      } else {
         newJustifications[incidentId] = { type };
-    }
-    onJustificationsChange(newJustifications);
+      }
+      return newJustifications;
+    });
   };
 
   const handleClearManualJustification = (incidentId: string) => {
-    const next = { ...justifications };
-    delete next[incidentId];
-    onJustificationsChange(next);
+    onJustificationsChange((prev) => {
+      if (!(incidentId in prev)) return prev;
+      const next = { ...prev };
+      delete next[incidentId];
+      return next;
+    });
   };
 
   /** Quita todas las claves manuales que el motor asocia a este tramo; si solo quedaba justificación por pulso, marca ignorar. */
   const handleRemoveJustification = (incident: DeadTimeEntry) => {
-    const keys = findManualJustificationKeysForDeadTime(incident, justifications);
-    const next = { ...justifications };
-    let changed = false;
-    for (const k of keys) {
-      delete next[k];
-      changed = true;
-    }
-    if (changed) {
-      onJustificationsChange(next);
-      return;
-    }
-    if (incident.status === 'Justificado' || incident.status === 'Excedente de Descanso') {
-      const baseId = baseDeadTimeId(incident.id);
-      next[baseId] = { type: 'PULSE_IGNORE' };
-      onJustificationsChange(next);
-    }
+    onJustificationsChange((prev) => {
+      const keys = findManualJustificationKeysForDeadTime(incident, prev);
+      const next = { ...prev };
+      let changed = false;
+      for (const k of keys) {
+        delete next[k];
+        changed = true;
+      }
+      if (changed) return next;
+      if (incident.status === 'Justificado' || incident.status === 'Excedente de Descanso') {
+        const baseId = baseDeadTimeId(incident.id);
+        next[baseId] = { type: 'PULSE_IGNORE' };
+        return next;
+      }
+      return prev;
+    });
   };
   
   const handleSaveReason = () => {
     if (!selectedIncident) return;
-    
-    const newJustifications = { ...justifications };
-    const justificationText = reason.trim();
-    const prev = justifications[selectedIncident.id];
-    const inferredFromIncident = inferBreakTypeFromIncidentText(selectedIncident.justification);
-    const inferredFromUserText = inferBreakTypeFromIncidentText(justificationText);
-    const hasRangeOrDuration =
-      (Boolean(startTime?.trim()) && Boolean(endTime?.trim())) || customDuration != null;
 
-    if (!justificationText && !hasRangeOrDuration) {
-      delete newJustifications[selectedIncident.id];
-      onJustificationsChange(newJustifications);
-      setIsDialogOpen(false);
-      setSelectedIncident(null);
-      setReason('');
-      setCustomDuration(undefined);
-      setStartTime('');
-      setEndTime('');
-      return;
-    }
+    onJustificationsChange((prev) => {
+      const newJustifications = { ...prev };
+      const justificationText = reason.trim();
+      const prevJ = prev[selectedIncident.id];
+      const inferredFromIncident = inferBreakTypeFromIncidentText(selectedIncident.justification);
+      const inferredFromUserText = inferBreakTypeFromIncidentText(justificationText);
+      const hasRangeOrDuration =
+        (Boolean(startTime?.trim()) && Boolean(endTime?.trim())) || customDuration != null;
 
-    let savedType: JustificationType = 'REASON';
-    if (prev?.type && prev.type !== 'PULSE_IGNORE') {
-      if (prev.type === 'SHIFT_END') savedType = 'SHIFT_END';
-      else if (['BREAKFAST', 'LUNCH', 'SNACK'].includes(prev.type)) savedType = prev.type;
-      else savedType = prev.type;
-    } else if (justificationText && !inferredFromUserText) {
-      savedType = 'REASON';
-    } else if (inferredFromUserText) {
-      savedType = inferredFromUserText;
-    } else if (inferredFromIncident) {
-      savedType = inferredFromIncident;
-    }
+      if (!justificationText && !hasRangeOrDuration) {
+        if (!(selectedIncident.id in prev)) return prev;
+        delete newJustifications[selectedIncident.id];
+        return newJustifications;
+      }
 
-    newJustifications[selectedIncident.id] = {
-      type: savedType,
-      reasonText: justificationText || undefined,
-      customDuration,
-      startTime: startTime?.trim() || undefined,
-      endTime: endTime?.trim() || undefined,
-    };
-    onJustificationsChange(newJustifications);
-    
+      let savedType: JustificationType = 'REASON';
+      if (prevJ?.type && prevJ.type !== 'PULSE_IGNORE') {
+        if (prevJ.type === 'SHIFT_END') savedType = 'SHIFT_END';
+        else if (['BREAKFAST', 'LUNCH', 'SNACK'].includes(prevJ.type)) savedType = prevJ.type;
+        else savedType = prevJ.type;
+      } else if (justificationText && !inferredFromUserText) {
+        savedType = 'REASON';
+      } else if (inferredFromUserText) {
+        savedType = inferredFromUserText;
+      } else if (inferredFromIncident) {
+        savedType = inferredFromIncident;
+      }
+
+      newJustifications[selectedIncident.id] = {
+        type: savedType,
+        reasonText: justificationText || undefined,
+        customDuration,
+        startTime: startTime?.trim() || undefined,
+        endTime: endTime?.trim() || undefined,
+      };
+      return newJustifications;
+    });
+
     setIsDialogOpen(false);
     setSelectedIncident(null);
     setReason('');
@@ -241,14 +242,16 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
     const boundedRestartTime =
       restartTime < incidentStart ? incidentStart : restartTime > incidentEnd ? incidentEnd : restartTime;
 
-    const newJustifications = { ...justifications };
-    newJustifications[incidentToRevert.id] = {
-      type: 'REASON',
-      reasonText: `Reingreso a labor desde ${boundedRestartTime}`,
-      startTime: incidentStart,
-      endTime: boundedRestartTime,
-    };
-    onJustificationsChange(newJustifications);
+    onJustificationsChange((prev) => {
+      const newJustifications = { ...prev };
+      newJustifications[incidentToRevert.id] = {
+        type: 'REASON',
+        reasonText: `Reingreso a labor desde ${boundedRestartTime}`,
+        startTime: incidentStart,
+        endTime: boundedRestartTime,
+      };
+      return newJustifications;
+    });
 
     setIsRevertDialogOpen(false);
     setIncidentToRevert(null);
@@ -325,7 +328,7 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
               </Button>
           </div>
           <Button 
-              onClick={() => onJustificationsChange(justifications)}
+              onClick={() => onJustificationsChange((prev) => ({ ...prev }))}
               disabled={isSaving}
               className="shadow-lg hover:shadow-xl transition-all"
           >

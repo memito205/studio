@@ -3,7 +3,7 @@
 "use client";
 
 import React, { useMemo, useEffect } from 'react';
-import type { ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, UniqueReference, ReferenceCorrections, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, JustificationType, Annotations, ProductDatabaseItem, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReferenceGoals } from '@/types';
+import type { ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ManualJustificationsUpdate, UniqueReference, ReferenceCorrections, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, JustificationType, Annotations, ProductDatabaseItem, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReferenceGoals } from '@/types';
 import { FileDown, Upload, Share2, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -34,7 +34,7 @@ interface ConfigurationScreenProps {
   manualClassifications: ManualProductClassifications;
   onManualClassificationsChange: (newClassifications: ManualProductClassifications) => void;
   manualJustifications: ManualJustifications;
-  onManualJustificationsChange: (newJustifications: ManualJustifications) => void;
+  onManualJustificationsChange: (update: ManualJustificationsUpdate) => void;
   uniqueReferences: UniqueReference[];
   referenceCorrections: ReferenceCorrections;
   onReferenceCorrectionsChange: (newCorrections: ReferenceCorrections) => void;

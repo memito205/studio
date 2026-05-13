@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo, useState, useCallback } from "react";
-import type { ManualJustifications, JustificationType } from "@/types";
+import type { ManualJustifications, ManualJustificationsUpdate, JustificationType } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -38,7 +38,7 @@ function typeLabel(t: JustificationType | undefined): string {
 interface ManualJustificationsInspectorProps {
   reportDate: string;
   justifications: ManualJustifications;
-  onJustificationsChange: (next: ManualJustifications) => void;
+  onJustificationsChange: (update: ManualJustificationsUpdate) => void;
   onReloadFromServer?: () => Promise<void>;
   isSaving?: boolean;
 }
@@ -67,11 +67,14 @@ export const ManualJustificationsInspector: React.FC<ManualJustificationsInspect
 
   const removeKey = useCallback(
     (key: string) => {
-      const next = { ...justifications };
-      delete next[key];
-      onJustificationsChange(next);
+      onJustificationsChange((prev) => {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
     },
-    [justifications, onJustificationsChange],
+    [onJustificationsChange],
   );
 
   const handleReload = useCallback(async () => {
@@ -114,7 +117,8 @@ export const ManualJustificationsInspector: React.FC<ManualJustificationsInspect
         </div>
         <CardDescription>
           Fecha de reporte: <span className="font-mono text-foreground">{reportDate || "—"}</span>. Cada fila es una
-          clave guardada en <code className="text-xs">reports_justifications</code> (y posibles merges de historial).
+          clave guardada en <code className="text-xs">reports_justifications</code> para este día (si no hay doc
+          dedicado, el servidor puede unir datos de snapshots históricos).
           Al eliminar, se quita la clave y se vuelve a guardar el documento del día. Versión de app mostrada:{" "}
           <span className="font-mono text-sky-600 dark:text-sky-400">{CURRENT_APP_VERSION}</span>
         </CardDescription>
