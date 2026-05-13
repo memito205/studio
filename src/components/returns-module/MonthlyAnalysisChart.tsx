@@ -66,10 +66,10 @@ export const MonthlyAnalysisChart: React.FC<MonthlyAnalysisChartProps> = ({ data
   
     return (
       <g transform={`translate(${x},${y})`}>
-        <text x={0} y={0} dy={16} textAnchor="middle" fill="#64748b" className="dark:fill-slate-400 text-xs">
+        <text x={0} y={0} dy={16} textAnchor="middle" fill="var(--returns-chart-axis)" fontSize={11}>
           {payload.value} de {year}
         </text>
-        <text x={0} y={0} dy={30} textAnchor="middle" fill={rate > 0.15 ? '#f43f5e' : '#64748b'} className={rate > 0.15 ? 'dark:fill-rose-500' : 'dark:fill-slate-400'} fontSize="12px" fontWeight="bold">
+        <text x={0} y={0} dy={30} textAnchor="middle" fill={rate > 0.15 ? 'var(--color-returns)' : 'var(--returns-chart-axis)'} fontSize={12} fontWeight="bold">
           {formatPercentage(rate)}
         </text>
       </g>
@@ -82,17 +82,17 @@ export const MonthlyAnalysisChart: React.FC<MonthlyAnalysisChartProps> = ({ data
         margin={{ top: 30, right: 20, left: 30, bottom: 60 }} // Increased bottom margin for labels
         {...(isPrinting && { width: 960, height: 450 })} // Fixed size for printing
       >
-        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" className="dark:stroke-slate-700" />
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--returns-chart-line-grid)" />
         <XAxis dataKey="name" tick={<CustomizedXAxisTick />} axisLine={false} tickLine={false} />
         <YAxis
           tickFormatter={(value) => formatCompactCurrency(Number(value))}
           axisLine={false}
           tickLine={false}
-          tick={{ fill: '#64748b', className: 'dark:fill-slate-400', fontSize: '12px' }}
+          tick={{ fill: 'var(--returns-chart-axis)', fontSize: 12 }}
           domain={[0, yAxisMax]}
           ticks={yAxisTicks}
         />
-        <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(100, 116, 139, 0.1)' }}/>
+        <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(148, 163, 184, 0.22)' }}/>
         <Legend
           verticalAlign="top"
           align="right"
@@ -105,8 +105,7 @@ export const MonthlyAnalysisChart: React.FC<MonthlyAnalysisChartProps> = ({ data
                 dataKey="sales" 
                 position="top" 
                 formatter={(value: number) => value > 0 ? formatMillionsCurrency(value) : ''} 
-                style={{ fontSize: '12px' }} 
-                className="fill-slate-600 dark:fill-slate-400 font-medium"
+                style={{ fontSize: 12, fill: 'var(--returns-chart-axis)', fontWeight: 600 }} 
             />
         </Bar>
         <Bar dataKey="returns" name="Devoluciones" fill="var(--color-returns)" radius={[4, 4, 0, 0]}>
@@ -114,8 +113,7 @@ export const MonthlyAnalysisChart: React.FC<MonthlyAnalysisChartProps> = ({ data
                 dataKey="returns" 
                 position="top" 
                 formatter={(value: number) => value > 0 ? formatCompactCurrency(value) : ''} 
-                style={{ fontSize: '12px' }}
-                className="fill-rose-500 dark:fill-rose-500 font-medium"
+                style={{ fontSize: 12, fill: 'var(--returns-chart-axis)', fontWeight: 600 }}
             />
         </Bar>
       </BarChart>

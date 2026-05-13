@@ -49,7 +49,7 @@ export const ComparativeTrendChart: React.FC<ComparativeTrendChartProps> = ({ cu
       formatter: (value: number) => formatPercentage(value),
       diffFormatter: (value: number) => formatPercentagePoints(value),
       line1Color: 'var(--color-returns)',
-      line2Color: '#94a3b8',
+      line2Color: 'var(--returns-chart-line-previous)',
       legend1: `% Devolución ${currentYear}`,
       legend2: `% Devolución ${currentYear - 1}`,
       labelColor: 'var(--color-returns)',
@@ -60,7 +60,7 @@ export const ComparativeTrendChart: React.FC<ComparativeTrendChartProps> = ({ cu
       tooltipFormatter: (value: number) => formatMillionsCurrency(value),
       diffFormatter: (value: number) => `+${(value * 100).toFixed(1)}%`,
       line1Color: 'var(--color-sales)',
-      line2Color: '#94a3b8',
+      line2Color: 'var(--returns-chart-line-previous)',
       legend1: `Ventas ${currentYear}`,
       legend2: `Ventas ${currentYear - 1}`,
       labelColor: 'var(--color-sales)',
@@ -71,7 +71,7 @@ export const ComparativeTrendChart: React.FC<ComparativeTrendChartProps> = ({ cu
       tooltipFormatter: (value: number) => formatMillionsCurrency(value),
       diffFormatter: (value: number) => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)}%`,
       line1Color: 'var(--color-returns)',
-      line2Color: '#94a3b8',
+      line2Color: 'var(--returns-chart-line-previous)',
       legend1: `Devoluciones ${currentYear}`,
       legend2: `Devoluciones ${currentYear - 1}`,
       labelColor: 'var(--color-returns)',
@@ -127,7 +127,7 @@ export const ComparativeTrendChart: React.FC<ComparativeTrendChartProps> = ({ cu
   
     const color = (type === ChartType.Returns && diff < 0) ? 'var(--color-sales)' : chartConfig.labelColor;
     return (
-      <text x={x} y={y} dy={-10} fill={color} fontSize={12} textAnchor="middle">
+      <text x={x} y={y} dy={-10} fill={color} fontSize={12} fontWeight={600} textAnchor="middle">
         {chartConfig.diffFormatter(diff)}
       </text>
     );
@@ -139,9 +139,9 @@ export const ComparativeTrendChart: React.FC<ComparativeTrendChartProps> = ({ cu
         margin={{ top: 20, right: 30, left: 20, bottom: 60 }} // Increased bottom margin for legend
         {...(isPrinting && { width: 960, height: 350 })} // Fixed size for printing
     >
-        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" className="dark:stroke-slate-700" />
-        <XAxis dataKey="name" tick={{ fill: '#64748b', className: 'dark:fill-slate-400', fontSize: '12px' }} axisLine={false} tickLine={false}/>
-        <YAxis tickFormatter={chartConfig.formatter} tick={{ fill: '#64748b', className: 'dark:fill-slate-400', fontSize: '12px' }} axisLine={false} tickLine={false} />
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--returns-chart-line-grid)" />
+        <XAxis dataKey="name" tick={{ fill: 'var(--returns-chart-axis)', fontSize: 12 }} axisLine={false} tickLine={false}/>
+        <YAxis tickFormatter={chartConfig.formatter} tick={{ fill: 'var(--returns-chart-axis)', fontSize: 12 }} axisLine={false} tickLine={false} />
         <Tooltip content={<CustomTooltip />} />
         <Legend
             verticalAlign="bottom"
@@ -149,9 +149,9 @@ export const ComparativeTrendChart: React.FC<ComparativeTrendChartProps> = ({ cu
             formatter={(value) => <span className="text-slate-700 dark:text-slate-300">{value}</span>}
             iconType="circle"
         />
-        <Line type="monotone" dataKey="current" name={chartConfig.legend1} stroke={chartConfig.line1Color} strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} connectNulls>
+        <Line type="monotone" dataKey="current" name={chartConfig.legend1} stroke={chartConfig.line1Color} strokeWidth={2.5} dot={{ r: 5, strokeWidth: 2, stroke: chartConfig.line1Color, fill: chartConfig.line1Color }} activeDot={{ r: 7 }} connectNulls>
         </Line>
-        <Line type="monotone" dataKey="previous" name={chartConfig.legend2} stroke={chartConfig.line2Color} strokeDasharray="5 5" strokeWidth={2} />
+        <Line type="monotone" dataKey="previous" name={chartConfig.legend2} stroke={chartConfig.line2Color} strokeDasharray="6 4" strokeWidth={2.5} dot={{ r: 4, fill: chartConfig.line2Color }} activeDot={{ r: 6 }} />
     </LineChart>
   );
 
