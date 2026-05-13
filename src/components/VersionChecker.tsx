@@ -4,15 +4,29 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { getAppVersion } from '@/app/actions';
 import { CURRENT_APP_VERSION } from '@/app/version';
 import { 
-  Dialog, 
-  DialogContent, 
-  DialogHeader, 
-  DialogTitle, 
-  DialogDescription,
-  DialogFooter
+    Dialog, 
+    DialogContent, 
+    DialogHeader, 
+    DialogTitle, 
+    DialogDescription,
+    DialogFooter
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { RefreshCcw, AlertTriangle } from 'lucide-react';
+
+/** Compara etiquetas tipo 1.2.10 vs 1.2.3 (solo segmentos numéricos). -1 si a<b, 0 igual, 1 si a>b. */
+function compareReleaseTags(a: string, b: string): number {
+    const pa = a.replace(/^v/i, '').split('.').map((x) => parseInt(x, 10) || 0);
+    const pb = b.replace(/^v/i, '').split('.').map((x) => parseInt(x, 10) || 0);
+    const len = Math.max(pa.length, pb.length);
+    for (let i = 0; i < len; i++) {
+        const da = pa[i] ?? 0;
+        const db = pb[i] ?? 0;
+        if (da < db) return -1;
+        if (da > db) return 1;
+    }
+    return 0;
+}
 
 export const VersionChecker: React.FC = () => {
     const [needsUpdate, setNeedsUpdate] = useState(false);
@@ -20,10 +34,20 @@ export const VersionChecker: React.FC = () => {
 
     const checkVersion = useCallback(async () => {
         const result = await getAppVersion();
-        if (result.version && result.version !== CURRENT_APP_VERSION) {
-            // Check if the remote version is different from the local one
-            setLatestVersion(result.version);
+        const remote = result.version?.trim();
+        if (!remote) {
+            setNeedsUpdate(false);
+            setLatestVersion(null);
+            return;
+        }
+        // Solo pedir recarga si Firestore exige una versión *más nueva* que la del bundle.
+        // Si el metadata quedó viejo (p. ej. 1.1.2) y el usuario ya tiene 1.1.4, no bloquear.
+        if (compareReleaseTags(remote, CURRENT_APP_VERSION) > 0) {
+            setLatestVersion(remote);
             setNeedsUpdate(true);
+        } else {
+            setNeedsUpdate(false);
+            setLatestVersion(null);
         }
     }, []);
 
@@ -49,8 +73,8 @@ export const VersionChecker: React.FC = () => {
                         Actualización Requerida
                     </DialogTitle>
                     <DialogDescription className="py-4 text-base">
-                        Se ha desplegado una nueva versión del sistema ({latestVersion}). 
-                        Para garantizar el correcto funcionamiento y la integridad de los datos, es necesario recargar la página.
+                        Esta pestaña aún tiene la versión <strong>{CURRENT_APP_VERSION}</strong> y en el servidor ya está activa la{' '}
+                        <strong>{latestVersion}</strong>. Recargue la página para cargar el nuevo despliegue y evitar datos inconsistentes.
                     </DialogDescription>
                 </DialogHeader>
                 <DialogFooter>
