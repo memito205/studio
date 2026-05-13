@@ -41,6 +41,12 @@ body {
     --sidebar-accent-foreground: 240 5.9% 10%;
     --sidebar-border: 220 13% 91%;
     --sidebar-ring: 217.2 91.2% 59.8%;
+    /* Reporte de devoluciones: colores de gráficos legibles en claro y oscuro */
+    --color-sales: #0d9488;
+    --color-returns: #e11d48;
+    --returns-chart-line-previous: #475569;
+    --returns-chart-line-grid: #94a3b8;
+    --returns-chart-axis: #0f172a;
   }
   .dark {
     --background: 240 10% 3.9%;
@@ -75,6 +81,11 @@ body {
     --sidebar-accent-foreground: 240 4.8% 95.9%;
     --sidebar-border: 240 3.7% 15.9%;
     --sidebar-ring: 217.2 91.2% 59.8%;
+    --color-sales: #2dd4bf;
+    --color-returns: #fb7185;
+    --returns-chart-line-previous: #e2e8f0;
+    --returns-chart-line-grid: #64748b;
+    --returns-chart-axis: #f1f5f9;
   }
 }
 
@@ -111,5 +122,12 @@ body {
 
   .mask-fade-right {
     mask-image: linear-gradient(to right, black 85%, transparent 100%);
+  }
+
+  .text-sales {
+    color: var(--color-sales);
+  }
+  .text-returns {
+    color: var(--color-returns);
   }
 }

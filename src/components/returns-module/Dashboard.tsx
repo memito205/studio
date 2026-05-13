@@ -27,9 +27,13 @@ interface DashboardProps {
   initialState?: { year: number, filters: Filters } | null;
 }
 
-/** Línea de flete en referencia: cuenta en KPIs globales pero no en tops de producto (marca/género/grupo/ref). */
-function isFreightReferenceRow(d: Transaction): boolean {
-  return String(d.reference ?? "").trim().toUpperCase() === "FLETE";
+/** Referencias de servicio (flete, financiación, aval, etc.): cuentan en KPIs globales pero no en tops ref/marca/género/grupo. */
+const REFERENCE_EXCLUDED_FROM_PRODUCT_TOPS = new Set(
+  ["FLETE", "FINANC", "AVAL", "FLETE ENVIO NACIONAL"].map((s) => s.toUpperCase()),
+);
+
+function isExcludedFromProductTopReferences(d: Transaction): boolean {
+  return REFERENCE_EXCLUDED_FROM_PRODUCT_TOPS.has(String(d.reference ?? "").trim().toUpperCase());
 }
 
 const TOP_CATEGORIES_EXCLUDING_FREIGHT: FilterCategory[] = ["reference", "brand", "gender", "group"];
@@ -53,7 +57,7 @@ const calculateTopItems = (
     });
 
     if (TOP_CATEGORIES_EXCLUDING_FREIGHT.includes(category)) {
-        dataForThisTable = dataForThisTable.filter((d) => !isFreightReferenceRow(d));
+        dataForThisTable = dataForThisTable.filter((d) => !isExcludedFromProductTopReferences(d));
     }
 
     const itemMap = new Map<string, { quantity: number; value: number }>();
@@ -161,10 +165,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, onStateChange, initi
     };
   }, [fullyFilteredData.currentYearData]);
 
-  /** Base para % Part. en tops de producto: mismas devoluciones filtradas que el KPI, sin líneas FLETE. */
+  /** Base para % Part. en tops de producto: devoluciones filtradas sin referencias de servicio (FLETE, FINANC, …). */
   const totalReturnsExcludingFreightForProductTops = useMemo(() => {
     return fullyFilteredData.currentYearData
-      .filter((d) => d.type === TransactionType.Return && !isFreightReferenceRow(d))
+      .filter((d) => d.type === TransactionType.Return && !isExcludedFromProductTopReferences(d))
       .reduce((s, d) => s + d.value, 0);
   }, [fullyFilteredData.currentYearData]);
 
