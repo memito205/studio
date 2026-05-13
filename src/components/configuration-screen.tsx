@@ -3,7 +3,7 @@
 "use client";
 
 import React, { useMemo, useEffect } from 'react';
-import type { ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, UniqueReference, ReferenceCorrections, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, JustificationType, Annotations, ProductDatabaseItem, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReferenceGoals } from '@/types';
+import type { ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ManualJustificationsUpdate, UniqueReference, ReferenceCorrections, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, JustificationType, Annotations, ProductDatabaseItem, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReferenceGoals } from '@/types';
 import { FileDown, Upload, Share2, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -14,6 +14,7 @@ import { GoalConfiguration } from './goal-configuration';
 import { BrandProductTypeGoalConfiguration } from './brand-product-type-goal-configuration';
 import { UnclassifiedProductEditor } from './unclassified-product-editor';
 import { DeadTimeJustificationEditor } from './dead-time-justification-editor';
+import { ManualJustificationsInspector } from './ManualJustificationsInspector';
 import { ReferenceCorrectionEditor } from './reference-correction-editor';
 import { NewOperatorMapper } from './new-operator-mapper';
 import { IncidentLogEditor } from './incident-log-editor';
@@ -33,7 +34,7 @@ interface ConfigurationScreenProps {
   manualClassifications: ManualProductClassifications;
   onManualClassificationsChange: (newClassifications: ManualProductClassifications) => void;
   manualJustifications: ManualJustifications;
-  onManualJustificationsChange: (newJustifications: ManualJustifications) => void;
+  onManualJustificationsChange: (update: ManualJustificationsUpdate) => void;
   uniqueReferences: UniqueReference[];
   referenceCorrections: ReferenceCorrections;
   onReferenceCorrectionsChange: (newCorrections: ReferenceCorrections) => void;
@@ -64,6 +65,8 @@ interface ConfigurationScreenProps {
   isSavingJustifications?: boolean;
   referenceGoals: ReferenceGoals;
   onReferenceGoalsChange: (goals: ReferenceGoals) => void;
+  /** Sustituye el mapa en memoria con lo último de Firestore (evita claves fantasma). */
+  onReloadJustificationsFromServer?: () => Promise<void>;
 }
 
 export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
@@ -109,6 +112,7 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
   isSavingJustifications,
   referenceGoals,
   onReferenceGoalsChange,
+  onReloadJustificationsFromServer,
 }) => {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [shareStatus, setShareStatus] = React.useState<'idle' | 'copied'>('idle');
@@ -408,6 +412,14 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
         availableBrands={derivedState.brands}
       />
       
+      <ManualJustificationsInspector
+        reportDate={reportDate}
+        justifications={manualJustifications}
+        onJustificationsChange={onManualJustificationsChange}
+        onReloadFromServer={onReloadJustificationsFromServer}
+        isSaving={isSavingJustifications}
+      />
+
       <DeadTimeJustificationEditor 
           incidents={deadTimes}
           justifications={manualJustifications} 

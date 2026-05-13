@@ -632,6 +632,65 @@ export function applyJustifications(
     return finalIncidents;
 }
 
+/**
+ * Claves de `manualJustifications` que el motor asociaría a este tramo (id del card, id base tras split,
+ * variante ISO legacy o coincidencia fuzzy por tiempo + operario). Útil para borrar un desayuno guardado
+ * bajo una clave distinta a `incident.id`.
+ */
+export function findManualJustificationKeysForDeadTime(
+  incident: DeadTimeEntry,
+  justifications: ManualJustifications
+): string[] {
+  const keys = new Set<string>();
+  const addIfPresent = (k: string) => {
+    if (Object.prototype.hasOwnProperty.call(justifications, k)) keys.add(k);
+  };
+
+  addIfPresent(incident.id);
+
+  const timestamp = incident.startTime.getTime();
+  const isoId = incident.id.replace(/-?\d+$/, () => new Date(timestamp).toISOString());
+  addIfPresent(isoId);
+
+  const baseId = incident.id.replace(/-(justified|excess|remains|pre|post)$/i, '');
+  if (baseId !== incident.id) addIfPresent(baseId);
+
+  const currentName = incident.packerName.toUpperCase();
+
+  for (const key of Object.keys(justifications)) {
+    if (keys.has(key)) continue;
+    const match = key.match(/(\d{10,14})(?:-[\w-]+)?$/);
+    if (!match) continue;
+    const keyTs = parseInt(match[1], 10);
+    if (Math.abs(keyTs - timestamp) > 120000) continue;
+
+    const namePartFromKey = key.replace(/-?\d{10,14}(?:-[\w-]+)?$/, '').toUpperCase();
+    if (namePartFromKey === currentName) {
+      keys.add(key);
+      continue;
+    }
+    const mappedNameFromKey = OPERATOR_MAP[namePartFromKey]?.toUpperCase();
+    if (mappedNameFromKey === currentName) {
+      keys.add(key);
+      continue;
+    }
+    const mappedCurrentName = OPERATOR_MAP[currentName]?.toUpperCase();
+    if (mappedCurrentName === namePartFromKey) {
+      keys.add(key);
+      continue;
+    }
+    const keyNameWords = namePartFromKey.split(/\s+/).filter((p) => p.length > 2);
+    const incNameWords = currentName.split(/\s+/).filter((p) => p.length > 2);
+    const wordMatch =
+      keyNameWords.some((p) => incNameWords.includes(p)) ||
+      incNameWords.some((p) => keyNameWords.includes(p));
+    if (wordMatch) {
+      keys.add(key);
+    }
+  }
+
+  return [...keys];
+}
 
 export function preProcessDeadTimes(
     data: RemisionEntry[],

@@ -388,69 +388,64 @@ export async function getAllUserStatuses(): Promise<{ data?: any[]; error?: stri
 
 export async function loadJustificationsByDate(dateStr: string): Promise<{ data?: ManualJustifications; error?: string }> {
     try {
-        // Wider range to account for timezone skew (+/- 12 hours)
+        // 1) Documento dedicado: fuente de verdad. Si existe, NO mezclar con snapshots (estos conservan
+        //    manualJustifications históricas y harían "resucitar" claves ya borradas en reports_justifications).
+        try {
+            const dedicatedSnap = await getDoc(doc(firestore, 'reports_justifications', dateStr));
+            if (dedicatedSnap.exists()) {
+                const d = dedicatedSnap.data() as { justifications?: ManualJustifications };
+                if (d.justifications !== undefined && typeof d.justifications === 'object') {
+                    const j = { ...d.justifications };
+                    console.log(`[Firestore] Dedicated justifications for ${dateStr}:`, Object.keys(j).length, 'items');
+                    return { data: j };
+                }
+            }
+        } catch (e) {
+            console.warn('Could not load dedicated justifications:', e);
+        }
+
+        // 2) Retrocompat: solo snapshots del día (sin doc dedicado aún)
         const start = new Date(dateStr + 'T00:00:00');
         start.setHours(start.getHours() - 12);
         const end = new Date(dateStr + 'T23:59:59');
         end.setHours(end.getHours() + 12);
-        
-        const snapshotsRef = collection(firestore, "reports_summary");
-        
-        // 1. Try Timestamp query
+
+        const snapshotsRef = collection(firestore, 'reports_summary');
+
         let querySnapshot = await getDocs(
             query(
                 snapshotsRef,
-                where("reportDate", ">=", Timestamp.fromDate(start)),
-                where("reportDate", "<=", Timestamp.fromDate(end))
+                where('reportDate', '>=', Timestamp.fromDate(start)),
+                where('reportDate', '<=', Timestamp.fromDate(end))
             )
         );
 
-        // 2. Fallback to String query for older records
         if (querySnapshot.empty) {
-            querySnapshot = await getDocs(query(snapshotsRef, where("reportDate", "==", dateStr)));
+            querySnapshot = await getDocs(query(snapshotsRef, where('reportDate', '==', dateStr)));
         }
 
         if (querySnapshot.empty) {
             return { data: {} };
         }
 
-        // Combine justifications from ALL snapshots of the day
-        const docs = querySnapshot.docs.map(doc => ({
-            ...doc.data(),
-            id: doc.id,
-            snapshotCreatedAt: doc.data().snapshotCreatedAt?.toDate?.() || new Date(doc.data().snapshotCreatedAt)
+        const docs = querySnapshot.docs.map((docSnap) => ({
+            ...docSnap.data(),
+            id: docSnap.id,
+            snapshotCreatedAt: docSnap.data().snapshotCreatedAt?.toDate?.() || new Date(docSnap.data().snapshotCreatedAt),
         })) as any[];
 
-        // Sort by date ascending so that when we merge, more recent ones overwrite older ones
         docs.sort((a, b) => a.snapshotCreatedAt.getTime() - b.snapshotCreatedAt.getTime());
 
         const mergedJustifications: ManualJustifications = {};
-        docs.forEach(doc => {
-            if (doc.manualJustifications) {
-                Object.assign(mergedJustifications, doc.manualJustifications);
+        docs.forEach((docRow) => {
+            if (docRow.manualJustifications) {
+                Object.assign(mergedJustifications, docRow.manualJustifications);
             }
         });
 
-        // 3. Try to load from the dedicated JUSTIFICATIONS collection for the specific date
-        // This is the new "Source of Truth" for immediate saves
-        try {
-            const dedicatedJustificationDoc = await getDoc(doc(firestore, "reports_justifications", dateStr));
-            if (dedicatedJustificationDoc.exists()) {
-                const data = dedicatedJustificationDoc.data() as { justifications: ManualJustifications };
-                if (data.justifications) {
-                    console.log(`[Firestore] Found dedicated justifications for ${dateStr}:`, Object.keys(data.justifications).length, "items");
-                    Object.assign(mergedJustifications, data.justifications);
-                }
-            } else {
-                console.log(`[Firestore] No dedicated justifications found for ${dateStr}`);
-            }
-        } catch (e) {
-            console.warn("Could not load dedicated justifications:", e);
-        }
-
         return { data: mergedJustifications };
     } catch (error: any) {
-        console.error("Error loading justifications by date:", error);
+        console.error('Error loading justifications by date:', error);
         return { data: {}, error: error.message };
     }
 }

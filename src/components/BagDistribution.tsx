@@ -1,17 +1,18 @@
 
 "use client";
 
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { FileUpload } from './bag-distribution/FileUpload';
 import ItemDashboard from './bag-distribution/ItemDashboard';
 import AnalyticsDashboard from './bag-distribution/AnalyticsDashboard';
 import DistributionDashboard from './bag-distribution/DistributionDashboard';
+import { ForecastRunsHistoryPanel } from './bag-distribution/ForecastRunsHistoryPanel';
 import ComparisonDashboard from './bag-distribution/ComparisonDashboard';
 import { Spinner } from './bag-distribution/common/Spinner';
 import { processSingleFile, aggregateData } from '@/services/fileProcessor';
 import { generateAllForecasts } from '@/services/forecastingEngine';
-import type { RawFileData, AllItemsMonthlyData, ItemForecast, ProcessedRow, ItemParameters } from '@/types';
-import { DEFAULT_LEAD_TIME_DAYS, DEFAULT_SERVICE_LEVEL_PERCENTAGE } from './bag-distribution/constants';
+import type { RawFileData, AllItemsMonthlyData, ItemForecast, ProcessedRow, ItemParameters, DistributionResult } from '@/types';
+import { DEFAULT_LEAD_TIME_DAYS, DEFAULT_SERVICE_LEVEL_PERCENTAGE, FORECAST_SNAPSHOT_ENGINE_LABEL } from './bag-distribution/constants';
 import { Header } from './bag-distribution/layout/Header';
 import { Footer } from './bag-distribution/layout/Footer';
 import { AnalyticsIcon } from './bag-distribution/icons/AnalyticsIcon';
@@ -20,7 +21,12 @@ import { CalculatorIcon } from './bag-distribution/icons/CalculatorIcon';
 import { DistributionIcon } from './bag-distribution/icons/DistributionIcon';
 import { TrendingUpIcon } from './bag-distribution/icons/TrendingUpIcon';
 import { Button } from './ui/button';
-import { ArrowLeft } from 'lucide-react';
+import { Label } from './ui/label';
+import { Switch } from './ui/switch';
+import { ArrowLeft, History } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
+import { buildForecastRunPayload, historyRangeFromProcessedRows } from '@/lib/forecastSnapshot';
+import { saveForecastRunSnapshot } from '@/app/forecast-snapshot-actions';
 
 
 interface BagDistributionProps {
@@ -28,16 +34,21 @@ interface BagDistributionProps {
 }
 
 export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuite }) => {
+  const { toast } = useToast();
+  const forecastResultsRef = useRef<ItemForecast[]>([]);
   const [rawFilesData, setRawFilesData] = useState<RawFileData[]>([]);
   const [processedData, setProcessedData] = useState<AllItemsMonthlyData | null>(null);
   const [allProcessedRowsData, setAllProcessedRowsData] = useState<ProcessedRow[]>([]);
   const [itemInventories, setItemInventories] = useState<Map<string, number>>(new Map());
   const [itemParametersMap, setItemParametersMap] = useState<Map<string, ItemParameters>>(new Map());
   const [forecastResults, setForecastResults] = useState<ItemForecast[]>([]);
+  const [autoSaveForecastRuns, setAutoSaveForecastRuns] = useState(true);
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'data' | 'forecast' | 'analytics' | 'distribution' | 'comparative'>('data');
+  const [activeTab, setActiveTab] = useState<
+    'data' | 'forecast' | 'analytics' | 'distribution' | 'comparative' | 'history'
+  >('data');
   const [itemDashboardActiveTab, setItemDashboardActiveTab] = useState<'data' | 'forecast'>('data');
 
   useEffect(() => {
@@ -47,6 +58,10 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
       setItemDashboardActiveTab('data');
     }
   }, [activeTab, forecastResults.length]);
+
+  useEffect(() => {
+    forecastResultsRef.current = forecastResults;
+  }, [forecastResults]);
 
   const handleFilesUploaded = useCallback(async (files: File[]) => {
     setIsLoading(true);
@@ -181,6 +196,54 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
     });
   }, []);
 
+  const persistForecastRunSnapshot = useCallback(
+    async (itemForecasts: ItemForecast[], distributionResults: DistributionResult[]) => {
+      if (!autoSaveForecastRuns) return;
+      if (!itemForecasts.length) return;
+
+      try {
+        const historyRange =
+          allProcessedRowsData.length > 0 ? historyRangeFromProcessedRows(allProcessedRowsData) : undefined;
+        const payload = buildForecastRunPayload({
+          generationDate: new Date(),
+          itemForecasts,
+          distributionResults,
+          historyRange,
+          meta: { engineVersion: FORECAST_SNAPSHOT_ENGINE_LABEL },
+        });
+        const result = await saveForecastRunSnapshot(payload);
+        if (result.success) {
+          toast({
+            title: 'Corrida guardada',
+            description:
+              distributionResults.length > 0
+                ? `Pronóstico y distribución guardados (id: ${result.id}).`
+                : `Pronóstico guardado (id: ${result.id}).`,
+          });
+        } else {
+          toast({
+            variant: 'destructive',
+            title: 'No se pudo guardar la corrida',
+            description: result.error,
+          });
+        }
+      } catch (e) {
+        toast({
+          variant: 'destructive',
+          title: 'Error al guardar',
+          description: (e as Error).message,
+        });
+      }
+    },
+    [allProcessedRowsData, autoSaveForecastRuns, toast],
+  );
+
+  const handleDistributionResultsChange = useCallback(
+    (results: DistributionResult[]) => {
+      void persistForecastRunSnapshot(forecastResultsRef.current, results);
+    },
+    [persistForecastRunSnapshot],
+  );
 
   const handleGenerateForecasts = useCallback(async () => {
     if (!processedData || processedData.size === 0) {
@@ -211,6 +274,9 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
 
       const forecastsData = generateAllForecasts(processedData, allProcessedRowsData, itemInventories, currentParams);
       setForecastResults(forecastsData);
+      if (forecastsData.length > 0) {
+        void persistForecastRunSnapshot(forecastsData, []);
+      }
       setActiveTab('forecast');
       setItemDashboardActiveTab('forecast');
       if (forecastsData.length === 0) {
@@ -223,7 +289,7 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
     } finally {
       setIsLoading(false);
     }
-  }, [processedData, allProcessedRowsData, itemInventories, itemParametersMap]);
+  }, [processedData, allProcessedRowsData, itemInventories, itemParametersMap, persistForecastRunSnapshot]);
 
 
   const uniqueItemCodes = useMemo(() => {
@@ -281,9 +347,9 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
           </div>
         )}
 
-        { (processedData || allProcessedRowsData.length > 0 ) && (
-        <div className="flex border-b border-slate-700 mb-6 flex-wrap">
+        <div className="flex border-b border-slate-700 mb-6 flex-wrap gap-y-1">
             <button
+                type="button"
                 onClick={() => setActiveTab('data')}
                 disabled={!processedData || uniqueItemCodes.length === 0}
                 className={`py-3 px-4 sm:px-6 font-medium text-sm transition-colors ${activeTab === 'data' ? 'border-b-2 border-sky-500 text-sky-400' : 'text-slate-400 hover:text-sky-300'} ${(!processedData || uniqueItemCodes.length === 0) ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -292,6 +358,7 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
                 Inventario
             </button>
             <button
+                type="button"
                 onClick={() => setActiveTab('forecast')}
                 disabled={forecastResults.length === 0 && (!processedData || uniqueItemCodes.length === 0)}
                 className={`py-3 px-4 sm:px-6 font-medium text-sm transition-colors ${activeTab === 'forecast' ? 'border-b-2 border-sky-500 text-sky-400' : 'text-slate-400 hover:text-sky-300'} ${(forecastResults.length === 0 && (!processedData || uniqueItemCodes.length === 0)) ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -300,6 +367,7 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
                 Pronósticos
             </button>
             <button
+                type="button"
                 onClick={() => setActiveTab('analytics')}
                 disabled={!canShowAnalyticsOrDistribution}
                 className={`py-3 px-4 sm:px-6 font-medium text-sm transition-colors ${activeTab === 'analytics' ? 'border-b-2 border-sky-500 text-sky-400' : 'text-slate-400 hover:text-sky-300'} ${!canShowAnalyticsOrDistribution ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -308,6 +376,7 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
                 Analítica
             </button>
             <button
+                type="button"
                 onClick={() => setActiveTab('comparative')}
                 disabled={!canShowAnalyticsOrDistribution}
                 className={`py-3 px-4 sm:px-6 font-medium text-sm transition-colors ${activeTab === 'comparative' ? 'border-b-2 border-sky-500 text-sky-400' : 'text-slate-400 hover:text-sky-300'} ${!canShowAnalyticsOrDistribution ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -316,6 +385,7 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
                 Comparativo
             </button>
             <button
+                type="button"
                 onClick={() => setActiveTab('distribution')}
                 disabled={!canShowAnalyticsOrDistribution || forecastResults.length === 0}
                 className={`py-3 px-4 sm:px-6 font-medium text-sm transition-colors ${activeTab === 'distribution' ? 'border-b-2 border-sky-500 text-sky-400' : 'text-slate-400 hover:text-sky-300'} ${(!canShowAnalyticsOrDistribution || forecastResults.length === 0) ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -323,8 +393,15 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
                 <DistributionIcon className="inline-block w-5 h-5 mr-1 sm:mr-2" />
                 Distribución
             </button>
+            <button
+                type="button"
+                onClick={() => setActiveTab('history')}
+                className={`py-3 px-4 sm:px-6 font-medium text-sm transition-colors ${activeTab === 'history' ? 'border-b-2 border-sky-500 text-sky-400' : 'text-slate-400 hover:text-sky-300'}`}
+            >
+                <History className="inline-block w-5 h-5 mr-1 sm:mr-2" />
+                Historial
+            </button>
         </div>
-        )}
 
         {isLoading && (
           <div className="fixed inset-0 bg-slate-900 bg-opacity-75 flex items-center justify-center z-50">
@@ -335,10 +412,21 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
 
         {activeTab === 'data' && processedData && uniqueItemCodes.length > 0 && (
           <div className="bg-slate-800 shadow-2xl rounded-xl p-6 mb-8">
-            <div className="flex justify-between items-center mb-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:justify-between lg:items-center mb-6">
                  <h2 className="text-3xl font-bold text-sky-400 border-b-2 border-sky-500 pb-2">
                     2. Inventario y Parámetros (General)
                 </h2>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:flex-wrap sm:justify-end">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="auto-save-forecast-runs"
+                    checked={autoSaveForecastRuns}
+                    onCheckedChange={setAutoSaveForecastRuns}
+                  />
+                  <Label htmlFor="auto-save-forecast-runs" className="text-slate-300 text-sm cursor-pointer whitespace-normal">
+                    Guardar automáticamente la corrida en Firestore
+                  </Label>
+                </div>
                 <button
                     onClick={handleGenerateForecasts}
                     disabled={isLoading || uniqueItemCodes.length === 0}
@@ -350,6 +438,7 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
                     </svg>
                     <span>Generar Pronósticos</span>
                 </button>
+                </div>
             </div>
              <ItemDashboard
                 itemCodes={uniqueItemCodes}
@@ -407,6 +496,7 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
             <DistributionDashboard
                 allProcessedRows={allProcessedRowsData}
                 itemForecasts={forecastResults}
+                onDistributionResultsChange={handleDistributionResultsChange}
             />
         )}
          {activeTab === 'distribution' && (!canShowAnalyticsOrDistribution || forecastResults.length === 0) && (
@@ -419,6 +509,8 @@ export const BagDistribution: React.FC<BagDistributionProps> = ({ onReturnToSuit
                 </p>
             </div>
         )}
+
+        {activeTab === 'history' && <ForecastRunsHistoryPanel />}
     </div>
   );
 };

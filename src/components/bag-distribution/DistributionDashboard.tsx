@@ -22,11 +22,14 @@ import { Input } from '@/components/ui/input';
 interface DistributionDashboardProps {
   allProcessedRows: ProcessedRow[];
   itemForecasts: ItemForecast[];
+  /** Notifica a la vista padre cuando cambian los resultados de distribución (para historial Firestore). */
+  onDistributionResultsChange?: (results: DistributionResult[]) => void;
 }
 
 const DistributionDashboard: React.FC<DistributionDashboardProps> = ({
   allProcessedRows,
   itemForecasts,
+  onDistributionResultsChange,
 }) => {
   const [bodegaInventories, setBodegaInventories] = useState<BodegaInventory[]>([]);
   const [distributionResults, setDistributionResults] = useState<DistributionResult[]>([]);
@@ -107,6 +110,7 @@ const DistributionDashboard: React.FC<DistributionDashboardProps> = ({
     setError(null);
     setDiagnosticLogs([]);
     setDistributionResults([]);
+    onDistributionResultsChange?.([]);
 
     try {
       const content = await file.text();
@@ -122,7 +126,7 @@ const DistributionDashboard: React.FC<DistributionDashboardProps> = ({
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [onDistributionResultsChange]);
 
   const handleCalculateDistribution = useCallback(() => {
     if (bodegaInventories.length === 0) {
@@ -153,6 +157,7 @@ const DistributionDashboard: React.FC<DistributionDashboardProps> = ({
       
       setDistributionResults(results);
       setDiagnosticLogs(logs);
+      onDistributionResultsChange?.(results);
 
       if (results.length === 0) {
         setError("No se generaron resultados de distribución. Revise los registros de diagnóstico a continuación para ver los detalles del cálculo.");
@@ -161,10 +166,11 @@ const DistributionDashboard: React.FC<DistributionDashboardProps> = ({
       setError(`Error al calcular la distribución: ${(e as Error).message}`);
       setDiagnosticLogs(prev => [...prev, `ERROR CRÍTICO: ${(e as Error).message}`]);
       setDistributionResults([]);
+      onDistributionResultsChange?.([]);
     } finally {
       setIsLoading(false);
     }
-  }, [allProcessedRows, bodegaInventories, itemForecasts, bodegaCoverageConfig, minMonths, maxCv]);
+  }, [allProcessedRows, bodegaInventories, itemForecasts, bodegaCoverageConfig, minMonths, maxCv, onDistributionResultsChange]);
 
   const handleExportCSV = useCallback(() => {
     if (distributionResults.length === 0) return;

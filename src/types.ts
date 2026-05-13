@@ -610,6 +610,11 @@ export type ManualJustifications = {
     };
 };
 
+/** Mapa nuevo o actualizador funcional (evita perder borrados al hacer varios clics seguidos). */
+export type ManualJustificationsUpdate =
+    | ManualJustifications
+    | ((prev: ManualJustifications) => ManualJustifications);
+
 export interface DetectedBreakDetail {
     packerName: string;
     breakType: 'BREAKFAST' | 'LUNCH' | 'SNACK';
