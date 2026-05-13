@@ -3,7 +3,7 @@
 import React, { useMemo, useState, useCallback } from "react";
 import type { ManualJustifications, ManualJustificationsUpdate, JustificationType } from "@/types";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -15,6 +15,8 @@ import {
 import { Trash2, RefreshCw, ChevronDown, ChevronRight } from "lucide-react";
 import { CURRENT_APP_VERSION } from "@/app/version";
 import { cn } from "@/lib/utils";
+import { format } from "date-fns";
+import { es } from "date-fns/locale";
 
 function typeLabel(t: JustificationType | undefined): string {
   switch (t) {
@@ -33,6 +35,30 @@ function typeLabel(t: JustificationType | undefined): string {
     default:
       return String(t ?? "—");
   }
+}
+
+/** Muchas claves terminan en `-` + epoch ms (13 dígitos) o s (10) del tramo de inactividad. */
+const TRAILING_EPOCH = /-(\d{10,13})$/;
+
+function inferMomentFromKey(key: string): Date | null {
+  const m = key.match(TRAILING_EPOCH);
+  if (!m) return null;
+  const raw = m[1];
+  const n = parseInt(raw, 10);
+  if (Number.isNaN(n)) return null;
+  const ms = raw.length >= 13 ? n : n * 1000;
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  if (y < 2020 || y > 2035) return null;
+  return d;
+}
+
+/** Texto legible antes del sufijo numérico (operario + segmento opcional tipo `-final`). */
+function inferLabelFromKey(key: string): string {
+  const noTs = key.replace(TRAILING_EPOCH, "");
+  const cleaned = noTs.replace(/-(final|pre|post|justified|excess|remains)$/i, "");
+  return cleaned.trim() || "—";
 }
 
 interface ManualJustificationsInspectorProps {
@@ -55,14 +81,31 @@ export const ManualJustificationsInspector: React.FC<ManualJustificationsInspect
 
   const rows = useMemo(() => {
     return Object.entries(justifications)
-      .map(([key, val]) => ({
-        key,
-        type: val.type,
-        detail: [val.reasonText, val.startTime && val.endTime ? `${val.startTime}–${val.endTime}` : "", val.customDuration != null ? `${val.customDuration} min` : ""]
+      .map(([key, val]) => {
+        const inferredAt = inferMomentFromKey(key);
+        const manualTime =
+          val.startTime && val.endTime ? `${val.startTime}–${val.endTime}` : val.startTime || val.endTime || "";
+        const detail = [val.reasonText, manualTime, val.customDuration != null ? `${val.customDuration} min` : ""]
           .filter(Boolean)
-          .join(" · "),
-      }))
-      .sort((a, b) => a.key.localeCompare(b.key));
+          .join(" · ");
+        const inferredLine = inferredAt
+          ? format(inferredAt, "EEE d MMM yyyy, HH:mm", { locale: es })
+          : "";
+        return {
+          key,
+          type: val.type,
+          operatorLabel: inferLabelFromKey(key),
+          inferredAt,
+          inferredLine,
+          detail,
+        };
+      })
+      .sort((a, b) => {
+        const ta = a.inferredAt?.getTime() ?? 0;
+        const tb = b.inferredAt?.getTime() ?? 0;
+        if (ta !== tb) return ta - tb;
+        return a.key.localeCompare(b.key);
+      });
   }, [justifications]);
 
   const removeKey = useCallback(
@@ -97,7 +140,7 @@ export const ManualJustificationsInspector: React.FC<ManualJustificationsInspect
             className="flex items-center gap-2 text-left font-semibold text-foreground hover:opacity-90"
           >
             {open ? <ChevronDown className="h-5 w-5 shrink-0" /> : <ChevronRight className="h-5 w-5 shrink-0" />}
-            <span>Justificaciones manuales (Firestore / día)</span>
+            <span>Justificaciones manuales — día {reportDate || "—"}</span>
           </button>
           <div className="flex flex-wrap items-center gap-2">
             {onReloadFromServer && (
@@ -116,10 +159,10 @@ export const ManualJustificationsInspector: React.FC<ManualJustificationsInspect
           </div>
         </div>
         <CardDescription>
-          Fecha de reporte: <span className="font-mono text-foreground">{reportDate || "—"}</span>. Cada fila es una
-          clave guardada en <code className="text-xs">reports_justifications</code> para este día (si no hay doc
-          dedicado, el servidor puede unir datos de snapshots históricos).
-          Al eliminar, se quita la clave y se vuelve a guardar el documento del día. Versión de app mostrada:{" "}
+          Solo entradas del documento <code className="text-xs">reports_justifications/{reportDate || "—"}</code>{" "}
+          (misma fecha que el reporte que vas a generar). La columna <strong>Fecha/hora (ID)</strong> se calcula del
+          número final de la clave cuando es un instante válido; desayuno/almuerzo sin texto siguen siendo
+          identificables por esa hora. Al borrar se guarda de nuevo el mapa del día. App:{" "}
           <span className="font-mono text-sky-600 dark:text-sky-400">{CURRENT_APP_VERSION}</span>
         </CardDescription>
       </CardHeader>
@@ -131,18 +174,28 @@ export const ManualJustificationsInspector: React.FC<ManualJustificationsInspect
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[38%] min-w-[120px]">Clave (id en Firestore)</TableHead>
-                  <TableHead className="w-[14%]">Tipo</TableHead>
-                  <TableHead>Detalle</TableHead>
+                  <TableHead className="min-w-[140px]">Operario / tramo</TableHead>
+                  <TableHead className="whitespace-nowrap min-w-[150px]">Fecha/hora (ID)</TableHead>
+                  <TableHead className="w-[11%]">Tipo</TableHead>
+                  <TableHead>Detalle manual</TableHead>
+                  <TableHead className="min-w-[200px] max-w-[320px]">Clave completa</TableHead>
                   <TableHead className="w-[100px] text-right">Acción</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {rows.map((row) => (
                   <TableRow key={row.key}>
-                    <TableCell className="font-mono text-xs align-top break-all max-w-[280px]">{row.key}</TableCell>
+                    <TableCell className="text-sm align-top">{row.operatorLabel}</TableCell>
+                    <TableCell className="text-sm align-top whitespace-nowrap text-foreground">
+                      {row.inferredLine || "—"}
+                    </TableCell>
                     <TableCell className="text-sm align-top whitespace-nowrap">{typeLabel(row.type)}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground align-top break-words">{row.detail || "—"}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground align-top break-words">
+                      {row.detail || "—"}
+                    </TableCell>
+                    <TableCell className="font-mono text-[11px] align-top break-all text-muted-foreground">
+                      {row.key}
+                    </TableCell>
                     <TableCell className="text-right align-top">
                       <Button
                         type="button"
