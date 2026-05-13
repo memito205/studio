@@ -33,7 +33,8 @@ import {
     UserMinus,
     LayoutGrid,
     List,
-    RotateCcw
+    RotateCcw,
+    Trash2
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -61,6 +62,11 @@ function manualBreakLabel(type: JustificationType): string | undefined {
     case 'SNACK': return 'Refrigerio';
     default: return undefined;
   }
+}
+
+/** Id del pause original antes de splits (`-justified`, `-excess`, etc.). */
+function baseDeadTimeId(incidentId: string): string {
+  return incidentId.replace(/-(justified|excess|remains|pre|post)$/i, '');
 }
 
 interface Props {
@@ -142,6 +148,40 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
     const next = { ...justifications };
     delete next[incidentId];
     onJustificationsChange(next);
+  };
+
+  /** Quita justificación manual errónea o, si solo venía de pulso automático, marca ignorar pulso. */
+  const handleRemoveJustification = (incident: DeadTimeEntry) => {
+    const baseId = baseDeadTimeId(incident.id);
+    const next = { ...justifications };
+    const manualHere = next[incident.id];
+    const manualBase = baseId !== incident.id ? next[baseId] : undefined;
+    const hadManual =
+      (manualHere && manualHere.type !== 'PULSE_IGNORE') ||
+      (manualBase && manualBase.type !== 'PULSE_IGNORE');
+
+    if (manualHere) delete next[incident.id];
+    if (baseId !== incident.id && manualBase) delete next[baseId];
+
+    if (hadManual) {
+      onJustificationsChange(next);
+      return;
+    }
+
+    if (incident.status === 'Justificado' || incident.status === 'Excedente de Descanso') {
+      next[baseId] = { type: 'PULSE_IGNORE' };
+      onJustificationsChange(next);
+    }
+  };
+
+  const canOfferRemoveJustification = (incident: DeadTimeEntry): boolean => {
+    const baseId = baseDeadTimeId(incident.id);
+    const m = justifications[incident.id];
+    const mb = baseId !== incident.id ? justifications[baseId] : undefined;
+    if (m?.type === 'PULSE_IGNORE' || mb?.type === 'PULSE_IGNORE') return false;
+    if (m && m.type !== 'PULSE_IGNORE') return true;
+    if (mb && mb.type !== 'PULSE_IGNORE') return true;
+    return incident.status === 'Justificado' || incident.status === 'Excedente de Descanso';
   };
   
   const handleSaveReason = () => {
@@ -391,6 +431,15 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
                                                           ? 'Modificar justificación…'
                                                           : 'Justificar con razón…'}
                                                   </DropdownMenuItem>
+                                                  {canOfferRemoveJustification(incident) && (
+                                                      <DropdownMenuItem
+                                                          onClick={() => handleRemoveJustification(incident)}
+                                                          className="text-destructive focus:text-destructive"
+                                                      >
+                                                          <Trash2 className="h-4 w-4 mr-2" />
+                                                          Eliminar justificación
+                                                      </DropdownMenuItem>
+                                                  )}
                                                   {justifications[incident.id]?.type === 'PULSE_IGNORE' ? (
                                                       <DropdownMenuItem onClick={() => handleClearManualJustification(incident.id)}>
                                                           Restaurar sincronización con pulso
