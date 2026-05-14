@@ -16,10 +16,12 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  Layers,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { format, startOfWeek, endOfWeek } from 'date-fns';
 import { useToast } from '@/hooks/use-toast';
+import { useAuth } from '@/hooks/use-auth-context';
 import { 
     saveExternalServiceRows, 
     getExternalServiceRows, 
@@ -30,9 +32,13 @@ import {
 import { ExternalServiceRow, ServiceRate } from '@/types';
 
 interface WeeklyBatch {
+  /** Clave estable para UI (semana+proveedor o grupo manual+proveedor). */
+  batchKey: string;
   weekKey: string;
   weekRange: string;
   provider: string;
+  /** Si no es null, el lote fue armado manualmente en logística (varios días). */
+  manualGroupId: string | null;
   totalValue: number;
   rows: ExternalServiceRow[];
   serviceBreakdown: { 
@@ -60,7 +66,15 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [activeElementId, setActiveElementId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const { toast } = useToast();
+  const { role, loading: authLoading } = useAuth();
+  const isOffice = role === 'office';
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (isOffice && activeTab === 'logistica') setActiveTab('compras');
+  }, [authLoading, isOffice, activeTab]);
 
   // Load data on mount
   useEffect(() => {
@@ -209,6 +223,22 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
     } catch { return "unknown"; }
   };
 
+  const getRowTimeMs = (row: ExternalServiceRow): number => {
+    const d = toDateObject(row.fechaServicio);
+    return d ? d.getTime() : 0;
+  };
+
+  const rowMatchesBatch = (batch: WeeklyBatch, row: ExternalServiceRow): boolean => {
+    if (batch.manualGroupId) {
+      return (
+        row.proveedor === batch.provider &&
+        (row.grupoFacturacion?.trim() ?? '') === batch.manualGroupId
+      );
+    }
+    if (row.grupoFacturacion?.trim()) return false;
+    return getWeekKey(row.fechaServicio) === batch.weekKey && row.proveedor === batch.provider;
+  };
+
   // Logistics View Data
   const logisticsData = useMemo(() => {
     let result = data.filter(row => row.estadoCadena === 'Logística' || row.estadoCadena === 'Devuelto');
@@ -258,13 +288,18 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
     const batches: { [key: string]: WeeklyBatch } = {};
     
     data.forEach(row => {
+      const manual = row.grupoFacturacion?.trim();
       const wKey = getWeekKey(row.fechaServicio);
-      const compositeKey = `${wKey}_${row.proveedor}`;
+      const compositeKey = manual
+        ? `grp_${manual}_${row.proveedor}`
+        : `${wKey}_${row.proveedor}`;
       
       if (!batches[compositeKey]) {
         batches[compositeKey] = {
+          batchKey: compositeKey,
+          manualGroupId: manual || null,
           weekKey: wKey,
-          weekRange: getWeekRange(row.fechaServicio),
+          weekRange: manual ? '' : getWeekRange(row.fechaServicio),
           provider: row.proveedor,
           totalValue: 0,
           rows: [],
@@ -330,6 +365,19 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
     });
     
     let result = Object.values(batches);
+    result.forEach(b => {
+      if (b.manualGroupId && b.rows.length) {
+        const times = b.rows.map(r => getRowTimeMs(r)).filter(t => t > 0);
+        if (times.length) {
+          const dMin = new Date(Math.min(...times));
+          const dMax = new Date(Math.max(...times));
+          b.weekRange = `${format(dMin, 'dd MMM')} - ${format(dMax, 'dd MMM yyyy')} · ${b.rows.length} operaciones`;
+          b.weekKey = format(dMin, 'yyyy-MM-dd');
+        } else {
+          b.weekRange = `Grupo manual · ${b.rows.length} operaciones`;
+        }
+      }
+    });
     if (filterProvider) {
       result = result.filter(b => b.provider.toLowerCase().includes(filterProvider.toLowerCase()));
     }
@@ -341,6 +389,10 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
     if (!oldRow) return;
 
     let updated = { ...oldRow, [field]: value };
+
+    if (field === 'proveedor' && oldRow.grupoFacturacion?.trim()) {
+      updated.grupoFacturacion = '';
+    }
     
     // Auto-calculate depending on field changes
     if (field === 'proveedor' || field === 'servicio' || field === 'cantidad') {
@@ -390,7 +442,7 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
     const updatesList: { id: string, data: ExternalServiceRow }[] = [];
 
     setData(prev => prev.map(row => {
-      if (getWeekKey(row.fechaServicio) === batch.weekKey && row.proveedor === batch.provider) {
+      if (rowMatchesBatch(batch, row)) {
         const updated = { ...row, [field]: coercedValue };
         
         if (field === 'valorFactura') {
@@ -407,6 +459,89 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
     }));
 
     await Promise.all(updatesList.map(u => updateExternalServiceRow(u.id, u.data)));
+  };
+
+  const applyBillingGroupToSelected = async () => {
+    const ids = Array.from(selectedIds);
+    const rows = logisticsData.filter(r => ids.includes(r.id));
+    if (rows.length < 2) {
+      toast({
+        variant: 'destructive',
+        title: 'Selección insuficiente',
+        description: 'Seleccione al menos dos filas para armar un lote de facturación.',
+      });
+      return;
+    }
+    const providers = new Set(rows.map(r => normalize(r.proveedor)));
+    if (providers.size !== 1) {
+      toast({
+        variant: 'destructive',
+        title: 'Proveedor distinto',
+        description: 'Solo se pueden agrupar operaciones del mismo proveedor.',
+      });
+      return;
+    }
+    const provider = rows[0].proveedor;
+    if (!provider.trim()) {
+      toast({
+        variant: 'destructive',
+        title: 'Proveedor requerido',
+        description: 'Complete el proveedor en las filas seleccionadas antes de agrupar.',
+      });
+      return;
+    }
+    const groupId = `fact-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    setIsSaving(true);
+    const errors: string[] = [];
+    for (const r of rows) {
+      const res = await updateExternalServiceRow(r.id, { grupoFacturacion: groupId });
+      if (!res.success) errors.push(res.error || r.id);
+    }
+    setData(prev =>
+      prev.map(row => (ids.includes(row.id) ? { ...row, grupoFacturacion: groupId } : row)),
+    );
+    setIsSaving(false);
+    setSelectedIds(new Set());
+    if (errors.length) {
+      toast({ variant: 'destructive', title: 'Error al guardar', description: errors[0] });
+    } else {
+      toast({
+        title: 'Lote agrupado',
+        description: 'Compras y contabilidad verán un solo bloque para este proveedor con las fechas seleccionadas.',
+      });
+    }
+  };
+
+  const clearBillingGroupFromSelected = async () => {
+    const ids = Array.from(selectedIds);
+    const rows = logisticsData.filter(r => ids.includes(r.id) && r.grupoFacturacion?.trim());
+    if (rows.length === 0) {
+      toast({
+        variant: 'destructive',
+        title: 'Sin grupo',
+        description: 'Las filas seleccionadas no tienen agrupación manual de facturación.',
+      });
+      return;
+    }
+    setIsSaving(true);
+    const errors: string[] = [];
+    for (const r of rows) {
+      const res = await updateExternalServiceRow(r.id, { grupoFacturacion: '' });
+      if (!res.success) errors.push(res.error || r.id);
+    }
+    const clearIds = new Set(rows.map(r => r.id));
+    setData(prev =>
+      prev.map(row =>
+        clearIds.has(row.id) ? { ...row, grupoFacturacion: '' } : row,
+      ),
+    );
+    setIsSaving(false);
+    setSelectedIds(new Set());
+    if (errors.length) {
+      toast({ variant: 'destructive', title: 'Error al guardar', description: errors[0] });
+    } else {
+      toast({ title: 'Agrupación quitada', description: 'Esas operaciones vuelven a consolidarse solo por semana calendario.' });
+    }
   };
 
   const handleRatesUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -586,8 +721,25 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Resumen_Compra");
     
-    const fileName = `Resumen_Compra_${batch.provider}_${batch.weekKey}.xlsx`;
+    const fileName = `Resumen_Compra_${batch.provider}_${batch.batchKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96)}.xlsx`;
     XLSX.writeFile(wb, fileName);
+  };
+
+  const allVisibleSelected =
+    logisticsData.length > 0 && logisticsData.every(r => selectedIds.has(r.id));
+
+  const toggleSelectRow = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllVisible = () => {
+    if (allVisibleSelected) setSelectedIds(new Set());
+    else setSelectedIds(new Set(logisticsData.map(r => r.id)));
   };
 
   if (isLoading) {
@@ -635,7 +787,7 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
               { id: 'logistica', label: '1. Logística', icon: Truck, color: 'text-blue-600', activeBg: 'bg-blue-50' },
               { id: 'compras', label: '2. Compras', icon: ShoppingCart, color: 'text-amber-600', activeBg: 'bg-amber-50' },
               { id: 'contabilidad', label: '3. Contabilidad', icon: Calculator, color: 'text-emerald-600', activeBg: 'bg-emerald-50' }
-            ].map(tab => (
+            ].filter(tab => !isOffice || tab.id !== 'logistica').map(tab => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
@@ -676,10 +828,53 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
         ) : (
           <div className="space-y-6">
             {activeTab === 'logistica' && (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-3 bg-blue-50/90 border border-blue-200 rounded-2xl px-4 py-3 text-sm shadow-sm">
+                  <Layers className="text-blue-700 w-5 h-5 shrink-0" aria-hidden />
+                  <p className="text-slate-700 flex-1 min-w-[220px] leading-snug">
+                    Marque varias operaciones del <span className="font-bold">mismo proveedor</span> (pueden ser días distintos) y agrúpelas para que Compras y Contabilidad las vean como un solo lote, alineado a cómo factura el proveedor.
+                  </p>
+                  <div className="flex flex-wrap gap-2 shrink-0">
+                    <button
+                      type="button"
+                      disabled={isSaving || selectedIds.size < 2}
+                      onClick={() => void applyBillingGroupToSelected()}
+                      className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold shadow-sm disabled:opacity-40 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
+                    >
+                      Agrupar selección
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSaving || selectedIds.size === 0}
+                      onClick={() => void clearBillingGroupFromSelected()}
+                      className="px-4 py-2 rounded-xl bg-white border border-blue-300 text-blue-900 text-xs font-bold shadow-sm disabled:opacity-40 disabled:cursor-not-allowed hover:bg-blue-100/50 transition-colors"
+                    >
+                      Quitar agrupación
+                    </button>
+                    <button
+                      type="button"
+                      disabled={selectedIds.size === 0}
+                      onClick={() => setSelectedIds(new Set())}
+                      className="px-3 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-white/80 disabled:opacity-40"
+                    >
+                      Limpiar selección
+                    </button>
+                  </div>
+                </div>
               <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-lg shadow-slate-100 overflow-x-auto">
                 <table className="w-full text-sm text-left">
                   <thead className="bg-blue-600 text-white font-bold">
                     <tr>
+                      <th className="px-2 py-4 w-11 text-center align-middle">
+                        <input
+                          type="checkbox"
+                          className="rounded border-white/80 bg-white/20 accent-blue-600"
+                          checked={allVisibleSelected}
+                          onChange={toggleSelectAllVisible}
+                          aria-label="Seleccionar todas las filas visibles"
+                        />
+                      </th>
+                      <th className="px-3 py-4 whitespace-nowrap">Lote</th>
                       <th className="px-6 py-4 whitespace-nowrap">Fecha</th>
                       <th className="px-6 py-4 whitespace-nowrap">Proveedor</th>
                       <th className="px-6 py-4 whitespace-nowrap">Servicio</th>
@@ -690,7 +885,32 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {logisticsData.map(row => (
-                      <tr key={row.id} className={cn("hover:bg-blue-50/10", row.estadoCadena === 'Devuelto' && "bg-red-50")}>
+                      <tr
+                        key={row.id}
+                        className={cn(
+                          'hover:bg-blue-50/10',
+                          row.estadoCadena === 'Devuelto' && 'bg-red-50',
+                          row.grupoFacturacion?.trim() && 'bg-violet-50/50',
+                        )}
+                      >
+                        <td className="px-2 py-4 align-middle text-center">
+                          <input
+                            type="checkbox"
+                            className="rounded border-slate-300 accent-blue-600"
+                            checked={selectedIds.has(row.id)}
+                            onChange={() => toggleSelectRow(row.id)}
+                            aria-label={`Seleccionar fila ${row.id}`}
+                          />
+                        </td>
+                        <td className="px-3 py-4 align-middle">
+                          {row.grupoFacturacion?.trim() ? (
+                            <span className="inline-block text-[10px] font-black uppercase tracking-tight bg-violet-200 text-violet-900 px-2 py-1 rounded-lg max-w-[7rem] truncate" title={row.grupoFacturacion}>
+                              Manual
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-400 font-semibold">—</span>
+                          )}
+                        </td>
                         <td className="px-6 py-4">
                           <input
                             type="date"
@@ -765,12 +985,13 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
                   </tbody>
                 </table>
               </div>
+              </div>
             )}
 
             {activeTab === 'compras' && (
               <div className="flex flex-col gap-6">
                 {weeklyBatches.map(batch => {
-                  const bKey = `${batch.weekKey}_${batch.provider}`;
+                  const bKey = batch.batchKey;
                   const isExpanded = expandedBatches.includes(bKey);
                   return (
                     <div key={bKey} className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-md">
@@ -778,13 +999,15 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
                         <div className="flex items-center gap-6">
                            {isExpanded ? <ChevronDown size={24} /> : <ChevronRight size={24} />}
                            <div>
-                              <p className="text-[10px] font-black uppercase tracking-widest opacity-80">Semana: {batch.weekRange}</p>
+                              <p className="text-[10px] font-black uppercase tracking-widest opacity-80">
+                                {batch.manualGroupId ? 'Periodo (agrupado en logística)' : 'Semana'}: {batch.weekRange}
+                              </p>
                               <h3 className="text-xl font-black uppercase tracking-tight mt-1">{batch.provider}</h3>
                            </div>
                         </div>
                         <div className="flex items-center gap-6">
                            <div className="text-right">
-                              <p className="text-[10px] font-bold uppercase opacity-75">Suma Semanal</p>
+                              <p className="text-[10px] font-bold uppercase opacity-75">{batch.manualGroupId ? 'Total lote' : 'Suma semanal'}</p>
                               <p className="text-2xl font-mono font-black">${batch.totalValue.toLocaleString()}</p>
                            </div>
                            <button 
@@ -851,7 +1074,7 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
                         const diff = totalNum - invNum;
                         const diffFinite = Number.isFinite(diff);
                         return (
-                          <tr key={`${batch.weekKey}_${batch.provider}`} className={cn("hover:bg-emerald-50/10", diffFinite && diff !== 0 && "bg-red-50/20")}>
+                          <tr key={batch.batchKey} className={cn("hover:bg-emerald-50/10", diffFinite && diff !== 0 && "bg-red-50/20")}>
                             <td className="px-6 py-5">
                                 <div className="flex flex-col">
                                    <span className="bg-slate-800 text-white px-2 py-1 rounded text-[10px] font-black w-fit uppercase">OC: {batch.ocNumber || "FALTA"}</span>
@@ -901,6 +1124,7 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
                 XLSX.writeFile(wb, `Reporte_Conciliacion_${format(new Date(), 'yyyy-MM-dd')}.xlsx`);
             }} className="bg-emerald-600 text-white p-5 rounded-full shadow-2xl hover:scale-110 transition-all"><Download size={28} /></button>
          )}
+         {!isOffice && (
          <button onClick={async () => {
              const newRow: ExternalServiceRow = {
                  id: "manual-" + Date.now(),
@@ -923,6 +1147,7 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
                 setActiveTab('logistica');
              }
          }} className="bg-indigo-600 text-white p-5 rounded-full shadow-2xl hover:scale-110 transition-all"><Plus size={28} /></button>
+         )}
       </div>
     </div>
   );

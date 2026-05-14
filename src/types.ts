@@ -1513,6 +1513,8 @@ export interface ExternalServiceRow {
     id: string;
     fechaServicio: Date;
     proveedor: string;
+    /** Id compartido: logística agrupa varias operaciones/días en un solo lote de facturación (alternativa a la agrupación semanal automática). */
+    grupoFacturacion?: string;
     cantidad: number;
     servicio: string;
     destino?: string;
