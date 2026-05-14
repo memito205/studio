@@ -32,5 +32,7 @@ if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "TU_API_KEY_AQUI" && fire
   console.warn("CRITICAL: Firebase config is missing or incomplete in src/services/firebase.ts. Please update it with your project's configuration.");
 }
 
+export const firebaseProjectId = firebaseConfig.projectId || 'unknown';
+
 export { auth, firestore, app };
 

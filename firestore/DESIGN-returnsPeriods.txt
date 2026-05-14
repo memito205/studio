@@ -59,3 +59,15 @@ Documento de referencia (paso 1 del plan). La implementación vive en
   al menos una prueba manual con ~20k filas.
 - Reglas publicadas en consola deben coincidir con el fragmento del repo;
   el código no despliega reglas por sí solo.
+
+8. Coste de lecturas (Firestore) y mitigación en la app
+-------------------------------------------------------
+- Firestore factura por documento leído. Cada fila en `buckets` = 1 lectura al
+  reconstruir el reporte.
+- La app: (1) consulta perímetros por `where('year', 'in', …)` para no barrer
+  toda la raíz `returnsPeriods`; (2) carga por defecto solo el año en curso;
+  (3) permite elegir rango de años; (4) guarda el resultado reconstruido en
+  IndexedDB hasta 24 h si los metadatos de esos meses no cambiaron.
+- Los documentos de período deben tener el campo `year` (numérico) relleno;
+  los períodos guardados con la ingesta actual lo incluyen. Períodos antiguos
+  sin `year` no aparecerán en consultas por año hasta re-guardarlos o migrar.

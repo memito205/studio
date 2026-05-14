@@ -1,7 +1,7 @@
 
 "use client";
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { Dashboard } from '@/components/returns-module/Dashboard';
 import { DataPreviewModal } from '@/components/DataPreviewModal';
@@ -16,14 +16,26 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import type { ReturnsPeriodMetaDoc, ReturnsPeriodStatus } from '@/lib/returnsIngest/types';
+import { firebaseProjectId } from '@/services/firebase';
 import {
+  estimateReturnsReadsFromMeta,
+  fingerprintReturnsMetaForYears,
   formatReturnsFirestoreError,
   getReturnsTransactionsForYears,
   ingestReturnsPeriod,
+  listReturnsPeriodMetaForYears,
   listReturnsPeriods,
+  yearsInclusive,
 } from '@/lib/returnsIngest/firestoreReturnsClient';
+import {
+  clearReturnsReadCache,
+  readReturnsReadCache,
+  writeReturnsReadCache,
+} from '@/lib/returnsIngest/returnsReadCache';
 
 const RETURNS_ACCESS_ROLES = new Set(['admin', 'office']);
+/** Caché local IndexedDB: evita releer todos los buckets si los metadatos no cambiaron. */
+const RETURNS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function defaultPeriodId(): string {
   const n = new Date();
@@ -64,6 +76,64 @@ export default function ReturnsModulePage() {
   const [periodStatus, setPeriodStatus] = useState<ReturnsPeriodStatus>('partial');
   const [forceReopenComplete, setForceReopenComplete] = useState(false);
   const [isSavingFirestore, setIsSavingFirestore] = useState(false);
+  const nowYear = new Date().getFullYear();
+  const [loadYearFrom, setLoadYearFrom] = useState(nowYear);
+  const [loadYearTo, setLoadYearTo] = useState(nowYear);
+  const [forceRefreshFs, setForceRefreshFs] = useState(false);
+  const [dataReadSource, setDataReadSource] = useState<'cache' | 'network' | 'mock' | null>(null);
+
+  const firestoreYearOptions = useMemo(() => Array.from({ length: 14 }, (_, i) => nowYear - i), [nowYear]);
+
+  const readYearsSpan = useMemo(() => yearsInclusive(loadYearFrom, loadYearTo), [loadYearFrom, loadYearTo]);
+  const readEstimate = useMemo(
+    () => estimateReturnsReadsFromMeta(firestorePeriods, readYearsSpan),
+    [firestorePeriods, readYearsSpan],
+  );
+
+  const pullReturnsData = useCallback(
+    async (
+      years: number[],
+      forceRemote: boolean,
+      opts?: { silent?: boolean },
+    ): Promise<{ status: 'cache' | 'network' | 'empty' | 'meta_error' | 'fetch_error'; rows?: number }> => {
+      const meta = await listReturnsPeriodMetaForYears(years);
+      if (!meta.success || !meta.data) {
+        if (!opts?.silent) {
+          toast({ variant: 'destructive', title: 'Firestore', description: meta.error ?? 'No se listaron períodos.' });
+        }
+        return { status: 'meta_error' };
+      }
+      setFirestorePeriods(meta.data);
+      const fp = fingerprintReturnsMetaForYears(meta.data, years);
+      const sortedY = [...new Set(years.filter(Number.isFinite))].sort((a, b) => a - b);
+      const key = `${firebaseProjectId}|y:${sortedY.join(',')}|fp:${fp}`;
+      if (!forceRemote) {
+        const cached = await readReturnsReadCache(key, RETURNS_CACHE_TTL_MS);
+        if (cached && cached.length > 0) {
+          setProcessedData(cached);
+          setFileName('Datos desde Firebase (caché local · máx. 24 h)');
+          setDataReadSource('cache');
+          return { status: 'cache', rows: cached.length };
+        }
+      }
+      const fromFs = await getReturnsTransactionsForYears(years);
+      if (!fromFs.success) {
+        if (!opts?.silent) {
+          toast({ variant: 'destructive', title: 'Error', description: fromFs.error ?? 'No se pudo leer buckets.' });
+        }
+        return { status: 'fetch_error' };
+      }
+      if (fromFs.data && fromFs.data.length > 0) {
+        setProcessedData(fromFs.data);
+        setFileName('Datos desde Firebase');
+        setDataReadSource('network');
+        await writeReturnsReadCache(key, fromFs.data, RETURNS_CACHE_TTL_MS);
+        return { status: 'network', rows: fromFs.data.length };
+      }
+      return { status: 'empty' };
+    },
+    [toast],
+  );
 
   const refreshFirestoreMetadata = async (opts?: { showErrorToast?: boolean }) => {
     const meta = await listReturnsPeriods();
@@ -74,26 +144,20 @@ export default function ReturnsModulePage() {
     }
   };
 
-  // Carga inicial: si hay datos en Firestore para año actual y anterior, los usa; si no, muestra mock.
+  // Carga inicial: solo año en curso (menos lecturas). Caché local 24 h si metadatos coinciden.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setIsProcessing(true);
       const y = new Date().getFullYear();
       try {
-        const [fromFs, meta] = await Promise.all([
-          getReturnsTransactionsForYears([y, y - 1]),
-          listReturnsPeriods(),
-        ]);
+        const result = await pullReturnsData(yearsInclusive(y, y), false, { silent: true });
         if (cancelled) return;
-        if (meta.success && meta.data) setFirestorePeriods(meta.data);
-        if (fromFs.success && fromFs.data && fromFs.data.length > 0) {
-          setProcessedData(fromFs.data);
-          setFileName('Datos desde Firebase');
-        } else {
+        if (result.status !== 'cache' && result.status !== 'network') {
           const mockRawData = generateMockData();
           setProcessedData(processRawData(mockRawData));
           setFileName('Datos de muestra (local)');
+          setDataReadSource('mock');
         }
       } catch (e) {
         console.error('[returns-module] Firestore inicial:', e);
@@ -101,6 +165,7 @@ export default function ReturnsModulePage() {
           const mockRawData = generateMockData();
           setProcessedData(processRawData(mockRawData));
           setFileName('Datos de muestra (local)');
+          setDataReadSource('mock');
         }
       } finally {
         if (!cancelled) setIsProcessing(false);
@@ -109,27 +174,22 @@ export default function ReturnsModulePage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [pullReturnsData]);
 
   const handleReloadFromFirestore = async () => {
     setIsProcessing(true);
     try {
-      const y = new Date().getFullYear();
-      const r = await getReturnsTransactionsForYears([y, y - 1]);
-      if (!r.success) {
-        toast({ variant: 'destructive', title: 'Error', description: r.error ?? 'No se pudo leer Firestore.' });
-        return;
-      }
-      if (!r.data?.length) {
+      const years = yearsInclusive(loadYearFrom, loadYearTo);
+      const r = await pullReturnsData(years, forceRefreshFs, { silent: false });
+      if (r.status === 'meta_error' || r.status === 'fetch_error') return;
+      if (r.status === 'empty') {
         toast({
           variant: 'destructive',
           title: 'Sin datos en Firebase',
-          description: 'No hay buckets guardados para el año actual ni el anterior. Guarde un período como administrador o revise el proyecto y las reglas.',
+          description: `No hay buckets para el rango de años seleccionado (${years.join(', ')}).`,
         });
         return;
       }
-      setProcessedData(r.data);
-      setFileName('Datos desde Firebase');
       try {
         await refreshFirestoreMetadata({ showErrorToast: true });
       } catch (metaErr) {
@@ -140,7 +200,11 @@ export default function ReturnsModulePage() {
           description: 'Los datos se cargaron pero no se pudo actualizar la lista de períodos en pantalla.',
         });
       }
-      toast({ title: 'Datos actualizados', description: `Se cargaron ${r.data.length} líneas reconstruidas desde buckets.` });
+      const src = r.status === 'cache' ? 'caché local (sin releer buckets)' : 'Firebase';
+      toast({
+        title: r.status === 'cache' ? 'Datos desde caché' : 'Datos actualizados',
+        description: `${src} · ${r.rows ?? 0} líneas reconstruidas.`,
+      });
     } catch (e) {
       console.error('[returns-module] handleReloadFromFirestore:', e);
       toast({
@@ -151,6 +215,11 @@ export default function ReturnsModulePage() {
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const handleClearReturnsReadCache = async () => {
+    await clearReturnsReadCache();
+    toast({ title: 'Caché local borrada', description: 'La próxima recarga leerá de nuevo desde Firebase.' });
   };
 
   const handlePersistToFirestore = async () => {
@@ -181,6 +250,7 @@ export default function ReturnsModulePage() {
         title: 'Guardado en Firebase',
         description: `${res.bucketCount ?? 0} buckets · días tocados: ${(res.dayKeysTouched ?? []).join(', ') || '—'}`,
       });
+      await clearReturnsReadCache();
       try {
         await refreshFirestoreMetadata({ showErrorToast: true });
       } catch (metaErr) {
@@ -453,6 +523,86 @@ export default function ReturnsModulePage() {
               </button>
             </div>
           </header>
+          {canAccessReturns && (
+            <section className="mb-6 rounded-xl border border-sky-200 bg-sky-50/80 p-4 text-sm text-slate-800 shadow-sm dark:border-sky-900/50 dark:bg-sky-950/40 dark:text-slate-200">
+              <h2 className="mb-2 text-base font-bold text-sky-900 dark:text-sky-200">Lectura desde Firebase (coste)</h2>
+              <p className="mb-2 text-xs text-slate-600 dark:text-slate-400">
+                Cada documento en la subcolección <code className="rounded bg-white/70 px-0.5 dark:bg-slate-900/80">buckets</code> cuenta como
+                una lectura en facturación. Por defecto la suite carga solo el <strong>año en curso</strong>; amplíe el rango solo cuando necesite
+                comparar más años. Si los metadatos de esos meses no cambiaron, durante <strong>24 horas</strong> se usa una caché en este navegador
+                (casi cero lecturas de buckets al volver a entrar).
+              </p>
+              <div className="mb-2 flex flex-wrap items-end gap-3">
+                <label className="flex flex-col gap-1 text-xs font-semibold">
+                  Año desde
+                  <select
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-900"
+                    value={loadYearFrom}
+                    onChange={(e) => setLoadYearFrom(Number(e.target.value))}
+                  >
+                    {firestoreYearOptions.map((y) => (
+                      <option key={`from-${y}`} value={y}>
+                        {y}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-xs font-semibold">
+                  Año hasta
+                  <select
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-900"
+                    value={loadYearTo}
+                    onChange={(e) => setLoadYearTo(Number(e.target.value))}
+                  >
+                    {firestoreYearOptions.map((y) => (
+                      <option key={`to-${y}`} value={y}>
+                        {y}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex max-w-xs items-center gap-2 text-xs font-semibold leading-snug">
+                  <input
+                    type="checkbox"
+                    checked={forceRefreshFs}
+                    onChange={(e) => setForceRefreshFs(e.target.checked)}
+                  />
+                  Forzar lectura remota (ignorar caché 24 h)
+                </label>
+              </div>
+              <p className="mb-2 text-xs text-slate-700 dark:text-slate-300">
+                Estimado en el rango elegido: aprox.{' '}
+                <strong>{readEstimate.estimatedBucketDocReads.toLocaleString('es-CO')}</strong> lecturas de documentos bucket
+                {readEstimate.monthsInRange > 0 ? (
+                  <>
+                    {' '}
+                    ({readEstimate.monthsInRange} mes(es) con metadatos en Firebase)
+                  </>
+                ) : (
+                  <> (sin meses con datos en ese rango según metadatos locales)</>
+                )}
+                . El listado de períodos por año usa consultas acotadas, no toda la colección.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={isProcessing || isGeneratingPdf}
+                  onClick={() => void handleReloadFromFirestore()}
+                  className="rounded-lg bg-sky-700 px-4 py-2 text-xs font-bold text-white shadow hover:bg-sky-800 disabled:opacity-50"
+                >
+                  {isProcessing ? 'Leyendo…' : 'Recargar desde Firebase'}
+                </button>
+                <button
+                  type="button"
+                  disabled={isProcessing || isGeneratingPdf}
+                  onClick={() => void handleClearReturnsReadCache()}
+                  className="rounded-lg border border-sky-500 bg-white px-4 py-2 text-xs font-bold text-sky-900 shadow-sm hover:bg-sky-100 dark:bg-slate-900 dark:text-sky-200 dark:hover:bg-slate-800"
+                >
+                  Limpiar caché local
+                </button>
+              </div>
+            </section>
+          )}
           {role === 'admin' && (
             <section className="mb-8 rounded-xl border border-violet-200 bg-violet-50/80 p-4 text-sm text-slate-800 shadow-sm dark:border-violet-900/50 dark:bg-violet-950/40 dark:text-slate-200">
               <h2 className="mb-2 text-base font-bold text-violet-900 dark:text-violet-200">Persistencia Firebase (devoluciones)</h2>
@@ -462,7 +612,7 @@ export default function ReturnsModulePage() {
               </p>
               {firestorePeriods.length > 0 && (
                 <p className="mb-2 text-xs font-medium text-slate-700 dark:text-slate-300">
-                  Períodos en Firestore:{' '}
+                  Períodos en Firestore (rango o última carga):{' '}
                   {firestorePeriods.map((p) => `${p.periodId} (${p.status})`).join(' · ')}
                 </p>
               )}
@@ -502,14 +652,6 @@ export default function ReturnsModulePage() {
                   className="rounded-lg bg-violet-700 px-4 py-2 text-xs font-bold text-white shadow hover:bg-violet-800 disabled:opacity-50"
                 >
                   {isSavingFirestore ? 'Guardando…' : 'Guardar datos actuales en Firebase'}
-                </button>
-                <button
-                  type="button"
-                  disabled={isProcessing || isGeneratingPdf}
-                  onClick={() => void handleReloadFromFirestore()}
-                  className="rounded-lg border border-violet-400 bg-white px-4 py-2 text-xs font-bold text-violet-900 shadow-sm hover:bg-violet-100 dark:bg-slate-900 dark:text-violet-200 dark:hover:bg-slate-800"
-                >
-                  Recargar desde Firebase
                 </button>
               </div>
             </section>

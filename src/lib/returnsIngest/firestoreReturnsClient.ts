@@ -40,6 +40,56 @@ const BUCKET_SUBCOL_PAGE_SIZE = 350;
 
 const PERIOD_ID_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  if (size <= 0) return [arr];
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+/** Años enteros de `max` a `min` inclusive (orden descendente). */
+export function yearsInclusive(minYear: number, maxYear: number): number[] {
+  const lo = Math.min(minYear, maxYear);
+  const hi = Math.max(minYear, maxYear);
+  const out: number[] = [];
+  for (let y = hi; y >= lo; y--) out.push(y);
+  return out;
+}
+
+export function estimateReturnsReadsFromMeta(
+  metas: ReturnsPeriodMetaDoc[],
+  years: number[],
+): { monthsInRange: number; estimatedBucketDocReads: number } {
+  const set = new Set(years.filter((y) => Number.isFinite(y)));
+  let monthsInRange = 0;
+  let estimatedBucketDocReads = 0;
+  for (const m of metas) {
+    const p = parseReturnsPeriodId(m.periodId);
+    if (!p || !set.has(p.year)) continue;
+    monthsInRange += 1;
+    estimatedBucketDocReads += Math.max(0, Number(m.bucketCount) || 0);
+  }
+  return { monthsInRange, estimatedBucketDocReads };
+}
+
+export function fingerprintReturnsMetaForYears(metas: ReturnsPeriodMetaDoc[], years: number[]): string {
+  const set = new Set(years.filter((y) => Number.isFinite(y)));
+  return metas
+    .filter((m) => {
+      const p = parseReturnsPeriodId(m.periodId);
+      return p && set.has(p.year);
+    })
+    .sort((a, b) => a.periodId.localeCompare(b.periodId))
+    .map((m) => {
+      const ts = m.lastIngestAt as { seconds?: number; toMillis?: () => number } | undefined;
+      let t = '0';
+      if (ts && typeof ts.seconds === 'number') t = String(ts.seconds);
+      else if (ts && typeof ts.toMillis === 'function') t = String(ts.toMillis());
+      return `${m.periodId}:${m.bucketCount ?? 0}:${t}`;
+    })
+    .join('#');
+}
+
 function metaFromPeriodDoc(d: QueryDocumentSnapshot): ReturnsPeriodMetaDoc {
   const raw = d.data() as Record<string, unknown>;
   return {
@@ -141,7 +191,7 @@ async function bucketDocIdAsync(bucket: ReturnsBucketDoc): Promise<string> {
     .join('');
 }
 
-function parsePeriodId(periodId: string): { year: number; month: number } | null {
+export function parseReturnsPeriodId(periodId: string): { year: number; month: number } | null {
   if (!PERIOD_ID_RE.test(periodId)) return null;
   const [y, m] = periodId.split('-').map(Number);
   if (!y || m < 1 || m > 12) return null;
@@ -179,6 +229,39 @@ export async function listReturnsPeriods(): Promise<{
   }
 }
 
+/** Metadatos de períodos cuyo campo `year` está en la lista (menos lecturas que listar toda la raíz). */
+export async function listReturnsPeriodMetaForYears(
+  years: number[],
+): Promise<{ success: boolean; data?: ReturnsPeriodMetaDoc[]; error?: string }> {
+  try {
+    if (typeof window === 'undefined') {
+      return { success: false, error: 'listReturnsPeriodMetaForYears solo en navegador.' };
+    }
+    if (!firestore) {
+      return { success: false, error: 'Firestore no está inicializado (revise firebase.ts).' };
+    }
+    const yearSet = new Set(years.filter((y) => Number.isFinite(y)));
+    if (yearSet.size === 0) {
+      return { success: true, data: [] };
+    }
+    const uniq = [...yearSet].sort((a, b) => a - b);
+    const byId = new Map<string, ReturnsPeriodMetaDoc>();
+    for (const ychunk of chunkArray(uniq, 10)) {
+      if (ychunk.length === 0) continue;
+      const qy = query(collection(firestore, RETURNS_PERIODS), where('year', 'in', ychunk));
+      const snap = await getDocs(qy);
+      for (const d of snap.docs) {
+        byId.set(d.id, metaFromPeriodDoc(d));
+      }
+    }
+    const data = [...byId.values()].sort((a, b) => b.periodId.localeCompare(a.periodId));
+    return { success: true, data };
+  } catch (e: unknown) {
+    console.error('[listReturnsPeriodMetaForYears]', e);
+    return { success: false, error: formatReturnsFirestoreError(e) };
+  }
+}
+
 export async function getReturnsTransactionsForYears(
   years: number[],
 ): Promise<{ success: boolean; data?: Transaction[]; error?: string }> {
@@ -194,14 +277,18 @@ export async function getReturnsTransactionsForYears(
       return { success: true, data: [] };
     }
 
-    const periodIds: string[] = [];
-    await forEachReturnsPeriodRootPage(firestore, (docs) => {
-      for (const d of docs) {
-        const id = d.id;
-        const p = parsePeriodId(id);
-        if (p && yearSet.has(p.year)) periodIds.push(id);
+    const uniqYears = [...yearSet].sort((a, b) => a - b);
+    const periodIdSet = new Set<string>();
+    for (const ychunk of chunkArray(uniqYears, 10)) {
+      if (ychunk.length === 0) continue;
+      const qy = query(collection(firestore, RETURNS_PERIODS), where('year', 'in', ychunk));
+      const snapYears = await getDocs(qy);
+      for (const d of snapYears.docs) {
+        const p = parseReturnsPeriodId(d.id);
+        if (p && yearSet.has(p.year)) periodIdSet.add(d.id);
       }
-    });
+    }
+    const periodIds = [...periodIdSet];
 
     const allBuckets: ReturnsBucketDoc[] = [];
     for (const periodId of periodIds) {
@@ -257,7 +344,7 @@ export async function ingestReturnsPeriod(params: {
       };
     }
 
-    const parsed = parsePeriodId(params.periodId);
+    const parsed = parseReturnsPeriodId(params.periodId);
     if (!parsed) {
       return { success: false, error: 'periodId debe ser YYYY-MM (ej. 2025-01).' };
     }
