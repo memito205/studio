@@ -17,10 +17,11 @@ import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import type { ReturnsPeriodMetaDoc, ReturnsPeriodStatus } from '@/lib/returnsIngest/types';
 import {
+  formatReturnsFirestoreError,
   getReturnsTransactionsForYears,
   ingestReturnsPeriod,
   listReturnsPeriods,
-} from '@/app/returns-ingest-actions';
+} from '@/lib/returnsIngest/firestoreReturnsClient';
 
 const RETURNS_ACCESS_ROLES = new Set(['admin', 'office']);
 
@@ -64,9 +65,13 @@ export default function ReturnsModulePage() {
   const [forceReopenComplete, setForceReopenComplete] = useState(false);
   const [isSavingFirestore, setIsSavingFirestore] = useState(false);
 
-  const refreshFirestoreMetadata = async () => {
+  const refreshFirestoreMetadata = async (opts?: { showErrorToast?: boolean }) => {
     const meta = await listReturnsPeriods();
-    if (meta.success && meta.data) setFirestorePeriods(meta.data);
+    if (meta.success && meta.data) {
+      setFirestorePeriods(meta.data);
+    } else if (!meta.success && meta.error && opts?.showErrorToast) {
+      toast({ variant: 'destructive', title: 'Períodos en Firebase', description: meta.error });
+    }
   };
 
   // Carga inicial: si hay datos en Firestore para año actual y anterior, los usa; si no, muestra mock.
@@ -126,7 +131,7 @@ export default function ReturnsModulePage() {
       setProcessedData(r.data);
       setFileName('Datos desde Firebase');
       try {
-        await refreshFirestoreMetadata();
+        await refreshFirestoreMetadata({ showErrorToast: true });
       } catch (metaErr) {
         console.error('[returns-module] refreshFirestoreMetadata:', metaErr);
         toast({
@@ -177,7 +182,7 @@ export default function ReturnsModulePage() {
         description: `${res.bucketCount ?? 0} buckets · días tocados: ${(res.dayKeysTouched ?? []).join(', ') || '—'}`,
       });
       try {
-        await refreshFirestoreMetadata();
+        await refreshFirestoreMetadata({ showErrorToast: true });
       } catch (metaErr) {
         console.error('[returns-module] refreshFirestoreMetadata tras guardar:', metaErr);
       }
@@ -186,7 +191,7 @@ export default function ReturnsModulePage() {
       toast({
         variant: 'destructive',
         title: 'Error inesperado',
-        description: e instanceof Error ? e.message : 'Fallo al invocar la acción de guardado.',
+        description: formatReturnsFirestoreError(e),
       });
     } finally {
       setIsSavingFirestore(false);

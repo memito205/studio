@@ -1,12 +1,10 @@
-'use server';
-
 /**
- * Persistencia del reporte de devoluciones (buckets opción B).
- * Reglas Firestore: fusionar `firestore/returnsPeriods.rules.fragment` en su ruleset
- * (instrucciones en `firestore/README-returnsPeriods.txt`).
+ * Lectura/escritura de `returnsPeriods` desde el navegador.
+ * Las reglas suelen exigir `request.auth`; el SDK en server actions no envía el usuario,
+ * por eso aquí se usa el mismo `firestore` que ya va con la sesión de Auth del cliente.
  */
 
-import { createHash } from 'crypto';
+import { FirebaseError } from 'firebase/app';
 import {
   collection,
   deleteDoc,
@@ -33,9 +31,35 @@ const BUCKETS_SUB = 'buckets';
 
 const PERIOD_ID_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
-function bucketDocId(bucket: ReturnsBucketDoc): string {
+export function formatReturnsFirestoreError(e: unknown): string {
+  if (e instanceof FirebaseError) {
+    if (e.code === 'permission-denied') {
+      return 'Firestore rechazó la operación (permission-denied). Debe estar logueado como administrador y las reglas deben permitir returnsPeriods para su usuario.';
+    }
+    if (e.code === 'failed-precondition') {
+      return `${e.message} (Si pide índice, ábralo desde el enlace del mensaje en consola.)`;
+    }
+    return `${e.code}: ${e.message}`;
+  }
+  if (typeof e === 'object' && e !== null && 'code' in e && 'message' in e) {
+    const code = String((e as { code: unknown }).code);
+    const message = String((e as { message: unknown }).message);
+    if (code === 'permission-denied') {
+      return 'Firestore rechazó la operación (permission-denied). Debe estar logueado como administrador y las reglas deben permitir returnsPeriods para su usuario.';
+    }
+    return `${code}: ${message}`;
+  }
+  if (e instanceof Error) return e.message;
+  return typeof e === 'string' ? e : 'Error desconocido al hablar con Firestore.';
+}
+
+async function bucketDocIdAsync(bucket: ReturnsBucketDoc): Promise<string> {
   const payload = JSON.stringify(bucket);
-  return createHash('sha256').update(payload).digest('hex');
+  const enc = new TextEncoder().encode(payload);
+  const digest = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 function parsePeriodId(periodId: string): { year: number; month: number } | null {
@@ -52,15 +76,17 @@ function reviveTransactions(rows: Transaction[]): Transaction[] {
   }));
 }
 
-/** Lista metadatos de períodos guardados (orden por periodId desc). */
 export async function listReturnsPeriods(): Promise<{
   success: boolean;
   data?: ReturnsPeriodMetaDoc[];
   error?: string;
 }> {
   try {
+    if (typeof window === 'undefined') {
+      return { success: false, error: 'listReturnsPeriods solo puede ejecutarse en el navegador.' };
+    }
     if (!firestore) {
-      return { success: false, error: 'Firestore no está inicializado.' };
+      return { success: false, error: 'Firestore no está inicializado (revise firebase.ts).' };
     }
     const snap = await getDocs(collection(firestore, RETURNS_PERIODS));
     const data: ReturnsPeriodMetaDoc[] = snap.docs.map((d) => {
@@ -79,22 +105,20 @@ export async function listReturnsPeriods(): Promise<{
     data.sort((a, b) => b.periodId.localeCompare(a.periodId));
     return { success: true, data };
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : 'Error al listar períodos.';
     console.error('[listReturnsPeriods]', e);
-    return { success: false, error: msg };
+    return { success: false, error: formatReturnsFirestoreError(e) };
   }
 }
 
-/**
- * Lee todos los buckets de los períodos cuyo año está en `years` y devuelve `Transaction[]`
- * (reconstrucción opción B, misma semántica que el dashboard con filas sintéticas).
- */
 export async function getReturnsTransactionsForYears(
   years: number[],
 ): Promise<{ success: boolean; data?: Transaction[]; error?: string }> {
   try {
+    if (typeof window === 'undefined') {
+      return { success: false, error: 'getReturnsTransactionsForYears solo puede ejecutarse en el navegador.' };
+    }
     if (!firestore) {
-      return { success: false, error: 'Firestore no está inicializado.' };
+      return { success: false, error: 'Firestore no está inicializado (revise firebase.ts).' };
     }
     const yearSet = new Set(years.filter((y) => Number.isFinite(y)));
     if (yearSet.size === 0) {
@@ -132,28 +156,25 @@ export async function getReturnsTransactionsForYears(
 
     return { success: true, data: bucketDocsToTransactions(allBuckets) };
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : 'Error al leer devoluciones desde Firestore.';
     console.error('[getReturnsTransactionsForYears]', e);
-    return { success: false, error: msg };
+    return { success: false, error: formatReturnsFirestoreError(e) };
   }
 }
 
-/**
- * Idempotencia por día: borra buckets de `returnsPeriods/{periodId}/buckets` cuyo `dayKey`
- * está en los días presentes en `transactions`, luego escribe los buckets agregados.
- */
 export async function ingestReturnsPeriod(params: {
   periodId: string;
   transactions: Transaction[];
   status: ReturnsPeriodStatus;
   lastIngestBy?: string;
-  /** Si el período ya está `complete`, solo admin puede pasar true. */
   forceReopenComplete?: boolean;
   callerRole?: string | null;
 }): Promise<{ success: boolean; error?: string; bucketCount?: number; dayKeysTouched?: string[] }> {
   try {
+    if (typeof window === 'undefined') {
+      return { success: false, error: 'ingestReturnsPeriod solo puede ejecutarse en el navegador.' };
+    }
     if (!firestore) {
-      return { success: false, error: 'Firestore no está inicializado.' };
+      return { success: false, error: 'Firestore no está inicializado (revise firebase.ts).' };
     }
     if (params.callerRole === 'office') {
       return { success: false, error: 'El perfil oficina no puede guardar datos en Firebase.' };
@@ -198,7 +219,6 @@ export async function ingestReturnsPeriod(params: {
       }
     }
 
-    /** Documento padre temprano: la colección `returnsPeriods` aparece en consola aunque fallen batches posteriores. */
     await setDoc(
       periodRef,
       {
@@ -236,10 +256,12 @@ export async function ingestReturnsPeriod(params: {
 
     const CHUNK = 450;
     for (let i = 0; i < bucketDocs.length; i += CHUNK) {
-      const batch = writeBatch(firestore);
       const slice = bucketDocs.slice(i, i + CHUNK);
-      for (const b of slice) {
-        const id = bucketDocId(b);
+      const idPairs = await Promise.all(
+        slice.map(async (b) => ({ b, id: await bucketDocIdAsync(b) })),
+      );
+      const batch = writeBatch(firestore);
+      for (const { b, id } of idPairs) {
         const bref = doc(firestore, RETURNS_PERIODS, params.periodId, BUCKETS_SUB, id);
         batch.set(bref, { ...b });
       }
@@ -263,8 +285,7 @@ export async function ingestReturnsPeriod(params: {
 
     return { success: true, bucketCount: bucketDocs.length, dayKeysTouched: dayKeys };
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : 'Error al guardar el período.';
     console.error('[ingestReturnsPeriod]', e);
-    return { success: false, error: msg };
+    return { success: false, error: formatReturnsFirestoreError(e) };
   }
 }

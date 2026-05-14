@@ -17,11 +17,9 @@ Comportamiento propuesto
 - Escritura: solo usuarios cuyo documento users/{uid} tenga role == "admin".
 
 Requisito: el cliente (navegador) debe estar autenticado con Firebase Auth para
-que request.auth no sea null. Las server actions de Next que usan el SDK web
-sin sesión de usuario suelen tener request.auth == null: si tras desplegar
-reglas las lecturas/escrituras desde el servidor fallan con PERMISSION_DENIED,
-use temporalmente reglas más abiertas solo en devoluciones o migre la ingesta
-a Firebase Admin SDK con cuenta de servicio.
+que request.auth no sea null. La lectura/escritura de returnsPeriods se hace
+desde el navegador con el mismo SDK de Firestore que ya lleva el token del
+usuario (no desde server actions sin sesión).
 
 Bloque a fusionar (sintaxis rules v2)
 -------------------------------------
