@@ -11,10 +11,10 @@ resto de colecciones. Copie el bloque "match /returnsPeriods" dentro de:
     <PEGUE AQUÍ EL BLOQUE DE ABAJO>
   }
 
-Comportamiento propuesto
-------------------------
-- Lectura: usuarios autenticados (admin u office pueden ver el módulo).
-- Escritura: solo usuarios cuyo documento users/{uid} tenga role == "admin".
+Comportamiento propuesto (paso 3 del plan)
+------------------------------------------
+- Lectura: solo roles admin u office (alineado con quién entra al módulo devoluciones).
+- Escritura: solo role admin en users/{uid}.
 
 Requisito: el cliente (navegador) debe estar autenticado con Firebase Auth para
 que request.auth no sea null. La lectura/escritura de returnsPeriods se hace
@@ -25,13 +25,17 @@ Bloque a fusionar (sintaxis rules v2)
 -------------------------------------
 
     match /returnsPeriods/{periodId} {
-      allow read: if request.auth != null;
+      allow read: if request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'office'];
       allow create, update, delete: if request.auth != null
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
 
       match /buckets/{bucketId} {
-        allow read: if request.auth != null;
+        allow read: if request.auth != null
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'office'];
         allow create, update, delete: if request.auth != null
           && exists(/databases/$(database)/documents/users/$(request.auth.uid))
           && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';

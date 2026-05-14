@@ -2,13 +2,18 @@
 // NO usar como archivo de reglas completo.
 
     match /returnsPeriods/{periodId} {
-      allow read: if request.auth != null;
+      // Paso 3 plan: lectura admin u oficina; escritura solo admin.
+      allow read: if request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'office'];
       allow create, update, delete: if request.auth != null
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
 
       match /buckets/{bucketId} {
-        allow read: if request.auth != null;
+        allow read: if request.auth != null
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'office'];
         allow create, update, delete: if request.auth != null
           && exists(/databases/$(database)/documents/users/$(request.auth.uid))
           && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
