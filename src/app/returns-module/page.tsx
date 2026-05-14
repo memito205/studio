@@ -108,30 +108,54 @@ export default function ReturnsModulePage() {
 
   const handleReloadFromFirestore = async () => {
     setIsProcessing(true);
-    const y = new Date().getFullYear();
-    const r = await getReturnsTransactionsForYears([y, y - 1]);
-    setIsProcessing(false);
-    if (!r.success) {
-      toast({ variant: 'destructive', title: 'Error', description: r.error ?? 'No se pudo leer Firestore.' });
-      return;
-    }
-    if (!r.data?.length) {
+    try {
+      const y = new Date().getFullYear();
+      const r = await getReturnsTransactionsForYears([y, y - 1]);
+      if (!r.success) {
+        toast({ variant: 'destructive', title: 'Error', description: r.error ?? 'No se pudo leer Firestore.' });
+        return;
+      }
+      if (!r.data?.length) {
+        toast({
+          variant: 'destructive',
+          title: 'Sin datos en Firebase',
+          description: 'No hay buckets guardados para el año actual ni el anterior. Guarde un período como administrador o revise el proyecto y las reglas.',
+        });
+        return;
+      }
+      setProcessedData(r.data);
+      setFileName('Datos desde Firebase');
+      try {
+        await refreshFirestoreMetadata();
+      } catch (metaErr) {
+        console.error('[returns-module] refreshFirestoreMetadata:', metaErr);
+        toast({
+          variant: 'destructive',
+          title: 'Metadatos',
+          description: 'Los datos se cargaron pero no se pudo actualizar la lista de períodos en pantalla.',
+        });
+      }
+      toast({ title: 'Datos actualizados', description: `Se cargaron ${r.data.length} líneas reconstruidas desde buckets.` });
+    } catch (e) {
+      console.error('[returns-module] handleReloadFromFirestore:', e);
       toast({
         variant: 'destructive',
-        title: 'Sin datos en Firebase',
-        description: 'No hay buckets guardados para el año actual ni el anterior.',
+        title: 'Error al recargar',
+        description: e instanceof Error ? e.message : 'Fallo de red o del servidor al leer Firestore.',
       });
-      return;
+    } finally {
+      setIsProcessing(false);
     }
-    setProcessedData(r.data);
-    setFileName('Datos desde Firebase');
-    await refreshFirestoreMetadata();
-    toast({ title: 'Datos actualizados', description: `Se cargaron ${r.data.length} líneas reconstruidas desde buckets.` });
   };
 
   const handlePersistToFirestore = async () => {
-    if (role !== 'admin') {
-      toast({ variant: 'destructive', title: 'No permitido', description: 'Solo administrador puede guardar en Firebase.' });
+    const isAdmin = role?.toLowerCase() === 'admin';
+    if (!isAdmin) {
+      toast({
+        variant: 'destructive',
+        title: 'No permitido',
+        description: `Solo administrador puede guardar en Firebase (rol actual: ${role ?? 'sin sesión'}).`,
+      });
       return;
     }
     setIsSavingFirestore(true);
@@ -152,7 +176,18 @@ export default function ReturnsModulePage() {
         title: 'Guardado en Firebase',
         description: `${res.bucketCount ?? 0} buckets · días tocados: ${(res.dayKeysTouched ?? []).join(', ') || '—'}`,
       });
-      await refreshFirestoreMetadata();
+      try {
+        await refreshFirestoreMetadata();
+      } catch (metaErr) {
+        console.error('[returns-module] refreshFirestoreMetadata tras guardar:', metaErr);
+      }
+    } catch (e) {
+      console.error('[returns-module] handlePersistToFirestore:', e);
+      toast({
+        variant: 'destructive',
+        title: 'Error inesperado',
+        description: e instanceof Error ? e.message : 'Fallo al invocar la acción de guardado.',
+      });
     } finally {
       setIsSavingFirestore(false);
     }
