@@ -1,0 +1,16 @@
+// Fragmento para fusionar en firestore.rules (ver README-returnsPeriods.txt).
+// NO usar como archivo de reglas completo.
+
+    match /returnsPeriods/{periodId} {
+      allow read: if request.auth != null;
+      allow create, update, delete: if request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+
+      match /buckets/{bucketId} {
+        allow read: if request.auth != null;
+        allow create, update, delete: if request.auth != null
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      }
+    }

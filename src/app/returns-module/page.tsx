@@ -11,11 +11,32 @@ import { processRawData } from '@/services/dataUtils';
 import { FileDownIcon } from '@/components/returns-module/icons';
 import AuthLayout from '@/components/AuthLayout';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Loader2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { useAuth } from '@/hooks/use-auth-context';
+import { useToast } from '@/hooks/use-toast';
+import type { ReturnsPeriodMetaDoc, ReturnsPeriodStatus } from '@/lib/returnsIngest/types';
+import {
+  getReturnsTransactionsForYears,
+  ingestReturnsPeriod,
+  listReturnsPeriods,
+} from '@/app/returns-ingest-actions';
 
+const RETURNS_ACCESS_ROLES = new Set(['admin', 'office']);
 
-declare const html2pdf: any;
+function defaultPeriodId(): string {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/** Carga perezosa: en Next no existe el script global del CDN del prototipo estático. */
+let html2pdfLoader: Promise<(typeof import('html2pdf.js'))['default']> | null = null;
+function loadHtml2Pdf() {
+  if (!html2pdfLoader) {
+    html2pdfLoader = import('html2pdf.js').then((m) => m.default);
+  }
+  return html2pdfLoader;
+}
 
 export default function ReturnsModulePage() {
   const [processedData, setProcessedData] = useState<Transaction[]>([]);
@@ -29,19 +50,116 @@ export default function ReturnsModulePage() {
   const [fileName, setFileName] = useState('Datos de Muestra');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
+  const { toast } = useToast();
+  const { role, loading: authLoading, user } = useAuth();
+  const canAccessReturns = role != null && RETURNS_ACCESS_ROLES.has(role);
+  /** Office no puede importar Excel ni carpetas; el resto del reporte (PDF, filtros, año) sí. */
+  const canUploadExcel = role !== 'office';
   
   const dashboardStateRef = useRef<{ year: number; filters: Filters } | null>(null);
 
+  const [firestorePeriods, setFirestorePeriods] = useState<ReturnsPeriodMetaDoc[]>([]);
+  const [periodIdInput, setPeriodIdInput] = useState(defaultPeriodId);
+  const [periodStatus, setPeriodStatus] = useState<ReturnsPeriodStatus>('partial');
+  const [forceReopenComplete, setForceReopenComplete] = useState(false);
+  const [isSavingFirestore, setIsSavingFirestore] = useState(false);
 
-  // Load and process mock data on initial render
+  const refreshFirestoreMetadata = async () => {
+    const meta = await listReturnsPeriods();
+    if (meta.success && meta.data) setFirestorePeriods(meta.data);
+  };
+
+  // Carga inicial: si hay datos en Firestore para año actual y anterior, los usa; si no, muestra mock.
   useEffect(() => {
-    const mockRawData = generateMockData();
-    const processed = processRawData(mockRawData);
-    setProcessedData(processed);
-    setIsProcessing(false);
+    let cancelled = false;
+    (async () => {
+      setIsProcessing(true);
+      const y = new Date().getFullYear();
+      try {
+        const [fromFs, meta] = await Promise.all([
+          getReturnsTransactionsForYears([y, y - 1]),
+          listReturnsPeriods(),
+        ]);
+        if (cancelled) return;
+        if (meta.success && meta.data) setFirestorePeriods(meta.data);
+        if (fromFs.success && fromFs.data && fromFs.data.length > 0) {
+          setProcessedData(fromFs.data);
+          setFileName('Datos desde Firebase');
+        } else {
+          const mockRawData = generateMockData();
+          setProcessedData(processRawData(mockRawData));
+          setFileName('Datos de muestra (local)');
+        }
+      } catch (e) {
+        console.error('[returns-module] Firestore inicial:', e);
+        if (!cancelled) {
+          const mockRawData = generateMockData();
+          setProcessedData(processRawData(mockRawData));
+          setFileName('Datos de muestra (local)');
+        }
+      } finally {
+        if (!cancelled) setIsProcessing(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
+  const handleReloadFromFirestore = async () => {
+    setIsProcessing(true);
+    const y = new Date().getFullYear();
+    const r = await getReturnsTransactionsForYears([y, y - 1]);
+    setIsProcessing(false);
+    if (!r.success) {
+      toast({ variant: 'destructive', title: 'Error', description: r.error ?? 'No se pudo leer Firestore.' });
+      return;
+    }
+    if (!r.data?.length) {
+      toast({
+        variant: 'destructive',
+        title: 'Sin datos en Firebase',
+        description: 'No hay buckets guardados para el año actual ni el anterior.',
+      });
+      return;
+    }
+    setProcessedData(r.data);
+    setFileName('Datos desde Firebase');
+    await refreshFirestoreMetadata();
+    toast({ title: 'Datos actualizados', description: `Se cargaron ${r.data.length} líneas reconstruidas desde buckets.` });
+  };
+
+  const handlePersistToFirestore = async () => {
+    if (role !== 'admin') {
+      toast({ variant: 'destructive', title: 'No permitido', description: 'Solo administrador puede guardar en Firebase.' });
+      return;
+    }
+    setIsSavingFirestore(true);
+    try {
+      const res = await ingestReturnsPeriod({
+        periodId: periodIdInput.trim(),
+        transactions: processedData,
+        status: periodStatus,
+        lastIngestBy: user?.email ?? undefined,
+        forceReopenComplete: forceReopenComplete,
+        callerRole: role,
+      });
+      if (!res.success) {
+        toast({ variant: 'destructive', title: 'No se guardó', description: res.error });
+        return;
+      }
+      toast({
+        title: 'Guardado en Firebase',
+        description: `${res.bucketCount ?? 0} buckets · días tocados: ${(res.dayKeysTouched ?? []).join(', ') || '—'}`,
+      });
+      await refreshFirestoreMetadata();
+    } finally {
+      setIsSavingFirestore(false);
+    }
+  };
+
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (role === 'office') return;
     const files = event.target.files;
     if (!files || files.length === 0) return;
     
@@ -113,28 +231,34 @@ export default function ReturnsModulePage() {
     }
   };
 
-  const generatePdf = (data: Transaction[], filename: string, year: number) => {
+  const generatePdf = (data: Transaction[], filename: string, _year: number) => {
     return new Promise<void>((resolve, reject) => {
-        setCurrentPdfName(filename);
-        setProcessedData(data); 
+      setCurrentPdfName(filename);
+      setProcessedData(data);
 
-        setTimeout(() => {
+      setTimeout(() => {
+        void (async () => {
+          try {
+            const html2pdf = await loadHtml2Pdf();
             const element = document.getElementById('dashboard-for-print');
-            if (element) {
-                const options = {
-                    margin: [0.25, 0.25, 0.25, 0.25], // inches
-                    filename: `${filename}.pdf`,
-                    image: { type: 'jpeg', quality: 0.85 },
-                    html2canvas: { scale: 1.5, useCORS: true, logging: false },
-                    jsPDF: { unit: 'in', format: 'letter', orientation: 'landscape' }
-                };
-                html2pdf().from(element).set(options).save().then(() => {
-                    resolve();
-                }).catch(reject);
-            } else {
-                reject(new Error("Print layout element (#dashboard-for-print) not found for PDF export."));
+            if (!element) {
+              reject(new Error('Print layout element (#dashboard-for-print) not found for PDF export.'));
+              return;
             }
-        }, 1500); // Allow time for charts to render in the print layout
+            const options = {
+              margin: [0.25, 0.25, 0.25, 0.25] as [number, number, number, number],
+              filename: `${filename}.pdf`,
+              image: { type: 'jpeg' as const, quality: 0.85 },
+              html2canvas: { scale: 1.5, useCORS: true, logging: false },
+              jsPDF: { unit: 'in', format: 'letter', orientation: 'landscape' as const },
+            };
+            await html2pdf().from(element).set(options).save();
+            resolve();
+          } catch (e) {
+            reject(e);
+          }
+        })();
+      }, 1500);
     });
   };
 
@@ -199,6 +323,33 @@ export default function ReturnsModulePage() {
     document.documentElement.classList.add('dark');
   }, []);
 
+  if (authLoading) {
+    return (
+      <AuthLayout>
+        <div className="flex min-h-[50vh] items-center justify-center">
+          <Loader2 className="h-12 w-12 animate-spin text-primary" />
+        </div>
+      </AuthLayout>
+    );
+  }
+
+  if (!canAccessReturns) {
+    return (
+      <AuthLayout>
+        <div className="mx-auto max-w-lg rounded-lg border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+          <h1 className="text-xl font-semibold text-slate-900 dark:text-white">Acceso restringido</h1>
+          <p className="mt-2 text-slate-600 dark:text-slate-400">
+            El reporte de devoluciones solo está disponible para los perfiles administrador u oficina.
+          </p>
+          <Button className="mt-6" onClick={() => router.push('/')} variant="outline">
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Volver a la Suite
+          </Button>
+        </div>
+      </AuthLayout>
+    );
+  }
+
   return (
     <AuthLayout>
       {isGeneratingPdf && (
@@ -215,12 +366,19 @@ export default function ReturnsModulePage() {
             <div>
               <h1 className="text-3xl font-bold text-slate-900 dark:text-white">Análisis de Ventas y Devoluciones</h1>
               <p className="text-slate-500 dark:text-slate-400">Mostrando datos de: <span className="font-semibold text-slate-600 dark:text-slate-300">{fileName}</span></p>
+              {role === 'office' && (
+                <p className="mt-2 text-sm text-amber-700 dark:text-amber-300/90">
+                  Perfil oficina: puede explorar el reporte, filtrar y exportar PDF; no puede cargar archivos ni carpetas de datos.
+                </p>
+              )}
                <Button onClick={() => router.push('/')} variant="outline" className="mt-4">
                     <ArrowLeft className="mr-2 h-4 w-4" />
                     Volver a la Suite
                 </Button>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 justify-end">
+              {canUploadExcel && (
+                <>
               <input
                 type="file"
                 ref={fileInputRef}
@@ -243,6 +401,8 @@ export default function ReturnsModulePage() {
               >
                 {isProcessing ? 'Procesando...' : 'Cargar Carpeta'}
               </button>
+                </>
+              )}
               <button
                 onClick={handleExportPdf}
                 disabled={isProcessing || isGeneratingPdf}
@@ -253,6 +413,67 @@ export default function ReturnsModulePage() {
               </button>
             </div>
           </header>
+          {role === 'admin' && (
+            <section className="mb-8 rounded-xl border border-violet-200 bg-violet-50/80 p-4 text-sm text-slate-800 shadow-sm dark:border-violet-900/50 dark:bg-violet-950/40 dark:text-slate-200">
+              <h2 className="mb-2 text-base font-bold text-violet-900 dark:text-violet-200">Persistencia Firebase (devoluciones)</h2>
+              <p className="mb-3 text-xs text-slate-600 dark:text-slate-400">
+                Los datos se guardan como buckets agregados (opción B) en <code className="rounded bg-white/70 px-1 dark:bg-slate-900/80">returnsPeriods/&lt;YYYY-MM&gt;/buckets</code>.
+                Idempotencia por día: al guardar, se borran solo los días presentes en el dataset actual y se reescriben.
+              </p>
+              {firestorePeriods.length > 0 && (
+                <p className="mb-2 text-xs font-medium text-slate-700 dark:text-slate-300">
+                  Períodos en Firestore:{' '}
+                  {firestorePeriods.map((p) => `${p.periodId} (${p.status})`).join(' · ')}
+                </p>
+              )}
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="flex flex-col gap-1 text-xs font-semibold">
+                  Período (YYYY-MM)
+                  <input
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1.5 font-mono text-sm dark:border-slate-600 dark:bg-slate-900"
+                    value={periodIdInput}
+                    onChange={(e) => setPeriodIdInput(e.target.value)}
+                    placeholder="2025-01"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-xs font-semibold">
+                  Estado
+                  <select
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-900"
+                    value={periodStatus}
+                    onChange={(e) => setPeriodStatus(e.target.value as ReturnsPeriodStatus)}
+                  >
+                    <option value="partial">Parcial</option>
+                    <option value="complete">Completo</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 text-xs font-semibold">
+                  <input
+                    type="checkbox"
+                    checked={forceReopenComplete}
+                    onChange={(e) => setForceReopenComplete(e.target.checked)}
+                  />
+                  Forzar si el mes estaba completo
+                </label>
+                <button
+                  type="button"
+                  disabled={isSavingFirestore || isProcessing || isGeneratingPdf}
+                  onClick={() => void handlePersistToFirestore()}
+                  className="rounded-lg bg-violet-700 px-4 py-2 text-xs font-bold text-white shadow hover:bg-violet-800 disabled:opacity-50"
+                >
+                  {isSavingFirestore ? 'Guardando…' : 'Guardar datos actuales en Firebase'}
+                </button>
+                <button
+                  type="button"
+                  disabled={isProcessing || isGeneratingPdf}
+                  onClick={() => void handleReloadFromFirestore()}
+                  className="rounded-lg border border-violet-400 bg-white px-4 py-2 text-xs font-bold text-violet-900 shadow-sm hover:bg-violet-100 dark:bg-slate-900 dark:text-violet-200 dark:hover:bg-slate-800"
+                >
+                  Recargar desde Firebase
+                </button>
+              </div>
+            </section>
+          )}
           <main>
             {isProcessing && processedData.length === 0 ? (
                  <div className="flex items-center justify-center min-h-[50vh] text-slate-800 dark:text-slate-200">

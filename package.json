@@ -48,6 +48,7 @@
     "express": "^4.21.2",
     "firebase": "^11.9.1",
     "html2canvas": "^1.4.1",
+    "html2pdf.js": "^0.14.0",
     "html5-qrcode": "^2.3.8",
     "jsbarcode": "^3.11.6",
     "jspdf": "^2.5.1",
