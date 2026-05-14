@@ -9,13 +9,18 @@ import {
   collection,
   deleteDoc,
   doc,
+  documentId,
   getDoc,
   getDocs,
+  limit,
+  orderBy,
   query,
   setDoc,
+  startAfter,
   Timestamp,
   where,
   writeBatch,
+  type QueryDocumentSnapshot,
 } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
 import type { Transaction } from '@/types';
@@ -29,7 +34,81 @@ import type { ReturnsBucketDoc, ReturnsPeriodMetaDoc, ReturnsPeriodStatus } from
 const RETURNS_PERIODS = 'returnsPeriods';
 const BUCKETS_SUB = 'buckets';
 
+/** Paginación paso 5: evita un único snapshot enorme en raíz y en `buckets`. */
+const PERIOD_ROOT_PAGE_SIZE = 200;
+const BUCKET_SUBCOL_PAGE_SIZE = 350;
+
 const PERIOD_ID_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+function metaFromPeriodDoc(d: QueryDocumentSnapshot): ReturnsPeriodMetaDoc {
+  const raw = d.data() as Record<string, unknown>;
+  return {
+    periodId: d.id,
+    year: Number(raw.year ?? 0),
+    month: Number(raw.month ?? 0),
+    status: (raw.status as ReturnsPeriodStatus) || 'partial',
+    lastIngestAt: raw.lastIngestAt,
+    lastIngestBy: raw.lastIngestBy != null ? String(raw.lastIngestBy) : undefined,
+    coversThrough: raw.coversThrough != null ? String(raw.coversThrough) : undefined,
+    bucketCount: raw.bucketCount != null ? Number(raw.bucketCount) : undefined,
+  };
+}
+
+function bucketFromSnapshot(bd: QueryDocumentSnapshot): ReturnsBucketDoc {
+  const raw = bd.data() as ReturnsBucketDoc;
+  return {
+    dayKey: String(raw.dayKey ?? ''),
+    type: String(raw.type ?? ''),
+    pdv: String(raw.pdv ?? ''),
+    brand: String(raw.brand ?? ''),
+    gender: String(raw.gender ?? ''),
+    group: String(raw.group ?? ''),
+    returnReason: raw.returnReason != null ? String(raw.returnReason) : '',
+    reference: String(raw.reference ?? ''),
+    lineCount: Number(raw.lineCount ?? 0),
+    sumValue: Number(raw.sumValue ?? 0),
+    sumQuantity: Number(raw.sumQuantity ?? 0),
+  };
+}
+
+/** Itera documentos de la raíz `returnsPeriods` por páginas de `documentId`. */
+async function forEachReturnsPeriodRootPage(
+  fs: NonNullable<typeof firestore>,
+  onPage: (docs: QueryDocumentSnapshot[]) => void,
+): Promise<void> {
+  const col = collection(fs, RETURNS_PERIODS);
+  let last: QueryDocumentSnapshot | null = null;
+  for (;;) {
+    const q = last
+      ? query(col, orderBy(documentId()), startAfter(last), limit(PERIOD_ROOT_PAGE_SIZE))
+      : query(col, orderBy(documentId()), limit(PERIOD_ROOT_PAGE_SIZE));
+    const snap = await getDocs(q);
+    if (snap.empty) break;
+    onPage(snap.docs);
+    last = snap.docs[snap.docs.length - 1];
+    if (snap.size < PERIOD_ROOT_PAGE_SIZE) break;
+  }
+}
+
+/** Itera `buckets` de un período por páginas de `documentId`. */
+async function forEachBucketPage(
+  fs: NonNullable<typeof firestore>,
+  periodId: string,
+  onEach: (bd: QueryDocumentSnapshot) => void,
+): Promise<void> {
+  const col = collection(fs, RETURNS_PERIODS, periodId, BUCKETS_SUB);
+  let last: QueryDocumentSnapshot | null = null;
+  for (;;) {
+    const q = last
+      ? query(col, orderBy(documentId()), startAfter(last), limit(BUCKET_SUBCOL_PAGE_SIZE))
+      : query(col, orderBy(documentId()), limit(BUCKET_SUBCOL_PAGE_SIZE));
+    const snap = await getDocs(q);
+    if (snap.empty) break;
+    for (const bd of snap.docs) onEach(bd);
+    last = snap.docs[snap.docs.length - 1];
+    if (snap.size < BUCKET_SUBCOL_PAGE_SIZE) break;
+  }
+}
 
 export function formatReturnsFirestoreError(e: unknown): string {
   if (e instanceof FirebaseError) {
@@ -88,19 +167,9 @@ export async function listReturnsPeriods(): Promise<{
     if (!firestore) {
       return { success: false, error: 'Firestore no está inicializado (revise firebase.ts).' };
     }
-    const snap = await getDocs(collection(firestore, RETURNS_PERIODS));
-    const data: ReturnsPeriodMetaDoc[] = snap.docs.map((d) => {
-      const raw = d.data() as Record<string, unknown>;
-      return {
-        periodId: d.id,
-        year: Number(raw.year ?? 0),
-        month: Number(raw.month ?? 0),
-        status: (raw.status as ReturnsPeriodStatus) || 'partial',
-        lastIngestAt: raw.lastIngestAt,
-        lastIngestBy: raw.lastIngestBy != null ? String(raw.lastIngestBy) : undefined,
-        coversThrough: raw.coversThrough != null ? String(raw.coversThrough) : undefined,
-        bucketCount: raw.bucketCount != null ? Number(raw.bucketCount) : undefined,
-      };
+    const data: ReturnsPeriodMetaDoc[] = [];
+    await forEachReturnsPeriodRootPage(firestore, (docs) => {
+      data.push(...docs.map(metaFromPeriodDoc));
     });
     data.sort((a, b) => b.periodId.localeCompare(a.periodId));
     return { success: true, data };
@@ -125,33 +194,20 @@ export async function getReturnsTransactionsForYears(
       return { success: true, data: [] };
     }
 
-    const periodsSnap = await getDocs(collection(firestore, RETURNS_PERIODS));
-    const periodIds = periodsSnap.docs
-      .map((d) => d.id)
-      .filter((id) => {
+    const periodIds: string[] = [];
+    await forEachReturnsPeriodRootPage(firestore, (docs) => {
+      for (const d of docs) {
+        const id = d.id;
         const p = parsePeriodId(id);
-        return p && yearSet.has(p.year);
-      });
+        if (p && yearSet.has(p.year)) periodIds.push(id);
+      }
+    });
 
     const allBuckets: ReturnsBucketDoc[] = [];
     for (const periodId of periodIds) {
-      const bSnap = await getDocs(collection(firestore, RETURNS_PERIODS, periodId, BUCKETS_SUB));
-      for (const bd of bSnap.docs) {
-        const raw = bd.data() as ReturnsBucketDoc;
-        allBuckets.push({
-          dayKey: String(raw.dayKey ?? ''),
-          type: String(raw.type ?? ''),
-          pdv: String(raw.pdv ?? ''),
-          brand: String(raw.brand ?? ''),
-          gender: String(raw.gender ?? ''),
-          group: String(raw.group ?? ''),
-          returnReason: raw.returnReason != null ? String(raw.returnReason) : '',
-          reference: String(raw.reference ?? ''),
-          lineCount: Number(raw.lineCount ?? 0),
-          sumValue: Number(raw.sumValue ?? 0),
-          sumQuantity: Number(raw.sumQuantity ?? 0),
-        });
-      }
+      await forEachBucketPage(firestore, periodId, (bd) => {
+        allBuckets.push(bucketFromSnapshot(bd));
+      });
     }
 
     return { success: true, data: bucketDocsToTransactions(allBuckets) };

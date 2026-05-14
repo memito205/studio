@@ -1,6 +1,8 @@
 Fragmento de reglas Firestore — returnsPeriods (reporte de devoluciones)
 ================================================================================
 
+Diseño de datos (paso 1 del plan): ver `DESIGN-returnsPeriods.txt` en esta carpeta.
+
 IMPORTANTE
 ----------
 No reemplace todo su archivo firestore.rules con solo este bloque: perdería el
@@ -44,9 +46,12 @@ Bloque a fusionar (sintaxis rules v2)
 
 Índices
 -------
-Las consultas usan equality en dayKey dentro de la subcolección buckets; en la
-mayoría de proyectos Firestore crea índice simple automáticamente. Si la
-consola pide un índice compuesto, créelo con el enlace que ofrece el error.
+- Las consultas de ingesta usan equality en `dayKey` dentro de la subcolección
+  `buckets`; en muchos proyectos Firestore crea índice simple automáticamente.
+  Si la consola pide un índice compuesto, créelo con el enlace del error.
+- La lectura paginada (paso 5) usa `orderBy(documentId())` + `limit` en raíz
+  `returnsPeriods` y en cada `buckets`; no suele requerir índice compuesto
+  adicional frente a un solo campo de orden.
 
 Despliegue (CLI)
 ----------------

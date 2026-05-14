@@ -1,0 +1,61 @@
+Diseño fijo — returnsPeriods (reporte de devoluciones)
+======================================================
+Documento de referencia (paso 1 del plan). La implementación vive en
+`src/lib/returnsIngest/` y `src/lib/returnsIngest/firestoreReturnsClient.ts`.
+
+1. Colecciones y rutas
+----------------------
+- Raíz: colección `returnsPeriods`.
+- ID de documento de período: `YYYY-MM` (ej. `2025-03`). Validación en código
+  con regex estricta.
+- Subcolección por período: `returnsPeriods/{periodId}/buckets/{bucketDocId}`.
+
+2. Opción B (agregación)
+------------------------
+- Cada documento en `buckets` representa un agregado por:
+  día local (dayKey YYYY-MM-DD), tipo, PDV, marca, género, grupo, motivo
+  devolución, referencia completa.
+- Varios renglones de Excel que comparten esas dimensiones se fusionan en un
+  solo bucket (lineCount, sumValue, sumQuantity).
+- `bucketDocId` = SHA-256 del JSON estable del bucket (mismo contenido → mismo id).
+
+3. Campos del documento de período (metadatos)
+-----------------------------------------------
+- `periodId`, `year`, `month` (redundantes con el id pero útiles en queries).
+- `status`: `partial` | `complete`.
+- `coversThrough`: último `dayKey` incluido en la última ingesta (null si vacío).
+- `lastIngestAt`: Timestamp de Firestore.
+- `lastIngestBy`: string (email u operador).
+- `bucketCount`: número de documentos en la subcolección `buckets` tras ingesta.
+
+4. Ingesta e idempotencia
+-------------------------
+- Se calculan los `dayKey` distintos presentes en las filas a guardar.
+- Para cada `dayKey`, se borran en Firestore todos los buckets de ese día en
+  ese período (consulta `where dayKey ==`).
+- Luego se escriben los nuevos buckets agregados (batches de hasta 450 ops).
+- Si el período ya tiene `status == complete`, no se permite nueva escritura
+  salvo que un administrador marque explícitamente reabrir (flag en UI/código).
+
+5. Lectura hacia el dashboard
+-----------------------------
+- `bucketDocsToTransactions` expande buckets a `Transaction[]` sintéticas (misma
+  semántica agregada que el dashboard espera).
+- La lectura desde Firestore recorre la raíz `returnsPeriods` y cada subcolección
+  `buckets` en páginas (`orderBy(documentId())` + `limit`) para no depender de
+  un único `getDocs` sin límite (paso 5 del plan).
+
+6. Seguridad (resumen; detalle en returnsPeriods.rules.fragment)
+-----------------------------------------------------------------
+- Lectura: roles `admin` y `office` (documento `users/{uid}`).
+- Escritura: solo `admin`.
+
+7. Qué puede quedar pendiente después del plan base
+----------------------------------------------------
+- Memoria en el navegador: aunque la lectura de Firestore sea paginada, el
+  resultado final sigue siendo un `Transaction[]` completo; volúmenes muy
+  grandes pueden requerir virtualización en el dashboard o agregados server-side.
+- Pruebas automatizadas (Excel pequeño / grande) no están en el repo; conviene
+  al menos una prueba manual con ~20k filas.
+- Reglas publicadas en consola deben coincidir con el fragmento del repo;
+  el código no despliega reglas por sí solo.
