@@ -161,6 +161,25 @@ export async function ingestReturnsPeriod(params: {
 
     const transactions = reviveTransactions(params.transactions);
 
+    if (transactions.length === 0) {
+      return {
+        success: false,
+        error:
+          'No hay filas para guardar. Importe un Excel o carpeta, confirme en la vista previa y use «Guardar datos actuales en Firebase» (solo subir archivos no escribe en Firestore).',
+      };
+    }
+
+    const badDates = transactions.filter((t) => {
+      const d = t.date instanceof Date ? t.date : new Date(String((t as { date?: unknown }).date));
+      return Number.isNaN(d.getTime());
+    });
+    if (badDates.length > 0) {
+      return {
+        success: false,
+        error: `Hay ${badDates.length} fila(s) con fecha inválida; corrija el Excel antes de guardar.`,
+      };
+    }
+
     const parsed = parsePeriodId(params.periodId);
     if (!parsed) {
       return { success: false, error: 'periodId debe ser YYYY-MM (ej. 2025-01).' };
@@ -178,6 +197,22 @@ export async function ingestReturnsPeriod(params: {
         };
       }
     }
+
+    /** Documento padre temprano: la colección `returnsPeriods` aparece en consola aunque fallen batches posteriores. */
+    await setDoc(
+      periodRef,
+      {
+        periodId: params.periodId,
+        year: parsed.year,
+        month: parsed.month,
+        status: params.status,
+        lastIngestAt: Timestamp.now(),
+        lastIngestBy: params.lastIngestBy ?? null,
+        coversThrough: null,
+        bucketCount: 0,
+      },
+      { merge: true },
+    );
 
     const dayKeys = Array.from(
       new Set(transactions.map((t) => transactionLocalDayKey(t.date))),
