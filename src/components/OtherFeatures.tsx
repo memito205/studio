@@ -10,6 +10,7 @@ import { SubModuleCard } from './SubModuleCard';
 import { FinancialCalculator } from './financial-calculator/FinancialCalculator';
 import { CreditSimulator } from './CreditSimulator';
 import { useRouter } from 'next/navigation';
+import { useAuth } from '@/hooks/use-auth-context';
 import { FletesVtex } from './FletesVtex';
 import { PropuestaTransportadora } from './PropuestaTransportadora';
 import { TulasDistribucion } from './TulasDistribucion';
@@ -22,9 +23,13 @@ interface OtherFeaturesProps {
 
 type OtherFeaturesView = 'main' | 'financial_calculator' | 'credit_simulator' | 'returns_module' | 'fletes_vtex' | 'propuesta_transportadora' | 'tulas_distribucion' | 'bag_counting';
 
+const CAN_ACCESS_RETURNS_MODULE = new Set(['admin', 'office']);
+
 export const OtherFeatures: React.FC<OtherFeaturesProps> = ({ onReturnToSuite }) => {
   const [view, setView] = useState<OtherFeaturesView>('main');
   const router = useRouter();
+  const { role } = useAuth();
+  const canAccessReturns = role != null && CAN_ACCESS_RETURNS_MODULE.has(role);
 
   if (view === 'financial_calculator') {
     return <FinancialCalculator onReturn={() => setView('main')} />;
@@ -52,16 +57,14 @@ export const OtherFeatures: React.FC<OtherFeaturesProps> = ({ onReturnToSuite })
 
   // The returns module is now a dedicated page, so we navigate to it.
   if (view === 'returns_module') {
-    // We can't render a full page component here directly.
-    // The best approach is to navigate to its dedicated route.
-    // This effect will run once when the view is set to 'returns_module'.
     React.useEffect(() => {
-        router.push('/returns-module');
-    }, [router]);
+        if (canAccessReturns) router.push('/returns-module');
+        else setView('main');
+    }, [router, canAccessReturns]);
     
     return (
         <div className="flex justify-center items-center h-64">
-            <p>Redirigiendo al Módulo de Devoluciones...</p>
+            <p>{canAccessReturns ? 'Redirigiendo al Módulo de Devoluciones…' : 'Volviendo…'}</p>
         </div>
     );
   }
@@ -98,6 +101,7 @@ export const OtherFeatures: React.FC<OtherFeaturesProps> = ({ onReturnToSuite })
             actionText="Acceder"
             onAction={() => setView('credit_simulator')}
           />
+          {canAccessReturns && (
           <SubModuleCard
             iconName="Undo2"
             title="Reporte de Devoluciones"
@@ -105,6 +109,7 @@ export const OtherFeatures: React.FC<OtherFeaturesProps> = ({ onReturnToSuite })
             actionText="Acceder"
             onAction={() => router.push('/returns-module')}
           />
+          )}
           <SubModuleCard
             iconName="Ship"
             title="Fletes VTEX"
