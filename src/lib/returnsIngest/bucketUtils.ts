@@ -2,7 +2,7 @@ import type { Transaction } from '@/types';
 import { TransactionType } from '@/types';
 import type { ReturnsBucketDoc } from './types';
 
-/** Fecha local YYYY-MM-DD (alineado a cómo agrupa el dashboard por `Date` local). */
+/** Fecha local YYYY-MM-DD (por si se necesita granularidad diaria en otro flujo). */
 export function transactionLocalDayKey(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -10,9 +10,27 @@ export function transactionLocalDayKey(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+/** Mes local `YYYY-MM` — misma granularidad que los reportes del módulo (mensual). */
+export function transactionLocalMonthKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  return `${y}-${m}`;
+}
+
+/** Primer instante del mes siguiente (clave exclusiva alta para rangos en Firestore). */
+export function nextCalendarMonthKey(ym: string): string {
+  const m = ym.match(/^(\d{4})-(\d{2})$/);
+  if (!m) return `${ym}~`;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  if (!y || mo < 1 || mo > 12) return `${ym}~`;
+  const next = new Date(y, mo, 1);
+  return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`;
+}
+
 function bucketAggregateKey(row: Transaction): string {
   return JSON.stringify({
-    day: transactionLocalDayKey(row.date),
+    month: transactionLocalMonthKey(row.date),
     type: row.type,
     pdv: row.pdv,
     brand: row.brand,
@@ -43,7 +61,7 @@ export function transactionsToBucketDocs(rows: Transaction[]): ReturnsBucketDoc[
 
   for (const row of rows) {
     const key = bucketAggregateKey(row);
-    const dayKey = transactionLocalDayKey(row.date);
+    const dayKey = transactionLocalMonthKey(row.date);
     const cur =
       map.get(key) ??
       {
@@ -80,8 +98,14 @@ export function transactionsToBucketDocs(rows: Transaction[]): ReturnsBucketDoc[
   }));
 }
 
-function parseDayKeyToDate(dayKey: string): Date {
-  const [y, m, d] = dayKey.split('-').map(Number);
+/** Convierte clave guardada en `dayKey`: mensual `YYYY-MM` o legado diario `YYYY-MM-DD`. */
+function parseBucketKeyToDate(dayKey: string): Date {
+  const parts = dayKey.split('-').map(Number);
+  if (parts.length === 2 && parts[0] && parts[1] >= 1 && parts[1] <= 12) {
+    const [y, m] = parts;
+    return new Date(y, m - 1, 1, 12, 0, 0, 0);
+  }
+  const [y, m, d] = parts;
   if (!y || !m || !d) return new Date();
   return new Date(y, m - 1, d, 12, 0, 0, 0);
 }
@@ -89,7 +113,7 @@ function parseDayKeyToDate(dayKey: string): Date {
 export function bucketDocsToTransactions(buckets: ReturnsBucketDoc[]): Transaction[] {
   const out: Transaction[] = [];
   for (const b of buckets) {
-    const baseDate = parseDayKeyToDate(b.dayKey);
+    const baseDate = parseBucketKeyToDate(b.dayKey);
     const lineCount = Math.max(0, Math.floor(b.lineCount));
     const v = lineCount > 0 ? b.sumValue / lineCount : 0;
     const q = lineCount > 0 ? b.sumQuantity / lineCount : 0;

@@ -13,8 +13,9 @@ Documento de referencia (paso 1 del plan). La implementación vive en
 2. Opción B (agregación)
 ------------------------
 - Cada documento en `buckets` representa un agregado por:
-  día local (dayKey YYYY-MM-DD), tipo, PDV, marca, género, grupo, motivo
-  devolución, referencia completa.
+  **mes local** (campo `dayKey` con valor `YYYY-MM` — mismos gráficos/reportes
+  mensuales del módulo; legado puede tener `YYYY-MM-DD` diario), tipo, PDV,
+  marca, género, grupo, motivo devolución, referencia completa.
 - Varios renglones de Excel que comparten esas dimensiones se fusionan en un
   solo bucket (lineCount, sumValue, sumQuantity).
 - `bucketDocId` = SHA-256 del JSON estable del bucket (mismo contenido → mismo id).
@@ -23,16 +24,18 @@ Documento de referencia (paso 1 del plan). La implementación vive en
 -----------------------------------------------
 - `periodId`, `year`, `month` (redundantes con el id pero útiles en queries).
 - `status`: `partial` | `complete`.
-- `coversThrough`: último `dayKey` incluido en la última ingesta (null si vacío).
+- `coversThrough`: último mes de agregación `YYYY-MM` tocado (o legado con día).
 - `lastIngestAt`: Timestamp de Firestore.
 - `lastIngestBy`: string (email u operador).
 - `bucketCount`: número de documentos en la subcolección `buckets` tras ingesta.
 
 4. Ingesta e idempotencia
 -------------------------
-- Se calculan los `dayKey` distintos presentes en las filas a guardar.
-- Para cada `dayKey`, se borran en Firestore todos los buckets de ese día en
-  ese período (consulta `where dayKey ==`).
+- Se calculan los meses locales (`YYYY-MM`) distintos presentes en las filas.
+- Para cada mes, se borran en Firestore todos los buckets cuyo `dayKey` cae en
+  ese mes: consulta de rango `dayKey >= "YYYY-MM"` y `dayKey < "YYYY-MM+1"`
+  (así se eliminan tanto buckets mensuales nuevos como legados diarios
+  `YYYY-MM-DD` del mismo mes).
 - Luego se escriben los nuevos buckets agregados (batches de hasta 450 ops).
 - Si el período ya tiene `status == complete`, no se permite nueva escritura
   salvo que un administrador marque explícitamente reabrir (flag en UI/código).
@@ -71,3 +74,34 @@ Documento de referencia (paso 1 del plan). La implementación vive en
 - Los documentos de período deben tener el campo `year` (numérico) relleno;
   los períodos guardados con la ingesta actual lo incluyen. Períodos antiguos
   sin `year` no aparecerán en consultas por año hasta re-guardarlos o migrar.
+
+9. “Siguiente escalón” si aún quieren menos lecturas (lenguaje sencillo)
+------------------------------------------------------------------------
+Hoy el navegador, al armar el reporte, **lee muchos documentos** en Firestore
+(uno por cada “bucket” de datos agregados). Eso es como ir al almacén y contar
+**cada caja** cada vez que quieren ver el inventario: funciona, pero cuesta.
+
+Si más adelante quieren **bajar mucho más** el número de lecturas al abrir el
+módulo, hay tres ideas típicas (no excluyentes):
+
+1) **Resumen por mes en pocos documentos**  
+   Al guardar (o con un proceso nocturno), además de los buckets se escribe
+   **un solo documento** por mes con los totales que el tablero realmente usa
+   (por ejemplo totales por PDV o por marca). Al abrir el reporte, la app lee
+   **solo esos resúmenes** (decenas de lecturas en vez de miles). El detalle
+   fino seguiría en buckets solo si alguien lo pide.
+
+2) **Archivo en Cloud Storage**  
+   Tras cada carga o una vez al día, un proceso genera un **archivo** (por
+   ejemplo JSON comprimido) con el reporte ya armado y lo sube a Storage. La
+   app solo **descarga ese archivo** (casi una sola operación de lectura de
+   red respecto a Firestore). Es útil cuando el dataset es muy grande.
+
+3) **Job diario**  
+   Un programador (Cloud Functions / cron) **una vez al día** recalcula y
+   guarda el resumen o el archivo. Los usuarios del día solo consumen ese
+   resultado ya preparado, en lugar de recalcular desde cero cada visita.
+
+Cualquiera de estas implica **más diseño y mantenimiento**; la agregación
+**mensual en buckets** que hicimos antes reduce ya un orden de magnitud sin
+tanto complejidad.

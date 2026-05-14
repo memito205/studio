@@ -248,7 +248,7 @@ export default function ReturnsModulePage() {
       }
       toast({
         title: 'Guardado en Firebase',
-        description: `${res.bucketCount ?? 0} buckets · días tocados: ${(res.dayKeysTouched ?? []).join(', ') || '—'}`,
+        description: `${res.bucketCount ?? 0} buckets · meses reescritos: ${(res.monthsTouched ?? []).join(', ') || '—'}`,
       });
       await clearReturnsReadCache();
       try {
@@ -608,7 +608,7 @@ export default function ReturnsModulePage() {
               <h2 className="mb-2 text-base font-bold text-violet-900 dark:text-violet-200">Persistencia Firebase (devoluciones)</h2>
               <p className="mb-3 text-xs text-slate-600 dark:text-slate-400">
                 Los datos se guardan como buckets agregados (opción B) en <code className="rounded bg-white/70 px-1 dark:bg-slate-900/80">returnsPeriods/&lt;YYYY-MM&gt;/buckets</code>.
-                Idempotencia por día: al guardar, se borran solo los días presentes en el dataset actual y se reescriben.
+                Idempotencia por mes: al guardar, se borran los buckets de los meses presentes en el Excel (incluye legado diario del mismo mes) y se reescriben.
               </p>
               {firestorePeriods.length > 0 && (
                 <p className="mb-2 text-xs font-medium text-slate-700 dark:text-slate-300">

@@ -9,7 +9,7 @@ export interface ReturnsPeriodMetaDoc {
   status: ReturnsPeriodStatus;
   lastIngestAt?: unknown;
   lastIngestBy?: string;
-  /** Último día (YYYY-MM-DD) incluido en la última ingesta (útil si el mes es parcial). */
+  /** Último mes de agregación tocado (`YYYY-MM`) o legado `YYYY-MM-DD`. */
   coversThrough?: string;
   bucketCount?: number;
 }
@@ -19,6 +19,7 @@ export interface ReturnsPeriodMetaDoc {
  * Un documento por bucket en `returnsPeriods/{periodId}/buckets/{bucketDocId}`.
  */
 export interface ReturnsBucketDoc {
+  /** Clave temporal de agregación: preferente `YYYY-MM` (mensual). Legado: `YYYY-MM-DD` (diario). */
   dayKey: string;
   type: string;
   pdv: string;

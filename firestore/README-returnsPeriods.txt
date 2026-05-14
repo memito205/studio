@@ -46,10 +46,10 @@ Bloque a fusionar (sintaxis rules v2)
 
 Índices
 -------
-- Las consultas de ingesta usan equality en `dayKey` dentro de la subcolección
-  `buckets`; en muchos proyectos Firestore crea índice simple automáticamente.
-  Si la consola pide un índice compuesto, créelo con el enlace del error.
-- La lectura paginada (paso 5) usa `orderBy(documentId())` + `limit` en raíz
+- Ingesta: borrado por **rango** en `dayKey` (`>= mes` y `< mes siguiente`) dentro
+  de `buckets`. Si Firestore pide índice compuesto para esa consulta, créelo con
+  el enlace del error de la consola.
+- La lectura paginada usa `orderBy(documentId())` + `limit` en raíz
   `returnsPeriods` y en cada `buckets`; no suele requerir índice compuesto
   adicional frente a un solo campo de orden.
 

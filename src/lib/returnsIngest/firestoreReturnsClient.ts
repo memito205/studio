@@ -26,7 +26,8 @@ import { firestore } from '@/services/firebase';
 import type { Transaction } from '@/types';
 import {
   transactionsToBucketDocs,
-  transactionLocalDayKey,
+  transactionLocalMonthKey,
+  nextCalendarMonthKey,
   bucketDocsToTransactions,
 } from '@/lib/returnsIngest/bucketUtils';
 import type { ReturnsBucketDoc, ReturnsPeriodMetaDoc, ReturnsPeriodStatus } from '@/lib/returnsIngest/types';
@@ -311,7 +312,7 @@ export async function ingestReturnsPeriod(params: {
   lastIngestBy?: string;
   forceReopenComplete?: boolean;
   callerRole?: string | null;
-}): Promise<{ success: boolean; error?: string; bucketCount?: number; dayKeysTouched?: string[] }> {
+}): Promise<{ success: boolean; error?: string; bucketCount?: number; monthsTouched?: string[] }> {
   try {
     if (typeof window === 'undefined') {
       return { success: false, error: 'ingestReturnsPeriod solo puede ejecutarse en el navegador.' };
@@ -377,24 +378,25 @@ export async function ingestReturnsPeriod(params: {
       { merge: true },
     );
 
-    const dayKeys = Array.from(
-      new Set(transactions.map((t) => transactionLocalDayKey(t.date))),
+    const monthKeys = Array.from(
+      new Set(transactions.map((t) => transactionLocalMonthKey(t.date))),
     ).sort();
 
     const bucketsCol = collection(firestore, RETURNS_PERIODS, params.periodId, BUCKETS_SUB);
 
-    for (const dk of dayKeys) {
-      const q = query(bucketsCol, where('dayKey', '==', dk));
-      const snap = await getDocs(q);
-      for (const d of snap.docs) {
+    for (const mk of monthKeys) {
+      const hi = nextCalendarMonthKey(mk);
+      const qDel = query(bucketsCol, where('dayKey', '>=', mk), where('dayKey', '<', hi));
+      const snapDel = await getDocs(qDel);
+      for (const d of snapDel.docs) {
         await deleteDoc(d.ref);
       }
     }
 
     const bucketDocs = transactionsToBucketDocs(transactions);
     let coversThrough = '';
-    for (const dk of dayKeys) {
-      if (!coversThrough || dk > coversThrough) coversThrough = dk;
+    for (const mk of monthKeys) {
+      if (!coversThrough || mk > coversThrough) coversThrough = mk;
     }
 
     const CHUNK = 450;
@@ -426,7 +428,7 @@ export async function ingestReturnsPeriod(params: {
       { merge: true },
     );
 
-    return { success: true, bucketCount: bucketDocs.length, dayKeysTouched: dayKeys };
+    return { success: true, bucketCount: bucketDocs.length, monthsTouched: monthKeys };
   } catch (e: unknown) {
     console.error('[ingestReturnsPeriod]', e);
     return { success: false, error: formatReturnsFirestoreError(e) };
