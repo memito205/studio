@@ -40,7 +40,7 @@ import {
   loadSampleVerificationsSince,
   getSampleReferencesExistence,
   getSampleDeliveriesByReferences,
-} from '@/app/actions';
+} from '@/app/sample-control/actions';
 import { summarizePhotoReceptionForDeliveries } from '@/lib/samplePhotoReceptionAudit';
 import type {
   ReceptionSampleAuditRow,

@@ -10,7 +10,11 @@ import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import type { SampleReference, SampleDelivery } from '@/types';
-import { saveSampleReferences, loadSampleReferences, migrateAdidasVerifications } from '@/app/actions';
+import {
+  saveSampleReferences,
+  loadSampleReferences,
+  migrateAdidasVerifications,
+} from '@/app/sample-control/actions';
 import { saveSampleDeliveriesWithReception } from '@/app/sample-photo-reception/actions';
 import { normalizeSampleReference, normalizeSampleTransferNumber } from '@/lib/samplePhotoReception';
 import { SamplePhotoReceptionPhase1Panel } from './SamplePhotoReceptionPhase1Panel';

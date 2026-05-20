@@ -15,7 +15,7 @@ import {
   loadSampleVerifications,
   getSampleReferencesExistence,
   getSampleDeliveriesByReferences,
-} from '@/app/actions';
+} from '@/app/sample-control/actions';
 import { exportToXlsx } from '@/services/export';
 import { summarizePhotoReceptionForDeliveries } from '@/lib/samplePhotoReceptionAudit';
 

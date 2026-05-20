@@ -12,7 +12,12 @@ import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import type { SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification } from '@/types';
-import { getSampleReferenceById, getSampleDeliveriesByReferences, saveSampleVerification, loadSampleVerifications } from '@/app/actions';
+import {
+  getSampleReferenceById,
+  getSampleDeliveriesByReferences,
+  saveSampleVerification,
+  loadSampleVerifications,
+} from '@/app/sample-control/actions';
 import { exportToXlsx } from '@/services/export';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';

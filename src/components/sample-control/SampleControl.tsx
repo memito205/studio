@@ -19,24 +19,43 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { SampleVerification } from './SampleVerification';
-import { AdminDataManagement } from './AdminDataManagement';
-import { SampleFollowUpReport } from './SampleFollowUpReport';
-import { ReceptionSamplesAuditReport } from '@/components/ReceptionSamplesAuditReport';
 import type { SavedSampleVerification } from '@/types';
+
+const tabLoading = () => (
+  <div className="flex justify-center py-16">
+    <Loader2 className="h-10 w-10 animate-spin text-primary" />
+  </div>
+);
 
 const SamplePhotoReceptionDashboard = dynamic(
   () =>
     import('./SamplePhotoReceptionDashboard').then((mod) => ({
       default: mod.SamplePhotoReceptionDashboard,
     })),
-  {
-    loading: () => (
-      <div className="flex justify-center py-16">
-        <Loader2 className="h-10 w-10 animate-spin text-primary" />
-      </div>
-    ),
-  }
+  { loading: tabLoading }
+);
+
+const SampleVerification = dynamic(
+  () => import('./SampleVerification').then((mod) => ({ default: mod.SampleVerification })),
+  { loading: tabLoading }
+);
+
+const AdminDataManagement = dynamic(
+  () => import('./AdminDataManagement').then((mod) => ({ default: mod.AdminDataManagement })),
+  { loading: tabLoading }
+);
+
+const SampleFollowUpReport = dynamic(
+  () => import('./SampleFollowUpReport').then((mod) => ({ default: mod.SampleFollowUpReport })),
+  { loading: tabLoading }
+);
+
+const ReceptionSamplesAuditReport = dynamic(
+  () =>
+    import('@/components/ReceptionSamplesAuditReport').then((mod) => ({
+      default: mod.ReceptionSamplesAuditReport,
+    })),
+  { loading: tabLoading }
 );
 import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
@@ -125,17 +144,20 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
   const [isLoadingSaved, setIsLoadingSaved] = useState(false);
   const [selectedSavedVerification, setSelectedSavedVerification] = useState<SavedSampleVerification | null>(null);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
-
   const isAdmin = role === 'admin';
   const isSupervisor = role === 'supervisor';
   const isOffice = role === 'office';
   const isFullSampleAdmin = isAdmin || isSupervisor;
   const canAccessPhotoReception = isAdmin || isSupervisor || isOffice;
 
+  const [activeTab, setActiveTab] = useState<string>(() =>
+    canAccessPhotoReception ? 'photoReception' : 'verification'
+  );
+
   const fetchSavedVerifications = React.useCallback(async () => {
     if (!isFullSampleAdmin) return;
     setIsLoadingSaved(true);
-    const { loadSampleVerifications } = await import('@/app/actions');
+    const { loadSampleVerifications } = await import('@/app/sample-control/actions');
     const result = await loadSampleVerifications({ maxSessions: 3500 });
     if (result.success && result.data) {
         setSavedVerifications(result.data);
@@ -183,7 +205,7 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
         />
         <div className="space-y-8 max-w-7xl mx-auto">
           {headerCard}
-          <Tabs defaultValue="photoReception" className="w-full">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
             <TabsList className="grid w-full grid-cols-2 h-auto py-2">
               <TabsTrigger value="photoReception" className="text-base py-3">
                 <Camera className="mr-2 h-5 w-5" />
@@ -195,10 +217,12 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
               </TabsTrigger>
             </TabsList>
             <TabsContent value="photoReception" className="mt-6">
-              <SamplePhotoReceptionDashboard />
+              {activeTab === 'photoReception' && <SamplePhotoReceptionDashboard />}
             </TabsContent>
             <TabsContent value="verification" className="mt-6">
-              <SampleVerification onVerificationSaved={() => {}} />
+              {activeTab === 'verification' && (
+                <SampleVerification onVerificationSaved={() => {}} />
+              )}
             </TabsContent>
           </Tabs>
         </div>
@@ -216,7 +240,11 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
         />
         <div className="space-y-8 max-w-7xl mx-auto">
           {headerCard}
-          <Tabs defaultValue={canAccessPhotoReception ? 'photoReception' : 'verification'} className="w-full">
+          <Tabs
+            value={activeTab}
+            onValueChange={setActiveTab}
+            className="w-full"
+          >
             <TabsList
               className={cn(
                 'grid w-full gap-1 h-auto py-2',
@@ -254,22 +282,25 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
             </TabsList>
             {canAccessPhotoReception && (
               <TabsContent value="photoReception" className="mt-6">
-                <SamplePhotoReceptionDashboard />
+                {activeTab === 'photoReception' && <SamplePhotoReceptionDashboard />}
               </TabsContent>
             )}
             <TabsContent value="verification" className="mt-6">
-              <SampleVerification onVerificationSaved={fetchSavedVerifications} />
+              {activeTab === 'verification' && (
+                <SampleVerification onVerificationSaved={fetchSavedVerifications} />
+              )}
             </TabsContent>
             <TabsContent value="followUp" className="mt-6">
-              <SampleFollowUpReport />
+              {activeTab === 'followUp' && <SampleFollowUpReport />}
             </TabsContent>
             <TabsContent value="receptionAudit" className="mt-6">
-              <ReceptionSamplesAuditReport />
+              {activeTab === 'receptionAudit' && <ReceptionSamplesAuditReport />}
             </TabsContent>
             <TabsContent value="admin" className="mt-6">
-              <AdminDataManagement />
+              {activeTab === 'admin' && <AdminDataManagement />}
             </TabsContent>
             <TabsContent value="history" className="mt-6">
+              {activeTab === 'history' && (
               <Card>
                 <CardHeader>
                   <CardTitle>Verificaciones Guardadas</CardTitle>
@@ -320,6 +351,7 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
                   )}
                 </CardContent>
               </Card>
+              )}
             </TabsContent>
           </Tabs>
         </div>
