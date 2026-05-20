@@ -42,18 +42,16 @@ import {
   getSampleDeliveriesByReferences,
 } from '@/app/actions';
 import { summarizePhotoReceptionForDeliveries } from '@/lib/samplePhotoReceptionAudit';
+import type {
+  ReceptionSampleAuditRow,
+  ReceptionSamplesAuditQueryParams,
+  ReceptionSamplesAuditScanContext,
+  ReceptionSamplesAuditStats,
+} from '@/lib/receptionSampleAuditTypes';
 
 const LEGACY_SCAN_PAGE_SIZE = 1800;
 const REF_STATS_PAGE_SIZE = 450;
 const RECEPTION_OP_LOOKUP_PARALLEL = 48;
-
-export type ReceptionSamplesAuditQueryParams = {
-  scanDateFromIso?: string;
-  scanDateToIso?: string;
-  receptionOperationId?: string | null;
-  /** Solo modo fechas: recorrer scannedItems línea a línea (muy costoso en lecturas) */
-  legacyFullScan?: boolean;
-};
 
 async function mapReceptionOpIdsToRkLabels(opIds: string[]): Promise<Map<string, string>> {
   const unique = [...new Set(opIds.filter(Boolean))];
@@ -203,48 +201,6 @@ function applyAdidasSyntheticTfGapFill(
   }
 
   return added;
-}
-
-export interface ReceptionSampleAuditRow {
-  reference: string;
-  hasVerificationSinceCutoff: boolean;
-  inSampleDatabase: boolean;
-  hasTransferDelivery: boolean;
-  transferNumbers: string;
-  receivedInPhotoReception: boolean;
-  photoReceptionReceivedAt?: Date;
-  photoReceptionReceivedByName?: string;
-  photoReceptionByTf: string;
-  receptionOperationIds: string[];
-  receptionOperationLabels: string[];
-}
-
-export interface ReceptionSamplesAuditStats {
-  /** Docs leídos para armar la lista de referencias (referenceStats o scannedItems si legado) */
-  receptionRefSourceDocsRead: number;
-  usedLegacyFullScan: boolean;
-  verificationDocsRead: number;
-  deliveryDocsRead: number;
-  receptionOperationDocsRead: number;
-  queryRounds: number;
-  /** Líneas fusionadas desde deliveryHistory en verificaciones (TF virtual / Adidas, etc.) */
-  verificationDeliveryHistoryEntries?: number;
-  /** TF virtual Adidas inferida cuando había validación + sesión AD pero sin historial persistido */
-  adidasSyntheticTfFilled?: number;
-  /** Por operación: referenceStats vacío y se usaron scannedItems de esa OP */
-  operationScannedItemsFallback?: boolean;
-}
-
-export interface ReceptionSamplesAuditScanContext {
-  type: 'date_range' | 'operation';
-  dateFromIso?: string;
-  dateToIso?: string;
-  receptionOperationId?: string;
-  usedLegacyFullScan?: boolean;
-  /**
-   * Por operación: la subcolección referenceStats no tenía filas (operaciones antiguas); la lista salió de scannedItems.
-   */
-  operationUsedScannedItemsFallback?: boolean;
 }
 
 /** Índice referenceStats de una sola operación (≈ referencias distintas). */

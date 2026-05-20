@@ -15,12 +15,12 @@ import { useToast } from '@/hooks/use-toast';
 import { endOfWeek, format, parseISO, startOfWeek } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { exportToXlsx } from '@/services/export';
-import {
-  getReceptionSamplesAuditReport,
-  type ReceptionSampleAuditRow,
-  type ReceptionSamplesAuditScanContext,
-  type ReceptionSamplesAuditStats,
-} from '@/app/receptionSampleAuditActions';
+import { getReceptionSamplesAuditReport } from '@/app/receptionSampleAuditActions';
+import type {
+  ReceptionSampleAuditRow,
+  ReceptionSamplesAuditScanContext,
+  ReceptionSamplesAuditStats,
+} from '@/lib/receptionSampleAuditTypes';
 import { RECEPTION_SAMPLE_AUDIT_START_ISO } from '@/lib/receptionSampleAudit';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { loadReceptionOperations } from '@/app/reception/actions';
