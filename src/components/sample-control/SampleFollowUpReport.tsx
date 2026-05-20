@@ -17,6 +17,7 @@ import {
   getSampleDeliveriesByReferences,
 } from '@/app/actions';
 import { exportToXlsx } from '@/services/export';
+import { summarizePhotoReceptionForDeliveries } from '@/lib/samplePhotoReceptionAudit';
 
 function normRef(r: string) {
   return String(r || '')
@@ -38,6 +39,9 @@ type FollowUpRow = {
   hasRealTf: boolean;
   transferNumbers: string;
   lastDeliveryDate: string;
+  receivedInPhotoReception: boolean;
+  photoReceptionReceivedAt: string;
+  photoReceptionReceivedByName: string;
 };
 
 export const SampleFollowUpReport: React.FC = () => {
@@ -91,6 +95,7 @@ export const SampleFollowUpReport: React.FC = () => {
         const last = dlist[0]?.deliveryDate
           ? format(new Date(dlist[0].deliveryDate), 'dd/MM/yyyy', { locale: es })
           : '—';
+        const photo = summarizePhotoReceptionForDeliveries(dlist);
 
         return {
           verificationId: b.verificationId,
@@ -102,6 +107,11 @@ export const SampleFollowUpReport: React.FC = () => {
           hasRealTf,
           transferNumbers,
           lastDeliveryDate: last,
+          receivedInPhotoReception: photo.receivedInPhotoReception,
+          photoReceptionReceivedAt: photo.photoReceptionReceivedAt
+            ? format(photo.photoReceptionReceivedAt, 'dd/MM/yyyy HH:mm', { locale: es })
+            : '—',
+          photoReceptionReceivedByName: photo.photoReceptionReceivedByName || '—',
         };
       });
 
@@ -174,8 +184,9 @@ export const SampleFollowUpReport: React.FC = () => {
     const total = set.length;
     const inDb = set.filter((r) => r.inSampleDbNow).length;
     const withTf = set.filter((r) => r.hasRealTf).length;
+    const withPhotoReception = set.filter((r) => r.receivedInPhotoReception).length;
     const pendingBoth = set.filter((r) => !r.inSampleDbNow && !r.hasRealTf).length;
-    return { total, inDb, withTf, pendingBoth };
+    return { total, inDb, withTf, withPhotoReception, pendingBoth };
   }, [filteredRows]);
 
   const verificationOptions = useMemo(() => {
@@ -198,6 +209,9 @@ export const SampleFollowUpReport: React.FC = () => {
         'TF registrado (entregas reales)': r.hasRealTf ? 'Sí' : 'No',
         'Números TF': r.transferNumbers,
         'Última fecha entrega': r.lastDeliveryDate,
+        'Recibido en Fotografía': r.receivedInPhotoReception ? 'Sí' : 'No',
+        'Fecha recepción foto': r.photoReceptionReceivedAt,
+        'Usuario recepción foto': r.photoReceptionReceivedByName,
       })),
       'seguimiento_muestras_nuevas'
     );
@@ -234,7 +248,7 @@ export const SampleFollowUpReport: React.FC = () => {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
             <div className="rounded-lg border p-3 bg-muted/30">
               <div className="text-muted-foreground text-xs">Filas (filtro)</div>
               <div className="text-2xl font-bold">{summary.total}</div>
@@ -246,6 +260,10 @@ export const SampleFollowUpReport: React.FC = () => {
             <div className="rounded-lg border p-3 bg-muted/30">
               <div className="text-muted-foreground text-xs">Con TF registrado</div>
               <div className="text-2xl font-bold text-blue-600">{summary.withTf}</div>
+            </div>
+            <div className="rounded-lg border p-3 bg-muted/30">
+              <div className="text-muted-foreground text-xs">Recibido en fotografía</div>
+              <div className="text-2xl font-bold text-violet-600">{summary.withPhotoReception}</div>
             </div>
             <div className="rounded-lg border p-3 bg-muted/30">
               <div className="text-muted-foreground text-xs">Sin foto ni TF</div>
@@ -290,6 +308,9 @@ export const SampleFollowUpReport: React.FC = () => {
                     <TableHead className="text-center">TF real</TableHead>
                     <TableHead>Números TF</TableHead>
                     <TableHead>Última entrega</TableHead>
+                    <TableHead className="text-center">Recibido foto</TableHead>
+                    <TableHead>Fecha recepción</TableHead>
+                    <TableHead>Usuario foto</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -318,6 +339,17 @@ export const SampleFollowUpReport: React.FC = () => {
                       </TableCell>
                       <TableCell className="max-w-[220px] text-xs break-words">{r.transferNumbers}</TableCell>
                       <TableCell className="text-xs whitespace-nowrap">{r.lastDeliveryDate}</TableCell>
+                      <TableCell className="text-center">
+                        {r.receivedInPhotoReception ? (
+                          <Badge variant="success">Sí</Badge>
+                        ) : (
+                          <Badge variant="outline">No</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-xs whitespace-nowrap">{r.photoReceptionReceivedAt}</TableCell>
+                      <TableCell className="text-xs max-w-[120px] truncate" title={r.photoReceptionReceivedByName}>
+                        {r.photoReceptionReceivedByName}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

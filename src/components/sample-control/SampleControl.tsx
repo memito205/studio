@@ -5,13 +5,24 @@
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Database, ShieldCheck, History, Eye, Loader2, FlaskConical, Boxes } from 'lucide-react';
+import {
+  ArrowLeft,
+  Database,
+  ShieldCheck,
+  History,
+  Eye,
+  Loader2,
+  FlaskConical,
+  Boxes,
+  Camera,
+} from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SampleVerification } from './SampleVerification';
 import { AdminDataManagement } from './AdminDataManagement';
 import { SampleFollowUpReport } from './SampleFollowUpReport';
 import { ReceptionSamplesAuditReport } from '@/components/ReceptionSamplesAuditReport';
+import { SamplePhotoReceptionDashboard } from './SamplePhotoReceptionDashboard';
 import type { SavedSampleVerification } from '@/types';
 import { loadSampleVerifications } from '@/app/actions';
 import { useToast } from '@/hooks/use-toast';
@@ -22,6 +33,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { CheckCircle, AlertCircle } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface SampleControlProps {
   onReturnToSuite: () => void;
@@ -38,7 +50,6 @@ const SavedVerificationDetailsDialog: React.FC<{
         switch (status) {
             case 'En Base de Datos':
                 return <Badge variant="success"><CheckCircle className="mr-1 h-3 w-3" />En Base de Datos</Badge>;
-            // Assuming you have a 'warning' variant for Badge
             case 'Advertencia: Entregada pero sin Foto':
                 return <Badge variant="warning"><AlertCircle className="mr-1 h-3 w-3" />Entregada sin Foto</Badge>;
             case 'Muestra Nueva Requerida':
@@ -101,11 +112,15 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
   const [isLoadingSaved, setIsLoadingSaved] = useState(false);
   const [selectedSavedVerification, setSelectedSavedVerification] = useState<SavedSampleVerification | null>(null);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
-  
-  const isAdminOrSupervisor = role === 'admin' || role === 'supervisor';
+
+  const isAdmin = role === 'admin';
+  const isSupervisor = role === 'supervisor';
+  const isOffice = role === 'office';
+  const isFullSampleAdmin = isAdmin || isSupervisor;
+  const canAccessPhotoReception = isAdmin || isSupervisor || isOffice;
 
   const fetchSavedVerifications = React.useCallback(async () => {
-    if (!isAdminOrSupervisor) return;
+    if (!isFullSampleAdmin) return;
     setIsLoadingSaved(true);
     const result = await loadSampleVerifications({ maxSessions: 3500 });
     if (result.success && result.data) {
@@ -114,15 +129,188 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
         toast({ variant: 'destructive', title: 'Error', description: result.error });
     }
     setIsLoadingSaved(false);
-  }, [isAdminOrSupervisor, toast]);
+  }, [isFullSampleAdmin, toast]);
 
   useEffect(() => {
     fetchSavedVerifications();
   }, [fetchSavedVerifications]);
-  
+
   const handleViewDetails = (verification: SavedSampleVerification) => {
     setSelectedSavedVerification(verification);
     setIsDetailsOpen(true);
+  };
+
+  const headerCard = (
+    <Card>
+      <CardHeader className="flex flex-row justify-between items-center">
+        <div>
+          <CardTitle>Módulo de Control de Muestras</CardTitle>
+          <CardDescription>
+            {isOffice
+              ? 'Recepción en fotografía y verificación de referencias.'
+              : 'Verifique muestras, recepción en fotografía y administre datos.'}
+          </CardDescription>
+        </div>
+        <Button onClick={onReturnToSuite} variant="outline">
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Volver a la Suite
+        </Button>
+      </CardHeader>
+    </Card>
+  );
+
+  if (isOffice && canAccessPhotoReception) {
+    return (
+      <>
+        <SavedVerificationDetailsDialog
+          isOpen={isDetailsOpen}
+          onOpenChange={setIsDetailsOpen}
+          verification={selectedSavedVerification}
+        />
+        <div className="space-y-8 max-w-7xl mx-auto">
+          {headerCard}
+          <Tabs defaultValue="photoReception" className="w-full">
+            <TabsList className="grid w-full grid-cols-2 h-auto py-2">
+              <TabsTrigger value="photoReception" className="text-base py-3">
+                <Camera className="mr-2 h-5 w-5" />
+                Recepción Fotografía
+              </TabsTrigger>
+              <TabsTrigger value="verification" className="text-base py-3">
+                <ShieldCheck className="mr-2 h-4 w-4" />
+                Verificación
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="photoReception" className="mt-6">
+              <SamplePhotoReceptionDashboard />
+            </TabsContent>
+            <TabsContent value="verification" className="mt-6">
+              <SampleVerification onVerificationSaved={() => {}} />
+            </TabsContent>
+          </Tabs>
+        </div>
+      </>
+    );
+  }
+
+  if (isFullSampleAdmin) {
+    return (
+      <>
+        <SavedVerificationDetailsDialog
+          isOpen={isDetailsOpen}
+          onOpenChange={setIsDetailsOpen}
+          verification={selectedSavedVerification}
+        />
+        <div className="space-y-8 max-w-7xl mx-auto">
+          {headerCard}
+          <Tabs defaultValue={canAccessPhotoReception ? 'photoReception' : 'verification'} className="w-full">
+            <TabsList
+              className={cn(
+                'grid w-full gap-1 h-auto py-2',
+                canAccessPhotoReception
+                  ? 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-6'
+                  : 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-5'
+              )}
+            >
+              {canAccessPhotoReception && (
+                <TabsTrigger value="photoReception">
+                  <Camera className="mr-2 h-4 w-4" />
+                  Recepción Foto
+                </TabsTrigger>
+              )}
+              <TabsTrigger value="verification">
+                <ShieldCheck className="mr-2 h-4 w-4" />
+                Verificación
+              </TabsTrigger>
+              <TabsTrigger value="followUp">
+                <FlaskConical className="mr-2 h-4 w-4" />
+                Seguimiento nuevas
+              </TabsTrigger>
+              <TabsTrigger value="receptionAudit">
+                <Boxes className="mr-2 h-4 w-4" />
+                vs Recepción
+              </TabsTrigger>
+              <TabsTrigger value="admin">
+                <Database className="mr-2 h-4 w-4" />
+                Administración
+              </TabsTrigger>
+              <TabsTrigger value="history">
+                <History className="mr-2 h-4 w-4" />
+                Historial
+              </TabsTrigger>
+            </TabsList>
+            {canAccessPhotoReception && (
+              <TabsContent value="photoReception" className="mt-6">
+                <SamplePhotoReceptionDashboard />
+              </TabsContent>
+            )}
+            <TabsContent value="verification" className="mt-6">
+              <SampleVerification onVerificationSaved={fetchSavedVerifications} />
+            </TabsContent>
+            <TabsContent value="followUp" className="mt-6">
+              <SampleFollowUpReport />
+            </TabsContent>
+            <TabsContent value="receptionAudit" className="mt-6">
+              <ReceptionSamplesAuditReport />
+            </TabsContent>
+            <TabsContent value="admin" className="mt-6">
+              <AdminDataManagement />
+            </TabsContent>
+            <TabsContent value="history" className="mt-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Verificaciones Guardadas</CardTitle>
+                  <CardDescription>
+                    Historial de todas las verificaciones guardadas.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {isLoadingSaved ? (
+                    <div className="flex justify-center items-center h-48">
+                      <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                    </div>
+                  ) : (
+                    <div className="border rounded-md max-h-[60vh] overflow-y-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Nombre de la Verificación</TableHead>
+                            <TableHead>Fecha de Creación</TableHead>
+                            <TableHead className="text-center"># de Referencias</TableHead>
+                            <TableHead className="text-right">Acciones</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {savedVerifications.length > 0 ? (
+                            savedVerifications.map((v) => (
+                              <TableRow key={v.id}>
+                                <TableCell className="font-medium">{v.name}</TableCell>
+                                <TableCell>{format(v.createdAt, 'PPP p', { locale: es })}</TableCell>
+                                <TableCell className="text-center">{v.results.length}</TableCell>
+                                <TableCell className="text-right">
+                                  <Button variant="outline" size="sm" onClick={() => handleViewDetails(v)}>
+                                    <Eye className="mr-2 h-4 w-4" /> Ver Detalles
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            ))
+                          ) : (
+                            <TableRow>
+                              <TableCell colSpan={4} className="text-center text-muted-foreground h-24">
+                                No hay verificaciones guardadas.
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
+        </div>
+      </>
+    );
   }
 
   return (
@@ -133,88 +321,8 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
         verification={selectedSavedVerification}
       />
       <div className="space-y-8 max-w-7xl mx-auto">
-        <Card>
-          <CardHeader className="flex flex-row justify-between items-center">
-            <div>
-              <CardTitle>Módulo de Control de Muestras</CardTitle>
-              <CardDescription>
-                Verifique el estado de las muestras o administre la base de datos de referencias y entregas.
-              </CardDescription>
-            </div>
-            <Button onClick={onReturnToSuite} variant="outline">
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Volver a la Suite
-            </Button>
-          </CardHeader>
-        </Card>
-        
-        {isAdminOrSupervisor ? (
-          <Tabs defaultValue="verification" className="w-full">
-              <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-1 h-auto py-2">
-                  <TabsTrigger value="verification"><ShieldCheck className="mr-2 h-4 w-4" />Verificación</TabsTrigger>
-                  <TabsTrigger value="followUp"><FlaskConical className="mr-2 h-4 w-4" />Seguimiento nuevas</TabsTrigger>
-                  <TabsTrigger value="receptionAudit"><Boxes className="mr-2 h-4 w-4" />vs Recepción</TabsTrigger>
-                  <TabsTrigger value="admin"><Database className="mr-2 h-4 w-4" />Administración</TabsTrigger>
-                  <TabsTrigger value="history"><History className="mr-2 h-4 w-4" />Historial</TabsTrigger>
-              </TabsList>
-              <TabsContent value="verification" className="mt-6">
-                  <SampleVerification onVerificationSaved={fetchSavedVerifications} />
-              </TabsContent>
-              <TabsContent value="followUp" className="mt-6">
-                  <SampleFollowUpReport />
-              </TabsContent>
-              <TabsContent value="receptionAudit" className="mt-6">
-                  <ReceptionSamplesAuditReport />
-              </TabsContent>
-              <TabsContent value="admin" className="mt-6">
-                  <AdminDataManagement />
-              </TabsContent>
-              <TabsContent value="history" className="mt-6">
-                <Card>
-                    <CardHeader>
-                        <CardTitle>Verificaciones Guardadas</CardTitle>
-                        <CardDescription>Historial de todas las verificaciones que han sido guardadas por los administradores.</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                        {isLoadingSaved ? (
-                            <div className="flex justify-center items-center h-48"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>
-                        ) : (
-                            <div className="border rounded-md max-h-[60vh] overflow-y-auto">
-                                <Table>
-                                    <TableHeader>
-                                        <TableRow>
-                                            <TableHead>Nombre de la Verificación</TableHead>
-                                            <TableHead>Fecha de Creación</TableHead>
-                                            <TableHead className="text-center"># de Referencias</TableHead>
-                                            <TableHead className="text-right">Acciones</TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-                                    <TableBody>
-                                        {savedVerifications.length > 0 ? savedVerifications.map(v => (
-                                            <TableRow key={v.id}>
-                                                <TableCell className="font-medium">{v.name}</TableCell>
-                                                <TableCell>{format(v.createdAt, "PPP p", { locale: es })}</TableCell>
-                                                <TableCell className="text-center">{v.results.length}</TableCell>
-                                                <TableCell className="text-right">
-                                                    <Button variant="outline" size="sm" onClick={() => handleViewDetails(v)}>
-                                                        <Eye className="mr-2 h-4 w-4" /> Ver Detalles
-                                                    </Button>
-                                                </TableCell>
-                                            </TableRow>
-                                        )) : (
-                                            <TableRow><TableCell colSpan={4} className="text-center text-muted-foreground h-24">No hay verificaciones guardadas.</TableCell></TableRow>
-                                        )}
-                                    </TableBody>
-                                </Table>
-                            </div>
-                        )}
-                    </CardContent>
-                </Card>
-              </TabsContent>
-          </Tabs>
-        ) : (
-          <SampleVerification onVerificationSaved={() => {}} />
-        )}
+        {headerCard}
+        <SampleVerification onVerificationSaved={() => {}} />
       </div>
     </>
   );

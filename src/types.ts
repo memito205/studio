@@ -1425,6 +1425,10 @@ export interface SampleReference {
   sourceFile: string;
 }
 
+export type SampleReceptionLineStatus = 'pending' | 'received';
+
+export type SampleTfReceptionStatus = 'open' | 'closed_complete' | 'closed_incomplete';
+
 export interface SampleDelivery {
   id: string; // Firestore document ID
   reference: string;
@@ -1432,6 +1436,42 @@ export interface SampleDelivery {
   deliveryDate: Date;
   sourceWarehouse: string;
   destinationWarehouse: string;
+  /** Recepción física en departamento de fotografía */
+  receptionStatus?: SampleReceptionLineStatus;
+  receivedAt?: Date;
+  receivedBy?: string;
+  receivedByName?: string;
+  barcodeScanned?: string;
+  /** Historial de recepción en fotografía */
+  photoReceptionLog?: SamplePhotoReceptionLogEntry[];
+}
+
+export interface SamplePhotoReceptionLogEntry {
+  at: Date;
+  userId: string;
+  userName: string;
+  source: 'scan' | 'manual';
+  barcode?: string;
+}
+
+/** Resumen por TF para el tablero de recepción en fotografía */
+export interface SampleTransferReceptionSummary {
+  id: string;
+  transferNumber: string;
+  sourceWarehouse: string;
+  destinationWarehouse: string;
+  deliveryDate?: Date;
+  tfReceptionStatus: SampleTfReceptionStatus;
+  closureObservation?: string;
+  closedAt?: Date;
+  closedBy?: string;
+  closedByName?: string;
+  stats: {
+    total: number;
+    received: number;
+    pending: number;
+  };
+  updatedAt: Date;
 }
 
 export interface ComparisonResult {

@@ -216,7 +216,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             description: "Gestione el ciclo de vida de las muestras, desde la solicitud hasta la devolución o descarte.",
             actionText: "Acceder",
             onAction: onNavigateToSampleControlModule,
-            roles: ['admin', 'office']
+            roles: ['admin', 'supervisor', 'office']
         },
         {
             key: 'label_control',

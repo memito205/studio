@@ -41,6 +41,7 @@ import {
   getSampleReferencesExistence,
   getSampleDeliveriesByReferences,
 } from '@/app/actions';
+import { summarizePhotoReceptionForDeliveries } from '@/lib/samplePhotoReceptionAudit';
 
 const LEGACY_SCAN_PAGE_SIZE = 1800;
 const REF_STATS_PAGE_SIZE = 450;
@@ -210,6 +211,10 @@ export interface ReceptionSampleAuditRow {
   inSampleDatabase: boolean;
   hasTransferDelivery: boolean;
   transferNumbers: string;
+  receivedInPhotoReception: boolean;
+  photoReceptionReceivedAt?: Date;
+  photoReceptionReceivedByName?: string;
+  photoReceptionByTf: string;
   receptionOperationIds: string[];
   receptionOperationLabels: string[];
 }
@@ -559,12 +564,17 @@ export async function getReceptionSamplesAuditReport(
         return tb - ta;
       });
       const tfNums = dlist.map((x) => x.transferNumber).filter(Boolean);
+      const photo = summarizePhotoReceptionForDeliveries(dlist);
       return {
         reference: ref,
         hasVerificationSinceCutoff: validatedRefs.has(ref),
         inSampleDatabase: !!existence[ref],
         hasTransferDelivery: tfNums.length > 0,
         transferNumbers: tfNums.length ? [...new Set(tfNums)].join('; ') : '—',
+        receivedInPhotoReception: photo.receivedInPhotoReception,
+        photoReceptionReceivedAt: photo.photoReceptionReceivedAt,
+        photoReceptionReceivedByName: photo.photoReceptionReceivedByName,
+        photoReceptionByTf: photo.photoReceptionByTf,
         receptionOperationIds: opIds,
         receptionOperationLabels: labels,
       };

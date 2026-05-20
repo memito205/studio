@@ -2505,30 +2505,13 @@ export async function getSampleReferencesExistence(
 }
 
 export async function saveSampleDeliveries(deliveries: Omit<SampleDelivery, 'id'>[]): Promise<{ success: boolean; error?: string; processedCount: number }> {
-    if (!deliveries || deliveries.length === 0) {
-        return { success: false, error: "No se proporcionaron entregas para guardar.", processedCount: 0 };
-    }
-    
-    const collectionRef = collection(firestore, "sampleDeliveries");
-    const CHUNK_SIZE = 450;
-
-    try {
-        for (let i = 0; i < deliveries.length; i += CHUNK_SIZE) {
-            const chunk = deliveries.slice(i, i + CHUNK_SIZE);
-            const batch = writeBatch(firestore);
-            
-            chunk.forEach(delivery => {
-                const docRef = doc(collectionRef); // Auto-generate ID
-                batch.set(docRef, convertDatesToTimestamps(delivery));
-            });
-
-            await batch.commit();
-        }
-        return { success: true, processedCount: deliveries.length };
-    } catch (error: any) {
-        console.error("Error guardando entregas de muestras:", error);
-        return { success: false, error: `No se pudieron guardar las entregas: ${error.message}`, processedCount: 0 };
-    }
+    const { saveSampleDeliveriesWithReception } = await import('./samplePhotoReceptionActions');
+    const result = await saveSampleDeliveriesWithReception(deliveries);
+    return {
+        success: result.success,
+        error: result.error,
+        processedCount: result.success ? result.added + result.updated : 0,
+    };
 }
 
 /**

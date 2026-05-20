@@ -10,7 +10,10 @@ import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import type { SampleReference, SampleDelivery } from '@/types';
-import { saveSampleReferences, loadSampleReferences, saveSampleDeliveries, migrateAdidasVerifications } from '@/app/actions';
+import { saveSampleReferences, loadSampleReferences, migrateAdidasVerifications } from '@/app/actions';
+import { saveSampleDeliveriesWithReception } from '@/app/samplePhotoReceptionActions';
+import { normalizeSampleReference, normalizeSampleTransferNumber } from '@/lib/samplePhotoReception';
+import { SamplePhotoReceptionPhase1Panel } from './SamplePhotoReceptionPhase1Panel';
 import * as XLSX from 'xlsx';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import {
@@ -175,11 +178,12 @@ export const AdminDataManagement: React.FC = () => {
             const deliveryDate = parseFlexibleDate(row[dateIndex]);
             if (row[refIndex] && row[tfIndex] && deliveryDate) {
                 deliveriesToSave.push({
-                    reference: String(row[refIndex]).trim(),
-                    transferNumber: String(row[tfIndex]).trim(),
+                    reference: normalizeSampleReference(String(row[refIndex])),
+                    transferNumber: normalizeSampleTransferNumber(String(row[tfIndex])),
                     deliveryDate: deliveryDate,
                     sourceWarehouse: String(row[sourceIndex] || '').trim(),
                     destinationWarehouse: String(row[destIndex] || '').trim(),
+                    receptionStatus: 'pending',
                 });
             }
         }
@@ -188,10 +192,13 @@ export const AdminDataManagement: React.FC = () => {
             throw new Error("No se encontraron registros de entrega válidos en el archivo.");
         }
 
-        const result = await saveSampleDeliveries(deliveriesToSave);
+        const result = await saveSampleDeliveriesWithReception(deliveriesToSave);
 
         if (result.success) {
-            toast({ title: 'Entregas Guardadas', description: `Se han registrado ${result.processedCount} entregas.` });
+            toast({
+              title: 'Entregas guardadas',
+              description: `${result.added} nuevas, ${result.updated} actualizadas, ${result.preservedReceived} recibidas conservadas. TF: ${result.transferNumbers.length}.`,
+            });
         } else {
             throw new Error(result.error);
         }
@@ -327,6 +334,8 @@ export const AdminDataManagement: React.FC = () => {
           </div>
         </CardContent>
       </Card>
+
+      <SamplePhotoReceptionPhase1Panel />
     </div>
   );
 };

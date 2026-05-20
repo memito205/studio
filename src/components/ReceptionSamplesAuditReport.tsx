@@ -82,7 +82,13 @@ export interface ReceptionSamplesAuditReportProps {
   onReturn?: () => void;
 }
 
-type RowFilter = 'all' | 'missing_validation' | 'missing_photo' | 'missing_tf' | 'fully_ok';
+type RowFilter =
+  | 'all'
+  | 'missing_validation'
+  | 'missing_photo'
+  | 'missing_tf'
+  | 'missing_photo_reception'
+  | 'fully_ok';
 
 function matchesFilter(r: ReceptionSampleAuditRow, f: RowFilter): boolean {
   switch (f) {
@@ -92,11 +98,14 @@ function matchesFilter(r: ReceptionSampleAuditRow, f: RowFilter): boolean {
       return !r.inSampleDatabase;
     case 'missing_tf':
       return !r.hasTransferDelivery;
+    case 'missing_photo_reception':
+      return r.hasTransferDelivery && !r.receivedInPhotoReception;
     case 'fully_ok':
       return (
         r.hasVerificationSinceCutoff &&
         r.inSampleDatabase &&
-        r.hasTransferDelivery
+        r.hasTransferDelivery &&
+        r.receivedInPhotoReception
       );
     default:
       return true;
@@ -318,10 +327,15 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
     const withVer = filteredRows.filter((r) => r.hasVerificationSinceCutoff).length;
     const inDb = filteredRows.filter((r) => r.inSampleDatabase).length;
     const withTf = filteredRows.filter((r) => r.hasTransferDelivery).length;
+    const withPhotoReception = filteredRows.filter((r) => r.receivedInPhotoReception).length;
     const gaps = filteredRows.filter(
-      (r) => !r.hasVerificationSinceCutoff || !r.inSampleDatabase || !r.hasTransferDelivery
+      (r) =>
+        !r.hasVerificationSinceCutoff ||
+        !r.inSampleDatabase ||
+        !r.hasTransferDelivery ||
+        !r.receivedInPhotoReception
     ).length;
-    return { total, withVer, inDb, withTf, gaps };
+    return { total, withVer, inDb, withTf, withPhotoReception, gaps };
   }, [filteredRows]);
 
   const handleExport = () => {
@@ -338,6 +352,12 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
         'Muestra en BD (foto)': r.inSampleDatabase ? 'Sí' : 'No',
         'TF entrega registrado': r.hasTransferDelivery ? 'Sí' : 'No',
         'Números TF': r.transferNumbers,
+        'Recibido en Fotografía': r.receivedInPhotoReception ? 'Sí' : 'No',
+        'Fecha recepción foto': r.photoReceptionReceivedAt
+          ? format(r.photoReceptionReceivedAt, 'dd/MM/yyyy HH:mm', { locale: es })
+          : '—',
+        'Usuario recepción foto': r.photoReceptionReceivedByName || '—',
+        'Recepción por TF': r.photoReceptionByTf,
       })),
       'cruce_recepcion_muestras'
     );
@@ -372,9 +392,9 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
               <p>
                 Referencias distintas según el <strong>alcance de escaneos</strong> que elijas abajo, cruzadas con
                 validación de muestras (sesiones guardadas desde{' '}
-                <strong>{validationCutoffLabel}</strong>), foto en BD y TF reales o virtuales (colección{' '}
-                <code className="text-xs bg-muted px-1 rounded">sampleDeliveries</code> más historial en la verificación
-                guardada).
+                <strong>{validationCutoffLabel}</strong>), foto en BD, TF en{' '}
+                <code className="text-xs bg-muted px-1 rounded">sampleDeliveries</code> y recepción escaneada en
+                fotografía (<code className="text-xs bg-muted px-1 rounded">receptionStatus</code> en esas líneas).
               </p>
               {scanScopeDescription ? (
                 <p className="text-sm border-l-2 border-primary/30 pl-2">{scanScopeDescription}</p>
@@ -546,7 +566,7 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
             </TabsContent>
           </Tabs>
 
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 text-sm">
             <div className="rounded-lg border p-3 bg-muted/30">
               <div className="text-muted-foreground text-xs">Referencias (filtro)</div>
               <div className="text-2xl font-bold">{summary.total}</div>
@@ -562,6 +582,10 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
             <div className="rounded-lg border p-3 bg-muted/30">
               <div className="text-muted-foreground text-xs">Con TF entrega</div>
               <div className="text-2xl font-bold text-blue-600">{summary.withTf}</div>
+            </div>
+            <div className="rounded-lg border p-3 bg-muted/30">
+              <div className="text-muted-foreground text-xs">Recibido en fotografía</div>
+              <div className="text-2xl font-bold text-violet-600">{summary.withPhotoReception}</div>
             </div>
             <div className="rounded-lg border p-3 bg-muted/30">
               <div className="text-muted-foreground text-xs">Algún pendiente</div>
@@ -581,7 +605,8 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                   <SelectItem value="missing_validation">Sin validación guardada (≥ corte)</SelectItem>
                   <SelectItem value="missing_photo">Sin muestra en BD</SelectItem>
                   <SelectItem value="missing_tf">Sin TF de entrega</SelectItem>
-                  <SelectItem value="fully_ok">Completo (validación + foto + TF)</SelectItem>
+                  <SelectItem value="missing_photo_reception">Con TF pero sin recepción en fotografía</SelectItem>
+                  <SelectItem value="fully_ok">Completo (validación + foto + TF + recepción foto)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -614,6 +639,9 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                     <TableHead className="text-center">BD muestras</TableHead>
                     <TableHead className="text-center">TF entrega</TableHead>
                     <TableHead>Números TF</TableHead>
+                    <TableHead className="text-center">Recibido foto</TableHead>
+                    <TableHead>Fecha recepción</TableHead>
+                    <TableHead>Usuario foto</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -645,6 +673,21 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                         )}
                       </TableCell>
                       <TableCell className="max-w-[240px] text-xs break-words">{r.transferNumbers}</TableCell>
+                      <TableCell className="text-center">
+                        {r.receivedInPhotoReception ? (
+                          <Badge variant="success">Sí</Badge>
+                        ) : (
+                          <Badge variant="outline">No</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-xs whitespace-nowrap">
+                        {r.photoReceptionReceivedAt
+                          ? format(r.photoReceptionReceivedAt, 'dd/MM/yy HH:mm', { locale: es })
+                          : '—'}
+                      </TableCell>
+                      <TableCell className="text-xs max-w-[140px] truncate" title={r.photoReceptionReceivedByName}>
+                        {r.photoReceptionReceivedByName || '—'}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
