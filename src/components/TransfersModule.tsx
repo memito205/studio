@@ -11,7 +11,7 @@ import { Input } from './ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import type { TransferEntry, TransferStatus, DeliveryManifest, UserRole, CollectionLog, AppUser, RouteEntry } from '@/types';
+import type { TransferEntry, TransferStatus, DeliveryManifest, UserRole, CollectionLog, AppUser, RouteEntry, TransferActor } from '@/types';
 import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders, repairSingleTransferStorageOrder, reindexTransferStorageOrdersByDestination } from '@/app/actions';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
@@ -44,6 +44,14 @@ import { TransferLogDialog } from './TransferLogDialog';
 
 interface GroupedTransfer extends TransferEntry {
     allIds: string[];
+}
+
+function toTransferActor(user: { uid: string; displayName?: string | null; email?: string | null } | null | undefined): TransferActor | undefined {
+    if (!user?.uid) return undefined;
+    return {
+        userId: user.uid,
+        displayName: user.displayName || user.email || 'Usuario',
+    };
 }
 
 const groupTransfersByTF = (transfers: TransferEntry[], placaMap?: Map<string, string>): GroupedTransfer[] => {
@@ -685,7 +693,9 @@ const WarehouseReceptionView: React.FC<{
   collectionLogs: CollectionLog[];
   onRefresh: () => void;
 }> = ({ collectionLogs, onRefresh }) => {
+    const { user } = useAuth();
     const { toast } = useToast();
+    const actor = useMemo(() => toTransferActor(user), [user]);
     const [isLoading, setIsLoading] = useState(false);
     const [searchPlate, setSearchPlate] = useState('');
     const [foundTransfers, setFoundTransfers] = useState<TransferEntry[]>([]);
@@ -754,7 +764,7 @@ const WarehouseReceptionView: React.FC<{
         
         try {
             const ids = 'allIds' in transfer ? (transfer as any).allIds : [transfer.id];
-            const result = await updateTransferStatus(ids, 'Recibido en Bodega');
+            const result = await updateTransferStatus(ids, 'Recibido en Bodega', undefined, actor);
             if (result.success) {
                 toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
                 onRefresh();
@@ -764,7 +774,7 @@ const WarehouseReceptionView: React.FC<{
         } catch(error: any) {
              toast({ variant: 'destructive', title: 'Error', description: error.message });
         }
-    }, [onRefresh, toast]);
+    }, [onRefresh, toast, actor]);
 
 
     const handleBulkReceive = async (andPrint: boolean) => {
@@ -774,7 +784,7 @@ const WarehouseReceptionView: React.FC<{
         }
         setIsLoading(true);
         const transferIdsToUpdate = Array.from(selectedTransfers);
-        const result = await batchUpdateTransferStatus(transferIdsToUpdate, 'Recibido en Bodega');
+        const result = await batchUpdateTransferStatus(transferIdsToUpdate, 'Recibido en Bodega', actor);
         if (result.success) {
             toast({ title: 'Éxito', description: `${transferIdsToUpdate.length} transferencias marcadas como 'Recibido en Bodega'.` });
             
@@ -966,7 +976,9 @@ interface AdminViewProps {
 }
 
 const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, collectionLogs, isLoading, filters, setFilters, onRefresh, onSearch, role, users, isUploading, onFileChange, fileInputRef, setIsManualEntryOpen }) => {
+    const { user } = useAuth();
     const { toast } = useToast();
+    const actor = useMemo(() => toTransferActor(user), [user]);
     const isAdmin = role === 'admin' || role === 'supervisor';
     const [manifests, setManifests] = useState<DeliveryManifest[]>([]);
     const [isLoadingManifests, setIsLoadingManifests] = useState(false);
@@ -1006,7 +1018,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         setIsPrinting(true);
         try {
             const ids = 'allIds' in transfer ? transfer.allIds : [transfer.id];
-            const result = await updateTransferStatus(ids, 'Recibido en Bodega');
+            const result = await updateTransferStatus(ids, 'Recibido en Bodega', undefined, actor);
             if (result.success) {
                 toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
                 onRefresh();
@@ -1032,7 +1044,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             setIsPrinting(false);
             setIsLabelDialogOpen(false); // Close the dialog after everything
         }
-    }, [onRefresh, toast]);
+    }, [onRefresh, toast, actor]);
     
     const handlePrintLabelClick = (transfer: TransferEntry) => {
         setTransferForLabel(transfer);
@@ -1045,7 +1057,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         try {
             const transfer = statusChangeState.transfer as GroupedTransfer | TransferEntry;
             const ids = 'allIds' in transfer ? transfer.allIds : [transfer.id];
-            const result = await updateTransferStatus(ids, newStatus, justification);
+            const result = await updateTransferStatus(ids, newStatus, justification, actor);
             if (result.success) {
                 toast({ title: 'Éxito', description: 'El estado de la transferencia ha sido actualizado.' });
                 onRefresh();
@@ -1160,7 +1172,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     
     const handleUpdateStatus = async (transfer: GroupedTransfer | TransferEntry, newStatus: TransferStatus) => {
         const ids = 'allIds' in transfer ? transfer.allIds : [transfer.id];
-        const result = await updateTransferStatus(ids, newStatus);
+        const result = await updateTransferStatus(ids, newStatus, undefined, actor);
         if (result.success) {
             toast({ title: 'Estado Actualizado', description: `Se marcaron ${ids.length} línea(s) como '${newStatus}'.`});
             onRefresh();
@@ -1198,7 +1210,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                     return acc;
                 }, {} as Record<string, number>),
             }
-        });
+        }, actor);
         if (result.success) {
             toast({ title: 'Manifiesto Creado', description: 'La relación de entrega ha sido guardada.' });
             onRefresh();
@@ -1305,6 +1317,8 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         isOpen={isLogOpen}
         onOpenChange={setIsLogOpen}
         transfer={selectedTransferForLog}
+        usersMap={usersMap}
+        collectionLogs={collectionLogs}
       />
       <TransferLabelDialog
         isOpen={isLabelDialogOpen}
@@ -1884,11 +1898,15 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
 const OperatorView: React.FC<{
   allTransfers: TransferEntry[];
   collectionLogs: CollectionLog[];
+  users: AppUser[];
   isLoading: boolean;
   onRefresh: () => void;
-}> = ({ allTransfers, collectionLogs, isLoading, onRefresh }) => {
+}> = ({ allTransfers, collectionLogs, users, isLoading, onRefresh }) => {
     const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', status: 'all' });
+    const { user } = useAuth();
     const { toast } = useToast();
+    const actor = useMemo(() => toTransferActor(user), [user]);
+    const usersMap = useMemo(() => new Map(users.map(u => [u.uid, u.displayName || u.email || 'Desconocido'])), [users]);
     
     // States for Label Printing and History
     const [isLabelDialogOpen, setIsLabelDialogOpen] = useState(false);
@@ -1919,7 +1937,7 @@ const OperatorView: React.FC<{
         setIsPrinting(true);
         try {
             const ids = 'allIds' in transfer ? transfer.allIds : [transfer.id];
-            const result = await updateTransferStatus(ids, 'Recibido en Bodega');
+            const result = await updateTransferStatus(ids, 'Recibido en Bodega', undefined, actor);
             if (result.success) {
                 toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
                 onRefresh();
@@ -1945,7 +1963,7 @@ const OperatorView: React.FC<{
             setIsPrinting(false);
             setIsLabelDialogOpen(false);
         }
-    }, [onRefresh, toast]);
+    }, [onRefresh, toast, actor]);
 
     const handlePrintLabelClick = (transfer: TransferEntry) => {
         setTransferForLabel(transfer);
@@ -2064,6 +2082,8 @@ const OperatorView: React.FC<{
             isOpen={isLogOpen}
             onOpenChange={setIsLogOpen}
             transfer={selectedTransferForLog}
+            usersMap={usersMap}
+            collectionLogs={collectionLogs}
           />
         </Card>
     );
@@ -2150,7 +2170,12 @@ const CollectionTabView: React.FC<{
             return;
         }
         setIsLoading(true);
-        const result = await createCollectionLog(selectedPlate, Array.from(selectedTransfers), user.uid);
+        const result = await createCollectionLog(
+            selectedPlate,
+            Array.from(selectedTransfers),
+            user.uid,
+            user.displayName || user.email || undefined
+        );
         if (result.success) {
             toast({ title: 'Éxito', description: `${uniqueSelectedTfCount} transferencias marcadas como recolectadas.` });
             fetchTransfers(); // Refresh local list
@@ -2550,6 +2575,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
           <OperatorView
             allTransfers={allTransfers}
             collectionLogs={collectionLogs}
+            users={allUsers}
             isLoading={isLoading}
             onRefresh={fetchData}
           />

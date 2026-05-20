@@ -8,7 +8,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import type { TransferEntry } from '@/types';
+import type { CollectionLog, TransferEntry } from '@/types';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 
@@ -16,57 +16,141 @@ interface TransferLogDialogProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   transfer: TransferEntry | null;
+  usersMap?: Map<string, string>;
+  collectionLogs?: CollectionLog[];
 }
 
 interface LogEvent {
   date: Date;
   description: string;
+  userName?: string;
 }
 
-export const TransferLogDialog: React.FC<TransferLogDialogProps> = ({ isOpen, onOpenChange, transfer }) => {
+function resolveUserLabel(
+  storedName?: string,
+  storedUid?: string,
+  usersMap?: Map<string, string>
+): string | undefined {
+  const name = storedName?.trim();
+  if (name) return name;
+  if (storedUid && usersMap?.has(storedUid)) return usersMap.get(storedUid);
+  if (storedUid) return storedUid;
+  return undefined;
+}
+
+function getTransferLineIds(transfer: TransferEntry): string[] {
+  const grouped = transfer as TransferEntry & { allIds?: string[] };
+  return grouped.allIds?.length ? grouped.allIds : [transfer.id];
+}
+
+export const TransferLogDialog: React.FC<TransferLogDialogProps> = ({
+  isOpen,
+  onOpenChange,
+  transfer,
+  usersMap,
+  collectionLogs,
+}) => {
   const logEvents = useMemo(() => {
     if (!transfer) return [];
 
     const events: LogEvent[] = [];
+    const lineIds = getTransferLineIds(transfer);
 
-    // Initial creation
+    const collectionLog = collectionLogs?.find((log) =>
+      log.transferIds.some((id) => lineIds.includes(id))
+    );
+    const collectionUserName =
+      resolveUserLabel(transfer.recolectadoByName, transfer.recolectadoBy, usersMap) ||
+      (collectionLog
+        ? resolveUserLabel(undefined, collectionLog.recolectadoPor, usersMap)
+        : undefined);
+
     if (transfer.fecha) {
-      events.push({ date: new Date(transfer.fecha), description: 'Transferencia creada (En Tránsito).' });
+      events.push({
+        date: new Date(transfer.fecha),
+        description: 'Transferencia creada (En Tránsito).',
+      });
     }
 
-    // Collection in route
-    if (transfer.recibidoAt && transfer.status === 'Recolectado en Ruta') {
-        events.push({ date: new Date(transfer.recibidoAt), description: 'Recolectado en Ruta.' });
+    const hasCollectionEvidence =
+      Boolean(transfer.recolectadoBy || transfer.recolectadoByName || collectionLog);
+    if (hasCollectionEvidence) {
+      events.push({
+        date: transfer.recibidoAt ? new Date(transfer.recibidoAt) : new Date(transfer.fecha),
+        description: 'Recolectado en Ruta.',
+        userName: collectionUserName,
+      });
     }
-    
-    // Supervisor validation
+
     if (transfer.validatedAt) {
-      events.push({ date: new Date(transfer.validatedAt), description: 'Validado por Supervisor.' });
-    }
-    
-    // Received at warehouse (different from collection)
-    if (transfer.recibidoAt && transfer.status === 'Recibido en Bodega') {
-        events.push({ date: new Date(transfer.recibidoAt), description: 'Recibido en Bodega Central.' });
+      events.push({
+        date: new Date(transfer.validatedAt),
+        description: 'Validado por Supervisor.',
+        userName: resolveUserLabel(transfer.validatedByName, transfer.validatedBy, usersMap),
+      });
     }
 
-    // Sent to destination
-    if (transfer.enviadoAt) {
-      events.push({ date: new Date(transfer.enviadoAt), description: 'Enviado a Destino (Manifiesto).' });
+    if (transfer.recibidoBodegaBy || transfer.recibidoBodegaByName) {
+      const bodegaDate = transfer.recibidoAt || transfer.validatedAt;
+      if (bodegaDate) {
+        events.push({
+          date: new Date(bodegaDate),
+          description: 'Recibido en Bodega Central.',
+          userName: resolveUserLabel(transfer.recibidoBodegaByName, transfer.recibidoBodegaBy, usersMap),
+        });
+      }
+    } else if (transfer.recibidoAt && transfer.status === 'Recibido en Bodega') {
+      events.push({
+        date: new Date(transfer.recibidoAt),
+        description: 'Recibido en Bodega Central.',
+        userName: resolveUserLabel(transfer.recibidoBodegaByName, transfer.recibidoBodegaBy, usersMap),
+      });
     }
-    
-    // Delivered in route
+
+    if (transfer.enviadoAt) {
+      events.push({
+        date: new Date(transfer.enviadoAt),
+        description: 'Enviado a Destino (Manifiesto).',
+        userName: resolveUserLabel(transfer.enviadoByName, transfer.enviadoBy, usersMap),
+      });
+    }
+
     if (transfer.deliveredAt) {
-        events.push({ date: new Date(transfer.deliveredAt), description: 'Entregado en Ruta.' });
+      events.push({
+        date: new Date(transfer.deliveredAt),
+        description: 'Entregado en Ruta.',
+        userName: resolveUserLabel(transfer.deliveredByName, transfer.deliveredBy, usersMap),
+      });
+    }
+
+    if (transfer.manualStatusChangeJustification) {
+      const manualDate =
+        transfer.deliveredAt ||
+        transfer.enviadoAt ||
+        transfer.validatedAt ||
+        transfer.recibidoAt ||
+        transfer.fecha;
+      if (manualDate) {
+        events.push({
+          date: new Date(manualDate),
+          description: `Cambio manual de estado: ${transfer.manualStatusChangeJustification}`,
+          userName: resolveUserLabel(
+            transfer.manualStatusChangedByName,
+            transfer.manualStatusChangedBy,
+            usersMap
+          ),
+        });
+      }
     }
 
     return events.sort((a, b) => a.date.getTime() - b.date.getTime());
-  }, [transfer]);
+  }, [transfer, usersMap, collectionLogs]);
 
   if (!transfer) return null;
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Historial de Transferencia</DialogTitle>
           <DialogDescription>
@@ -80,6 +164,7 @@ export const TransferLogDialog: React.FC<TransferLogDialogProps> = ({ isOpen, on
                 <TableRow>
                   <TableHead>Fecha y Hora</TableHead>
                   <TableHead>Evento</TableHead>
+                  <TableHead>Usuario</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -88,11 +173,14 @@ export const TransferLogDialog: React.FC<TransferLogDialogProps> = ({ isOpen, on
                     <TableRow key={index}>
                       <TableCell>{format(event.date, "PPP p", { locale: es })}</TableCell>
                       <TableCell>{event.description}</TableCell>
+                      <TableCell className="font-medium">
+                        {event.userName || '—'}
+                      </TableCell>
                     </TableRow>
                   ))
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={2} className="text-center text-muted-foreground h-24">
+                    <TableCell colSpan={3} className="text-center text-muted-foreground h-24">
                       No hay eventos de historial para esta transferencia.
                     </TableCell>
                   </TableRow>

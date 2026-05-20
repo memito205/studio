@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagItem } from "@/types";
+import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagItem } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -3368,7 +3368,45 @@ export async function deleteTransfer(transferId: string): Promise<{ success: boo
     }
 }
 
-export async function updateTransferStatus(transferId: string | string[], status: TransferStatus, justification?: string): Promise<{ success: boolean; error?: string }> {
+function applyTransferStatusActor(updates: Record<string, unknown>, status: TransferStatus, actor?: TransferActor, justification?: string) {
+    if (!actor?.userId) return;
+    const actorName = (actor.displayName || '').trim() || actor.userId;
+
+    if (justification) {
+        updates.manualStatusChangedBy = actor.userId;
+        updates.manualStatusChangedByName = actorName;
+    }
+
+    switch (status) {
+        case 'Recolectado en Ruta':
+            updates.recolectadoBy = actor.userId;
+            updates.recolectadoByName = actorName;
+            break;
+        case 'Validado Supervisor':
+            updates.validatedBy = actor.userId;
+            updates.validatedByName = actorName;
+            break;
+        case 'Recibido en Bodega':
+            updates.recibidoBodegaBy = actor.userId;
+            updates.recibidoBodegaByName = actorName;
+            break;
+        case 'Enviado a Destino':
+            updates.enviadoBy = actor.userId;
+            updates.enviadoByName = actorName;
+            break;
+        case 'Entregado en Ruta':
+            updates.deliveredBy = actor.userId;
+            updates.deliveredByName = actorName;
+            break;
+    }
+}
+
+export async function updateTransferStatus(
+    transferId: string | string[],
+    status: TransferStatus,
+    justification?: string,
+    actor?: TransferActor
+): Promise<{ success: boolean; error?: string }> {
     try {
         const ids = Array.isArray(transferId) ? transferId : [transferId];
         if (ids.length === 0) {
@@ -3377,7 +3415,7 @@ export async function updateTransferStatus(transferId: string | string[], status
 
         const batch = writeBatch(firestore);
         
-        const updates: any = { status };
+        const updates: Record<string, unknown> = { status };
         if (justification) {
             updates.manualStatusChangeJustification = justification;
         }
@@ -3388,6 +3426,8 @@ export async function updateTransferStatus(transferId: string | string[], status
         else if (status === 'Validado Supervisor') updates.validatedAt = now;
         else if (status === 'Entregado en Ruta') updates.deliveredAt = now;
         else if (status === 'Recolectado en Ruta') updates.recibidoAt = now;
+
+        applyTransferStatusActor(updates, status, actor, justification);
 
         ids.forEach(id => {
             const transferRef = doc(firestore, "transfers", id);
@@ -3402,7 +3442,11 @@ export async function updateTransferStatus(transferId: string | string[], status
     }
 }
 
-export async function batchUpdateTransferStatus(transferIds: string[], status: TransferStatus): Promise<{ success: boolean; error?: string }> {
+export async function batchUpdateTransferStatus(
+    transferIds: string[],
+    status: TransferStatus,
+    actor?: TransferActor
+): Promise<{ success: boolean; error?: string }> {
     if (!transferIds || transferIds.length === 0) {
         return { success: true }; // Nothing to do
     }
@@ -3410,10 +3454,11 @@ export async function batchUpdateTransferStatus(transferIds: string[], status: T
     try {
         transferIds.forEach(id => {
             const transferRef = doc(firestore, 'transfers', id);
-            const updates: any = { status };
+            const updates: Record<string, unknown> = { status };
             if (status === 'Recibido en Bodega') {
                 updates.recibidoAt = Timestamp.now();
             }
+            applyTransferStatusActor(updates, status, actor);
             batch.update(transferRef, updates);
         });
         await batch.commit();
@@ -3522,7 +3567,10 @@ export async function healInconsistentTransfers(): Promise<{ success: boolean; u
     }
 }
     
-export async function createDeliveryManifest(manifestData: Omit<DeliveryManifest, 'id' | 'createdAt' | 'manifestId'>): Promise<{ success: boolean; error?: string; id?: string }> {
+export async function createDeliveryManifest(
+    manifestData: Omit<DeliveryManifest, 'id' | 'createdAt' | 'manifestId'>,
+    actor?: TransferActor
+): Promise<{ success: boolean; error?: string; id?: string }> {
     const counterRef = doc(firestore, 'counters', 'manifestCounter');
     const manifestsCollection = collection(firestore, 'deliveryManifests');
     
@@ -3545,12 +3593,14 @@ export async function createDeliveryManifest(manifestData: Omit<DeliveryManifest
 
             // Update status of all included transfers
             const now = new Date();
+            const enviadoUpdates: Record<string, unknown> = {
+                status: 'Enviado a Destino',
+                enviadoAt: now,
+            };
+            applyTransferStatusActor(enviadoUpdates, 'Enviado a Destino', actor);
             for (const transferId of manifestData.transferIds) {
                 const transferRef = doc(firestore, 'transfers', transferId);
-                transaction.update(transferRef, {
-                    status: 'Enviado a Destino',
-                    enviadoAt: now
-                });
+                transaction.update(transferRef, enviadoUpdates);
             }
         });
 
@@ -3800,7 +3850,12 @@ export async function updateEcommerceOrderDispatchDate(orderId: string, dispatch
     }
 }
 
-export async function createCollectionLog(placa: string, transferIds: string[], userId: string): Promise<{ success: boolean; error?: string; }> {
+export async function createCollectionLog(
+    placa: string,
+    transferIds: string[],
+    userId: string,
+    userDisplayName?: string
+): Promise<{ success: boolean; error?: string; }> {
     const collectionLogRef = collection(firestore, 'collectionLogs');
     const transfersCollection = collection(firestore, 'transfers');
 
@@ -3831,11 +3886,14 @@ export async function createCollectionLog(placa: string, transferIds: string[], 
         };
         batch.set(newLogRef, newLogData);
 
+        const actorName = (userDisplayName || '').trim() || userId;
         transferIds.forEach(id => {
             const transferRef = doc(transfersCollection, id);
             batch.update(transferRef, { 
                 status: 'Recolectado en Ruta',
                 recibidoAt: Timestamp.now(), // Save the collection time
+                recolectadoBy: userId,
+                recolectadoByName: actorName,
             });
         });
 

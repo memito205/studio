@@ -392,6 +392,11 @@ export type UserRole = 'admin' | 'supervisor' | 'operator' | 'office' | 'conduct
 export type TransferStatus = 'En Tránsito' | 'Recolectado en Ruta' | 'Entregado en Ruta' | 'Recibido en Bodega' | 'Validado Supervisor' | 'Enviado a Destino';
 
 
+export interface TransferActor {
+  userId: string;
+  displayName: string;
+}
+
 export interface TransferEntry {
   id: string;
   fecha: Date;
@@ -408,6 +413,18 @@ export interface TransferEntry {
   deliveredAt?: Date;
   manualStatusChangeJustification?: string;
   storageOrder?: string;
+  recolectadoBy?: string;
+  recolectadoByName?: string;
+  validatedBy?: string;
+  validatedByName?: string;
+  recibidoBodegaBy?: string;
+  recibidoBodegaByName?: string;
+  enviadoBy?: string;
+  enviadoByName?: string;
+  deliveredBy?: string;
+  deliveredByName?: string;
+  manualStatusChangedBy?: string;
+  manualStatusChangedByName?: string;
   }
 
 export interface DeliveryManifest {
