@@ -38,7 +38,6 @@ const SamplePhotoReceptionDashboard = dynamic(
     ),
   }
 );
-import { loadSampleVerifications } from '@/app/actions';
 import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -136,6 +135,7 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
   const fetchSavedVerifications = React.useCallback(async () => {
     if (!isFullSampleAdmin) return;
     setIsLoadingSaved(true);
+    const { loadSampleVerifications } = await import('@/app/actions');
     const result = await loadSampleVerifications({ maxSessions: 3500 });
     if (result.success && result.data) {
         setSavedVerifications(result.data);

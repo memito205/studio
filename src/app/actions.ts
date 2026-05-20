@@ -2505,7 +2505,7 @@ export async function getSampleReferencesExistence(
 }
 
 export async function saveSampleDeliveries(deliveries: Omit<SampleDelivery, 'id'>[]): Promise<{ success: boolean; error?: string; processedCount: number }> {
-    const { saveSampleDeliveriesWithReception } = await import('./samplePhotoReceptionActions');
+    const { saveSampleDeliveriesWithReception } = await import('./sample-photo-reception/actions');
     const result = await saveSampleDeliveriesWithReception(deliveries);
     return {
         success: result.success,
@@ -2584,13 +2584,7 @@ const SAMPLE_VERIFICATION_PAGE_SIZE = 450;
 const DEFAULT_SAMPLE_VERIFICATION_SESSION_CAP = 2000;
 const MAX_SAMPLE_VERIFICATION_SESSION_CAP = 8000;
 
-export type LoadSampleVerificationsOptions = {
-    /**
-     * Máximo de sesiones recientes (createdAt desc). Antes se leía toda la colección (miles de lecturas por clic).
-     * Valores altos solo para pantallas que lo necesiten explícitamente.
-     */
-    maxSessions?: number;
-};
+import type { LoadSampleVerificationsOptions } from '@/lib/sampleVerificationTypes';
 
 export async function loadSampleVerifications(
     options?: LoadSampleVerificationsOptions
@@ -4299,55 +4293,14 @@ export async function resetAllBags(opId: string): Promise<{ success: boolean; er
 // PROPUESTA TRANSPORTADORA — Actions
 // ============================================================
 
-export interface CarrierRateRow {
-    codigoMunicipio: string;
-    tipoTrayecto: string;      // e.g. "Nacional" | "Regional" | "Local"
-    flete: number;
-    iva: number;
-    margenLogisticaInversa: number;
-    total: number;             // calculated: flete + iva + margenLogisticaInversa
-}
-
-export interface CarrierProposalRow {
-    codigoMunicipio: string;
-    municipio: string;
-    departamento: string;
-    tipoTrayecto: string;
-    actual: { flete: number; iva: number; margenLogisticaInversa: number; total: number };
-    propuesta: { flete: number; iva: number; margenLogisticaInversa: number; total: number };
-    diferencia: number;
-    diferenciaPct: number;
-}
-
-export interface CarrierProposal {
-    id?: string;
-    name: string;
-    carrier: string;
-    date: string;
-    createdAt?: Date;
-    createdBy?: string;
-    summary: {
-        totalMunicipios: number;
-        ahorroTotal: number;
-        incrementoTotal: number;
-        municipiosConAhorro: number;
-        municipiosConIncremento: number;
-    };
-    rows: CarrierProposalRow[];
-}
-
-export interface CarrierScoreConfig {
-    criteriaWeights: {
-        costo: number; calidad: number; novedades: number;
-        cobertura: number; tiempoEntrega: number; soporte: number;
-    };
-    scores: {
-        [carrier: string]: {
-            costo: number; calidad: number; novedades: number;
-            cobertura: number; tiempoEntrega: number; soporte: number;
-        };
-    };
-}
+import type {
+    CarrierRateRow,
+    CarrierProposal,
+    CarrierProposalRow,
+    CarrierScoreConfig,
+    CODRule,
+    CODTier,
+} from '@/lib/carrierProposalTypes';
 
 /** Saves current carrier rates (with breakdown) to Firestore */
 export async function saveCarrierCurrentRates(
@@ -4530,20 +4483,6 @@ export async function getCarrierInsuranceConfig(): Promise<{ success: boolean; d
     } catch (error: any) {
         return { success: false, error: error.message };
     }
-}
-
-export interface CODTier {
-    min: number;
-    max: number;
-    feeType: 'fixed' | 'percent';
-    value: number;
-}
-
-export interface CODRule {
-    type: 'simple' | 'tiered';
-    percentage?: number;  // Standard percentage (e.g. 3)
-    minFee?: number;     // Optional minimum floor fee
-    tiers?: CODTier[];   // Required for 'tiered' type
 }
 
 /** Saves per-carrier COD fee rules */

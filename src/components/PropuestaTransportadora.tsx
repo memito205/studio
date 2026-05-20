@@ -35,12 +35,14 @@ import {
     getCarrierInsuranceConfig,
     saveCarrierCODConfig,
     getCarrierCODConfig,
+} from '@/app/actions';
+import type {
     CarrierRateRow,
     CarrierProposal,
     CarrierScoreConfig,
     CODRule,
     CODTier,
-} from '@/app/actions';
+} from '@/lib/carrierProposalTypes';
 
 // ---------------------------------------------------------------------------
 // Constants
