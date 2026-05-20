@@ -46,11 +46,15 @@ interface GroupedTransfer extends TransferEntry {
     allIds: string[];
 }
 
-function toTransferActor(user: { uid: string; displayName?: string | null; email?: string | null } | null | undefined): TransferActor | undefined {
+function toTransferActor(
+    user: { uid: string; displayName?: string | null; email?: string | null } | null | undefined,
+    profileName?: string | null
+): TransferActor | undefined {
     if (!user?.uid) return undefined;
+    const name = (profileName || '').trim() || user.displayName || user.email || 'Usuario';
     return {
         userId: user.uid,
-        displayName: user.displayName || user.email || 'Usuario',
+        displayName: name,
     };
 }
 
@@ -693,9 +697,9 @@ const WarehouseReceptionView: React.FC<{
   collectionLogs: CollectionLog[];
   onRefresh: () => void;
 }> = ({ collectionLogs, onRefresh }) => {
-    const { user } = useAuth();
+    const { user, userName } = useAuth();
     const { toast } = useToast();
-    const actor = useMemo(() => toTransferActor(user), [user]);
+    const actor = useMemo(() => toTransferActor(user, userName), [user, userName]);
     const [isLoading, setIsLoading] = useState(false);
     const [searchPlate, setSearchPlate] = useState('');
     const [foundTransfers, setFoundTransfers] = useState<TransferEntry[]>([]);
@@ -976,9 +980,9 @@ interface AdminViewProps {
 }
 
 const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, collectionLogs, isLoading, filters, setFilters, onRefresh, onSearch, role, users, isUploading, onFileChange, fileInputRef, setIsManualEntryOpen }) => {
-    const { user } = useAuth();
+    const { user, userName } = useAuth();
     const { toast } = useToast();
-    const actor = useMemo(() => toTransferActor(user), [user]);
+    const actor = useMemo(() => toTransferActor(user, userName), [user, userName]);
     const isAdmin = role === 'admin' || role === 'supervisor';
     const [manifests, setManifests] = useState<DeliveryManifest[]>([]);
     const [isLoadingManifests, setIsLoadingManifests] = useState(false);
@@ -1903,9 +1907,9 @@ const OperatorView: React.FC<{
   onRefresh: () => void;
 }> = ({ allTransfers, collectionLogs, users, isLoading, onRefresh }) => {
     const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', status: 'all' });
-    const { user } = useAuth();
+    const { user, userName } = useAuth();
     const { toast } = useToast();
-    const actor = useMemo(() => toTransferActor(user), [user]);
+    const actor = useMemo(() => toTransferActor(user, userName), [user, userName]);
     const usersMap = useMemo(() => new Map(users.map(u => [u.uid, u.displayName || u.email || 'Desconocido'])), [users]);
     
     // States for Label Printing and History
@@ -2093,8 +2097,9 @@ const CollectionTabView: React.FC<{
   onRefresh: () => void;
   onOpenManualEntry?: () => void;
 }> = ({ onRefresh, onOpenManualEntry }) => {
-    const { user } = useAuth();
+    const { user, userName } = useAuth();
     const { toast } = useToast();
+    const actor = useMemo(() => toTransferActor(user, userName), [user, userName]);
     const [isLoading, setIsLoading] = useState(false);
     const [transfers, setTransfers] = useState<TransferEntry[]>([]);
     const [selectedPlate, setSelectedPlate] = useState('');
@@ -2174,7 +2179,7 @@ const CollectionTabView: React.FC<{
             selectedPlate,
             Array.from(selectedTransfers),
             user.uid,
-            user.displayName || user.email || undefined
+            userName || user.displayName || user.email || undefined
         );
         if (result.success) {
             toast({ title: 'Éxito', description: `${uniqueSelectedTfCount} transferencias marcadas como recolectadas.` });

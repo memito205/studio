@@ -397,6 +397,14 @@ export interface TransferActor {
   displayName: string;
 }
 
+/** Entrada append-only de cada cambio de estado (trazabilidad). */
+export interface TransferStatusHistoryEntry {
+  status: TransferStatus;
+  at: Date;
+  userId: string;
+  userName: string;
+}
+
 export interface TransferEntry {
   id: string;
   fecha: Date;
@@ -425,6 +433,7 @@ export interface TransferEntry {
   deliveredByName?: string;
   manualStatusChangedBy?: string;
   manualStatusChangedByName?: string;
+  statusHistory?: TransferStatusHistoryEntry[];
   }
 
 export interface DeliveryManifest {

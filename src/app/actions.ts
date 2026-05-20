@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagItem } from "@/types";
+import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagItem } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -3368,7 +3368,13 @@ export async function deleteTransfer(transferId: string): Promise<{ success: boo
     }
 }
 
-function applyTransferStatusActor(updates: Record<string, unknown>, status: TransferStatus, actor?: TransferActor, justification?: string) {
+function applyTransferStatusActor(
+    updates: Record<string, unknown>,
+    status: TransferStatus,
+    actor?: TransferActor,
+    justification?: string,
+    at: Timestamp = Timestamp.now()
+) {
     if (!actor?.userId) return;
     const actorName = (actor.displayName || '').trim() || actor.userId;
 
@@ -3376,6 +3382,13 @@ function applyTransferStatusActor(updates: Record<string, unknown>, status: Tran
         updates.manualStatusChangedBy = actor.userId;
         updates.manualStatusChangedByName = actorName;
     }
+
+    updates.statusHistory = arrayUnion({
+        status,
+        at,
+        userId: actor.userId,
+        userName: actorName,
+    });
 
     switch (status) {
         case 'Recolectado en Ruta':
@@ -3427,7 +3440,7 @@ export async function updateTransferStatus(
         else if (status === 'Entregado en Ruta') updates.deliveredAt = now;
         else if (status === 'Recolectado en Ruta') updates.recibidoAt = now;
 
-        applyTransferStatusActor(updates, status, actor, justification);
+        applyTransferStatusActor(updates, status, actor, justification, now);
 
         ids.forEach(id => {
             const transferRef = doc(firestore, "transfers", id);
@@ -3455,10 +3468,11 @@ export async function batchUpdateTransferStatus(
         transferIds.forEach(id => {
             const transferRef = doc(firestore, 'transfers', id);
             const updates: Record<string, unknown> = { status };
+            const now = Timestamp.now();
             if (status === 'Recibido en Bodega') {
-                updates.recibidoAt = Timestamp.now();
+                updates.recibidoAt = now;
             }
-            applyTransferStatusActor(updates, status, actor);
+            applyTransferStatusActor(updates, status, actor, undefined, now);
             batch.update(transferRef, updates);
         });
         await batch.commit();
@@ -3526,6 +3540,17 @@ export async function healInconsistentTransfers(): Promise<{ success: boolean; u
                 if (templateLine.validatedAt) metadata.validatedAt = templateLine.validatedAt;
                 if (templateLine.enviadoAt) metadata.enviadoAt = templateLine.enviadoAt;
                 if (templateLine.deliveredAt) metadata.deliveredAt = templateLine.deliveredAt;
+                if (templateLine.recolectadoBy) metadata.recolectadoBy = templateLine.recolectadoBy;
+                if (templateLine.recolectadoByName) metadata.recolectadoByName = templateLine.recolectadoByName;
+                if (templateLine.validatedBy) metadata.validatedBy = templateLine.validatedBy;
+                if (templateLine.validatedByName) metadata.validatedByName = templateLine.validatedByName;
+                if (templateLine.recibidoBodegaBy) metadata.recibidoBodegaBy = templateLine.recibidoBodegaBy;
+                if (templateLine.recibidoBodegaByName) metadata.recibidoBodegaByName = templateLine.recibidoBodegaByName;
+                if (templateLine.enviadoBy) metadata.enviadoBy = templateLine.enviadoBy;
+                if (templateLine.enviadoByName) metadata.enviadoByName = templateLine.enviadoByName;
+                if (templateLine.deliveredBy) metadata.deliveredBy = templateLine.deliveredBy;
+                if (templateLine.deliveredByName) metadata.deliveredByName = templateLine.deliveredByName;
+                if (templateLine.statusHistory) metadata.statusHistory = templateLine.statusHistory;
 
                 // Mark lines that need update
                 lines.forEach(l => {
@@ -3647,6 +3672,60 @@ export async function getTransfersByIds(transferIds: string[]): Promise<{ succes
     } catch (error: any) {
         console.error("Error loading transfers by IDs:", error);
         return { success: false, error: `Failed to load transfers: ${error.message}` };
+    }
+}
+
+/** Carga la transferencia actualizada desde Firestore y fusiona historial de todas sus líneas. */
+export async function getTransferTraceability(
+    transferIds: string[]
+): Promise<{ success: boolean; data?: TransferEntry | null; error?: string }> {
+    try {
+        const result = await getTransfersByIds(transferIds);
+        if (!result.success || !result.data?.length) {
+            return { success: false, error: result.error || 'No se encontró la transferencia.' };
+        }
+
+        const lines = result.data;
+        const statusPriority: Record<TransferStatus, number> = {
+            'En Tránsito': 1,
+            'Recolectado en Ruta': 2,
+            'Entregado en Ruta': 3,
+            'Validado Supervisor': 4,
+            'Recibido en Bodega': 5,
+            'Enviado a Destino': 6,
+        };
+
+        const primary = [...lines].sort(
+            (a, b) => (statusPriority[b.status] ?? 0) - (statusPriority[a.status] ?? 0)
+        )[0];
+
+        const mergedHistory: TransferStatusHistoryEntry[] = [];
+        const seen = new Set<string>();
+        for (const line of lines) {
+            for (const entry of line.statusHistory || []) {
+                const atMs = entry.at instanceof Date ? entry.at.getTime() : new Date(entry.at as unknown as string).getTime();
+                const key = `${entry.status}-${atMs}-${entry.userId}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    mergedHistory.push({
+                        ...entry,
+                        at: entry.at instanceof Date ? entry.at : new Date(entry.at as unknown as string),
+                    });
+                }
+            }
+        }
+        mergedHistory.sort((a, b) => a.at.getTime() - b.at.getTime());
+
+        return {
+            success: true,
+            data: {
+                ...primary,
+                statusHistory: mergedHistory.length > 0 ? mergedHistory : primary.statusHistory,
+            },
+        };
+    } catch (error: any) {
+        console.error('Error loading transfer traceability:', error);
+        return { success: false, error: error.message };
     }
 }
 
@@ -3887,13 +3966,20 @@ export async function createCollectionLog(
         batch.set(newLogRef, newLogData);
 
         const actorName = (userDisplayName || '').trim() || userId;
+        const collectedAt = Timestamp.now();
         transferIds.forEach(id => {
             const transferRef = doc(transfersCollection, id);
             batch.update(transferRef, { 
                 status: 'Recolectado en Ruta',
-                recibidoAt: Timestamp.now(), // Save the collection time
+                recibidoAt: collectedAt,
                 recolectadoBy: userId,
                 recolectadoByName: actorName,
+                statusHistory: arrayUnion({
+                    status: 'Recolectado en Ruta',
+                    at: collectedAt,
+                    userId,
+                    userName: actorName,
+                }),
             });
         });
 
