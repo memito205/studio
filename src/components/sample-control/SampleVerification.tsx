@@ -13,7 +13,6 @@ import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import type { SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification } from '@/types';
 import { getSampleReferenceById, getSampleDeliveriesByReferences, saveSampleVerification, loadSampleVerifications } from '@/app/actions';
-import * as XLSX from 'xlsx';
 import { exportToXlsx } from '@/services/export';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -189,6 +188,7 @@ export const SampleVerification: React.FC<SampleVerificationProps> = ({ onVerifi
 
         try {
             const data = await file.arrayBuffer();
+            const XLSX = await import('xlsx');
             const workbook = XLSX.read(data);
             const sheetName = workbook.SheetNames[0];
             const worksheet = workbook.Sheets[sheetName];

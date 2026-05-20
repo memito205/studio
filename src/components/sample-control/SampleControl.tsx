@@ -3,6 +3,7 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
+import dynamic from 'next/dynamic';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
@@ -22,8 +23,21 @@ import { SampleVerification } from './SampleVerification';
 import { AdminDataManagement } from './AdminDataManagement';
 import { SampleFollowUpReport } from './SampleFollowUpReport';
 import { ReceptionSamplesAuditReport } from '@/components/ReceptionSamplesAuditReport';
-import { SamplePhotoReceptionDashboard } from './SamplePhotoReceptionDashboard';
 import type { SavedSampleVerification } from '@/types';
+
+const SamplePhotoReceptionDashboard = dynamic(
+  () =>
+    import('./SamplePhotoReceptionDashboard').then((mod) => ({
+      default: mod.SamplePhotoReceptionDashboard,
+    })),
+  {
+    loading: () => (
+      <div className="flex justify-center py-16">
+        <Loader2 className="h-10 w-10 animate-spin text-primary" />
+      </div>
+    ),
+  }
+);
 import { loadSampleVerifications } from '@/app/actions';
 import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';

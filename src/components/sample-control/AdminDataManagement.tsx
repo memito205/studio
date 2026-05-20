@@ -14,7 +14,6 @@ import { saveSampleReferences, loadSampleReferences, migrateAdidasVerifications 
 import { saveSampleDeliveriesWithReception } from '@/app/samplePhotoReceptionActions';
 import { normalizeSampleReference, normalizeSampleTransferNumber } from '@/lib/samplePhotoReception';
 import { SamplePhotoReceptionPhase1Panel } from './SamplePhotoReceptionPhase1Panel';
-import * as XLSX from 'xlsx';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import {
   AlertDialog,
@@ -30,7 +29,8 @@ import {
 
 
 const DownloadDeliveriesTemplateButton: React.FC = () => {
-    const handleDownload = () => {
+    const handleDownload = async () => {
+        const XLSX = await import('xlsx');
         const headers = ["Referencia", "Numero de TF", "Fecha", "Bodega Origen", "Bodega Destino"];
         const exampleData = [
             {
@@ -152,6 +152,7 @@ export const AdminDataManagement: React.FC = () => {
     setIsSavingDeliveries(true);
     try {
         const data = await file.arrayBuffer();
+        const XLSX = await import('xlsx');
         const workbook = XLSX.read(data);
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
