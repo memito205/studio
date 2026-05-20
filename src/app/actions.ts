@@ -2395,20 +2395,7 @@ export async function batchUpsertDelayedOrderLogs(logs: { orderId: string, detec
 }
 
 
-// --- Sample Control Actions (implementacion en modulo dedicado; re-export para compatibilidad) ---
-export {
-  saveSampleReferences,
-  loadSampleReferences,
-  getSampleReferenceById,
-  getSampleReferencesExistence,
-  saveSampleDeliveries,
-  loadAllSampleDeliveries,
-  getSampleDeliveriesByReferences,
-  saveSampleVerification,
-  loadSampleVerifications,
-  loadSampleVerificationsSince,
-  migrateAdidasVerifications,
-} from './sample-control/actions';
+// --- Sample Control Actions: usar @/app/sample-control/actions (no re-exportar aqui; rompe el build) ---
 
 // --- FIFO Ordering for Transfers ---
 /**
