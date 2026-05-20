@@ -15,8 +15,14 @@ import * as XLSX from 'xlsx';
 import { CURRENT_APP_VERSION } from './version';
 import { normalizeHeader, parseFlexibleDate, excelSerialDateToJSDate, findCaseInsensitiveKey, extractLocalDateString } from '@/lib/parsingUtils';
 import { processReport } from '@/services/reportProcessor';
-
-
+import type {
+    CarrierRateRow,
+    CarrierProposal,
+    CarrierProposalRow,
+    CarrierScoreConfig,
+    CODRule,
+    CODTier,
+} from '@/lib/carrierProposalTypes';
 
 // Helper function to convert Dates back to Timestamps FOR WRITING to Firestore
 const convertDatesToTimestamps = (data: any): any => {
@@ -74,8 +80,10 @@ const normalizeLabelId = (id: string): string => {
 };
 
 
-// Activity Log
-export const createActivityLog = async (logEntry: Omit<ActivityLog, 'id' | 'created_at'>): Promise<void> => {
+// Activity Log (debe ser export async function, no export const: si no, el stub en cliente falla)
+export async function createActivityLog(
+    logEntry: Omit<ActivityLog, 'id' | 'created_at'>
+): Promise<void> {
     try {
         await addDoc(collection(firestore, 'activity_logs'), {
             ...logEntry,
@@ -3949,15 +3957,6 @@ export async function resetAllBags(opId: string): Promise<{ success: boolean; er
 // ============================================================
 // PROPUESTA TRANSPORTADORA — Actions
 // ============================================================
-
-import type {
-    CarrierRateRow,
-    CarrierProposal,
-    CarrierProposalRow,
-    CarrierScoreConfig,
-    CODRule,
-    CODTier,
-} from '@/lib/carrierProposalTypes';
 
 /** Saves current carrier rates (with breakdown) to Firestore */
 export async function saveCarrierCurrentRates(

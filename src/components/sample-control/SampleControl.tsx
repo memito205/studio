@@ -150,9 +150,13 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
   const isFullSampleAdmin = isAdmin || isSupervisor;
   const canAccessPhotoReception = isAdmin || isSupervisor || isOffice;
 
-  const [activeTab, setActiveTab] = useState<string>(() =>
-    canAccessPhotoReception ? 'photoReception' : 'verification'
-  );
+  const [activeTab, setActiveTab] = useState('photoReception');
+
+  useEffect(() => {
+    if (!canAccessPhotoReception && activeTab === 'photoReception') {
+      setActiveTab('verification');
+    }
+  }, [canAccessPhotoReception, activeTab]);
 
   const fetchSavedVerifications = React.useCallback(async () => {
     if (!isFullSampleAdmin) return;
