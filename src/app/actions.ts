@@ -2601,6 +2601,7 @@ export type UpdateSamplePhotoReceptionStatusPayload = {
     updatedByName?: string;
     activeTransferNumber?: string;
     allowClosedTransferUpdates?: boolean;
+    eventSource?: SamplePhotoReceptionEvent['source'];
 };
 
 export type UpdateSamplePhotoReceptionStatusResult = {
@@ -2712,6 +2713,7 @@ export async function updateSamplePhotoReceptionStatus(
                 at: new Date(),
                 fromStatus: current.status ?? null,
                 toStatus: payload.nextStatus,
+                source: payload.eventSource ?? 'manual',
                 note: payload.note?.trim().slice(0, 500) || null,
                 actorId: payload.updatedById ?? null,
                 actorName: payload.updatedByName ?? null,
@@ -2775,6 +2777,7 @@ export async function scanSamplePhotoReception(
             updatedById: payload.updatedById,
             updatedByName: payload.updatedByName,
             activeTransferNumber: activeTf || undefined,
+            eventSource: 'id',
         });
         return { ...update, source: 'id' };
     }
@@ -2815,6 +2818,7 @@ export async function scanSamplePhotoReception(
                 updatedById: payload.updatedById,
                 updatedByName: payload.updatedByName,
                 activeTransferNumber: activeTf || undefined,
+                eventSource: matchedSource,
             });
             return { ...update, source: matchedSource };
         }
@@ -2848,6 +2852,7 @@ export async function scanSamplePhotoReception(
                 updatedById: payload.updatedById,
                 updatedByName: payload.updatedByName,
                 activeTransferNumber: activeTf || undefined,
+                eventSource: 'barcode',
             });
             return { ...update, source: 'barcode' };
         }
@@ -2891,6 +2896,39 @@ export type CloseSamplePhotoTransferResult = {
     error?: string;
     unchanged?: boolean;
     data?: SamplePhotoTransferSummary;
+};
+
+export type LoadSamplePhotoReceptionReportOptions = {
+    fromDate?: string;
+    toDate?: string;
+    transferNumber?: string;
+    status?: SamplePhotoReceptionStatus | 'all';
+    maxItems?: number;
+};
+
+export type SamplePhotoReceptionReportRow = {
+    id: string;
+    reference: string;
+    transferNumber: string;
+    status: SamplePhotoReceptionStatus;
+    updatedAt?: Date;
+    updatedByName?: string | null;
+    lastEventSource?: SamplePhotoReceptionEvent['source'];
+    lastEventNote?: string | null;
+    isTransferClosed: boolean;
+};
+
+export type SamplePhotoReceptionReportData = {
+    totals: {
+        total: number;
+        pending: number;
+        inProgress: number;
+        received: number;
+        cancelled: number;
+        closedTransfers: number;
+        openTransfers: number;
+    };
+    rows: SamplePhotoReceptionReportRow[];
 };
 
 export async function closeSamplePhotoTransfer(
@@ -2944,6 +2982,77 @@ export async function closeSamplePhotoTransfer(
     }
 }
 
+export async function loadSamplePhotoReceptionReport(
+    options?: LoadSamplePhotoReceptionReportOptions
+): Promise<{ success: boolean; data?: SamplePhotoReceptionReportData; error?: string }> {
+    try {
+        const maxItems = Math.min(Math.max(options?.maxItems ?? 3000, 1), 6000);
+        const statusFilter = options?.status ?? 'all';
+        const tfFilter = normalizeTransferNumber(options?.transferNumber);
+        const fromDate = options?.fromDate ? new Date(`${options.fromDate}T00:00:00`) : null;
+        const toDate = options?.toDate ? new Date(`${options.toDate}T23:59:59`) : null;
+
+        const baseSnap = statusFilter === 'all'
+            ? await getDocs(query(collection(firestore, SAMPLE_PHOTO_RECEPTION_COLLECTION), orderBy('updatedAt', 'desc'), limit(maxItems)))
+            : await getDocs(query(collection(firestore, SAMPLE_PHOTO_RECEPTION_COLLECTION), where('status', '==', statusFilter), orderBy('updatedAt', 'desc'), limit(maxItems)));
+
+        let rows = baseSnap.docs.map((d) => convertTimestampsToDates({ id: d.id, ...d.data() }) as SamplePhotoReception);
+        if (tfFilter) {
+            rows = rows.filter((item) => normalizeTransferNumber(item.transferNumber) === tfFilter);
+        }
+        if (fromDate || toDate) {
+            rows = rows.filter((item) => {
+                if (!item.updatedAt) return false;
+                const ts = item.updatedAt.getTime();
+                if (fromDate && ts < fromDate.getTime()) return false;
+                if (toDate && ts > toDate.getTime()) return false;
+                return true;
+            });
+        }
+
+        const transferNumbers = Array.from(new Set(rows.map((item) => normalizeTransferNumber(item.transferNumber)).filter(Boolean)));
+        const closureMap = new Map<string, boolean>();
+        await Promise.all(
+            transferNumbers.map(async (tf) => {
+                const closure = await getSamplePhotoTransferClosure(tf);
+                closureMap.set(tf, Boolean(closure?.isClosed));
+            })
+        );
+
+        const reportRows: SamplePhotoReceptionReportRow[] = rows.map((item) => {
+            const lastEvent = Array.isArray(item.statusHistory) && item.statusHistory.length > 0
+                ? item.statusHistory[item.statusHistory.length - 1]
+                : undefined;
+            const tf = normalizeTransferNumber(item.transferNumber);
+            return {
+                id: item.id,
+                reference: item.reference,
+                transferNumber: item.transferNumber,
+                status: item.status,
+                updatedAt: item.updatedAt,
+                updatedByName: item.updatedByName ?? null,
+                lastEventSource: lastEvent?.source,
+                lastEventNote: lastEvent?.note ?? null,
+                isTransferClosed: closureMap.get(tf) === true,
+            };
+        });
+
+        const totals = {
+            total: reportRows.length,
+            pending: reportRows.filter((r) => r.status === 'pending').length,
+            inProgress: reportRows.filter((r) => r.status === 'in_progress').length,
+            received: reportRows.filter((r) => r.status === 'received').length,
+            cancelled: reportRows.filter((r) => r.status === 'cancelled').length,
+            closedTransfers: new Set(reportRows.filter((r) => r.isTransferClosed).map((r) => normalizeTransferNumber(r.transferNumber))).size,
+            openTransfers: new Set(reportRows.filter((r) => !r.isTransferClosed).map((r) => normalizeTransferNumber(r.transferNumber))).size,
+        };
+
+        return { success: true, data: { totals, rows: reportRows } };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
 export type CancelSamplePhotoReceptionPayload = {
     id: string;
     note?: string;
@@ -2965,6 +3074,7 @@ export async function cancelSamplePhotoReception(
         updatedById: payload.updatedById,
         updatedByName: payload.updatedByName,
         allowClosedTransferUpdates: true,
+        eventSource: 'admin_cancel',
     });
 }
 

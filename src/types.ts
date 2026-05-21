@@ -1440,6 +1440,7 @@ export interface SamplePhotoReceptionEvent {
   at: Date;
   fromStatus: SamplePhotoReceptionStatus | null;
   toStatus: SamplePhotoReceptionStatus;
+  source?: 'manual' | 'id' | 'reference' | 'transfer' | 'barcode' | 'admin_cancel';
   note?: string | null;
   actorId?: string | null;
   actorName?: string | null;

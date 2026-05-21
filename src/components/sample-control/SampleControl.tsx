@@ -46,6 +46,11 @@ const PhotoReceptionQueue = dynamic(
   { loading: tabLoading }
 );
 
+const PhotoReceptionReport = dynamic(
+  () => import('./photo-reception').then((mod) => ({ default: mod.PhotoReceptionReport })),
+  { loading: tabLoading }
+);
+
 const ReceptionSamplesAuditReport = dynamic(
   () =>
     import('@/components/ReceptionSamplesAuditReport').then((mod) => ({
@@ -215,7 +220,7 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
         <div className="space-y-8 max-w-7xl mx-auto">
           {headerCard}
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-            <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-1 h-auto py-2">
+            <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-1 h-auto py-2">
               <TabsTrigger value="verification">
                 <ShieldCheck className="mr-2 h-4 w-4" />
                 Verificación
@@ -235,6 +240,10 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
               <TabsTrigger value="photoReceptionOps">
                 <Boxes className="mr-2 h-4 w-4" />
                 Recepción foto
+              </TabsTrigger>
+              <TabsTrigger value="photoReceptionReport">
+                <Boxes className="mr-2 h-4 w-4" />
+                Rep. recepción
               </TabsTrigger>
               <TabsTrigger value="history">
                 <History className="mr-2 h-4 w-4" />
@@ -257,6 +266,9 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
             </TabsContent>
             <TabsContent value="photoReceptionOps" className="mt-6">
               {activeTab === 'photoReceptionOps' && <PhotoReceptionQueue />}
+            </TabsContent>
+            <TabsContent value="photoReceptionReport" className="mt-6">
+              {activeTab === 'photoReceptionReport' && <PhotoReceptionReport />}
             </TabsContent>
             <TabsContent value="history" className="mt-6">
               {activeTab === 'history' && (

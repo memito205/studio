@@ -12,6 +12,7 @@ import { Loader2, RefreshCcw, Search } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import {
+  cancelSamplePhotoReception,
   closeSamplePhotoTransfer,
   loadSamplePhotoTransferSummary,
   loadSamplePhotoReceptions,
@@ -178,6 +179,42 @@ export const PhotoReceptionQueue: React.FC = () => {
       description: result.unchanged
         ? 'El registro ya tenia ese estado.'
         : `Estado actualizado a ${STATUS_LABEL[nextStatus]}.`,
+    });
+    await Promise.all([fetchQueue(), fetchTransferSummary()]);
+    setSavingId(null);
+  };
+
+  const handleCancelReception = async (id: string) => {
+    if (role !== 'admin') return;
+    const note = window.prompt('Motivo de cancelacion (obligatorio):', '');
+    if (!note || !note.trim()) {
+      toast({
+        variant: 'destructive',
+        title: 'Cancelacion requerida',
+        description: 'Debe ingresar motivo para cancelar la recepcion.',
+      });
+      return;
+    }
+    setSavingId(id);
+    const result = await cancelSamplePhotoReception({
+      id,
+      note: note.trim(),
+      updatedById: user?.uid,
+      updatedByName: userName ?? user?.displayName ?? user?.email ?? undefined,
+      updatedByRole: role,
+    });
+    if (!result.success) {
+      toast({
+        variant: 'destructive',
+        title: 'No se pudo cancelar',
+        description: result.error || 'Error al cancelar recepcion.',
+      });
+      setSavingId(null);
+      return;
+    }
+    toast({
+      title: 'Recepcion cancelada',
+      description: 'La recepcion fue cancelada por administracion.',
     });
     await Promise.all([fetchQueue(), fetchTransferSummary()]);
     setSavingId(null);
@@ -379,6 +416,16 @@ export const PhotoReceptionQueue: React.FC = () => {
                         >
                           {savingId === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Marcar recibida'}
                         </Button>
+                        {role === 'admin' && item.status !== 'cancelled' && (
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            disabled={savingId === item.id}
+                            onClick={() => handleCancelReception(item.id)}
+                          >
+                            {savingId === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Cancelar'}
+                          </Button>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>
