@@ -1434,7 +1434,7 @@ export interface SampleDelivery {
   destinationWarehouse: string;
 }
 
-export type SamplePhotoReceptionStatus = 'pending' | 'in_progress' | 'received';
+export type SamplePhotoReceptionStatus = 'pending' | 'in_progress' | 'received' | 'cancelled';
 
 export interface SamplePhotoReceptionEvent {
   at: Date;
@@ -1459,6 +1459,20 @@ export interface SamplePhotoReception {
   updatedById?: string | null;
   updatedByName?: string | null;
   statusHistory?: SamplePhotoReceptionEvent[];
+}
+
+export interface SamplePhotoTransferSummary {
+  transferNumber: string;
+  total: number;
+  pending: number;
+  inProgress: number;
+  received: number;
+  cancelled: number;
+  canClose: boolean;
+  isClosed: boolean;
+  closedAt?: Date;
+  closedById?: string | null;
+  closedByName?: string | null;
 }
 
 export interface ComparisonResult {

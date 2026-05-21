@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagItem } from "@/types";
+import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagItem } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -2491,16 +2491,20 @@ export type LoadSamplePhotoReceptionsOptions = {
     maxItems?: number;
 };
 
-const SAMPLE_PHOTO_RECEPTION_STATUSES: SamplePhotoReceptionStatus[] = ['pending', 'in_progress', 'received'];
+const SAMPLE_PHOTO_RECEPTION_STATUSES: SamplePhotoReceptionStatus[] = ['pending', 'in_progress', 'received', 'cancelled'];
+const SAMPLE_PHOTO_RECEPTION_COLLECTION = 'samplePhotoReceptions';
+const SAMPLE_PHOTO_TRANSFER_CLOSURES_COLLECTION = 'samplePhotoReceptionTransferClosures';
 
 function isValidSamplePhotoReceptionTransition(
     fromStatus: SamplePhotoReceptionStatus,
     toStatus: SamplePhotoReceptionStatus
 ): boolean {
     if (fromStatus === toStatus) return true;
+    if (toStatus === 'cancelled') return true;
     if (fromStatus === 'pending' && toStatus === 'in_progress') return true;
     if (fromStatus === 'pending' && toStatus === 'received') return true;
     if (fromStatus === 'in_progress' && toStatus === 'received') return true;
+    if (fromStatus === 'cancelled' && toStatus === 'pending') return true;
     return false;
 }
 
@@ -2596,6 +2600,7 @@ export type UpdateSamplePhotoReceptionStatusPayload = {
     updatedById?: string;
     updatedByName?: string;
     activeTransferNumber?: string;
+    allowClosedTransferUpdates?: boolean;
 };
 
 export type UpdateSamplePhotoReceptionStatusResult = {
@@ -2618,6 +2623,43 @@ function sortByUpdatedAtDesc(items: SamplePhotoReception[]): SamplePhotoReceptio
 
 function normalizeTransferNumber(input: string | null | undefined): string {
     return String(input ?? '').trim().toUpperCase();
+}
+
+function computeSamplePhotoTransferSummary(
+    transferNumber: string,
+    receptions: SamplePhotoReception[],
+    closure?: Record<string, unknown> | null
+): SamplePhotoTransferSummary {
+    const summary: SamplePhotoTransferSummary = {
+        transferNumber,
+        total: receptions.length,
+        pending: 0,
+        inProgress: 0,
+        received: 0,
+        cancelled: 0,
+        canClose: false,
+        isClosed: Boolean(closure?.isClosed),
+        closedAt: closure?.closedAt instanceof Date ? closure.closedAt : undefined,
+        closedById: typeof closure?.closedById === 'string' ? closure.closedById : null,
+        closedByName: typeof closure?.closedByName === 'string' ? closure.closedByName : null,
+    };
+    receptions.forEach((item) => {
+        if (item.status === 'pending') summary.pending += 1;
+        else if (item.status === 'in_progress') summary.inProgress += 1;
+        else if (item.status === 'received') summary.received += 1;
+        else if (item.status === 'cancelled') summary.cancelled += 1;
+    });
+    summary.canClose = summary.total > 0 && summary.pending === 0 && summary.inProgress === 0;
+    return summary;
+}
+
+async function getSamplePhotoTransferClosure(transferNumber: string): Promise<Record<string, unknown> | null> {
+    const normalized = normalizeTransferNumber(transferNumber);
+    if (!normalized) return null;
+    const closureRef = doc(firestore, SAMPLE_PHOTO_TRANSFER_CLOSURES_COLLECTION, normalized);
+    const snap = await getDoc(closureRef);
+    if (!snap.exists()) return null;
+    return convertTimestampsToDates(snap.data()) as Record<string, unknown>;
 }
 
 export async function updateSamplePhotoReceptionStatus(
@@ -2647,6 +2689,13 @@ export async function updateSamplePhotoReceptionStatus(
                 return {
                     success: false,
                     error: `Recepcion fuera de TF activa (${activeTf}).`,
+                };
+            }
+            const closure = await getSamplePhotoTransferClosure(current.transferNumber);
+            if (closure?.isClosed && !payload.allowClosedTransferUpdates) {
+                return {
+                    success: false,
+                    error: `La TF ${normalizeTransferNumber(current.transferNumber)} esta cerrada.`,
                 };
             }
             if (current.status === payload.nextStatus) {
@@ -2807,6 +2856,116 @@ export async function scanSamplePhotoReception(
     } catch (error: any) {
         return { success: false, error: error.message };
     }
+}
+
+export async function loadSamplePhotoTransferSummary(
+    transferNumber: string
+): Promise<{ success: boolean; data?: SamplePhotoTransferSummary; error?: string }> {
+    const normalized = normalizeTransferNumber(transferNumber);
+    if (!normalized) {
+        return { success: false, error: 'Debe indicar una TF valida.' };
+    }
+    try {
+        const snap = await getDocs(
+            query(collection(firestore, SAMPLE_PHOTO_RECEPTION_COLLECTION), where('transferNumber', '==', normalized), limit(3000))
+        );
+        const receptions = snap.docs.map((d) =>
+            convertTimestampsToDates({ id: d.id, ...d.data() }) as SamplePhotoReception
+        );
+        const closure = await getSamplePhotoTransferClosure(normalized);
+        const summary = computeSamplePhotoTransferSummary(normalized, receptions, closure);
+        return { success: true, data: summary };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+export type CloseSamplePhotoTransferPayload = {
+    transferNumber: string;
+    closedById?: string;
+    closedByName?: string;
+};
+
+export type CloseSamplePhotoTransferResult = {
+    success: boolean;
+    error?: string;
+    unchanged?: boolean;
+    data?: SamplePhotoTransferSummary;
+};
+
+export async function closeSamplePhotoTransfer(
+    payload: CloseSamplePhotoTransferPayload
+): Promise<CloseSamplePhotoTransferResult> {
+    const normalized = normalizeTransferNumber(payload.transferNumber);
+    if (!normalized) {
+        return { success: false, error: 'Debe indicar una TF valida para cerrar.' };
+    }
+    try {
+        const summaryResult = await loadSamplePhotoTransferSummary(normalized);
+        if (!summaryResult.success || !summaryResult.data) {
+            return { success: false, error: summaryResult.error || 'No se pudo calcular el estado de la TF.' };
+        }
+        if (summaryResult.data.isClosed) {
+            return { success: true, unchanged: true, data: summaryResult.data };
+        }
+        if (!summaryResult.data.canClose) {
+            return {
+                success: false,
+                error: `No se puede cerrar la TF ${normalized}. Pendientes: ${summaryResult.data.pending}, en proceso: ${summaryResult.data.inProgress}.`,
+            };
+        }
+
+        const closureRef = doc(firestore, SAMPLE_PHOTO_TRANSFER_CLOSURES_COLLECTION, normalized);
+        const now = new Date();
+        await setDoc(
+            closureRef,
+            convertDatesToTimestamps({
+                transferNumber: normalized,
+                isClosed: true,
+                closedAt: now,
+                closedById: payload.closedById ?? null,
+                closedByName: payload.closedByName ?? null,
+                stats: {
+                    total: summaryResult.data.total,
+                    pending: summaryResult.data.pending,
+                    inProgress: summaryResult.data.inProgress,
+                    received: summaryResult.data.received,
+                    cancelled: summaryResult.data.cancelled,
+                },
+                updatedAt: now,
+            }),
+            { merge: true }
+        );
+
+        const refreshed = await loadSamplePhotoTransferSummary(normalized);
+        return { success: true, data: refreshed.data };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+export type CancelSamplePhotoReceptionPayload = {
+    id: string;
+    note?: string;
+    updatedById?: string;
+    updatedByName?: string;
+    updatedByRole?: string;
+};
+
+export async function cancelSamplePhotoReception(
+    payload: CancelSamplePhotoReceptionPayload
+): Promise<UpdateSamplePhotoReceptionStatusResult> {
+    if (payload.updatedByRole !== 'admin') {
+        return { success: false, error: 'Solo admin puede cancelar recepciones.' };
+    }
+    return updateSamplePhotoReceptionStatus({
+        id: payload.id,
+        nextStatus: 'cancelled',
+        note: payload.note || 'Cancelada por administracion',
+        updatedById: payload.updatedById,
+        updatedByName: payload.updatedByName,
+        allowClosedTransferUpdates: true,
+    });
 }
 
 /**

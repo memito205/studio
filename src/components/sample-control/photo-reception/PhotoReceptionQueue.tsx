@@ -12,12 +12,14 @@ import { Loader2, RefreshCcw, Search } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import {
+  closeSamplePhotoTransfer,
+  loadSamplePhotoTransferSummary,
   loadSamplePhotoReceptions,
   scanSamplePhotoReception,
   updateSamplePhotoReceptionStatus,
   type LoadSamplePhotoReceptionsOptions,
 } from '@/app/actions';
-import type { SamplePhotoReception, SamplePhotoReceptionStatus } from '@/types';
+import type { SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoTransferSummary } from '@/types';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 
@@ -25,6 +27,7 @@ const STATUS_LABEL: Record<SamplePhotoReceptionStatus, string> = {
   pending: 'Pendiente',
   in_progress: 'En proceso',
   received: 'Recibida',
+  cancelled: 'Cancelada',
 };
 
 export const PhotoReceptionQueue: React.FC = () => {
@@ -34,11 +37,14 @@ export const PhotoReceptionQueue: React.FC = () => {
   const [scanValue, setScanValue] = useState('');
   const [activeTransferNumber, setActiveTransferNumber] = useState('');
   const [isTransferLockedMode, setIsTransferLockedMode] = useState(false);
+  const [transferSummary, setTransferSummary] = useState<SamplePhotoTransferSummary | null>(null);
+  const [isLoadingTransferSummary, setIsLoadingTransferSummary] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [isClosingTransfer, setIsClosingTransfer] = useState(false);
   const { toast } = useToast();
-  const { user, userName } = useAuth();
+  const { user, userName, role } = useAuth();
   const normalizedActiveTf = activeTransferNumber.trim().toUpperCase();
 
   const filteredCountLabel = useMemo(() => `${receptions.length} registro(s)`, [receptions.length]);
@@ -69,6 +75,55 @@ export const PhotoReceptionQueue: React.FC = () => {
     return () => clearTimeout(timer);
   }, [fetchQueue]);
 
+  const fetchTransferSummary = useCallback(async () => {
+    if (!isTransferLockedMode || !normalizedActiveTf) {
+      setTransferSummary(null);
+      return;
+    }
+    setIsLoadingTransferSummary(true);
+    const result = await loadSamplePhotoTransferSummary(normalizedActiveTf);
+    if (result.success && result.data) {
+      setTransferSummary(result.data);
+    } else {
+      setTransferSummary(null);
+      toast({
+        variant: 'destructive',
+        title: 'No se pudo leer estado de la TF',
+        description: result.error || 'Error cargando resumen de la TF activa.',
+      });
+    }
+    setIsLoadingTransferSummary(false);
+  }, [isTransferLockedMode, normalizedActiveTf, toast]);
+
+  useEffect(() => {
+    void fetchTransferSummary();
+  }, [fetchTransferSummary]);
+
+  const handleCloseTransfer = async () => {
+    if (!normalizedActiveTf) return;
+    setIsClosingTransfer(true);
+    const result = await closeSamplePhotoTransfer({
+      transferNumber: normalizedActiveTf,
+      closedById: user?.uid,
+      closedByName: userName ?? user?.displayName ?? user?.email ?? undefined,
+    });
+    if (!result.success) {
+      toast({
+        variant: 'destructive',
+        title: 'No se pudo cerrar la TF',
+        description: result.error || 'Error cerrando la TF activa.',
+      });
+      setIsClosingTransfer(false);
+      return;
+    }
+    toast({
+      title: result.unchanged ? 'TF ya cerrada' : 'TF cerrada',
+      description: `TF ${normalizedActiveTf} marcada como cerrada.`,
+    });
+    await Promise.all([fetchQueue(), fetchTransferSummary()]);
+    setIsClosingTransfer(false);
+  };
+
   const handleScanReception = async () => {
     const normalized = scanValue.trim();
     if (!normalized) return;
@@ -95,7 +150,7 @@ export const PhotoReceptionQueue: React.FC = () => {
         : 'Recepcion actualizada por escaneo.',
     });
     setScanValue('');
-    await fetchQueue();
+    await Promise.all([fetchQueue(), fetchTransferSummary()]);
     setIsScanning(false);
   };
 
@@ -124,7 +179,7 @@ export const PhotoReceptionQueue: React.FC = () => {
         ? 'El registro ya tenia ese estado.'
         : `Estado actualizado a ${STATUS_LABEL[nextStatus]}.`,
     });
-    await fetchQueue();
+    await Promise.all([fetchQueue(), fetchTransferSummary()]);
     setSavingId(null);
   };
 
@@ -161,7 +216,11 @@ export const PhotoReceptionQueue: React.FC = () => {
             <Button
               size="sm"
               onClick={handleScanReception}
-              disabled={isScanning || !scanValue.trim() || (isTransferLockedMode && !normalizedActiveTf)}
+              disabled={
+                isScanning ||
+                !scanValue.trim() ||
+                (isTransferLockedMode && (!normalizedActiveTf || transferSummary?.isClosed))
+              }
             >
               {isScanning ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Escanear'}
             </Button>
@@ -219,6 +278,41 @@ export const PhotoReceptionQueue: React.FC = () => {
           </div>
         )}
 
+        {isTransferLockedMode && normalizedActiveTf && (
+          <div className="border rounded-md p-3 text-xs">
+            {isLoadingTransferSummary || !transferSummary ? (
+              <div className="text-muted-foreground">Cargando resumen de TF...</div>
+            ) : (
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-muted-foreground">
+                  <span className="mr-3">Total: {transferSummary.total}</span>
+                  <span className="mr-3">Pend: {transferSummary.pending}</span>
+                  <span className="mr-3">Proc: {transferSummary.inProgress}</span>
+                  <span className="mr-3">Rec: {transferSummary.received}</span>
+                  <span>Cancel: {transferSummary.cancelled}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant={transferSummary.isClosed ? 'secondary' : 'outline'}>
+                    {transferSummary.isClosed ? 'TF cerrada' : 'TF abierta'}
+                  </Badge>
+                  <Button
+                    size="sm"
+                    onClick={handleCloseTransfer}
+                    disabled={
+                      isClosingTransfer ||
+                      transferSummary.isClosed ||
+                      !transferSummary.canClose ||
+                      role !== 'admin'
+                    }
+                  >
+                    {isClosingTransfer ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Cerrar TF'}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="text-xs text-muted-foreground">{filteredCountLabel}</div>
 
         <div className="border rounded-md max-h-[65vh] overflow-y-auto">
@@ -264,6 +358,7 @@ export const PhotoReceptionQueue: React.FC = () => {
                           disabled={
                             savingId === item.id ||
                             item.status !== 'pending' ||
+                            (isTransferLockedMode && transferSummary?.isClosed) ||
                             (isTransferLockedMode &&
                               (!normalizedActiveTf || item.transferNumber.trim().toUpperCase() !== normalizedActiveTf))
                           }
@@ -276,6 +371,7 @@ export const PhotoReceptionQueue: React.FC = () => {
                           disabled={
                             savingId === item.id ||
                             item.status !== 'in_progress' ||
+                            (isTransferLockedMode && transferSummary?.isClosed) ||
                             (isTransferLockedMode &&
                               (!normalizedActiveTf || item.transferNumber.trim().toUpperCase() !== normalizedActiveTf))
                           }
