@@ -11,6 +11,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import {
   loadSamplePhotoReceptions,
+  scanSamplePhotoReception,
   updateSamplePhotoReceptionStatus,
   type LoadSamplePhotoReceptionsOptions,
 } from '@/app/actions';
@@ -28,8 +29,10 @@ export const PhotoReceptionQueue: React.FC = () => {
   const [receptions, setReceptions] = useState<SamplePhotoReception[]>([]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<LoadSamplePhotoReceptionsOptions['status']>('pending');
+  const [scanValue, setScanValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
   const { toast } = useToast();
   const { user, userName } = useAuth();
 
@@ -55,8 +58,40 @@ export const PhotoReceptionQueue: React.FC = () => {
   }, [search, statusFilter, toast]);
 
   useEffect(() => {
-    fetchQueue();
+    const timer = setTimeout(() => {
+      fetchQueue();
+    }, 300);
+    return () => clearTimeout(timer);
   }, [fetchQueue]);
+
+  const handleScanReception = async () => {
+    const normalized = scanValue.trim();
+    if (!normalized) return;
+    setIsScanning(true);
+    const result = await scanSamplePhotoReception({
+      scanValue: normalized,
+      updatedById: user?.uid,
+      updatedByName: userName ?? user?.displayName ?? user?.email ?? undefined,
+    });
+    if (!result.success) {
+      toast({
+        variant: 'destructive',
+        title: 'Escaneo sin resultado',
+        description: result.error || 'No fue posible registrar el escaneo.',
+      });
+      setIsScanning(false);
+      return;
+    }
+    toast({
+      title: result.unchanged ? 'Sin cambios' : 'Escaneo aplicado',
+      description: result.data
+        ? `${result.data.reference} / ${result.data.transferNumber} marcada como recibida.`
+        : 'Recepcion actualizada por escaneo.',
+    });
+    setScanValue('');
+    await fetchQueue();
+    setIsScanning(false);
+  };
 
   const handleUpdateStatus = async (id: string, nextStatus: SamplePhotoReceptionStatus) => {
     setSavingId(id);
@@ -103,6 +138,22 @@ export const PhotoReceptionQueue: React.FC = () => {
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Buscar por referencia o TF"
             />
+          </div>
+          <div className="flex items-center gap-2 w-full lg:max-w-md">
+            <Input
+              value={scanValue}
+              onChange={(e) => setScanValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void handleScanReception();
+                }
+              }}
+              placeholder="Pistoleo rapido (TF__REF, referencia o TF)"
+            />
+            <Button size="sm" onClick={handleScanReception} disabled={isScanning || !scanValue.trim()}>
+              {isScanning ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Escanear'}
+            </Button>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button

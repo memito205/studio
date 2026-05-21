@@ -2507,8 +2507,9 @@ export async function loadSamplePhotoReceptions(
     options?: LoadSamplePhotoReceptionsOptions
 ): Promise<{ success: boolean; data?: SamplePhotoReception[]; error?: string }> {
     try {
-        const maxItems = Math.min(Math.max(options?.maxItems ?? 500, 1), 3000);
         const requestedStatus = options?.status ?? 'all';
+        const defaultLimit = requestedStatus === 'received' ? 250 : 600;
+        const maxItems = Math.min(Math.max(options?.maxItems ?? defaultLimit, 1), 3000);
         if (
             requestedStatus !== 'all' &&
             !SAMPLE_PHOTO_RECEPTION_STATUSES.includes(requestedStatus as SamplePhotoReceptionStatus)
@@ -2517,6 +2518,37 @@ export async function loadSamplePhotoReceptions(
         }
         const search = options?.search?.trim().toUpperCase() ?? '';
         const refs: SamplePhotoReception[] = [];
+
+        // Fast path for exact search by stable id (TF__REF)
+        if (search.includes('__')) {
+            const byId = await getSamplePhotoReceptionById(search);
+            if (!byId.success || !byId.data) return { success: true, data: [] };
+            if (requestedStatus !== 'all' && byId.data.status !== requestedStatus) return { success: true, data: [] };
+            return { success: true, data: [byId.data] };
+        }
+
+        // Fast path for exact reference / TF search to avoid loading large datasets.
+        if (search.length > 0) {
+            const refQuery = await getDocs(
+                query(collection(firestore, 'samplePhotoReceptions'), where('reference', '==', search), limit(maxItems))
+            );
+            const tfQuery = await getDocs(
+                query(collection(firestore, 'samplePhotoReceptions'), where('transferNumber', '==', search), limit(maxItems))
+            );
+            const map = new Map<string, SamplePhotoReception>();
+            refQuery.forEach((d) => {
+                map.set(d.id, convertTimestampsToDates({ id: d.id, ...d.data() }) as SamplePhotoReception);
+            });
+            tfQuery.forEach((d) => {
+                map.set(d.id, convertTimestampsToDates({ id: d.id, ...d.data() }) as SamplePhotoReception);
+            });
+            let result = Array.from(map.values());
+            if (requestedStatus !== 'all') {
+                result = result.filter((item) => item.status === requestedStatus);
+            }
+            result.sort((a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0));
+            return { success: true, data: result.slice(0, maxItems) };
+        }
 
         const coll = collection(firestore, 'samplePhotoReceptions');
         const baseQuery =
@@ -2529,16 +2561,7 @@ export async function loadSamplePhotoReceptions(
             refs.push(convertTimestampsToDates({ id: d.id, ...d.data() }) as SamplePhotoReception);
         });
 
-        if (!search) {
-            return { success: true, data: refs };
-        }
-
-        const filtered = refs.filter((item) => {
-            const ref = String(item.reference ?? '').toUpperCase();
-            const tf = String(item.transferNumber ?? '').toUpperCase();
-            return ref.includes(search) || tf.includes(search);
-        });
-        return { success: true, data: filtered };
+        return { success: true, data: refs };
     } catch (error: any) {
         return { success: false, error: error.message };
     }
@@ -2579,6 +2602,17 @@ export type UpdateSamplePhotoReceptionStatusResult = {
     unchanged?: boolean;
     data?: SamplePhotoReception;
 };
+
+function normalizeScanToken(input: string): string {
+    return String(input ?? '')
+        .trim()
+        .toUpperCase()
+        .replace(/[/\\]/g, '_');
+}
+
+function sortByUpdatedAtDesc(items: SamplePhotoReception[]): SamplePhotoReception[] {
+    return [...items].sort((a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0));
+}
 
 export async function updateSamplePhotoReceptionStatus(
     payload: UpdateSamplePhotoReceptionStatusPayload
@@ -2639,6 +2673,76 @@ export async function updateSamplePhotoReceptionStatus(
                 id: current.id,
             } as SamplePhotoReception;
             return { success: true, unchanged: false, data: updated };
+        });
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+export type ScanSamplePhotoReceptionPayload = {
+    scanValue: string;
+    note?: string;
+    updatedById?: string;
+    updatedByName?: string;
+};
+
+export type ScanSamplePhotoReceptionResult = {
+    success: boolean;
+    error?: string;
+    unchanged?: boolean;
+    data?: SamplePhotoReception;
+};
+
+export async function scanSamplePhotoReception(
+    payload: ScanSamplePhotoReceptionPayload
+): Promise<ScanSamplePhotoReceptionResult> {
+    const scanValue = normalizeScanToken(payload?.scanValue ?? '');
+    if (!scanValue) {
+        return { success: false, error: 'Debe ingresar un valor de escaneo valido.' };
+    }
+
+    const byId = await getSamplePhotoReceptionById(scanValue);
+    if (byId.success && byId.data) {
+        return updateSamplePhotoReceptionStatus({
+            id: byId.data.id,
+            nextStatus: 'received',
+            note: payload.note || `Escaneo: ${scanValue}`,
+            updatedById: payload.updatedById,
+            updatedByName: payload.updatedByName,
+        });
+    }
+
+    try {
+        const [byReferenceSnap, byTransferSnap] = await Promise.all([
+            getDocs(
+                query(collection(firestore, 'samplePhotoReceptions'), where('reference', '==', scanValue), limit(25))
+            ),
+            getDocs(
+                query(collection(firestore, 'samplePhotoReceptions'), where('transferNumber', '==', scanValue), limit(25))
+            ),
+        ]);
+
+        const candidatesMap = new Map<string, SamplePhotoReception>();
+        byReferenceSnap.forEach((d) => {
+            candidatesMap.set(d.id, convertTimestampsToDates({ id: d.id, ...d.data() }) as SamplePhotoReception);
+        });
+        byTransferSnap.forEach((d) => {
+            candidatesMap.set(d.id, convertTimestampsToDates({ id: d.id, ...d.data() }) as SamplePhotoReception);
+        });
+
+        const candidates = sortByUpdatedAtDesc(
+            Array.from(candidatesMap.values()).filter((item) => item.status === 'pending' || item.status === 'in_progress')
+        );
+        if (candidates.length === 0) {
+            return { success: false, error: 'No se encontro una recepcion pendiente para ese escaneo.' };
+        }
+
+        return updateSamplePhotoReceptionStatus({
+            id: candidates[0].id,
+            nextStatus: 'received',
+            note: payload.note || `Escaneo: ${scanValue}`,
+            updatedById: payload.updatedById,
+            updatedByName: payload.updatedByName,
         });
     } catch (error: any) {
         return { success: false, error: error.message };
