@@ -85,7 +85,7 @@ export const PhotoReceptionQueue: React.FC = () => {
     toast({
       title: result.unchanged ? 'Sin cambios' : 'Escaneo aplicado',
       description: result.data
-        ? `${result.data.reference} / ${result.data.transferNumber} marcada como recibida.`
+        ? `${result.data.reference} / ${result.data.transferNumber} marcada como recibida (${result.source || 'manual'}).`
         : 'Recepcion actualizada por escaneo.',
     });
     setScanValue('');
@@ -149,7 +149,7 @@ export const PhotoReceptionQueue: React.FC = () => {
                   void handleScanReception();
                 }
               }}
-              placeholder="Pistoleo rapido (TF__REF, referencia o TF)"
+              placeholder="Pistoleo rapido (barcode, TF__REF, referencia o TF)"
             />
             <Button size="sm" onClick={handleScanReception} disabled={isScanning || !scanValue.trim()}>
               {isScanning ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Escanear'}

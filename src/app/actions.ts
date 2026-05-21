@@ -2691,6 +2691,7 @@ export type ScanSamplePhotoReceptionResult = {
     error?: string;
     unchanged?: boolean;
     data?: SamplePhotoReception;
+    source?: 'id' | 'reference' | 'transfer' | 'barcode';
 };
 
 export async function scanSamplePhotoReception(
@@ -2703,13 +2704,14 @@ export async function scanSamplePhotoReception(
 
     const byId = await getSamplePhotoReceptionById(scanValue);
     if (byId.success && byId.data) {
-        return updateSamplePhotoReceptionStatus({
+        const update = await updateSamplePhotoReceptionStatus({
             id: byId.data.id,
             nextStatus: 'received',
             note: payload.note || `Escaneo: ${scanValue}`,
             updatedById: payload.updatedById,
             updatedByName: payload.updatedByName,
         });
+        return { ...update, source: 'id' };
     }
 
     try {
@@ -2733,17 +2735,44 @@ export async function scanSamplePhotoReception(
         const candidates = sortByUpdatedAtDesc(
             Array.from(candidatesMap.values()).filter((item) => item.status === 'pending' || item.status === 'in_progress')
         );
-        if (candidates.length === 0) {
-            return { success: false, error: 'No se encontro una recepcion pendiente para ese escaneo.' };
+        if (candidates.length > 0) {
+            const matchedSource =
+                candidates.some((item) => normalizeScanToken(item.reference) === scanValue) ? 'reference' : 'transfer';
+            const update = await updateSamplePhotoReceptionStatus({
+                id: candidates[0].id,
+                nextStatus: 'received',
+                note: payload.note || `Escaneo: ${scanValue}`,
+                updatedById: payload.updatedById,
+                updatedByName: payload.updatedByName,
+            });
+            return { ...update, source: matchedSource };
         }
 
-        return updateSamplePhotoReceptionStatus({
-            id: candidates[0].id,
-            nextStatus: 'received',
-            note: payload.note || `Escaneo: ${scanValue}`,
-            updatedById: payload.updatedById,
-            updatedByName: payload.updatedByName,
-        });
+        const barcodeLookup = await lookupBarcode(scanValue);
+        if (barcodeLookup.status === 'success' && barcodeLookup.item?.referencia) {
+            const resolvedReference = normalizeScanToken(barcodeLookup.item.referencia);
+            const byBarcodeReference = await getDocs(
+                query(collection(firestore, 'samplePhotoReceptions'), where('reference', '==', resolvedReference), limit(25))
+            );
+            const barcodeCandidates = sortByUpdatedAtDesc(
+                byBarcodeReference.docs
+                    .map((d) => convertTimestampsToDates({ id: d.id, ...d.data() }) as SamplePhotoReception)
+                    .filter((item) => item.status === 'pending' || item.status === 'in_progress')
+            );
+            if (barcodeCandidates.length === 0) {
+                return { success: false, error: 'Barcode resuelto, pero no tiene recepcion pendiente asociada.' };
+            }
+            const update = await updateSamplePhotoReceptionStatus({
+                id: barcodeCandidates[0].id,
+                nextStatus: 'received',
+                note: payload.note || `Escaneo barcode: ${scanValue}`,
+                updatedById: payload.updatedById,
+                updatedByName: payload.updatedByName,
+            });
+            return { ...update, source: 'barcode' };
+        }
+
+        return { success: false, error: 'No se encontro una recepcion pendiente para ese escaneo.' };
     } catch (error: any) {
         return { success: false, error: error.message };
     }
