@@ -14,6 +14,7 @@ import { useAuth } from '@/hooks/use-auth-context';
 import {
   cancelSamplePhotoReception,
   closeSamplePhotoTransfer,
+  getSamplePhotoReceptionsByTransferNumber,
   loadSamplePhotoTransferSummary,
   loadSamplePhotoReceptions,
   scanSamplePhotoReception,
@@ -62,22 +63,14 @@ export const PhotoReceptionQueue: React.FC = () => {
 
   const listTargetsByScope = async (
     item: SamplePhotoReception,
-    scope: 'item' | 'transfer',
-    allowedStatuses?: SamplePhotoReceptionStatus[]
+    scope: 'item' | 'transfer'
   ): Promise<SamplePhotoReception[]> => {
     if (scope === 'item') return [item];
-    const result = await loadSamplePhotoReceptions({
-      status: 'all',
-      search: item.transferNumber,
-      maxItems: 3000,
-    });
+    const result = await getSamplePhotoReceptionsByTransferNumber(item.transferNumber);
     if (!result.success || !result.data) {
       throw new Error(result.error || 'No se pudo cargar la TF para aplicar la accion.');
     }
-    const tfNorm = item.transferNumber.trim().toUpperCase();
-    const rows = result.data.filter((r) => r.transferNumber.trim().toUpperCase() === tfNorm);
-    if (!allowedStatuses?.length) return rows;
-    return rows.filter((r) => allowedStatuses.includes(r.status));
+    return result.data;
   };
 
   const fetchQueue = useCallback(async () => {
@@ -193,7 +186,7 @@ export const PhotoReceptionQueue: React.FC = () => {
     if (!scope) return;
     setSavingId(scope === 'transfer' ? '__bulk__' : item.id);
     try {
-      const targets = await listTargetsByScope(item, scope, [item.status]);
+      const targets = await listTargetsByScope(item, scope);
       if (targets.length === 0) {
         toast({
           variant: 'destructive',
@@ -252,7 +245,7 @@ export const PhotoReceptionQueue: React.FC = () => {
     if (!scope) return;
     setSavingId(scope === 'transfer' ? '__bulk__' : item.id);
     try {
-      const targets = await listTargetsByScope(item, scope, ['pending', 'in_progress', 'received']);
+      const targets = await listTargetsByScope(item, scope);
       if (targets.length === 0) {
         toast({
           variant: 'destructive',

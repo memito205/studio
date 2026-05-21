@@ -2503,10 +2503,39 @@ function isValidSamplePhotoReceptionTransition(
     if (toStatus === 'cancelled') return true;
     if (fromStatus === 'pending' && toStatus === 'in_progress') return true;
     if (fromStatus === 'pending' && toStatus === 'received') return true;
+    if (fromStatus === 'in_progress' && toStatus === 'pending') return true;
     if (fromStatus === 'in_progress' && toStatus === 'received') return true;
+    if (fromStatus === 'received' && toStatus === 'in_progress') return true;
     if (fromStatus === 'received' && toStatus === 'pending') return true;
+    if (fromStatus === 'cancelled' && toStatus === 'in_progress') return true;
     if (fromStatus === 'cancelled' && toStatus === 'pending') return true;
     return false;
+}
+
+export async function getSamplePhotoReceptionsByTransferNumber(
+    transferNumber: string
+): Promise<{ success: boolean; data?: SamplePhotoReception[]; error?: string }> {
+    try {
+        const tf = normalizeTransferNumber(transferNumber);
+        if (!tf) return { success: true, data: [] };
+        const startId = `${tf}__`;
+        const endId = `${tf}__\uf8ff`;
+        const snap = await getDocs(
+            query(
+                collection(firestore, SAMPLE_PHOTO_RECEPTION_COLLECTION),
+                where(documentId(), '>=', startId),
+                where(documentId(), '<=', endId),
+                orderBy(documentId()),
+                limit(5000)
+            )
+        );
+        const rows = snap.docs.map((d) =>
+            convertTimestampsToDates({ id: d.id, ...d.data() }) as SamplePhotoReception
+        );
+        return { success: true, data: rows };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
 }
 
 export async function loadSamplePhotoReceptions(
