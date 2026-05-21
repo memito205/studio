@@ -9,8 +9,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
-import type { SampleReference, SampleDelivery } from '@/types';
-import { saveSampleReferences, loadSampleReferences, saveSampleDeliveries, migrateAdidasVerifications } from '@/app/actions';
+import type { SampleReference } from '@/types';
+import { saveSampleReferences, loadSampleReferences, importSamplePhotoDeliveries, migrateAdidasVerifications } from '@/app/actions';
+import { useAuth } from '@/hooks/use-auth-context';
 import * as XLSX from 'xlsx';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import {
@@ -69,6 +70,7 @@ export const AdminDataManagement: React.FC = () => {
   const listFileInputRef = useRef<HTMLInputElement>(null);
   const deliveriesFileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+  const { user, userName } = useAuth();
 
   const fetchReferences = useCallback(async () => {
     setIsLoading(true);
@@ -169,7 +171,14 @@ export const AdminDataManagement: React.FC = () => {
             throw new Error("El archivo de entregas debe contener las columnas: 'Referencia', 'Numero de TF', 'Fecha', 'Bodega Origen', 'Bodega Destino'");
         }
         
-        const deliveriesToSave: Omit<SampleDelivery, 'id'>[] = [];
+        const deliveriesToSave: {
+            reference: string;
+            transferNumber: string;
+            deliveryDate: string;
+            sourceWarehouse: string;
+            destinationWarehouse: string;
+        }[] = [];
+        let invalidRows = 0;
         for (let i = 1; i < json.length; i++) {
             const row = json[i];
             const deliveryDate = parseFlexibleDate(row[dateIndex]);
@@ -177,10 +186,12 @@ export const AdminDataManagement: React.FC = () => {
                 deliveriesToSave.push({
                     reference: String(row[refIndex]).trim(),
                     transferNumber: String(row[tfIndex]).trim(),
-                    deliveryDate: deliveryDate,
+                    deliveryDate: deliveryDate.toISOString(),
                     sourceWarehouse: String(row[sourceIndex] || '').trim(),
                     destinationWarehouse: String(row[destIndex] || '').trim(),
                 });
+            } else {
+                invalidRows += 1;
             }
         }
         
@@ -188,13 +199,28 @@ export const AdminDataManagement: React.FC = () => {
             throw new Error("No se encontraron registros de entrega válidos en el archivo.");
         }
 
-        const result = await saveSampleDeliveries(deliveriesToSave);
+        const result = await importSamplePhotoDeliveries({
+            deliveries: deliveriesToSave,
+            invalidRows,
+            uploadedById: user?.uid,
+            uploadedByName: userName ?? user?.displayName ?? user?.email ?? undefined,
+        });
 
-        if (result.success) {
-            toast({ title: 'Entregas Guardadas', description: `Se han registrado ${result.processedCount} entregas.` });
-        } else {
-            throw new Error(result.error);
+        if (!result.success) {
+            throw new Error(result.error || 'No se pudieron guardar las entregas.');
         }
+
+        const parts: string[] = [];
+        if (result.added > 0) parts.push(`${result.added} nueva(s)`);
+        if (result.updated > 0) parts.push(`${result.updated} actualizada(s)`);
+        if (result.unchanged > 0) parts.push(`${result.unchanged} sin cambios`);
+        if (result.duplicatesInFile > 0) parts.push(`${result.duplicatesInFile} duplicada(s) en el archivo`);
+        if (result.invalidRows > 0) parts.push(`${result.invalidRows} fila(s) invalida(s) omitidas`);
+
+        toast({
+            title: 'Recepcion Foto - Entregas registradas',
+            description: parts.length > 0 ? parts.join(' · ') : `Procesadas ${result.totalValidRows} fila(s).`,
+        });
 
     } catch (error: any) {
         toast({ variant: 'destructive', title: 'Error al procesar archivo de entregas', description: error.message });
@@ -262,7 +288,7 @@ export const AdminDataManagement: React.FC = () => {
         <Card>
             <CardHeader>
                 <CardTitle>Registrar Entregas a Foto</CardTitle>
-                <CardDescription>Suba un .xlsx con el historial de entregas (referencia, #TF, fecha, etc.) al depto. de fotografía.</CardDescription>
+                <CardDescription>Excel de entregas a fotografia. Sin duplicar TF + referencia. Recepcion pendiente en Firebase.</CardDescription>
             </CardHeader>
             <CardContent>
                 <div className="flex flex-col items-center justify-center p-4 border-2 border-dashed rounded-lg">
