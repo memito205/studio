@@ -203,7 +203,10 @@ export const PhotoReceptionQueue: React.FC = () => {
             nextStatus,
             updatedById: user?.uid,
             updatedByName: userName ?? user?.displayName ?? user?.email ?? undefined,
-            activeTransferNumber: isTransferLockedMode ? normalizedActiveTf : undefined,
+            activeTransferNumber:
+              isTransferLockedMode && !(target.status === 'cancelled' && nextStatus === 'pending')
+                ? normalizedActiveTf
+                : undefined,
           })
         )
       );
@@ -493,10 +496,12 @@ export const PhotoReceptionQueue: React.FC = () => {
                           disabled={
                             savingId === item.id ||
                             savingId === '__bulk__' ||
-                            item.status !== 'received' ||
-                            (isTransferLockedMode && transferSummary?.isClosed) ||
-                            (isTransferLockedMode &&
-                              (!normalizedActiveTf || item.transferNumber.trim().toUpperCase() !== normalizedActiveTf))
+                            (item.status !== 'received' && item.status !== 'cancelled') ||
+                            (item.status !== 'cancelled' &&
+                              ((isTransferLockedMode && transferSummary?.isClosed) ||
+                                (isTransferLockedMode &&
+                                  (!normalizedActiveTf ||
+                                    item.transferNumber.trim().toUpperCase() !== normalizedActiveTf))))
                           }
                           onClick={() => handleUpdateStatus(item, 'pending')}
                         >
