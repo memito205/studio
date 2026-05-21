@@ -10,11 +10,17 @@ import { Loader2, RefreshCw, Download, FlaskConical } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
-import type { SavedSampleVerification, SampleDelivery } from '@/types';
+import type {
+  SavedSampleVerification,
+  SampleDelivery,
+  SamplePhotoReception,
+  SamplePhotoReceptionStatus,
+} from '@/types';
 import {
   loadSampleVerifications,
   getSampleReferencesExistence,
   getSampleDeliveriesByReferences,
+  getSamplePhotoReceptionsByReferences,
 } from '@/app/actions';
 import { exportToXlsx } from '@/services/export';
 
@@ -28,6 +34,29 @@ function deliveriesForReference(all: SampleDelivery[], refNorm: string): SampleD
   return all.filter((d) => normRef(d.reference) === refNorm);
 }
 
+function receptionsForReference(all: SamplePhotoReception[], refNorm: string): SamplePhotoReception[] {
+  return all.filter((r) => normRef(r.reference) === refNorm);
+}
+
+function aggregateReceptionStatus(list: SamplePhotoReception[]): {
+  status: SamplePhotoReceptionStatus | 'none';
+  receivedCount: number;
+  totalCount: number;
+} {
+  if (!list.length) return { status: 'none', receivedCount: 0, totalCount: 0 };
+  const totalCount = list.length;
+  const receivedCount = list.filter((r) => r.status === 'received').length;
+  const inProgressCount = list.filter((r) => r.status === 'in_progress').length;
+  const pendingCount = list.filter((r) => r.status === 'pending').length;
+  const cancelledCount = list.filter((r) => r.status === 'cancelled').length;
+
+  if (receivedCount > 0) return { status: 'received', receivedCount, totalCount };
+  if (inProgressCount > 0) return { status: 'in_progress', receivedCount, totalCount };
+  if (pendingCount > 0) return { status: 'pending', receivedCount, totalCount };
+  if (cancelledCount > 0) return { status: 'cancelled', receivedCount, totalCount };
+  return { status: 'none', receivedCount, totalCount };
+}
+
 type FollowUpRow = {
   verificationId: string;
   verificationName: string;
@@ -36,6 +65,9 @@ type FollowUpRow = {
   refNorm: string;
   inSampleDbNow: boolean;
   hasRealTf: boolean;
+  photoReceptionStatus: SamplePhotoReceptionStatus | 'none';
+  photoReceptionReceivedCount: number;
+  photoReceptionTotalCount: number;
   transferNumbers: string;
   lastDeliveryDate: string;
 };
@@ -50,7 +82,8 @@ export const SampleFollowUpReport: React.FC = () => {
     async (
       verifications: SavedSampleVerification[],
       existence: Record<string, boolean>,
-      allDeliveries: SampleDelivery[]
+      allDeliveries: SampleDelivery[],
+      allPhotoReceptions: SamplePhotoReception[]
     ) => {
       const baseRows: {
         verificationId: string;
@@ -86,6 +119,7 @@ export const SampleFollowUpReport: React.FC = () => {
         const dlist = deliveriesForReference(allDeliveries, b.refNorm).sort(
           (a, c) => new Date(c.deliveryDate).getTime() - new Date(a.deliveryDate).getTime()
         );
+        const receptionAgg = aggregateReceptionStatus(receptionsForReference(allPhotoReceptions, b.refNorm));
         const hasRealTf = dlist.length > 0;
         const transferNumbers = dlist.map((d) => d.transferNumber).join('; ') || '—';
         const last = dlist[0]?.deliveryDate
@@ -100,6 +134,9 @@ export const SampleFollowUpReport: React.FC = () => {
           refNorm: b.refNorm,
           inSampleDbNow: !!existence[b.refNorm],
           hasRealTf,
+          photoReceptionStatus: receptionAgg.status,
+          photoReceptionReceivedCount: receptionAgg.receivedCount,
+          photoReceptionTotalCount: receptionAgg.totalCount,
           transferNumbers,
           lastDeliveryDate: last,
         };
@@ -134,13 +171,16 @@ export const SampleFollowUpReport: React.FC = () => {
       }
       const allRefs = [...baseRefSet];
 
-      const [existenceRes, delRes] = await Promise.all([
+      const [existenceRes, delRes, photoRes] = await Promise.all([
         allRefs.length
           ? getSampleReferencesExistence(allRefs)
           : Promise.resolve({ success: true, data: {} } as Awaited<ReturnType<typeof getSampleReferencesExistence>>),
         allRefs.length
           ? getSampleDeliveriesByReferences(allRefs)
           : Promise.resolve({ success: true, data: [] } as Awaited<ReturnType<typeof getSampleDeliveriesByReferences>>),
+        allRefs.length
+          ? getSamplePhotoReceptionsByReferences(allRefs)
+          : Promise.resolve({ success: true, data: [] } as Awaited<ReturnType<typeof getSamplePhotoReceptionsByReferences>>),
       ]);
 
       if (!existenceRes.success || !existenceRes.data) {
@@ -149,8 +189,11 @@ export const SampleFollowUpReport: React.FC = () => {
       if (!delRes.success || !delRes.data) {
         throw new Error(delRes.error || 'No se pudieron cargar las entregas (TF) por referencia.');
       }
+      if (!photoRes.success || !photoRes.data) {
+        throw new Error(photoRes.error || 'No se pudo cargar la recepción foto por referencia.');
+      }
 
-      const built = await buildRows(verRes.data, existenceRes.data, delRes.data);
+      const built = await buildRows(verRes.data, existenceRes.data, delRes.data, photoRes.data);
       setRows(built);
     } catch (e: any) {
       toast({ variant: 'destructive', title: 'Error', description: e.message });
@@ -196,6 +239,8 @@ export const SampleFollowUpReport: React.FC = () => {
         Referencia: r.reference,
         'En base muestras (foto) ahora': r.inSampleDbNow ? 'Sí' : 'No',
         'TF registrado (entregas reales)': r.hasRealTf ? 'Sí' : 'No',
+        'Recepción foto': r.photoReceptionStatus === 'none' ? 'Sin registro' : r.photoReceptionStatus,
+        'Recepción foto (recibidas/total)': `${r.photoReceptionReceivedCount}/${r.photoReceptionTotalCount}`,
         'Números TF': r.transferNumbers,
         'Última fecha entrega': r.lastDeliveryDate,
       })),
@@ -288,6 +333,7 @@ export const SampleFollowUpReport: React.FC = () => {
                     <TableHead>Referencia</TableHead>
                     <TableHead className="text-center">En BD muestras</TableHead>
                     <TableHead className="text-center">TF real</TableHead>
+                    <TableHead className="text-center">Recepción foto</TableHead>
                     <TableHead>Números TF</TableHead>
                     <TableHead>Última entrega</TableHead>
                   </TableRow>
@@ -314,6 +360,19 @@ export const SampleFollowUpReport: React.FC = () => {
                           <Badge variant="default">Sí</Badge>
                         ) : (
                           <Badge variant="outline">No</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {r.photoReceptionStatus === 'received' ? (
+                          <Badge variant="success">{`Recibida (${r.photoReceptionReceivedCount}/${r.photoReceptionTotalCount})`}</Badge>
+                        ) : r.photoReceptionStatus === 'in_progress' ? (
+                          <Badge variant="default">{`En proceso (${r.photoReceptionReceivedCount}/${r.photoReceptionTotalCount})`}</Badge>
+                        ) : r.photoReceptionStatus === 'pending' ? (
+                          <Badge variant="secondary">{`Pendiente (${r.photoReceptionReceivedCount}/${r.photoReceptionTotalCount})`}</Badge>
+                        ) : r.photoReceptionStatus === 'cancelled' ? (
+                          <Badge variant="outline">{`Cancelada (${r.photoReceptionReceivedCount}/${r.photoReceptionTotalCount})`}</Badge>
+                        ) : (
+                          <Badge variant="outline">Sin registro</Badge>
                         )}
                       </TableCell>
                       <TableCell className="max-w-[220px] text-xs break-words">{r.transferNumbers}</TableCell>

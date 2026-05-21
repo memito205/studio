@@ -34,12 +34,15 @@ import type {
   ReceptionOperation,
   SavedSampleVerification,
   SampleDelivery,
+  SamplePhotoReception,
+  SamplePhotoReceptionStatus,
   ScannedItem,
 } from '@/types';
 import {
   loadSampleVerificationsSince,
   getSampleReferencesExistence,
   getSampleDeliveriesByReferences,
+  getSamplePhotoReceptionsByReferences,
 } from '@/app/actions';
 
 const LEGACY_SCAN_PAGE_SIZE = 1800;
@@ -209,9 +212,32 @@ export interface ReceptionSampleAuditRow {
   hasVerificationSinceCutoff: boolean;
   inSampleDatabase: boolean;
   hasTransferDelivery: boolean;
+  hasPhotoReceptionReceived: boolean;
+  photoReceptionStatus: SamplePhotoReceptionStatus | 'none';
+  photoReceptionReceivedCount: number;
+  photoReceptionTotalCount: number;
   transferNumbers: string;
   receptionOperationIds: string[];
   receptionOperationLabels: string[];
+}
+
+function aggregatePhotoReceptionStatus(list: SamplePhotoReception[]): {
+  status: SamplePhotoReceptionStatus | 'none';
+  receivedCount: number;
+  totalCount: number;
+} {
+  if (!list.length) return { status: 'none', receivedCount: 0, totalCount: 0 };
+  const totalCount = list.length;
+  const receivedCount = list.filter((r) => r.status === 'received').length;
+  const inProgressCount = list.filter((r) => r.status === 'in_progress').length;
+  const pendingCount = list.filter((r) => r.status === 'pending').length;
+  const cancelledCount = list.filter((r) => r.status === 'cancelled').length;
+
+  if (receivedCount > 0) return { status: 'received', receivedCount, totalCount };
+  if (inProgressCount > 0) return { status: 'in_progress', receivedCount, totalCount };
+  if (pendingCount > 0) return { status: 'pending', receivedCount, totalCount };
+  if (cancelledCount > 0) return { status: 'cancelled', receivedCount, totalCount };
+  return { status: 'none', receivedCount, totalCount };
 }
 
 export interface ReceptionSamplesAuditStats {
@@ -489,10 +515,11 @@ export async function getReceptionSamplesAuditReport(
     const opLabelMap = await mapReceptionOpIdsToRkLabels(allReceptionOpIds);
     const receptionOperationDocsRead = new Set(allReceptionOpIds).size;
 
-    const [existenceRes, delRes, verRes] = await Promise.all([
+    const [existenceRes, delRes, verRes, photoRes] = await Promise.all([
       getSampleReferencesExistence(refKeys),
       getSampleDeliveriesByReferences(refKeys),
       loadSampleVerificationsSince(sinceDate),
+      getSamplePhotoReceptionsByReferences(refKeys),
     ]);
 
     if (!existenceRes.success || !existenceRes.data) {
@@ -503,6 +530,9 @@ export async function getReceptionSamplesAuditReport(
     }
     if (!verRes.success || !verRes.data) {
       return { success: false, error: verRes.error || 'No se pudieron cargar verificaciones de muestras.' };
+    }
+    if (!photoRes.success || !photoRes.data) {
+      return { success: false, error: photoRes.error || 'No se pudo cargar la recepción foto por referencia.' };
     }
 
     const existence = existenceRes.data;
@@ -517,6 +547,15 @@ export async function getReceptionSamplesAuditReport(
       const arr = deliveriesByRef.get(k) || [];
       arr.push(del);
       deliveriesByRef.set(k, arr);
+    });
+
+    const photoByRef = new Map<string, SamplePhotoReception[]>();
+    photoRes.data.forEach((rec) => {
+      const k = normalizeReceptionReference(rec.reference || '');
+      if (!k) return;
+      const arr = photoByRef.get(k) || [];
+      arr.push(rec);
+      photoByRef.set(k, arr);
     });
 
     const refKeySet = new Set(refKeys);
@@ -559,11 +598,16 @@ export async function getReceptionSamplesAuditReport(
         return tb - ta;
       });
       const tfNums = dlist.map((x) => x.transferNumber).filter(Boolean);
+      const photoAgg = aggregatePhotoReceptionStatus(photoByRef.get(ref) || []);
       return {
         reference: ref,
         hasVerificationSinceCutoff: validatedRefs.has(ref),
         inSampleDatabase: !!existence[ref],
         hasTransferDelivery: tfNums.length > 0,
+        hasPhotoReceptionReceived: photoAgg.receivedCount > 0,
+        photoReceptionStatus: photoAgg.status,
+        photoReceptionReceivedCount: photoAgg.receivedCount,
+        photoReceptionTotalCount: photoAgg.totalCount,
         transferNumbers: tfNums.length ? [...new Set(tfNums)].join('; ') : '—',
         receptionOperationIds: opIds,
         receptionOperationLabels: labels,

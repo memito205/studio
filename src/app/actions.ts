@@ -2504,6 +2504,7 @@ function isValidSamplePhotoReceptionTransition(
     if (fromStatus === 'pending' && toStatus === 'in_progress') return true;
     if (fromStatus === 'pending' && toStatus === 'received') return true;
     if (fromStatus === 'in_progress' && toStatus === 'received') return true;
+    if (fromStatus === 'received' && toStatus === 'pending') return true;
     if (fromStatus === 'cancelled' && toStatus === 'pending') return true;
     return false;
 }
@@ -3263,6 +3264,25 @@ export async function getSampleDeliveriesByReferences(
       if (!chunk.length) continue;
       const snap = await getDocs(query(collection(firestore, 'sampleDeliveries'), where('reference', 'in', chunk)));
       snap.forEach((d) => all.push({ id: d.id, ...convertTimestampsToDates(d.data()) } as SampleDelivery));
+    }
+    return { success: true, data: all };
+  } catch (e: any) {
+    return { success: false, error: e.message };
+  }
+}
+
+export async function getSamplePhotoReceptionsByReferences(
+  references: string[]
+): Promise<{ success: boolean; data?: SamplePhotoReception[]; error?: string }> {
+  try {
+    if (!references?.length) return { success: true, data: [] };
+    const normalized = [...new Set(references.map((r) => String(r || '').trim()).filter(Boolean))];
+    const all: SamplePhotoReception[] = [];
+    for (let i = 0; i < normalized.length; i += 30) {
+      const chunk = normalized.slice(i, i + 30);
+      if (!chunk.length) continue;
+      const snap = await getDocs(query(collection(firestore, 'samplePhotoReceptions'), where('reference', 'in', chunk)));
+      snap.forEach((d) => all.push(convertTimestampsToDates({ id: d.id, ...d.data() }) as SamplePhotoReception));
     }
     return { success: true, data: all };
   } catch (e: any) {

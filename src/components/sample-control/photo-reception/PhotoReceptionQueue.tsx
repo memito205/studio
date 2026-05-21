@@ -50,6 +50,36 @@ export const PhotoReceptionQueue: React.FC = () => {
 
   const filteredCountLabel = useMemo(() => `${receptions.length} registro(s)`, [receptions.length]);
 
+  const pickScopeForTransferAction = (
+    actionLabel: string,
+    transferNumber: string
+  ): 'item' | 'transfer' | null => {
+    const applyTransfer = window.confirm(
+      `${actionLabel}\n\nTF: ${transferNumber}\n\nAceptar = aplicar a TODA la TF\nCancelar = aplicar solo a este item`
+    );
+    return applyTransfer ? 'transfer' : 'item';
+  };
+
+  const listTargetsByScope = async (
+    item: SamplePhotoReception,
+    scope: 'item' | 'transfer',
+    allowedStatuses?: SamplePhotoReceptionStatus[]
+  ): Promise<SamplePhotoReception[]> => {
+    if (scope === 'item') return [item];
+    const result = await loadSamplePhotoReceptions({
+      status: 'all',
+      search: item.transferNumber,
+      maxItems: 3000,
+    });
+    if (!result.success || !result.data) {
+      throw new Error(result.error || 'No se pudo cargar la TF para aplicar la accion.');
+    }
+    const tfNorm = item.transferNumber.trim().toUpperCase();
+    const rows = result.data.filter((r) => r.transferNumber.trim().toUpperCase() === tfNorm);
+    if (!allowedStatuses?.length) return rows;
+    return rows.filter((r) => allowedStatuses.includes(r.status));
+  };
+
   const fetchQueue = useCallback(async () => {
     setIsLoading(true);
     const result = await loadSamplePhotoReceptions({
@@ -155,36 +185,59 @@ export const PhotoReceptionQueue: React.FC = () => {
     setIsScanning(false);
   };
 
-  const handleUpdateStatus = async (id: string, nextStatus: SamplePhotoReceptionStatus) => {
-    setSavingId(id);
-    const result = await updateSamplePhotoReceptionStatus({
-      id,
-      nextStatus,
-      updatedById: user?.uid,
-      updatedByName: userName ?? user?.displayName ?? user?.email ?? undefined,
-      activeTransferNumber: isTransferLockedMode ? normalizedActiveTf : undefined,
-    });
-    if (!result.success) {
-      toast({
-        variant: 'destructive',
-        title: 'No se pudo actualizar',
-        description: result.error || 'Error al actualizar el estado.',
-      });
+  const handleUpdateStatus = async (item: SamplePhotoReception, nextStatus: SamplePhotoReceptionStatus) => {
+    const scope = pickScopeForTransferAction(
+      `Accion: ${nextStatus === 'in_progress' ? 'Iniciar' : nextStatus === 'pending' ? 'Devolver a pendiente' : 'Actualizar'}`,
+      item.transferNumber
+    );
+    if (!scope) return;
+    setSavingId(scope === 'transfer' ? '__bulk__' : item.id);
+    try {
+      const targets = await listTargetsByScope(item, scope, [item.status]);
+      if (targets.length === 0) {
+        toast({
+          variant: 'destructive',
+          title: 'Sin registros',
+          description: 'No hay items elegibles para actualizar con ese estado.',
+        });
+        setSavingId(null);
+        return;
+      }
+      const responses = await Promise.all(
+        targets.map((target) =>
+          updateSamplePhotoReceptionStatus({
+            id: target.id,
+            nextStatus,
+            updatedById: user?.uid,
+            updatedByName: userName ?? user?.displayName ?? user?.email ?? undefined,
+            activeTransferNumber: isTransferLockedMode ? normalizedActiveTf : undefined,
+          })
+        )
+      );
+      const ok = responses.filter((r) => r.success).length;
+      const fail = responses.length - ok;
+      if (ok === 0) {
+        toast({
+          variant: 'destructive',
+          title: 'No se pudo actualizar',
+          description: responses.find((r) => !r.success)?.error || 'Error al actualizar estados.',
+        });
+      } else {
+        toast({
+          title: 'Recepcion actualizada',
+          description:
+            scope === 'transfer'
+              ? `Actualizados ${ok} item(s) de la TF ${item.transferNumber}${fail ? `, fallaron ${fail}.` : '.'}`
+              : `Estado actualizado a ${STATUS_LABEL[nextStatus]}.`,
+        });
+      }
+      await Promise.all([fetchQueue(), fetchTransferSummary()]);
+    } finally {
       setSavingId(null);
-      return;
     }
-
-    toast({
-      title: result.unchanged ? 'Sin cambios' : 'Recepcion actualizada',
-      description: result.unchanged
-        ? 'El registro ya tenia ese estado.'
-        : `Estado actualizado a ${STATUS_LABEL[nextStatus]}.`,
-    });
-    await Promise.all([fetchQueue(), fetchTransferSummary()]);
-    setSavingId(null);
   };
 
-  const handleCancelReception = async (id: string) => {
+  const handleCancelReception = async (item: SamplePhotoReception) => {
     if (role !== 'admin') return;
     const note = window.prompt('Motivo de cancelacion (obligatorio):', '');
     if (!note || !note.trim()) {
@@ -195,29 +248,52 @@ export const PhotoReceptionQueue: React.FC = () => {
       });
       return;
     }
-    setSavingId(id);
-    const result = await cancelSamplePhotoReception({
-      id,
-      note: note.trim(),
-      updatedById: user?.uid,
-      updatedByName: userName ?? user?.displayName ?? user?.email ?? undefined,
-      updatedByRole: role,
-    });
-    if (!result.success) {
-      toast({
-        variant: 'destructive',
-        title: 'No se pudo cancelar',
-        description: result.error || 'Error al cancelar recepcion.',
-      });
+    const scope = pickScopeForTransferAction('Accion: Cancelar recepcion', item.transferNumber);
+    if (!scope) return;
+    setSavingId(scope === 'transfer' ? '__bulk__' : item.id);
+    try {
+      const targets = await listTargetsByScope(item, scope, ['pending', 'in_progress', 'received']);
+      if (targets.length === 0) {
+        toast({
+          variant: 'destructive',
+          title: 'Sin registros',
+          description: 'No hay items elegibles para cancelar.',
+        });
+        setSavingId(null);
+        return;
+      }
+      const responses = await Promise.all(
+        targets.map((target) =>
+          cancelSamplePhotoReception({
+            id: target.id,
+            note: note.trim(),
+            updatedById: user?.uid,
+            updatedByName: userName ?? user?.displayName ?? user?.email ?? undefined,
+            updatedByRole: role,
+          })
+        )
+      );
+      const ok = responses.filter((r) => r.success).length;
+      const fail = responses.length - ok;
+      if (ok === 0) {
+        toast({
+          variant: 'destructive',
+          title: 'No se pudo cancelar',
+          description: responses.find((r) => !r.success)?.error || 'Error al cancelar recepcion.',
+        });
+      } else {
+        toast({
+          title: 'Recepcion cancelada',
+          description:
+            scope === 'transfer'
+              ? `Cancelados ${ok} item(s) de la TF ${item.transferNumber}${fail ? `, fallaron ${fail}.` : '.'}`
+              : 'La recepcion fue cancelada por administracion.',
+        });
+      }
+      await Promise.all([fetchQueue(), fetchTransferSummary()]);
+    } finally {
       setSavingId(null);
-      return;
     }
-    toast({
-      title: 'Recepcion cancelada',
-      description: 'La recepcion fue cancelada por administracion.',
-    });
-    await Promise.all([fetchQueue(), fetchTransferSummary()]);
-    setSavingId(null);
   };
 
   return (
@@ -394,12 +470,13 @@ export const PhotoReceptionQueue: React.FC = () => {
                           variant="outline"
                           disabled={
                             savingId === item.id ||
+                            savingId === '__bulk__' ||
                             item.status !== 'pending' ||
                             (isTransferLockedMode && transferSummary?.isClosed) ||
                             (isTransferLockedMode &&
                               (!normalizedActiveTf || item.transferNumber.trim().toUpperCase() !== normalizedActiveTf))
                           }
-                          onClick={() => handleUpdateStatus(item.id, 'in_progress')}
+                          onClick={() => handleUpdateStatus(item, 'in_progress')}
                         >
                           {savingId === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Iniciar'}
                         </Button>
@@ -407,21 +484,37 @@ export const PhotoReceptionQueue: React.FC = () => {
                           size="sm"
                           disabled={
                             savingId === item.id ||
+                            savingId === '__bulk__' ||
                             item.status !== 'in_progress' ||
                             (isTransferLockedMode && transferSummary?.isClosed) ||
                             (isTransferLockedMode &&
                               (!normalizedActiveTf || item.transferNumber.trim().toUpperCase() !== normalizedActiveTf))
                           }
-                          onClick={() => handleUpdateStatus(item.id, 'received')}
+                          onClick={() => handleUpdateStatus(item, 'received')}
                         >
                           {savingId === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Marcar recibida'}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={
+                            savingId === item.id ||
+                            savingId === '__bulk__' ||
+                            item.status !== 'received' ||
+                            (isTransferLockedMode && transferSummary?.isClosed) ||
+                            (isTransferLockedMode &&
+                              (!normalizedActiveTf || item.transferNumber.trim().toUpperCase() !== normalizedActiveTf))
+                          }
+                          onClick={() => handleUpdateStatus(item, 'pending')}
+                        >
+                          {savingId === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Devolver'}
                         </Button>
                         {role === 'admin' && item.status !== 'cancelled' && (
                           <Button
                             size="sm"
                             variant="destructive"
-                            disabled={savingId === item.id}
-                            onClick={() => handleCancelReception(item.id)}
+                            disabled={savingId === item.id || savingId === '__bulk__'}
+                            onClick={() => handleCancelReception(item)}
                           >
                             {savingId === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Cancelar'}
                           </Button>

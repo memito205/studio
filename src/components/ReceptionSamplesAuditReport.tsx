@@ -96,7 +96,8 @@ function matchesFilter(r: ReceptionSampleAuditRow, f: RowFilter): boolean {
       return (
         r.hasVerificationSinceCutoff &&
         r.inSampleDatabase &&
-        r.hasTransferDelivery
+        r.hasTransferDelivery &&
+        r.hasPhotoReceptionReceived
       );
     default:
       return true;
@@ -318,10 +319,15 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
     const withVer = filteredRows.filter((r) => r.hasVerificationSinceCutoff).length;
     const inDb = filteredRows.filter((r) => r.inSampleDatabase).length;
     const withTf = filteredRows.filter((r) => r.hasTransferDelivery).length;
+    const withPhotoReception = filteredRows.filter((r) => r.hasPhotoReceptionReceived).length;
     const gaps = filteredRows.filter(
-      (r) => !r.hasVerificationSinceCutoff || !r.inSampleDatabase || !r.hasTransferDelivery
+      (r) =>
+        !r.hasVerificationSinceCutoff ||
+        !r.inSampleDatabase ||
+        !r.hasTransferDelivery ||
+        !r.hasPhotoReceptionReceived
     ).length;
-    return { total, withVer, inDb, withTf, gaps };
+    return { total, withVer, inDb, withTf, withPhotoReception, gaps };
   }, [filteredRows]);
 
   const handleExport = () => {
@@ -337,6 +343,8 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
         'Validación guardada (≥ corte)': r.hasVerificationSinceCutoff ? 'Sí' : 'No',
         'Muestra en BD (foto)': r.inSampleDatabase ? 'Sí' : 'No',
         'TF entrega registrado': r.hasTransferDelivery ? 'Sí' : 'No',
+        'Recepción foto': r.photoReceptionStatus === 'none' ? 'Sin registro' : r.photoReceptionStatus,
+        'Recepción foto (recibidas/total)': `${r.photoReceptionReceivedCount}/${r.photoReceptionTotalCount}`,
         'Números TF': r.transferNumbers,
       })),
       'cruce_recepcion_muestras'
@@ -546,7 +554,7 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
             </TabsContent>
           </Tabs>
 
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-sm">
             <div className="rounded-lg border p-3 bg-muted/30">
               <div className="text-muted-foreground text-xs">Referencias (filtro)</div>
               <div className="text-2xl font-bold">{summary.total}</div>
@@ -562,6 +570,10 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
             <div className="rounded-lg border p-3 bg-muted/30">
               <div className="text-muted-foreground text-xs">Con TF entrega</div>
               <div className="text-2xl font-bold text-blue-600">{summary.withTf}</div>
+            </div>
+            <div className="rounded-lg border p-3 bg-muted/30">
+              <div className="text-muted-foreground text-xs">Con recepción foto</div>
+              <div className="text-2xl font-bold text-violet-600">{summary.withPhotoReception}</div>
             </div>
             <div className="rounded-lg border p-3 bg-muted/30">
               <div className="text-muted-foreground text-xs">Algún pendiente</div>
@@ -581,7 +593,7 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                   <SelectItem value="missing_validation">Sin validación guardada (≥ corte)</SelectItem>
                   <SelectItem value="missing_photo">Sin muestra en BD</SelectItem>
                   <SelectItem value="missing_tf">Sin TF de entrega</SelectItem>
-                  <SelectItem value="fully_ok">Completo (validación + foto + TF)</SelectItem>
+                  <SelectItem value="fully_ok">Completo (validación + BD + TF + recepción foto)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -613,6 +625,7 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                     <TableHead className="text-center">Validación</TableHead>
                     <TableHead className="text-center">BD muestras</TableHead>
                     <TableHead className="text-center">TF entrega</TableHead>
+                    <TableHead className="text-center">Recepción foto</TableHead>
                     <TableHead>Números TF</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -640,6 +653,19 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                       <TableCell className="text-center">
                         {r.hasTransferDelivery ? (
                           <Badge variant="default">Sí</Badge>
+                        ) : (
+                          <Badge variant="outline">No</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {r.photoReceptionStatus === 'received' ? (
+                          <Badge variant="success">{`Sí (${r.photoReceptionReceivedCount}/${r.photoReceptionTotalCount})`}</Badge>
+                        ) : r.photoReceptionStatus === 'in_progress' ? (
+                          <Badge variant="default">{`En proceso (${r.photoReceptionReceivedCount}/${r.photoReceptionTotalCount})`}</Badge>
+                        ) : r.photoReceptionStatus === 'pending' ? (
+                          <Badge variant="secondary">{`Pendiente (${r.photoReceptionReceivedCount}/${r.photoReceptionTotalCount})`}</Badge>
+                        ) : r.photoReceptionStatus === 'cancelled' ? (
+                          <Badge variant="outline">{`Cancelada (${r.photoReceptionReceivedCount}/${r.photoReceptionTotalCount})`}</Badge>
                         ) : (
                           <Badge variant="outline">No</Badge>
                         )}
