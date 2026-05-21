@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagItem } from "@/types";
+import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagItem } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -2482,6 +2482,166 @@ export async function importSamplePhotoDeliveries(
             duplicatesInFile,
             totalValidRows: unique.length,
         };
+    }
+}
+
+export type LoadSamplePhotoReceptionsOptions = {
+    status?: SamplePhotoReceptionStatus | 'all';
+    search?: string;
+    maxItems?: number;
+};
+
+const SAMPLE_PHOTO_RECEPTION_STATUSES: SamplePhotoReceptionStatus[] = ['pending', 'in_progress', 'received'];
+
+function isValidSamplePhotoReceptionTransition(
+    fromStatus: SamplePhotoReceptionStatus,
+    toStatus: SamplePhotoReceptionStatus
+): boolean {
+    if (fromStatus === toStatus) return true;
+    if (fromStatus === 'pending' && toStatus === 'in_progress') return true;
+    if (fromStatus === 'in_progress' && toStatus === 'received') return true;
+    return false;
+}
+
+export async function loadSamplePhotoReceptions(
+    options?: LoadSamplePhotoReceptionsOptions
+): Promise<{ success: boolean; data?: SamplePhotoReception[]; error?: string }> {
+    try {
+        const maxItems = Math.min(Math.max(options?.maxItems ?? 500, 1), 3000);
+        const requestedStatus = options?.status ?? 'all';
+        if (
+            requestedStatus !== 'all' &&
+            !SAMPLE_PHOTO_RECEPTION_STATUSES.includes(requestedStatus as SamplePhotoReceptionStatus)
+        ) {
+            return { success: false, error: 'Filtro de estado invalido para recepciones.' };
+        }
+        const search = options?.search?.trim().toUpperCase() ?? '';
+        const refs: SamplePhotoReception[] = [];
+
+        const coll = collection(firestore, 'samplePhotoReceptions');
+        const baseQuery =
+            requestedStatus === 'all'
+                ? query(coll, orderBy('updatedAt', 'desc'), limit(maxItems))
+                : query(coll, where('status', '==', requestedStatus), orderBy('updatedAt', 'desc'), limit(maxItems));
+
+        const snap = await getDocs(baseQuery);
+        snap.forEach((d) => {
+            refs.push(convertTimestampsToDates({ id: d.id, ...d.data() }) as SamplePhotoReception);
+        });
+
+        if (!search) {
+            return { success: true, data: refs };
+        }
+
+        const filtered = refs.filter((item) => {
+            const ref = String(item.reference ?? '').toUpperCase();
+            const tf = String(item.transferNumber ?? '').toUpperCase();
+            return ref.includes(search) || tf.includes(search);
+        });
+        return { success: true, data: filtered };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+export async function getSamplePhotoReceptionById(
+    id: string
+): Promise<{ success: boolean; data?: SamplePhotoReception; error?: string }> {
+    if (!id?.trim()) {
+        return { success: false, error: 'Debe indicar un identificador de recepcion.' };
+    }
+    try {
+        const ref = doc(firestore, 'samplePhotoReceptions', id.trim());
+        const snap = await getDoc(ref);
+        if (!snap.exists()) {
+            return { success: false, error: 'No se encontro la recepcion solicitada.' };
+        }
+        return {
+            success: true,
+            data: convertTimestampsToDates({ id: snap.id, ...snap.data() }) as SamplePhotoReception,
+        };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+export type UpdateSamplePhotoReceptionStatusPayload = {
+    id: string;
+    nextStatus: SamplePhotoReceptionStatus;
+    note?: string;
+    updatedById?: string;
+    updatedByName?: string;
+};
+
+export type UpdateSamplePhotoReceptionStatusResult = {
+    success: boolean;
+    error?: string;
+    unchanged?: boolean;
+    data?: SamplePhotoReception;
+};
+
+export async function updateSamplePhotoReceptionStatus(
+    payload: UpdateSamplePhotoReceptionStatusPayload
+): Promise<UpdateSamplePhotoReceptionStatusResult> {
+    if (!payload?.id?.trim()) {
+        return { success: false, error: 'Debe indicar el id de la recepcion.' };
+    }
+    if (!payload?.nextStatus) {
+        return { success: false, error: 'Debe indicar un estado destino valido.' };
+    }
+    if (!SAMPLE_PHOTO_RECEPTION_STATUSES.includes(payload.nextStatus)) {
+        return { success: false, error: 'Estado destino invalido.' };
+    }
+
+    try {
+        const receptionRef = doc(firestore, 'samplePhotoReceptions', payload.id.trim());
+        return await runTransaction(firestore, async (tx) => {
+            const snap = await tx.get(receptionRef);
+            if (!snap.exists()) {
+                return { success: false, error: 'No se encontro la recepcion solicitada.' };
+            }
+
+            const current = convertTimestampsToDates({ id: snap.id, ...snap.data() }) as SamplePhotoReception;
+            if (current.status === payload.nextStatus) {
+                return { success: true, unchanged: true, data: current };
+            }
+            if (!isValidSamplePhotoReceptionTransition(current.status, payload.nextStatus)) {
+                return {
+                    success: false,
+                    error: `Transicion invalida: ${current.status} -> ${payload.nextStatus}.`,
+                };
+            }
+
+            const event: SamplePhotoReceptionEvent = {
+                at: new Date(),
+                fromStatus: current.status ?? null,
+                toStatus: payload.nextStatus,
+                note: payload.note?.trim().slice(0, 500) || null,
+                actorId: payload.updatedById ?? null,
+                actorName: payload.updatedByName ?? null,
+            };
+
+            const statusHistory = Array.isArray(current.statusHistory)
+                ? [...current.statusHistory, event]
+                : [event];
+            const patch = convertDatesToTimestamps({
+                status: payload.nextStatus,
+                updatedAt: new Date(),
+                updatedById: payload.updatedById ?? null,
+                updatedByName: payload.updatedByName ?? null,
+                statusHistory,
+            }) as Record<string, unknown>;
+
+            tx.set(receptionRef, patch, { merge: true });
+            const updated: SamplePhotoReception = {
+                ...current,
+                ...convertTimestampsToDates(patch),
+                id: current.id,
+            } as SamplePhotoReception;
+            return { success: true, unchanged: false, data: updated };
+        });
+    } catch (error: any) {
+        return { success: false, error: error.message };
     }
 }
 

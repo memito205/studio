@@ -1434,6 +1434,33 @@ export interface SampleDelivery {
   destinationWarehouse: string;
 }
 
+export type SamplePhotoReceptionStatus = 'pending' | 'in_progress' | 'received';
+
+export interface SamplePhotoReceptionEvent {
+  at: Date;
+  fromStatus: SamplePhotoReceptionStatus | null;
+  toStatus: SamplePhotoReceptionStatus;
+  note?: string | null;
+  actorId?: string | null;
+  actorName?: string | null;
+}
+
+export interface SamplePhotoReception {
+  id: string;
+  deliveryKey: string;
+  reference: string;
+  transferNumber: string;
+  status: SamplePhotoReceptionStatus;
+  createdAt?: Date;
+  updatedAt?: Date;
+  lastUploadedAt?: Date;
+  lastUploadedById?: string | null;
+  lastUploadedByName?: string | null;
+  updatedById?: string | null;
+  updatedByName?: string | null;
+  statusHistory?: SamplePhotoReceptionEvent[];
+}
+
 export interface ComparisonResult {
     reference: string;
     status: 'En Base de Datos' | 'Muestra Nueva Requerida' | 'Advertencia: Entregada pero sin Foto';
