@@ -2499,6 +2499,7 @@ function isValidSamplePhotoReceptionTransition(
 ): boolean {
     if (fromStatus === toStatus) return true;
     if (fromStatus === 'pending' && toStatus === 'in_progress') return true;
+    if (fromStatus === 'pending' && toStatus === 'received') return true;
     if (fromStatus === 'in_progress' && toStatus === 'received') return true;
     return false;
 }
