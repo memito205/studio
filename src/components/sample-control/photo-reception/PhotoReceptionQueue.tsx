@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import { Loader2, RefreshCcw, Search } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
@@ -30,11 +32,14 @@ export const PhotoReceptionQueue: React.FC = () => {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<LoadSamplePhotoReceptionsOptions['status']>('pending');
   const [scanValue, setScanValue] = useState('');
+  const [activeTransferNumber, setActiveTransferNumber] = useState('');
+  const [isTransferLockedMode, setIsTransferLockedMode] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const { toast } = useToast();
   const { user, userName } = useAuth();
+  const normalizedActiveTf = activeTransferNumber.trim().toUpperCase();
 
   const filteredCountLabel = useMemo(() => `${receptions.length} registro(s)`, [receptions.length]);
 
@@ -72,6 +77,7 @@ export const PhotoReceptionQueue: React.FC = () => {
       scanValue: normalized,
       updatedById: user?.uid,
       updatedByName: userName ?? user?.displayName ?? user?.email ?? undefined,
+      activeTransferNumber: isTransferLockedMode ? normalizedActiveTf : undefined,
     });
     if (!result.success) {
       toast({
@@ -100,6 +106,7 @@ export const PhotoReceptionQueue: React.FC = () => {
       nextStatus,
       updatedById: user?.uid,
       updatedByName: userName ?? user?.displayName ?? user?.email ?? undefined,
+      activeTransferNumber: isTransferLockedMode ? normalizedActiveTf : undefined,
     });
     if (!result.success) {
       toast({
@@ -151,9 +158,24 @@ export const PhotoReceptionQueue: React.FC = () => {
               }}
               placeholder="Pistoleo rapido (barcode, TF__REF, referencia o TF)"
             />
-            <Button size="sm" onClick={handleScanReception} disabled={isScanning || !scanValue.trim()}>
+            <Button
+              size="sm"
+              onClick={handleScanReception}
+              disabled={isScanning || !scanValue.trim() || (isTransferLockedMode && !normalizedActiveTf)}
+            >
               {isScanning ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Escanear'}
             </Button>
+          </div>
+          <div className="flex items-center gap-2 w-full lg:max-w-md">
+            <Input
+              value={activeTransferNumber}
+              onChange={(e) => setActiveTransferNumber(e.target.value)}
+              placeholder="TF activa (ej: TFT-0060051)"
+            />
+            <div className="flex items-center space-x-2 whitespace-nowrap">
+              <Switch id="tf-lock-mode" checked={isTransferLockedMode} onCheckedChange={setIsTransferLockedMode} />
+              <Label htmlFor="tf-lock-mode">Bloquear por TF</Label>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -190,6 +212,12 @@ export const PhotoReceptionQueue: React.FC = () => {
             </Button>
           </div>
         </div>
+
+        {isTransferLockedMode && (
+          <div className="text-xs text-amber-600">
+            Modo TF bloqueada activo: {normalizedActiveTf || 'defina una TF para habilitar recepcion'}
+          </div>
+        )}
 
         <div className="text-xs text-muted-foreground">{filteredCountLabel}</div>
 
@@ -233,14 +261,24 @@ export const PhotoReceptionQueue: React.FC = () => {
                         <Button
                           size="sm"
                           variant="outline"
-                          disabled={savingId === item.id || item.status !== 'pending'}
+                          disabled={
+                            savingId === item.id ||
+                            item.status !== 'pending' ||
+                            (isTransferLockedMode &&
+                              (!normalizedActiveTf || item.transferNumber.trim().toUpperCase() !== normalizedActiveTf))
+                          }
                           onClick={() => handleUpdateStatus(item.id, 'in_progress')}
                         >
                           {savingId === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Iniciar'}
                         </Button>
                         <Button
                           size="sm"
-                          disabled={savingId === item.id || item.status !== 'in_progress'}
+                          disabled={
+                            savingId === item.id ||
+                            item.status !== 'in_progress' ||
+                            (isTransferLockedMode &&
+                              (!normalizedActiveTf || item.transferNumber.trim().toUpperCase() !== normalizedActiveTf))
+                          }
                           onClick={() => handleUpdateStatus(item.id, 'received')}
                         >
                           {savingId === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Marcar recibida'}

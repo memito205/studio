@@ -2595,6 +2595,7 @@ export type UpdateSamplePhotoReceptionStatusPayload = {
     note?: string;
     updatedById?: string;
     updatedByName?: string;
+    activeTransferNumber?: string;
 };
 
 export type UpdateSamplePhotoReceptionStatusResult = {
@@ -2613,6 +2614,10 @@ function normalizeScanToken(input: string): string {
 
 function sortByUpdatedAtDesc(items: SamplePhotoReception[]): SamplePhotoReception[] {
     return [...items].sort((a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0));
+}
+
+function normalizeTransferNumber(input: string | null | undefined): string {
+    return String(input ?? '').trim().toUpperCase();
 }
 
 export async function updateSamplePhotoReceptionStatus(
@@ -2637,6 +2642,13 @@ export async function updateSamplePhotoReceptionStatus(
             }
 
             const current = convertTimestampsToDates({ id: snap.id, ...snap.data() }) as SamplePhotoReception;
+            const activeTf = normalizeTransferNumber(payload.activeTransferNumber);
+            if (activeTf && normalizeTransferNumber(current.transferNumber) !== activeTf) {
+                return {
+                    success: false,
+                    error: `Recepcion fuera de TF activa (${activeTf}).`,
+                };
+            }
             if (current.status === payload.nextStatus) {
                 return { success: true, unchanged: true, data: current };
             }
@@ -2685,6 +2697,7 @@ export type ScanSamplePhotoReceptionPayload = {
     note?: string;
     updatedById?: string;
     updatedByName?: string;
+    activeTransferNumber?: string;
 };
 
 export type ScanSamplePhotoReceptionResult = {
@@ -2699,6 +2712,7 @@ export async function scanSamplePhotoReception(
     payload: ScanSamplePhotoReceptionPayload
 ): Promise<ScanSamplePhotoReceptionResult> {
     const scanValue = normalizeScanToken(payload?.scanValue ?? '');
+    const activeTf = normalizeTransferNumber(payload?.activeTransferNumber);
     if (!scanValue) {
         return { success: false, error: 'Debe ingresar un valor de escaneo valido.' };
     }
@@ -2711,6 +2725,7 @@ export async function scanSamplePhotoReception(
             note: payload.note || `Escaneo: ${scanValue}`,
             updatedById: payload.updatedById,
             updatedByName: payload.updatedByName,
+            activeTransferNumber: activeTf || undefined,
         });
         return { ...update, source: 'id' };
     }
@@ -2734,7 +2749,12 @@ export async function scanSamplePhotoReception(
         });
 
         const candidates = sortByUpdatedAtDesc(
-            Array.from(candidatesMap.values()).filter((item) => item.status === 'pending' || item.status === 'in_progress')
+            Array.from(candidatesMap.values()).filter((item) => {
+                const statusAllowed = item.status === 'pending' || item.status === 'in_progress';
+                if (!statusAllowed) return false;
+                if (!activeTf) return true;
+                return normalizeTransferNumber(item.transferNumber) === activeTf;
+            })
         );
         if (candidates.length > 0) {
             const matchedSource =
@@ -2745,6 +2765,7 @@ export async function scanSamplePhotoReception(
                 note: payload.note || `Escaneo: ${scanValue}`,
                 updatedById: payload.updatedById,
                 updatedByName: payload.updatedByName,
+                activeTransferNumber: activeTf || undefined,
             });
             return { ...update, source: matchedSource };
         }
@@ -2758,9 +2779,17 @@ export async function scanSamplePhotoReception(
             const barcodeCandidates = sortByUpdatedAtDesc(
                 byBarcodeReference.docs
                     .map((d) => convertTimestampsToDates({ id: d.id, ...d.data() }) as SamplePhotoReception)
-                    .filter((item) => item.status === 'pending' || item.status === 'in_progress')
+                    .filter((item) => {
+                        const statusAllowed = item.status === 'pending' || item.status === 'in_progress';
+                        if (!statusAllowed) return false;
+                        if (!activeTf) return true;
+                        return normalizeTransferNumber(item.transferNumber) === activeTf;
+                    })
             );
             if (barcodeCandidates.length === 0) {
+                if (activeTf) {
+                    return { success: false, error: `Barcode resuelto, pero fuera de TF activa (${activeTf}).` };
+                }
                 return { success: false, error: 'Barcode resuelto, pero no tiene recepcion pendiente asociada.' };
             }
             const update = await updateSamplePhotoReceptionStatus({
@@ -2769,6 +2798,7 @@ export async function scanSamplePhotoReception(
                 note: payload.note || `Escaneo barcode: ${scanValue}`,
                 updatedById: payload.updatedById,
                 updatedByName: payload.updatedByName,
+                activeTransferNumber: activeTf || undefined,
             });
             return { ...update, source: 'barcode' };
         }
