@@ -273,6 +273,7 @@ export const DeadTimeJustificationEditor: React.FC<Props> = ({
           return incident.justification?.trim() || 'Excedente de Descanso';
       }
       if (manual?.type === 'PULSE_IGNORE') return 'No justificado (pulso ignorado)';
+      if (incident.justification?.trim()) return incident.justification.trim();
       return 'No Justificado';
   }
 

@@ -613,9 +613,17 @@ export function applyJustifications(
                 packerBreakUsage.set(incident.packerName, new Set());
             }
 
-            if (packerBreakUsage.get(incident.packerName)!.has(justification.type)) {
-                 finalIncidents.push({ ...incident, status: 'No Justificado', justification: `Intento de usar ${breakTypeSpanish(justification.type)} de nuevo` });
+            const isPulseSyncedBreak = /^\[(?:Pulso|Remisión|Global)\]/i.test(justification.reasonText || '');
+            const breakAlreadyUsed = packerBreakUsage.get(incident.packerName)!.has(justification.type);
+
+            if (breakAlreadyUsed && isPulseSyncedBreak) {
+                finalIncidents.push({
+                    ...incident,
+                    status: 'No Justificado',
+                    justification: `Intento de usar ${breakTypeSpanish(justification.type)} de nuevo`,
+                });
             } else {
+                // Manual assignment has priority: when user classifies a break explicitly, keep it justified.
                 packerBreakUsage.get(incident.packerName)!.add(justification.type);
                 const breakDuration = breakDurations[justification.type]!;
                 const justifiedDuration = Math.min(incident.duration, breakDuration);
