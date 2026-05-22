@@ -235,6 +235,34 @@ const autoFitColumns = (sheet: any, data: any[]) => {
     sheet['!cols'] = cols;
 }
 
+export const exportStockTemplate = () => {
+  const headers = ['REFERENCIA', 'NOMBRE', 'TALLA', 'CANTD LEIDA'];
+  const rows = [
+    { REFERENCIA: 'ABC123', NOMBRE: 'TENIS MODELO A', TALLA: '37', 'CANTD LEIDA': 24 },
+    { REFERENCIA: 'ABC123', NOMBRE: 'TENIS MODELO A', TALLA: '38', 'CANTD LEIDA': 18 },
+    { REFERENCIA: 'XYZ999', NOMBRE: 'TENIS MODELO B', TALLA: '39', 'CANTD LEIDA': 12 },
+  ];
+  const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
+  autoFitColumns(ws, rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Existencias');
+  XLSX.writeFile(wb, 'Plantilla_Existencias_DistribuidorIA.xlsx', { bookType: 'xlsx', type: 'binary' });
+};
+
+export const exportPlanTemplate = () => {
+  const headers = ['REFERENCIA', 'BODEGA', 'CANT'];
+  const rows = [
+    { REFERENCIA: 'ABC123', BODEGA: 'B12', CANT: 20 },
+    { REFERENCIA: 'ABC123', BODEGA: 'B15', CANT: 10 },
+    { REFERENCIA: 'XYZ999', BODEGA: 'B3', CANT: 12 },
+  ];
+  const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
+  autoFitColumns(ws, rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Reparto');
+  XLSX.writeFile(wb, 'Plantilla_Reparto_DistribuidorIA.xlsx', { bookType: 'xlsx', type: 'binary' });
+};
+
 export const exportDocumentsToExcel = (allocations: Allocation, coMap: { [key: string]: string }) => {
   const { documentosData, movimientosData } = generateDocumentSheetsData(allocations, coMap);
   if (documentosData.length === 0) {
