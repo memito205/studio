@@ -343,6 +343,64 @@ function filterPulsesForPackingRemision(operationPulses: OperationPulse[]): Oper
     });
 }
 
+function normalizeMatchText(value: string): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function extractTimestampFromJustificationKey(key: string): number | null {
+  const match = key.match(/(\d{10,14})(?:-[\w-]+)?$/);
+  if (!match) return null;
+  const raw = match[1];
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return null;
+  // Legacy keys may store seconds (10 digits) instead of milliseconds.
+  return raw.length <= 10 ? parsed * 1000 : parsed;
+}
+
+function extractNamePartFromJustificationKey(key: string): string {
+  return normalizeMatchText(key.replace(/-?\d{10,14}(?:-[\w-]+)?$/, ''));
+}
+
+function namesLikelyMatch(candidateFromKey: string, incidentName: string): boolean {
+  const keyName = normalizeMatchText(candidateFromKey);
+  const currentName = normalizeMatchText(incidentName);
+  if (!keyName || !currentName) return false;
+  if (keyName === currentName) return true;
+
+  const mappedNameFromKey = normalizeMatchText(OPERATOR_MAP[keyName] || '');
+  if (mappedNameFromKey && mappedNameFromKey === currentName) return true;
+
+  const mappedCurrentName = normalizeMatchText(OPERATOR_MAP[currentName] || '');
+  if (mappedCurrentName && mappedCurrentName === keyName) return true;
+
+  const keyWords = keyName.split(/\s+/).filter((p) => p.length > 2);
+  const currentWords = currentName.split(/\s+/).filter((p) => p.length > 2);
+  if (keyWords.length === 0 || currentWords.length === 0) return false;
+  const overlap = keyWords.filter((w) => currentWords.includes(w)).length;
+  return overlap >= Math.min(2, Math.min(keyWords.length, currentWords.length));
+}
+
+function findMatchingJustificationKey(
+  incident: DeadTimeEntry,
+  justifications: ManualJustifications
+): string | undefined {
+  const timestamp = incident.startTime.getTime();
+  const incidentName = incident.packerName;
+  return Object.keys(justifications).find((key) => {
+    const keyTs = extractTimestampFromJustificationKey(key);
+    if (keyTs == null) return false;
+    if (Math.abs(keyTs - timestamp) > 120000) return false;
+    const keyNamePart = extractNamePartFromJustificationKey(key);
+    return namesLikelyMatch(keyNamePart, incidentName);
+  });
+}
+
 export function applyJustifications(
   incidents: DeadTimeEntry[],
   justifications: ManualJustifications,
@@ -396,39 +454,7 @@ export function applyJustifications(
 
             // 2. If still not found, try Fuzzy Search by Timestamp (allow 2-min jitter)
             if (!justification) {
-                const matchingKey = Object.keys(justifications).find(key => {
-                    // Capture timestamp (10-14 digits) and ignore any subsequent suffixes like -justified, -remains, -excess, etc.
-                    const match = key.match(/(\d{10,14})(?:-[\w-]+)?$/);
-                    if (match) {
-                        const keyTs = parseInt(match[1]);
-                        const isTimeMatch = Math.abs(keyTs - timestamp) <= 120000; // 2 minutes jitter
-                        if (!isTimeMatch) return false;
-                        
-                        // Robust packer name check:
-                        // Strip the timestamp and any subsequent suffixes
-                        const namePartFromKey = key.replace(/-?\d{10,14}(?:-[\w-]+)?$/, '').toUpperCase();
-                        const currentName = incident.packerName.toUpperCase();
-                        
-                        // Exact match
-                        if (namePartFromKey === currentName) return true;
-                        
-                        // ID to Name mapping check
-                        const mappedNameFromKey = OPERATOR_MAP[namePartFromKey]?.toUpperCase();
-                        if (mappedNameFromKey === currentName) return true;
-                        
-                        // Name to ID mapping check (if key is a name but current incident has ID - rare but possible)
-                        const mappedCurrentName = OPERATOR_MAP[currentName]?.toUpperCase();
-                        if (mappedCurrentName === namePartFromKey) return true;
-
-                        // Fuzzy word-based match as last resort
-                        const keyNameWords = namePartFromKey.split(/\s+/).filter(p => p.length > 2);
-                        const incNameWords = currentName.split(/\s+/).filter(p => p.length > 2);
-                        const wordMatch = keyNameWords.some(p => incNameWords.includes(p)) || incNameWords.some(p => keyNameWords.includes(p));
-                        
-                        return wordMatch;
-                    }
-                    return false;
-                });
+                const matchingKey = findMatchingJustificationKey(incident, justifications);
                 
                 if (matchingKey) {
                     justification = justifications[matchingKey];
@@ -659,34 +685,10 @@ export function findManualJustificationKeysForDeadTime(
 
   for (const key of Object.keys(justifications)) {
     if (keys.has(key)) continue;
-    const match = key.match(/(\d{10,14})(?:-[\w-]+)?$/);
-    if (!match) continue;
-    const keyTs = parseInt(match[1], 10);
-    if (Math.abs(keyTs - timestamp) > 120000) continue;
-
-    const namePartFromKey = key.replace(/-?\d{10,14}(?:-[\w-]+)?$/, '').toUpperCase();
-    if (namePartFromKey === currentName) {
-      keys.add(key);
-      continue;
-    }
-    const mappedNameFromKey = OPERATOR_MAP[namePartFromKey]?.toUpperCase();
-    if (mappedNameFromKey === currentName) {
-      keys.add(key);
-      continue;
-    }
-    const mappedCurrentName = OPERATOR_MAP[currentName]?.toUpperCase();
-    if (mappedCurrentName === namePartFromKey) {
-      keys.add(key);
-      continue;
-    }
-    const keyNameWords = namePartFromKey.split(/\s+/).filter((p) => p.length > 2);
-    const incNameWords = currentName.split(/\s+/).filter((p) => p.length > 2);
-    const wordMatch =
-      keyNameWords.some((p) => incNameWords.includes(p)) ||
-      incNameWords.some((p) => keyNameWords.includes(p));
-    if (wordMatch) {
-      keys.add(key);
-    }
+    const keyTs = extractTimestampFromJustificationKey(key);
+    if (keyTs == null || Math.abs(keyTs - timestamp) > 120000) continue;
+    const namePartFromKey = extractNamePartFromJustificationKey(key);
+    if (namesLikelyMatch(namePartFromKey, currentName)) keys.add(key);
   }
 
   return [...keys];
