@@ -203,7 +203,31 @@ export const SampleControl: React.FC<SampleControlProps> = ({ onReturnToSuite })
         />
         <div className="space-y-8 max-w-7xl mx-auto">
           {headerCard}
-          <SampleVerification onVerificationSaved={() => {}} />
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+            <TabsList className="grid w-full grid-cols-1 sm:grid-cols-3 gap-1 h-auto py-2">
+              <TabsTrigger value="verification">
+                <ShieldCheck className="mr-2 h-4 w-4" />
+                Verificación
+              </TabsTrigger>
+              <TabsTrigger value="photoReceptionOps">
+                <Boxes className="mr-2 h-4 w-4" />
+                Recepción foto
+              </TabsTrigger>
+              <TabsTrigger value="photoReceptionReport">
+                <Boxes className="mr-2 h-4 w-4" />
+                Rep. recepción
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="verification" className="mt-6">
+              {activeTab === 'verification' && <SampleVerification onVerificationSaved={() => {}} />}
+            </TabsContent>
+            <TabsContent value="photoReceptionOps" className="mt-6">
+              {activeTab === 'photoReceptionOps' && <PhotoReceptionQueue />}
+            </TabsContent>
+            <TabsContent value="photoReceptionReport" className="mt-6">
+              {activeTab === 'photoReceptionReport' && <PhotoReceptionReport />}
+            </TabsContent>
+          </Tabs>
         </div>
       </>
     );
