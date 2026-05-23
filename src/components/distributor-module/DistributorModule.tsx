@@ -11,7 +11,13 @@ import MappingModal from './components/MappingModal';
 import { DownloadIcon } from './components/icons';
 import { distribute, calculateAutoCurves } from './services/distributor';
 import { getDistributionSummary } from './services/geminiService';
-import { exportDocumentsToExcel, exportSummaryToExcel, findUnmappedWarehouses } from './services/exportService';
+import {
+  exportDocumentsToExcel,
+  exportSummaryToExcel,
+  findUnmappedWarehouses,
+  exportStockTemplate,
+  exportPlanTemplate,
+} from './services/exportService';
 import type { StockItem, DistributionRule, Allocation, BoxCurveRule } from './types';
 
 interface DistributorModuleProps {
@@ -186,6 +192,16 @@ const DistributorModule: React.FC<DistributorModuleProps> = ({ onReturnToSuite }
           <p className="mt-3 text-lg text-gray-600 max-w-2xl mx-auto">
             Cargue sus archivos de existencias y reparto para generar una distribución equitativa de productos.
           </p>
+          <div className="mt-4 flex flex-wrap justify-center gap-3">
+            <Button variant="secondary" onClick={exportStockTemplate} className="inline-flex items-center">
+              <DownloadIcon className="w-4 h-4 mr-2" />
+              Plantilla Existencias
+            </Button>
+            <Button variant="secondary" onClick={exportPlanTemplate} className="inline-flex items-center">
+              <DownloadIcon className="w-4 h-4 mr-2" />
+              Plantilla Reparto
+            </Button>
+          </div>
         </header>
 
         <main className="bg-white p-6 sm:p-8 rounded-2xl shadow-xl border border-gray-200">
