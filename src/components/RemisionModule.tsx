@@ -45,6 +45,8 @@ interface RemisionModuleProps {
 }
 
 const PAUSE_REASONS = [
+    { id: 'Inicio de Empaque', label: 'Inicio de Empaque', icon: Play, color: 'text-emerald-600' },
+    { id: 'Desplazamiento', label: 'Desplazamiento', icon: Timer, color: 'text-cyan-600' },
     { id: 'Desayuno', label: 'Desayuno', icon: Coffee, color: 'text-amber-500' },
     { id: 'Almuerzo', label: 'Almuerzo', icon: Utensils, color: 'text-orange-500' },
     { id: 'Refrigerio', label: 'Refrigerio', icon: Coffee, color: 'text-yellow-500' },
