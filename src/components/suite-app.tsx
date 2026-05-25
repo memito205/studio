@@ -410,7 +410,38 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
         } else {
           finalProcessedData.annotations = annotations;
           finalProcessedData.processedData = processedDataForReport;
-          const saveResult = await saveReportToHistory(finalProcessedData);
+
+          const estimatePayloadBytes = (value: unknown): number => {
+            try {
+              return new Blob([JSON.stringify(value)]).size;
+            } catch {
+              return Number.MAX_SAFE_INTEGER;
+            }
+          };
+          const MAX_SAFE_SERVER_ACTION_PAYLOAD_BYTES = 850_000;
+          const fullPayloadBytes = estimatePayloadBytes(finalProcessedData);
+
+          // Prevent 413 (Payload Too Large) on Server Actions by trimming heavy detail when needed.
+          const historyPayload: ProcessedReportData = { ...finalProcessedData };
+          if (fullPayloadBytes > MAX_SAFE_SERVER_ACTION_PAYLOAD_BYTES) {
+            delete (historyPayload as any).processedData;
+          }
+
+          let saveResult: Awaited<ReturnType<typeof saveReportToHistory>>;
+          try {
+            saveResult = await saveReportToHistory(historyPayload);
+          } catch (saveError: any) {
+            const errorMessage = String(saveError?.message || '');
+            const looksLikePayloadError = /413|payload too large|request entity too large|body.*exceed/i.test(errorMessage.toLowerCase());
+            if (!looksLikePayloadError || !('processedData' in historyPayload)) {
+              throw saveError;
+            }
+
+            const retryPayload: ProcessedReportData = { ...historyPayload };
+            delete (retryPayload as any).processedData;
+            saveResult = await saveReportToHistory(retryPayload);
+          }
+
           if (saveResult.error) {
               toast({
                   variant: "destructive",
@@ -419,6 +450,13 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                   duration: 8000,
               });
           } else {
+              if (!('processedData' in historyPayload)) {
+                toast({
+                    title: "Reporte Guardado (modo optimizado)",
+                    description: "Se omitió el detalle pesado para evitar errores de tamaño (413).",
+                    duration: 3500,
+                });
+              }
               toast({
                   title: "Reporte Guardado",
                   description: "El reporte se persistió correctamente en el historial.",
