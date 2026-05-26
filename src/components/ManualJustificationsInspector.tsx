@@ -3,6 +3,7 @@
 import React, { useMemo, useState, useCallback } from "react";
 import type { ManualJustifications, ManualJustificationsUpdate, JustificationType } from "@/types";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import {
   Table,
@@ -78,6 +79,7 @@ export const ManualJustificationsInspector: React.FC<ManualJustificationsInspect
 }) => {
   const [open, setOpen] = useState(true);
   const [reloadBusy, setReloadBusy] = useState(false);
+  const [userFilter, setUserFilter] = useState("");
 
   const rows = useMemo(() => {
     return Object.entries(justifications)
@@ -100,13 +102,25 @@ export const ManualJustificationsInspector: React.FC<ManualJustificationsInspect
           detail,
         };
       })
+      .filter((row) => {
+        if (!reportDate || !row.inferredAt) return true;
+        const y = row.inferredAt.getFullYear();
+        const m = String(row.inferredAt.getMonth() + 1).padStart(2, "0");
+        const d = String(row.inferredAt.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}` === reportDate;
+      })
+      .filter((row) => {
+        const q = userFilter.trim().toLowerCase();
+        if (!q) return true;
+        return row.operatorLabel.toLowerCase().includes(q);
+      })
       .sort((a, b) => {
         const ta = a.inferredAt?.getTime() ?? 0;
         const tb = b.inferredAt?.getTime() ?? 0;
         if (ta !== tb) return ta - tb;
         return a.key.localeCompare(b.key);
       });
-  }, [justifications]);
+  }, [justifications, reportDate, userFilter]);
 
   const removeKey = useCallback(
     (key: string) => {
@@ -143,6 +157,12 @@ export const ManualJustificationsInspector: React.FC<ManualJustificationsInspect
             <span>Justificaciones manuales — día {reportDate || "—"}</span>
           </button>
           <div className="flex flex-wrap items-center gap-2">
+            <Input
+              value={userFilter}
+              onChange={(e) => setUserFilter(e.target.value)}
+              placeholder="Filtrar por usuario..."
+              className="h-8 w-[220px]"
+            />
             {onReloadFromServer && (
               <Button
                 type="button"

@@ -3,7 +3,7 @@
 "use client";
 
 import React, { useMemo, useEffect } from 'react';
-import type { ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ManualJustificationsUpdate, UniqueReference, ReferenceCorrections, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, JustificationType, Annotations, ProductDatabaseItem, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReferenceGoals } from '@/types';
+import type { ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ManualJustificationsUpdate, UniqueReference, ReferenceCorrections, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, JustificationType, Annotations, ProductDatabaseItem, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReferenceGoals, OperationPulse } from '@/types';
 import { FileDown, Upload, Share2, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -21,6 +21,14 @@ import { IncidentLogEditor } from './incident-log-editor';
 import { DiscardedRecordsViewer } from './discarded-records-viewer';
 import { classifyProduct, extractBrandsFromReport, preScanForUnclassifiedProducts, extractUnmappedPackers, extractAllReferencesFromReport } from '@/services/reportProcessor';
 import { ReferenceGoalConfiguration } from './reference-goal-configuration';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 
 interface ConfigurationScreenProps {
   fileName: string;
@@ -65,6 +73,7 @@ interface ConfigurationScreenProps {
   isSavingJustifications?: boolean;
   referenceGoals: ReferenceGoals;
   onReferenceGoalsChange: (goals: ReferenceGoals) => void;
+  operationPulses?: OperationPulse[];
   /** Sustituye el mapa en memoria con lo último de Firestore (evita claves fantasma). */
   onReloadJustificationsFromServer?: () => Promise<void>;
 }
@@ -112,10 +121,12 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
   isSavingJustifications,
   referenceGoals,
   onReferenceGoalsChange,
+  operationPulses = [],
   onReloadJustificationsFromServer,
 }) => {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [shareStatus, setShareStatus] = React.useState<'idle' | 'copied'>('idle');
+  const [remisionPulseUserFilter, setRemisionPulseUserFilter] = React.useState('');
   
   const productMap = React.useMemo(() => new Map(productDB.map(p => [p.codigoBarras, p])), [productDB]);
   const combinedCorrections = React.useMemo(() => ({ ...learnedCorrections, ...referenceCorrections }), [learnedCorrections, referenceCorrections]);
@@ -146,6 +157,47 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
 
     return { brands, unclassifiedProducts, unmappedPackers, allReferences };
   }, [fullyProcessedData, rawData, manualOperatorMappings]);
+
+  const remisionSyncedRows = React.useMemo(() => {
+    const toLocalDate = (value: Date): string => {
+      const y = value.getFullYear();
+      const m = String(value.getMonth() + 1).padStart(2, '0');
+      const d = String(value.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    };
+
+    const userQuery = remisionPulseUserFilter.trim().toLowerCase();
+
+    return (operationPulses || [])
+      .filter((p) => p.metadata?.fromModule === 'Remisión' && p.type === 'pause')
+      .map((p) => {
+        const start = p.startTime instanceof Date ? p.startTime : new Date(p.startTime as any);
+        const end = p.endTime ? (p.endTime instanceof Date ? p.endTime : new Date(p.endTime as any)) : null;
+        const minutes =
+          end && !Number.isNaN(end.getTime()) && !Number.isNaN(start.getTime())
+            ? Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000))
+            : null;
+
+        return {
+          id: p.id || `${p.userId}-${String(start)}`,
+          userName: String(p.userName || ''),
+          reason: String(p.reason || p.justification || p.details || 'Sin motivo'),
+          start,
+          end,
+          minutes,
+          status: String(p.status || ''),
+        };
+      })
+      .filter((row) => {
+        if (!reportDate || Number.isNaN(row.start.getTime())) return true;
+        return toLocalDate(row.start) === reportDate;
+      })
+      .filter((row) => {
+        if (!userQuery) return true;
+        return row.userName.toLowerCase().includes(userQuery);
+      })
+      .sort((a, b) => a.start.getTime() - b.start.getTime());
+  }, [operationPulses, reportDate, remisionPulseUserFilter]);
   
   const handleCalculateClick = () => {
     onCalculate(fullyProcessedData);
@@ -419,6 +471,66 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
         onReloadFromServer={onReloadJustificationsFromServer}
         isSaving={isSavingJustifications}
       />
+      
+      <Card className="border-sky-600/30 bg-sky-950/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">
+            Pausas sincronizadas desde Remisión — día {reportDate || '—'}
+          </CardTitle>
+          <CardDescription>
+            Pulsos del día leídos desde <code className="text-xs">operation_pulses</code> con origen Remisión.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-3">
+            <Input
+              value={remisionPulseUserFilter}
+              onChange={(e) => setRemisionPulseUserFilter(e.target.value)}
+              placeholder="Filtrar por usuario..."
+              className="h-8 w-[220px]"
+            />
+            <span className="text-xs text-muted-foreground">{remisionSyncedRows.length} registros</span>
+          </div>
+          {remisionSyncedRows.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-2">
+              No hay pausas de Remisión para este día/filtro.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Operario</TableHead>
+                  <TableHead>Motivo</TableHead>
+                  <TableHead>Inicio</TableHead>
+                  <TableHead>Fin</TableHead>
+                  <TableHead>Duración (min)</TableHead>
+                  <TableHead>Estado</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {remisionSyncedRows.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell className="text-sm">{row.userName || '—'}</TableCell>
+                    <TableCell className="text-sm">{row.reason}</TableCell>
+                    <TableCell className="text-sm whitespace-nowrap">
+                      {Number.isNaN(row.start.getTime())
+                        ? '—'
+                        : row.start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </TableCell>
+                    <TableCell className="text-sm whitespace-nowrap">
+                      {row.end && !Number.isNaN(row.end.getTime())
+                        ? row.end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                        : 'Activa'}
+                    </TableCell>
+                    <TableCell className="text-sm">{row.minutes != null ? row.minutes : 'Activa'}</TableCell>
+                    <TableCell className="text-sm">{row.status || '—'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
 
       <DeadTimeJustificationEditor 
           incidents={deadTimes}
