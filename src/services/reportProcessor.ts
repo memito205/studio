@@ -568,18 +568,25 @@ export function applyJustifications(
                 // Intersection of incident [incident.startTime, incident.endTime] and [jStart, jEnd]
                 const overlapStart = Math.max(incident.startTime.getTime(), jStart.getTime());
                 const overlapEnd = Math.min(incident.endTime.getTime(), jEnd.getTime());
+                const isPulseSyncedReason = /^\[(?:Pulso|Remisión|Global)\]/i.test(justification.reasonText || '');
 
                 if (overlapEnd > overlapStart) {
                     // 1. Part before the justified range
                     if (overlapStart > incident.startTime.getTime()) {
-                        finalIncidents.push({
+                        const preSegment: DeadTimeEntry = {
                             ...incident,
                             id: `${incident.id}-pre`,
                             endTime: new Date(overlapStart),
                             duration: Math.round((overlapStart - incident.startTime.getTime()) / 60000),
                             status: 'No Justificado',
                             justification: undefined
-                        });
+                        };
+                        if (isPulseSyncedReason) {
+                            // Keep splitting synced pulse windows on both sides of the block.
+                            processQueue.unshift(preSegment);
+                        } else {
+                            finalIncidents.push(preSegment);
+                        }
                     }
 
                     // 2. The justified part
@@ -595,8 +602,6 @@ export function applyJustifications(
 
                     // 3. Part after the justified range
                     if (overlapEnd < incident.endTime.getTime()) {
-                        // We unshift this so it can be further justified if needed? 
-                        // Actually, for simplicity, just push it as unjustified now.
                         processQueue.unshift({
                             ...incident,
                             id: `${incident.id}-post`,
