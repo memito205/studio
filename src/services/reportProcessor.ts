@@ -331,6 +331,12 @@ function breakTypeSpanish(type: JustificationType): string {
     }
 }
 
+function toHHmm(date: Date): string {
+    const h = String(date.getHours()).padStart(2, '0');
+    const m = String(date.getMinutes()).padStart(2, '0');
+    return `${h}:${m}`;
+}
+
 /** Pulses elegibles para el módulo de empaque (suite): no mezclar con mayoristas/recepción. */
 function filterPulsesForPackingRemision(operationPulses: OperationPulse[]): OperationPulse[] {
     return operationPulses.filter(p => {
@@ -470,21 +476,36 @@ export function applyJustifications(
         // --- Pulse Sync Logic ---
         // Si no hay justificación manual, alinear con pulsos de Remisión / pausa global (no otros módulos).
         if (!justification) {
-            const pulse = packingPulses.find(p => {
-                if (!p.isGlobal && p.userName?.toUpperCase() !== incident.packerName.toUpperCase()) return false;
-                if (p.type === 'status_change' && p.status === 'En Remisión') return false;
-                
-                const pulseStart = p.startTime.getTime();
-                const pulseEnd = p.endTime?.getTime() || Date.now();
-                const incidentStart = incident.startTime.getTime();
-                const incidentEnd = incident.endTime.getTime();
-                
-                const overlapStart = Math.max(pulseStart, incidentStart);
-                const overlapEnd = Math.min(pulseEnd, incidentEnd);
-                return (overlapEnd - overlapStart) >= 60000;
-            });
-            
-            if (pulse) {
+            const incidentStart = incident.startTime.getTime();
+            const incidentEnd = incident.endTime.getTime();
+            const pulseMatch = packingPulses
+                .map(p => {
+                    if (!p.isGlobal && p.userName?.toUpperCase() !== incident.packerName.toUpperCase()) return null;
+                    if (p.type === 'status_change' && p.status === 'En Remisión') return null;
+
+                    const pulseStart = p.startTime.getTime();
+                    const pulseEnd = p.endTime?.getTime() || Date.now();
+                    const overlapStart = Math.max(pulseStart, incidentStart);
+                    const overlapEnd = Math.min(pulseEnd, incidentEnd);
+                    const overlapMs = overlapEnd - overlapStart;
+                    if (overlapMs < 60000) return null;
+
+                    return {
+                        pulse: p,
+                        overlapStart,
+                        overlapEnd,
+                        overlapMs,
+                    };
+                })
+                .filter(Boolean)
+                .sort((a, b) => {
+                    // Prefer the pulse that best explains the incident (largest overlap).
+                    if (b!.overlapMs !== a!.overlapMs) return b!.overlapMs - a!.overlapMs;
+                    return a!.overlapStart - b!.overlapStart;
+                })[0];
+
+            if (pulseMatch) {
+                const pulse = pulseMatch.pulse;
                 let type: JustificationType = 'REASON';
                 const rawReason = [pulse.justification, pulse.reason, pulse.details]
                     .find(v => v != null && String(v).trim() !== '');
@@ -505,6 +526,13 @@ export function applyJustifications(
                     type,
                     reasonText: displayReason,
                 };
+
+                // For non-break reasons, align justification strictly to the real pulse overlap.
+                // This avoids auto-justifying the entire dead-time block when only a segment matches.
+                if (type === 'REASON') {
+                    justification.startTime = toHHmm(new Date(pulseMatch.overlapStart));
+                    justification.endTime = toHHmm(new Date(pulseMatch.overlapEnd));
+                }
             }
         }
         // --- End Pulse Sync Logic ---
