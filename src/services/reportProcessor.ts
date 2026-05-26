@@ -480,7 +480,7 @@ export function applyJustifications(
             const incidentEnd = incident.endTime.getTime();
             const pulseMatch = packingPulses
                 .map(p => {
-                    if (!p.isGlobal && p.userName?.toUpperCase() !== incident.packerName.toUpperCase()) return null;
+                    if (!p.isGlobal && !namesLikelyMatch(String(p.userName || ''), incident.packerName)) return null;
                     if (p.type === 'status_change' && p.status === 'En Remisión') return null;
 
                     const pulseStart = p.startTime.getTime();
