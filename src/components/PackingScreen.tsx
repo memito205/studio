@@ -94,6 +94,18 @@ const createItemKey = (ref: any, talla: any) => {
     return `${r}-${t}`;
 };
 
+const parseItemKey = (itemKey: string): { reference: string; talla: string } => {
+    const key = String(itemKey || '').trim();
+    const separatorIndex = key.lastIndexOf('-');
+    if (separatorIndex < 0) {
+        return { reference: key, talla: '' };
+    }
+    return {
+        reference: key.slice(0, separatorIndex).trim(),
+        talla: key.slice(separatorIndex + 1).trim(),
+    };
+};
+
 const PauseDialog: React.FC<{
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
@@ -427,7 +439,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 const safeProgress = globalPackingProgress || {};
                 
                 const totalPackedForRef = Object.entries(safeProgress)
-                    .filter(([key]) => key.split('-')[0].trim() === scannedReference)
+                    .filter(([key]) => parseItemKey(key).reference === scannedReference)
                     .reduce((sum, [, qty]) => sum + qty, 0);
                     
                 const packedQty = safeProgress[itemKey] || 0;
@@ -474,9 +486,13 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
                 const itemsInActiveUnit = allPackedItems.filter(item => item.packingUnitId === unitToUse?.firestoreId);
                 if (itemsInActiveUnit.length > 0) {
-                    // Find the first item that has a reference (the part before the hyphen)
-                    const itemWithRef = itemsInActiveUnit.find(i => i.itemKey.split('-')[0].trim().length > 0);
-                    const expectedReference = itemWithRef ? itemWithRef.itemKey.split('-')[0].trim() : '';
+                    const itemWithRef = itemsInActiveUnit.find(i => {
+                        const resolvedRef = (i.item?.referencia || parseItemKey(i.itemKey).reference || '').toString().trim();
+                        return resolvedRef.length > 0;
+                    });
+                    const expectedReference = itemWithRef
+                        ? (itemWithRef.item?.referencia || parseItemKey(itemWithRef.itemKey).reference || '').toString().trim()
+                        : '';
                     const newReference = (result.item.referencia || '').toString().trim();
                     
                     if (newReference && expectedReference && newReference !== expectedReference) {
@@ -775,7 +791,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 if (totalCurrent === newQuantity) return;
 
                 const firstItem = itemsToUpdate[0];
-                const [ref, tallaPart] = itemKey.split('-');
+                const { reference: ref, talla: tallaPart } = parseItemKey(itemKey);
                 const updateData: any = { quantity: newQuantity };
 
                 if (!firstItem.item) {
@@ -820,7 +836,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         if (itemsToUpdate.length === 0) return;
 
         const firstItem = itemsToUpdate[0];
-        const [oldRef, oldTallaPart] = itemKey.split('-');
+        const { reference: oldRef, talla: oldTallaPart } = parseItemKey(itemKey);
         
         const currentTalla = firstItem.item?.talla || firstItem.item?.size || oldTallaPart || '';
         if (currentTalla.trim().toLowerCase() === newTalla.trim().toLowerCase()) return;
@@ -921,8 +937,8 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             
             if (detail) {
                 const existingItem = allPackedItems.find(p => 
-                    (p.item?.referencia || p.itemKey.split('-')[0]) === reference && 
-                    (p.item?.talla || p.itemKey.split('-')[1]) === talla
+                    (p.item?.referencia || parseItemKey(p.itemKey).reference) === reference && 
+                    (p.item?.talla || parseItemKey(p.itemKey).talla) === talla
                 );
                 barcode = existingItem?.barcode || detail.item || ''; 
             }
@@ -1215,7 +1231,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     const handleExport = (type: 'general' | 'detailed') => {
         const packedByRefTalla = globalPackingProgress; // Use global progress
         const packedRefs = new Set<string>();
-        Object.keys(packedByRefTalla).forEach(key => packedRefs.add(key.split('-')[0]));
+        Object.keys(packedByRefTalla).forEach(key => packedRefs.add(parseItemKey(key).reference));
     
         const dataToExport = Array.from(packedRefs).map(ref => {
             const orderedTotal = packingOrder.order.details
