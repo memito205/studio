@@ -389,33 +389,31 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
   const handleDownloadComparisonReport = (order: WholesaleOrder) => {
     const packedItemsForOrder = allPackedItems.filter((p) => p.orderId === order.id);
 
-    type Acc = { referencia: string; talla: string; item: string; ordered: number; packed: number };
+    type Acc = { referencia: string; talla: string; ordered: number; packed: number };
     const byKey = new Map<string, Acc>();
-    const makeKey = (referencia: string, talla: string, item: string) => `${referencia}||${talla}||${item}`;
+    const makeKey = (referencia: string, talla: string) => `${referencia}||${talla}`;
 
     order.details.forEach((d) => {
       const referencia = String(d.referencia || '').trim();
       const talla = String(d.talla || '').trim();
-      const item = String(d.item || '').trim();
-      const key = makeKey(referencia, talla, item);
+      const key = makeKey(referencia, talla);
       const prev = byKey.get(key);
       if (prev) {
         prev.ordered += Number(d.cantidad || 0);
       } else {
-        byKey.set(key, { referencia, talla, item, ordered: Number(d.cantidad || 0), packed: 0 });
+        byKey.set(key, { referencia, talla, ordered: Number(d.cantidad || 0), packed: 0 });
       }
     });
 
     packedItemsForOrder.forEach((p) => {
       const ref = String(p.item?.referencia || parsePackedItemKey(p.itemKey).referencia || '').trim();
       const talla = String(p.item?.talla || parsePackedItemKey(p.itemKey).talla || '').trim();
-      const item = String((p.item as any)?.item || '').trim();
-      const key = makeKey(ref, talla, item);
+      const key = makeKey(ref, talla);
       const prev = byKey.get(key);
       if (prev) {
         prev.packed += Number(p.quantity || 0);
       } else {
-        byKey.set(key, { referencia: ref, talla, item, ordered: 0, packed: Number(p.quantity || 0) });
+        byKey.set(key, { referencia: ref, talla, ordered: 0, packed: Number(p.quantity || 0) });
       }
     });
 
@@ -423,9 +421,7 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
       .sort((a, b) => {
         const byRef = a.referencia.localeCompare(b.referencia);
         if (byRef !== 0) return byRef;
-        const byTalla = a.talla.localeCompare(b.talla);
-        if (byTalla !== 0) return byTalla;
-        return a.item.localeCompare(b.item);
+        return a.talla.localeCompare(b.talla);
       })
       .map((r) => {
         const diff = r.packed - r.ordered;
@@ -433,7 +429,6 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
           'Pedido': order.id,
           'Referencia': r.referencia || '-',
           'Talla': r.talla || '-',
-          'Item': r.item || '-',
           'Pedido (Cantidad)': r.ordered,
           'Empacado (Cantidad)': r.packed,
           'Diferencia': diff,
