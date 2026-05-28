@@ -55,6 +55,8 @@ type InventoryDiffRow = {
   expectedAdjusted: number;
   expectedBase: number;
   adjustmentDelta: number;
+  previousExpectedAdjusted: number;
+  hasMovementVsPrevious: boolean;
   countedQty: number | null;
   diffQty: number;
   diffPct: number;
@@ -72,6 +74,10 @@ type LocationRecountRecommendation = {
   weightedScore: number;
   topPriority: DiffPriority;
 };
+
+function refLocKey(reference: string, location: string): string {
+  return `${String(reference || '').trim().toUpperCase()}|${String(location || '').trim()}`;
+}
 
 function classifyDiffPriority(row: {
   countedQty: number | null;
@@ -183,6 +189,9 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
   const [loadingDays, setLoadingDays] = useState(false);
   const [lines, setLines] = useState<InventoryLineView[]>([]);
   const [loadingLines, setLoadingLines] = useState(false);
+  const [previousDate, setPreviousDate] = useState<string | null>(null);
+  const [previousLines, setPreviousLines] = useState<InventoryLineView[]>([]);
+  const [loadingPreviousLines, setLoadingPreviousLines] = useState(false);
   const [filterRef, setFilterRef] = useState('');
   const [filterLoc, setFilterLoc] = useState('');
   const [onlyPending, setOnlyPending] = useState(false);
@@ -261,6 +270,47 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     void loadLines();
   }, [loadLines]);
 
+  useEffect(() => {
+    const current = inventoryDate.trim();
+    if (!isValidInventoryDateKey(current)) {
+      setPreviousDate(null);
+      return;
+    }
+    const candidate = [...recentDays]
+      .map((d) => d.id)
+      .filter((id) => id < current)
+      .sort((a, b) => b.localeCompare(a))[0];
+    setPreviousDate(candidate || null);
+  }, [inventoryDate, recentDays]);
+
+  const loadPreviousLines = useCallback(async () => {
+    if (!previousDate) {
+      setPreviousLines([]);
+      return;
+    }
+    setLoadingPreviousLines(true);
+    try {
+      const res = await getCyclicInventoryLinesForDate(previousDate);
+      if (!res.success || !res.data) {
+        throw new Error(res.error || 'No se pudo cargar el inventario previo.');
+      }
+      setPreviousLines(res.data as InventoryLineView[]);
+    } catch (e: unknown) {
+      toast({
+        variant: 'destructive',
+        title: 'Comparativo',
+        description: e instanceof Error ? e.message : 'Error desconocido',
+      });
+      setPreviousLines([]);
+    } finally {
+      setLoadingPreviousLines(false);
+    }
+  }, [previousDate, toast]);
+
+  useEffect(() => {
+    void loadPreviousLines();
+  }, [loadPreviousLines]);
+
   const loadAdjustments = useCallback(async () => {
     const dateKey = inventoryDate.trim();
     if (!isValidInventoryDateKey(dateKey)) {
@@ -332,23 +382,34 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
   }, [lines, filterRef, filterLoc, onlyPending]);
 
   const allDiffRows = useMemo<InventoryDiffRow[]>(() => {
+    const previousExpectedByKey = new Map<string, number>();
+    for (const prevLine of previousLines) {
+      previousExpectedByKey.set(
+        refLocKey(prevLine.reference, prevLine.location),
+        Math.max(0, Math.floor(Number(prevLine.expectedQty) || 0))
+      );
+    }
     return lines.map((line) => {
       const expectedAdjusted = Math.max(0, Math.floor(Number(line.expectedQty) || 0));
       const expectedBase = Math.max(0, Math.floor(Number(line.expectedQtyBase ?? line.expectedQty) || 0));
       const adjustmentDelta = Math.trunc(Number(line.expectedQtyDelta) || 0);
+      const previousExpectedAdjusted = previousExpectedByKey.get(refLocKey(line.reference, line.location)) ?? 0;
+      const hasMovementVsPrevious = expectedAdjusted !== previousExpectedAdjusted;
       const countedQty = line.countedQty ?? null;
       const diffQty = countedQty === null ? 0 : countedQty - expectedAdjusted;
       const diffPct = expectedAdjusted > 0 ? diffQty / expectedAdjusted : countedQty === null ? 0 : countedQty > 0 ? 1 : 0;
       const status: DiffStatus =
         countedQty === null ? 'sin_conteo' : diffQty === 0 ? 'cuadrado' : diffQty < 0 ? 'faltante' : 'sobrante';
       const priority = classifyDiffPriority({ countedQty, expectedAdjusted, diffQty, diffPct });
-      const recountSuggested = status !== 'cuadrado';
+      const recountSuggested = hasMovementVsPrevious && status !== 'cuadrado';
       return {
         reference: line.reference,
         location: line.location || '',
         expectedAdjusted,
         expectedBase,
         adjustmentDelta,
+        previousExpectedAdjusted,
+        hasMovementVsPrevious,
         countedQty,
         diffQty,
         diffPct,
@@ -358,7 +419,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
         lastCountedAt: line.countedAt,
       };
     });
-  }, [lines]);
+  }, [lines, previousLines]);
 
   const filteredDiffRows = useMemo(() => {
     const ref = diffFilterRef.trim().toUpperCase();
@@ -560,8 +621,11 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     }
     const detailRows = filteredDiffRows.map((row) => ({
       Fecha: inventoryDate,
+      FechaAnteriorComparada: previousDate || '',
       Referencia: row.reference,
       Ubicacion: row.location || 'SIN UBICACION',
+      MovimientoVsAnterior: row.hasMovementVsPrevious ? 'SI' : 'NO',
+      EsperadaAnterior: row.previousExpectedAdjusted,
       EsperadaBase: row.expectedBase,
       Ajuste: row.adjustmentDelta,
       EsperadaAjustada: row.expectedAdjusted,
@@ -805,6 +869,11 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                 </Button>
               </div>
 
+              <p className="text-xs text-muted-foreground">
+                Base comparativa: {previousDate ? `inventario previo ${previousDate}` : 'sin fecha previa disponible'}.
+                {loadingPreviousLines ? ' Cargando comparativo...' : ''}
+              </p>
+
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="rounded-md border p-3">
                   <p className="text-xs text-muted-foreground">Líneas evaluadas</p>
@@ -863,6 +932,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                     <TableRow>
                       <TableHead>Referencia</TableHead>
                       <TableHead>Ubicación</TableHead>
+                      <TableHead className="text-right">Esperada anterior</TableHead>
                       <TableHead className="text-right">Esperada base</TableHead>
                       <TableHead className="text-right">Ajuste</TableHead>
                       <TableHead className="text-right">Esperada ajustada</TableHead>
@@ -875,7 +945,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   <TableBody>
                     {filteredDiffRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                        <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
                           No hay diferencias para el criterio actual.
                         </TableCell>
                       </TableRow>
@@ -884,6 +954,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                         <TableRow key={`${row.reference}|${row.location}`}>
                           <TableCell className="font-mono text-sm">{row.reference}</TableCell>
                           <TableCell className="text-sm text-muted-foreground">{row.location || '—'}</TableCell>
+                          <TableCell className="text-right">{row.previousExpectedAdjusted}</TableCell>
                           <TableCell className="text-right">{row.expectedBase}</TableCell>
                           <TableCell className={`text-right ${row.adjustmentDelta < 0 ? 'text-red-600' : row.adjustmentDelta > 0 ? 'text-emerald-600' : ''}`}>
                             {row.adjustmentDelta}
