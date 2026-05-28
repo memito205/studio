@@ -34,7 +34,7 @@ import ReceptionOperationsTable from './ReceptionOperationsTable';
 import { CreateReceptionOperationDialog } from './CreateReceptionOperationDialog';
 import type { ReceptionOperation, Location, CsvRow } from '@/types';
 import { useToast } from '@/hooks/use-toast';
-import { loadReceptionOperations, getLocations, bulkUploadReceptionDataFromExcel } from '@/app/reception/actions';
+import { loadReceptionOperations, getLocations, bulkUploadReceptionDataFromExcel, applyBarcodeSizeCorrectionsFromExcel } from '@/app/reception/actions';
 import { useAuth } from '@/hooks/use-auth-context';
 import { cn } from '@/lib/utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
@@ -104,6 +104,7 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
   const [allLocations, setAllLocations] = useState<Location[]>([]);
   const [loading, setLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
+  const [isCorrectingSizes, setIsCorrectingSizes] = useState(false);
   const [activeTab, setActiveTab] = useState<OperationStatusFilter>('active');
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -118,6 +119,7 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
   const { toast } = useToast();
   const { user, role } = useAuth();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const correctionFileInputRef = React.useRef<HTMLInputElement>(null);
   
   const [view, setView] = useState<ReceptionView>('operations_list');
   const [selectedOperation, setSelectedOperation] = useState<ReceptionOperation | null>(null);
@@ -287,6 +289,51 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
     }
   }
 
+  const handleCorrectionFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setIsCorrectingSizes(true);
+    try {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const content = e.target?.result;
+        if (!content) {
+          toast({ variant: 'destructive', title: 'Error', description: 'No se pudo leer el archivo de corrección.' });
+          setIsCorrectingSizes(false);
+          return;
+        }
+
+        const result = await applyBarcodeSizeCorrectionsFromExcel(content as string);
+        if (!result.success || !result.summary) {
+          toast({
+            variant: 'destructive',
+            title: 'Error en corrección',
+            description: result.error || 'No se pudieron aplicar las correcciones.',
+            duration: 9000,
+          });
+        } else {
+          toast({
+            title: 'Correcciones aplicadas',
+            description: `Códigos: ${result.summary.totalCodes} | Maestro: ${result.summary.masterUpdated} (faltantes: ${result.summary.masterMissing}) | Escaneos: ${result.summary.scannedItemsUpdated} | Ops: ${result.summary.operationsUpdated}`,
+            duration: 9000,
+          });
+          fetchOperations();
+        }
+        setIsCorrectingSizes(false);
+      };
+      reader.onerror = () => {
+        toast({ variant: 'destructive', title: 'Error', description: 'No se pudo leer el archivo.' });
+        setIsCorrectingSizes(false);
+      };
+      reader.readAsBinaryString(file);
+    } catch (error: any) {
+      toast({ variant: 'destructive', title: 'Error inesperado', description: error.message });
+      setIsCorrectingSizes(false);
+    } finally {
+      if (correctionFileInputRef.current) correctionFileInputRef.current.value = '';
+    }
+  };
+
   const handleRowClick = (operation: ReceptionOperation) => {
     setSelectedOperation(operation);
     setView('labeling_prep');
@@ -369,10 +416,23 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
             </div>
             <div className="flex w-full md:w-auto gap-2">
                 <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept=".xlsx, .xls" />
+                <input type="file" ref={correctionFileInputRef} onChange={handleCorrectionFileChange} className="hidden" accept=".xlsx, .xls" />
                 <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={isUploading} className="flex-1 md:flex-none">
                     <Upload className="mr-2 h-4 w-4" />
                     Importar
                 </Button>
+                {role === 'admin' && (
+                  <Button
+                    variant="outline"
+                    onClick={() => correctionFileInputRef.current?.click()}
+                    disabled={isCorrectingSizes}
+                    className="flex-1 md:flex-none"
+                    title="Archivo con columnas: Código de barras y Talla"
+                  >
+                    {isCorrectingSizes ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Tag className="mr-2 h-4 w-4" />}
+                    Corregir Tallas (Excel)
+                  </Button>
+                )}
                 <CreateReceptionOperationDialog onSave={() => fetchOperations()}>
                   <Button className="flex-1 md:flex-none">
                       <PlusCircle className="mr-2 h-4 w-4" />

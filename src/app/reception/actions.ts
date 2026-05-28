@@ -910,6 +910,157 @@ export async function bulkUploadReceptionDataFromExcel(fileContent: string, user
     }
 }
 
+type BarcodeSizeCorrectionRow = { barcode: string; size: string };
+
+export async function applyBarcodeSizeCorrectionsFromExcel(
+    fileContent: string,
+): Promise<{
+    success: boolean;
+    previewData?: BarcodeSizeCorrectionRow[];
+    summary?: {
+        totalCodes: number;
+        masterUpdated: number;
+        masterMissing: number;
+        scannedItemsUpdated: number;
+        operationsUpdated: number;
+        expectedItemsUpdated: number;
+    };
+    error?: string;
+}> {
+    try {
+        const workbook = XLSX.read(fileContent, { type: 'binary', cellDates: true });
+        const sheetName = workbook.SheetNames[0];
+        if (!sheetName) return { success: false, error: "No se encontró ninguna hoja en el archivo Excel." };
+
+        const sheet = workbook.Sheets[sheetName];
+        const jsonData: CsvRow[] = XLSX.utils.sheet_to_json(sheet, { defval: null });
+        if (!jsonData.length) return { success: false, error: "El archivo está vacío." };
+
+        const correctionMap = new Map<string, string>();
+        for (const row of jsonData) {
+            const barcodeKey =
+                findCaseInsensitiveKey(row, 'Código de barras') ||
+                findCaseInsensitiveKey(row, 'Codigo de barras') ||
+                findCaseInsensitiveKey(row, 'Barcode') ||
+                findCaseInsensitiveKey(row, 'Código') ||
+                findCaseInsensitiveKey(row, 'Codigo');
+            const sizeKey =
+                findCaseInsensitiveKey(row, 'Talla') ||
+                findCaseInsensitiveKey(row, 'Size');
+
+            const barcode = String(row[barcodeKey || ''] || '').trim();
+            const size = String(row[sizeKey || ''] || '').trim();
+            if (!barcode || !size) continue;
+
+            correctionMap.set(barcode, size);
+        }
+
+        const corrections = Array.from(correctionMap.entries()).map(([barcode, size]) => ({ barcode, size }));
+        if (!corrections.length) {
+            return { success: false, error: "No se detectaron filas válidas. Columnas requeridas: Código de barras y Talla." };
+        }
+
+        let masterUpdated = 0;
+        let masterMissing = 0;
+        let scannedItemsUpdated = 0;
+        let operationsUpdated = 0;
+        let expectedItemsUpdated = 0;
+
+        // 1) Master update (productDatabase) only for existing barcodes
+        for (let i = 0; i < corrections.length; i += 30) {
+            const chunk = corrections.slice(i, i + 30);
+            const chunkBarcodes = chunk.map(c => c.barcode);
+            const q = query(collection(firestore, 'productDatabase'), where(documentId(), 'in', chunkBarcodes));
+            const snap = await getDocs(q);
+            const found = new Map<string, QueryDocumentSnapshot<DocumentData>>();
+            snap.docs.forEach(docSnap => found.set(docSnap.id, docSnap));
+
+            const batch = writeBatch(firestore);
+            for (const c of chunk) {
+                const existing = found.get(c.barcode);
+                if (!existing) {
+                    masterMissing++;
+                    continue;
+                }
+                batch.set(existing.ref, { talla: c.size, size: c.size, updated_at: Timestamp.now() }, { merge: true });
+                masterUpdated++;
+            }
+            await batch.commit();
+        }
+
+        // 2) Historical scanned items update by barcode
+        for (const c of corrections) {
+            const itemsQ = query(collection(firestore, 'scannedItems'), where('barcode', '==', c.barcode));
+            const itemsSnap = await getDocs(itemsQ);
+            if (itemsSnap.empty) continue;
+
+            const docs = itemsSnap.docs;
+            for (let i = 0; i < docs.length; i += 450) {
+                const batchDocs = docs.slice(i, i + 450);
+                const batch = writeBatch(firestore);
+                batchDocs.forEach(d => {
+                    batch.update(d.ref, { talla: c.size, size: c.size, updated_at: Timestamp.now() });
+                    scannedItemsUpdated++;
+                });
+                await batch.commit();
+            }
+        }
+
+        // 3) Update expectedItems in receptionOperations if barcode matches
+        const opsSnap = await getDocs(collection(firestore, 'receptionOperations'));
+        const opsToUpdate: { ref: DocumentReference<DocumentData>; expectedItems: ReceptionExpectedItem[] }[] = [];
+
+        opsSnap.docs.forEach(opDoc => {
+            const data = opDoc.data();
+            const expectedItems = Array.isArray(data.expectedItems) ? [...data.expectedItems] : [];
+            if (!expectedItems.length) return;
+
+            let changed = false;
+            const updatedItems = expectedItems.map((item: any) => {
+                const correctedSize = correctionMap.get(String(item.barcode || '').trim());
+                if (!correctedSize) return item;
+                if (String(item.size || '').trim() === correctedSize) return item;
+                changed = true;
+                expectedItemsUpdated++;
+                return { ...item, size: correctedSize, talla: correctedSize };
+            });
+
+            if (changed) {
+                opsToUpdate.push({
+                    ref: opDoc.ref,
+                    expectedItems: updatedItems as ReceptionExpectedItem[],
+                });
+            }
+        });
+
+        for (let i = 0; i < opsToUpdate.length; i += 450) {
+            const batch = writeBatch(firestore);
+            const chunk = opsToUpdate.slice(i, i + 450);
+            chunk.forEach(op => {
+                batch.update(op.ref, { expectedItems: op.expectedItems, updated_at: Timestamp.now() });
+                operationsUpdated++;
+            });
+            await batch.commit();
+        }
+
+        return {
+            success: true,
+            previewData: corrections,
+            summary: {
+                totalCodes: corrections.length,
+                masterUpdated,
+                masterMissing,
+                scannedItemsUpdated,
+                operationsUpdated,
+                expectedItemsUpdated,
+            },
+        };
+    } catch (error: any) {
+        console.error("Error applying barcode-size corrections:", error);
+        return { success: false, error: error.message || 'Error inesperado al aplicar correcciones.' };
+    }
+}
+
 // All other functions like getAllNovelties, createPackingUnit, etc., remain the same.
 // ... (resto del contenido del archivo sin cambios) ...
 export async function getAllNovelties(): Promise<{ success: boolean; data?: ItemNovelty[]; error?: string }> {
