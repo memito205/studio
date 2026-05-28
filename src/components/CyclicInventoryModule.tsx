@@ -365,12 +365,6 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     setScanEvents([]);
   }, [inventoryDate, scanLocation]);
 
-  useEffect(() => {
-    if (!scanLocation && availableLocations.length > 0) {
-      setScanLocation(availableLocations[0]);
-    }
-  }, [availableLocations, scanLocation]);
-
   const loadReport = useCallback(async () => {
     setLoadingReport(true);
     try {
@@ -419,6 +413,12 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     }
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [lines]);
+
+  useEffect(() => {
+    if (!scanLocation && availableLocations.length > 0) {
+      setScanLocation(availableLocations[0]);
+    }
+  }, [availableLocations, scanLocation]);
 
   const linesByRefLoc = useMemo(() => {
     const map = new Map<string, InventoryLineView>();
