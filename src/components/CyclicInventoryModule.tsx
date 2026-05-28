@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { ArrowLeft, ClipboardList, FileSearch, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { ArrowLeft, ClipboardList, FileDown, FileSearch, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -45,6 +45,79 @@ type InventoryAdjustmentRecord = {
   createdBy: string;
   createdByName?: string;
 };
+
+type DiffPriority = 'critico' | 'alto' | 'medio' | 'bajo' | 'sin_conteo';
+type DiffStatus = 'faltante' | 'sobrante' | 'cuadrado' | 'sin_conteo';
+
+type InventoryDiffRow = {
+  reference: string;
+  location: string;
+  expectedAdjusted: number;
+  expectedBase: number;
+  adjustmentDelta: number;
+  countedQty: number | null;
+  diffQty: number;
+  diffPct: number;
+  status: DiffStatus;
+  priority: DiffPriority;
+  recountSuggested: boolean;
+  lastCountedAt?: string | Date | null;
+};
+
+type LocationRecountRecommendation = {
+  location: string;
+  linesWithDiff: number;
+  linesWithoutCount: number;
+  totalAbsDiff: number;
+  weightedScore: number;
+  topPriority: DiffPriority;
+};
+
+function classifyDiffPriority(row: {
+  countedQty: number | null;
+  expectedAdjusted: number;
+  diffQty: number;
+  diffPct: number;
+}): DiffPriority {
+  if (row.countedQty === null || row.countedQty === undefined) return 'sin_conteo';
+  const absDiff = Math.abs(row.diffQty);
+  const absPct = Math.abs(row.diffPct);
+  if (absDiff >= 20 || absPct >= 0.18) return 'critico';
+  if (absDiff >= 10 || absPct >= 0.1) return 'alto';
+  if (absDiff >= 4 || absPct >= 0.05) return 'medio';
+  if (absDiff > 0) return 'bajo';
+  return 'bajo';
+}
+
+function priorityWeight(priority: DiffPriority): number {
+  switch (priority) {
+    case 'critico':
+      return 100;
+    case 'alto':
+      return 50;
+    case 'medio':
+      return 20;
+    case 'sin_conteo':
+      return 15;
+    default:
+      return 5;
+  }
+}
+
+function priorityLabel(priority: DiffPriority): string {
+  switch (priority) {
+    case 'critico':
+      return 'Crítico';
+    case 'alto':
+      return 'Alto';
+    case 'medio':
+      return 'Medio';
+    case 'sin_conteo':
+      return 'Sin conteo';
+    default:
+      return 'Bajo';
+  }
+}
 
 function ymdDaysAgo(days: number): string {
   const d = new Date();
@@ -129,6 +202,10 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
   const [adjLocation, setAdjLocation] = useState('');
   const [adjDiscountQty, setAdjDiscountQty] = useState('');
   const [adjReason, setAdjReason] = useState('');
+  const [diffFilterRef, setDiffFilterRef] = useState('');
+  const [diffFilterLoc, setDiffFilterLoc] = useState('');
+  const [diffOnlySuggested, setDiffOnlySuggested] = useState(true);
+  const [diffHideSquare, setDiffHideSquare] = useState(true);
 
   const canAdmin = role === 'admin' || role === 'supervisor';
 
@@ -253,6 +330,87 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       return true;
     });
   }, [lines, filterRef, filterLoc, onlyPending]);
+
+  const allDiffRows = useMemo<InventoryDiffRow[]>(() => {
+    return lines.map((line) => {
+      const expectedAdjusted = Math.max(0, Math.floor(Number(line.expectedQty) || 0));
+      const expectedBase = Math.max(0, Math.floor(Number(line.expectedQtyBase ?? line.expectedQty) || 0));
+      const adjustmentDelta = Math.trunc(Number(line.expectedQtyDelta) || 0);
+      const countedQty = line.countedQty ?? null;
+      const diffQty = countedQty === null ? 0 : countedQty - expectedAdjusted;
+      const diffPct = expectedAdjusted > 0 ? diffQty / expectedAdjusted : countedQty === null ? 0 : countedQty > 0 ? 1 : 0;
+      const status: DiffStatus =
+        countedQty === null ? 'sin_conteo' : diffQty === 0 ? 'cuadrado' : diffQty < 0 ? 'faltante' : 'sobrante';
+      const priority = classifyDiffPriority({ countedQty, expectedAdjusted, diffQty, diffPct });
+      const recountSuggested = status !== 'cuadrado';
+      return {
+        reference: line.reference,
+        location: line.location || '',
+        expectedAdjusted,
+        expectedBase,
+        adjustmentDelta,
+        countedQty,
+        diffQty,
+        diffPct,
+        status,
+        priority,
+        recountSuggested,
+        lastCountedAt: line.countedAt,
+      };
+    });
+  }, [lines]);
+
+  const filteredDiffRows = useMemo(() => {
+    const ref = diffFilterRef.trim().toUpperCase();
+    const loc = diffFilterLoc.trim().toUpperCase();
+    return allDiffRows
+      .filter((row) => {
+        if (ref && !row.reference.includes(ref)) return false;
+        if (loc && !row.location.toUpperCase().includes(loc)) return false;
+        if (diffOnlySuggested && !row.recountSuggested) return false;
+        if (diffHideSquare && row.status === 'cuadrado') return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const byPriority = priorityWeight(b.priority) - priorityWeight(a.priority);
+        if (byPriority !== 0) return byPriority;
+        const byAbsDiff = Math.abs(b.diffQty) - Math.abs(a.diffQty);
+        if (byAbsDiff !== 0) return byAbsDiff;
+        return `${a.reference}|${a.location}`.localeCompare(`${b.reference}|${b.location}`);
+      });
+  }, [allDiffRows, diffFilterRef, diffFilterLoc, diffOnlySuggested, diffHideSquare]);
+
+  const locationRecommendations = useMemo<LocationRecountRecommendation[]>(() => {
+    const byLoc = new Map<string, LocationRecountRecommendation>();
+    for (const row of filteredDiffRows) {
+      const key = row.location || 'SIN UBICACION';
+      const existing = byLoc.get(key) ?? {
+        location: key,
+        linesWithDiff: 0,
+        linesWithoutCount: 0,
+        totalAbsDiff: 0,
+        weightedScore: 0,
+        topPriority: 'bajo' as DiffPriority,
+      };
+      if (row.status !== 'cuadrado' && row.countedQty !== null) {
+        existing.linesWithDiff += 1;
+      }
+      if (row.countedQty === null) {
+        existing.linesWithoutCount += 1;
+      }
+      existing.totalAbsDiff += Math.abs(row.diffQty);
+      const pWeight = priorityWeight(row.priority);
+      existing.weightedScore += pWeight + Math.abs(row.diffQty);
+      if (pWeight > priorityWeight(existing.topPriority)) {
+        existing.topPriority = row.priority;
+      }
+      byLoc.set(key, existing);
+    }
+    return [...byLoc.values()].sort((a, b) => {
+      if (b.weightedScore !== a.weightedScore) return b.weightedScore - a.weightedScore;
+      return b.totalAbsDiff - a.totalAbsDiff;
+    });
+  }, [filteredDiffRows]);
 
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!user?.uid) {
@@ -395,6 +553,42 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     await loadLines();
   };
 
+  const handleDownloadDiffReport = () => {
+    if (filteredDiffRows.length === 0) {
+      toast({ title: 'Reporte de diferencias', description: 'No hay filas para exportar con los filtros actuales.' });
+      return;
+    }
+    const detailRows = filteredDiffRows.map((row) => ({
+      Fecha: inventoryDate,
+      Referencia: row.reference,
+      Ubicacion: row.location || 'SIN UBICACION',
+      EsperadaBase: row.expectedBase,
+      Ajuste: row.adjustmentDelta,
+      EsperadaAjustada: row.expectedAdjusted,
+      ConteoFisico: row.countedQty ?? '',
+      Diferencia: row.diffQty,
+      DiferenciaPct: `${(row.diffPct * 100).toFixed(2)}%`,
+      Estado: row.status,
+      PrioridadReconteo: priorityLabel(row.priority),
+      RecomendarReconteo: row.recountSuggested ? 'SI' : 'NO',
+      UltimoConteo: formatCountedAt(row.lastCountedAt),
+    }));
+    const locationRows = locationRecommendations.map((loc, idx) => ({
+      Ranking: idx + 1,
+      Ubicacion: loc.location,
+      PrioridadMaxima: priorityLabel(loc.topPriority),
+      LineasConDiferencia: loc.linesWithDiff,
+      LineasSinConteo: loc.linesWithoutCount,
+      DiferenciaAbsolutaTotal: loc.totalAbsDiff,
+      PuntajeReconteo: loc.weightedScore,
+    }));
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detailRows), 'Diferencias');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(locationRows), 'ReconteoPorUbicacion');
+    XLSX.writeFile(wb, `reconteo_recomendado_${inventoryDate}.xlsx`);
+  };
+
   const diffBadge = (line: CyclicInventoryLine) => {
     const { status, label } = getCyclicCountDiff(line.expectedQty, line.countedQty);
     const variant =
@@ -438,6 +632,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
             <FileSearch className="mr-2 h-4 w-4 inline" />
             Reporte de conteos
           </TabsTrigger>
+          <TabsTrigger value="diferencias">Diferencias y reconteo</TabsTrigger>
           {canAdmin ? <TabsTrigger value="ajustes">Ajustes de inventario</TabsTrigger> : null}
           {canAdmin ? <TabsTrigger value="subir">Subir inventario del día</TabsTrigger> : null}
         </TabsList>
@@ -561,6 +756,159 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   </Table>
                 </div>
               )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="diferencias" className="space-y-4 mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Diferencias y reconteo recomendado</CardTitle>
+              <CardDescription>
+                Prioriza reconteo por discrepancia contra <strong>esperada ajustada</strong> y agrupa ubicaciones críticas para
+                revalidación en piso.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-3 items-end">
+                <div className="space-y-2">
+                  <Label>Fecha inventario</Label>
+                  <Input type="date" value={inventoryDate} onChange={(e) => setInventoryDate(e.target.value)} className="w-44" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Filtrar referencia</Label>
+                  <Input value={diffFilterRef} onChange={(e) => setDiffFilterRef(e.target.value)} placeholder="REF..." className="w-40" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Filtrar ubicación</Label>
+                  <Input value={diffFilterLoc} onChange={(e) => setDiffFilterLoc(e.target.value)} placeholder="Ubicación..." className="w-40" />
+                </div>
+                <div className="flex items-center space-x-2 pb-2">
+                  <Checkbox id="diff-suggested" checked={diffOnlySuggested} onCheckedChange={(c) => setDiffOnlySuggested(!!c)} />
+                  <Label htmlFor="diff-suggested" className="font-normal cursor-pointer">
+                    Solo sugeridas a reconteo
+                  </Label>
+                </div>
+                <div className="flex items-center space-x-2 pb-2">
+                  <Checkbox id="diff-hide-square" checked={diffHideSquare} onCheckedChange={(c) => setDiffHideSquare(!!c)} />
+                  <Label htmlFor="diff-hide-square" className="font-normal cursor-pointer">
+                    Ocultar cuadrados
+                  </Label>
+                </div>
+                <Button type="button" variant="outline" onClick={() => void loadLines()} disabled={loadingLines}>
+                  <RefreshCw className={`mr-2 h-4 w-4 ${loadingLines ? 'animate-spin' : ''}`} />
+                  Recalcular
+                </Button>
+                <Button type="button" onClick={handleDownloadDiffReport}>
+                  <FileDown className="mr-2 h-4 w-4" />
+                  Descargar Excel
+                </Button>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Líneas evaluadas</p>
+                  <p className="text-2xl font-semibold">{filteredDiffRows.length}</p>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Ubicaciones recomendadas a reconteo</p>
+                  <p className="text-2xl font-semibold">{locationRecommendations.length}</p>
+                </div>
+              </div>
+
+              <div className="rounded-md border overflow-x-auto max-h-[32vh] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-right w-16">#</TableHead>
+                      <TableHead>Ubicación</TableHead>
+                      <TableHead>Prioridad máxima</TableHead>
+                      <TableHead className="text-right">Líneas con diferencia</TableHead>
+                      <TableHead className="text-right">Sin conteo</TableHead>
+                      <TableHead className="text-right">Abs total</TableHead>
+                      <TableHead className="text-right">Puntaje</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {locationRecommendations.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={7} className="text-center text-muted-foreground py-6">
+                          No hay ubicaciones priorizadas con los filtros actuales.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      locationRecommendations.map((loc, idx) => (
+                        <TableRow key={`${loc.location}-${idx}`}>
+                          <TableCell className="text-right font-mono text-xs">{idx + 1}</TableCell>
+                          <TableCell className="font-mono text-sm">{loc.location}</TableCell>
+                          <TableCell>
+                            <Badge variant={loc.topPriority === 'critico' ? 'destructive' : loc.topPriority === 'alto' ? 'warning' : 'secondary'}>
+                              {priorityLabel(loc.topPriority)}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right">{loc.linesWithDiff}</TableCell>
+                          <TableCell className="text-right">{loc.linesWithoutCount}</TableCell>
+                          <TableCell className="text-right">{loc.totalAbsDiff}</TableCell>
+                          <TableCell className="text-right font-medium">{loc.weightedScore}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+
+              <div className="rounded-md border overflow-x-auto max-h-[50vh] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Referencia</TableHead>
+                      <TableHead>Ubicación</TableHead>
+                      <TableHead className="text-right">Esperada base</TableHead>
+                      <TableHead className="text-right">Ajuste</TableHead>
+                      <TableHead className="text-right">Esperada ajustada</TableHead>
+                      <TableHead className="text-right">Conteo</TableHead>
+                      <TableHead className="text-right">Diferencia</TableHead>
+                      <TableHead>Estado</TableHead>
+                      <TableHead>Prioridad</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredDiffRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                          No hay diferencias para el criterio actual.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      filteredDiffRows.map((row) => (
+                        <TableRow key={`${row.reference}|${row.location}`}>
+                          <TableCell className="font-mono text-sm">{row.reference}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{row.location || '—'}</TableCell>
+                          <TableCell className="text-right">{row.expectedBase}</TableCell>
+                          <TableCell className={`text-right ${row.adjustmentDelta < 0 ? 'text-red-600' : row.adjustmentDelta > 0 ? 'text-emerald-600' : ''}`}>
+                            {row.adjustmentDelta}
+                          </TableCell>
+                          <TableCell className="text-right font-medium">{row.expectedAdjusted}</TableCell>
+                          <TableCell className="text-right">{row.countedQty ?? '—'}</TableCell>
+                          <TableCell className={`text-right font-medium ${row.diffQty < 0 ? 'text-red-600' : row.diffQty > 0 ? 'text-amber-600' : ''}`}>
+                            {row.countedQty === null ? '—' : row.diffQty}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={row.status === 'cuadrado' ? 'success' : row.status === 'sin_conteo' ? 'secondary' : row.status === 'faltante' ? 'destructive' : 'warning'}>
+                              {row.status === 'sin_conteo' ? 'Sin conteo' : row.status === 'cuadrado' ? 'Cuadrado' : row.status === 'faltante' ? 'Faltante' : 'Sobrante'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={row.priority === 'critico' ? 'destructive' : row.priority === 'alto' ? 'warning' : 'secondary'}>
+                              {priorityLabel(row.priority)}
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
