@@ -3,8 +3,10 @@
 import { firestore } from '@/services/firebase';
 import {
   collection,
+  deleteDoc,
   doc,
   documentId,
+  getDoc,
   getDocs,
   limit,
   orderBy,
@@ -25,6 +27,7 @@ const DELETE_CHUNK = 450;
 const LINES_COL = 'cyclicInventoryLines';
 const DAYS_COL = 'cyclicInventoryDays';
 const COUNT_RECORDS_COL = 'cyclicInventoryCountRecords';
+const ADJUSTMENTS_COL = 'inventoryAdjustments';
 
 function convertTimestampsToDates(data: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...data };
@@ -52,6 +55,23 @@ function normSize(s: string) {
 function lineRefLocKey(reference: string, location: string): string {
   return `${normRef(reference)}|${normLoc(location)}`;
 }
+
+function adjustmentRefLocKey(reference: string, location: string): string {
+  return `${normRef(reference)}|${normLoc(location)}`;
+}
+
+type InventoryAdjustmentRecord = {
+  id: string;
+  inventoryDate: string;
+  reference: string;
+  size?: string;
+  location: string;
+  deltaQty: number;
+  reason?: string;
+  createdAt: string | Date;
+  createdBy: string;
+  createdByName?: string;
+};
 
 async function deleteAllLinesForDate(inventoryDate: string): Promise<void> {
   const col = collection(firestore, LINES_COL);
@@ -314,6 +334,20 @@ function consolidateLinesByRefLoc(raw: CyclicInventoryLine[]): CyclicInventoryLi
   return out;
 }
 
+async function fetchAdjustmentDeltaPerKey(inventoryDate: string): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const qy = query(collection(firestore, ADJUSTMENTS_COL), where('inventoryDate', '==', inventoryDate));
+  const snap = await getDocs(qy);
+  for (const d of snap.docs) {
+    const x = d.data() as Record<string, unknown>;
+    const key = adjustmentRefLocKey(String(x.reference ?? ''), String(x.location ?? ''));
+    const prev = out.get(key) ?? 0;
+    const delta = Number(x.deltaQty) || 0;
+    out.set(key, prev + Math.trunc(delta));
+  }
+  return out;
+}
+
 export async function getCyclicInventoryLinesForDate(inventoryDate: string): Promise<{
   success: boolean;
   data?: CyclicInventoryLine[];
@@ -331,7 +365,18 @@ export async function getCyclicInventoryLinesForDate(inventoryDate: string): Pro
       return raw as unknown as CyclicInventoryLine;
     });
     const consolidated = consolidateLinesByRefLoc(data);
-    return { success: true, data: consolidated };
+    const adjustmentMap = await fetchAdjustmentDeltaPerKey(dateKey);
+    const withAdjustments = consolidated.map((line) => {
+      const delta = adjustmentMap.get(adjustmentRefLocKey(line.reference, line.location)) ?? 0;
+      const adjustedExpected = Math.max(0, Math.floor(Number(line.expectedQty) || 0) + delta);
+      return {
+        ...line,
+        expectedQty: adjustedExpected,
+        expectedQtyBase: Math.max(0, Math.floor(Number(line.expectedQty) || 0)),
+        expectedQtyDelta: delta,
+      };
+    });
+    return { success: true, data: withAdjustments as CyclicInventoryLine[] };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Error al cargar líneas.';
     if (String(msg).includes('failed-precondition')) {
@@ -359,6 +404,15 @@ export async function saveCyclicInventoryLineCount(input: {
     const n = Math.max(0, Math.floor(Number(input.countedQty)));
     const recRef = doc(collection(firestore, COUNT_RECORDS_COL));
     const now = Timestamp.now();
+    const firstLineRef = doc(firestore, LINES_COL, ids[0]);
+    const firstLineSnap = await getDoc(firstLineRef);
+    if (!firstLineSnap.exists()) {
+      return { success: false, error: 'Línea no encontrada.' };
+    }
+    const inventoryDate = String(firstLineSnap.data().inventoryDate ?? '').trim();
+    const adjustmentMap = isValidInventoryDateKey(inventoryDate)
+      ? await fetchAdjustmentDeltaPerKey(inventoryDate)
+      : new Map<string, number>();
 
     await runTransaction(firestore, async (tx) => {
       const lineRefs = ids.map((id) => doc(firestore, LINES_COL, id));
@@ -379,6 +433,7 @@ export async function saveCyclicInventoryLineCount(input: {
       const wantRef = normRef(String(first.reference ?? ''));
       const wantLoc = normLoc(String(first.location ?? ''));
       let sumExpected = 0;
+      let sumExpectedAdjusted = 0;
       for (let i = 0; i < snaps.length; i++) {
         const d = snaps[i].data() as Record<string, unknown>;
         if (String(d.inventoryDate ?? '') !== inv) {
@@ -389,6 +444,8 @@ export async function saveCyclicInventoryLineCount(input: {
         }
         sumExpected += Math.max(0, Math.floor(Number(d.expectedQty) || 0));
       }
+      const delta = adjustmentMap.get(adjustmentRefLocKey(wantRef, wantLoc)) ?? 0;
+      sumExpectedAdjusted = Math.max(0, sumExpected + delta);
       for (const lr of lineRefs) {
         tx.update(lr, {
           countedQty: n,
@@ -401,7 +458,7 @@ export async function saveCyclicInventoryLineCount(input: {
         reference: wantRef,
         size: '',
         location: wantLoc,
-        expectedQtyAtSave: sumExpected,
+        expectedQtyAtSave: sumExpectedAdjusted,
         countedQty: n,
         countedAt: now,
         countedBy: input.countedBy,
@@ -417,6 +474,99 @@ export async function saveCyclicInventoryLineCount(input: {
     return { success: true };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Error al guardar conteo.';
+    return { success: false, error: msg };
+  }
+}
+
+export async function listInventoryAdjustmentsForDate(input: {
+  inventoryDate: string;
+  maxRecords?: number;
+}): Promise<{ success: boolean; data?: InventoryAdjustmentRecord[]; error?: string }> {
+  try {
+    const dateKey = String(input.inventoryDate || '').trim();
+    if (!isValidInventoryDateKey(dateKey)) {
+      return { success: false, error: 'Fecha inválida. Use AAAA-MM-DD.' };
+    }
+    const max = Math.min(1000, Math.max(20, input.maxRecords ?? 300));
+    const qy = query(
+      collection(firestore, ADJUSTMENTS_COL),
+      where('inventoryDate', '==', dateKey),
+      orderBy('createdAt', 'desc'),
+      limit(max)
+    );
+    const snap = await getDocs(qy);
+    const rows: InventoryAdjustmentRecord[] = snap.docs.map((d) => {
+      const raw = convertTimestampsToDates({ id: d.id, ...d.data() } as Record<string, unknown>);
+      return raw as unknown as InventoryAdjustmentRecord;
+    });
+    return { success: true, data: rows };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'Error al cargar ajustes.';
+    if (String(msg).includes('failed-precondition')) {
+      return {
+        success: false,
+        error:
+          'Firestore puede requerir índice en inventoryAdjustments (inventoryDate asc, createdAt desc). Cree el índice desde el enlace de Firebase.',
+      };
+    }
+    return { success: false, error: msg };
+  }
+}
+
+export async function createInventoryAdjustment(input: {
+  inventoryDate: string;
+  reference: string;
+  size?: string;
+  location?: string;
+  discountQty: number;
+  reason?: string;
+  createdBy: string;
+  createdByName?: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  try {
+    const inventoryDate = String(input.inventoryDate || '').trim();
+    if (!isValidInventoryDateKey(inventoryDate)) {
+      return { success: false, error: 'Fecha inválida. Use AAAA-MM-DD.' };
+    }
+    const reference = normRef(input.reference);
+    const location = normLoc(input.location || '');
+    const size = normSize(input.size || '');
+    const discountQty = Math.max(0, Math.floor(Number(input.discountQty) || 0));
+    if (!reference) return { success: false, error: 'La referencia es obligatoria.' };
+    if (!location) return { success: false, error: 'La ubicación es obligatoria.' };
+    if (discountQty <= 0) return { success: false, error: 'El descuento debe ser mayor que cero.' };
+    if (!String(input.createdBy || '').trim()) return { success: false, error: 'Usuario no identificado.' };
+
+    const ref = doc(collection(firestore, ADJUSTMENTS_COL));
+    await setDoc(ref, {
+      inventoryDate,
+      reference,
+      size,
+      location,
+      deltaQty: -discountQty,
+      reason: String(input.reason || '').trim(),
+      source: 'manual_discount',
+      createdAt: Timestamp.now(),
+      createdBy: String(input.createdBy).trim(),
+      createdByName: String(input.createdByName || '').trim(),
+    });
+    return { success: true, id: ref.id };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'Error al crear ajuste.';
+    return { success: false, error: msg };
+  }
+}
+
+export async function deleteInventoryAdjustment(input: {
+  adjustmentId: string;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const id = String(input.adjustmentId || '').trim();
+    if (!id) return { success: false, error: 'Ajuste no identificado.' };
+    await deleteDoc(doc(firestore, ADJUSTMENTS_COL, id));
+    return { success: true };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'Error al eliminar ajuste.';
     return { success: false, error: msg };
   }
 }

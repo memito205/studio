@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { ArrowLeft, ClipboardList, FileSearch, Loader2, RefreshCw, Upload } from 'lucide-react';
+import { ArrowLeft, ClipboardList, FileSearch, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -18,12 +18,33 @@ import { findCaseInsensitiveKey, parseRobustNumber } from '@/lib/parsingUtils';
 import { getCyclicCountDiff } from '@/lib/cyclicInventoryDiff';
 import { isValidInventoryDateKey } from '@/lib/cyclicInventoryDate';
 import {
+  createInventoryAdjustment,
+  deleteInventoryAdjustment,
   getCyclicInventoryLinesForDate,
   importCyclicInventoryForDate,
+  listInventoryAdjustmentsForDate,
   listCyclicInventoryCountRecordsForReport,
   listCyclicInventoryDayMeta,
   saveCyclicInventoryLineCount,
 } from '@/app/cyclicInventoryActions';
+
+type InventoryLineView = CyclicInventoryLine & {
+  expectedQtyBase?: number;
+  expectedQtyDelta?: number;
+};
+
+type InventoryAdjustmentRecord = {
+  id: string;
+  inventoryDate: string;
+  reference: string;
+  size?: string;
+  location: string;
+  deltaQty: number;
+  reason?: string;
+  createdAt: string | Date;
+  createdBy: string;
+  createdByName?: string;
+};
 
 function ymdDaysAgo(days: number): string {
   const d = new Date();
@@ -87,7 +108,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
   const [inventoryDate, setInventoryDate] = useState(() => todayYmdLocal());
   const [recentDays, setRecentDays] = useState<CyclicInventoryDayMeta[]>([]);
   const [loadingDays, setLoadingDays] = useState(false);
-  const [lines, setLines] = useState<CyclicInventoryLine[]>([]);
+  const [lines, setLines] = useState<InventoryLineView[]>([]);
   const [loadingLines, setLoadingLines] = useState(false);
   const [filterRef, setFilterRef] = useState('');
   const [filterLoc, setFilterLoc] = useState('');
@@ -100,6 +121,14 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
   const [reportFilterLoc, setReportFilterLoc] = useState('');
   const [reportRows, setReportRows] = useState<CyclicInventoryCountRecord[]>([]);
   const [loadingReport, setLoadingReport] = useState(false);
+  const [adjustments, setAdjustments] = useState<InventoryAdjustmentRecord[]>([]);
+  const [loadingAdjustments, setLoadingAdjustments] = useState(false);
+  const [savingAdjustment, setSavingAdjustment] = useState(false);
+  const [adjReference, setAdjReference] = useState('');
+  const [adjSize, setAdjSize] = useState('');
+  const [adjLocation, setAdjLocation] = useState('');
+  const [adjDiscountQty, setAdjDiscountQty] = useState('');
+  const [adjReason, setAdjReason] = useState('');
 
   const canAdmin = role === 'admin' || role === 'supervisor';
 
@@ -138,7 +167,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       if (!res.success || !res.data) {
         throw new Error(res.error || 'No se pudieron cargar las líneas.');
       }
-      setLines(res.data);
+      setLines(res.data as InventoryLineView[]);
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
@@ -154,6 +183,36 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
   useEffect(() => {
     void loadLines();
   }, [loadLines]);
+
+  const loadAdjustments = useCallback(async () => {
+    const dateKey = inventoryDate.trim();
+    if (!isValidInventoryDateKey(dateKey)) {
+      setAdjustments([]);
+      return;
+    }
+    setLoadingAdjustments(true);
+    try {
+      const res = await listInventoryAdjustmentsForDate({ inventoryDate: dateKey, maxRecords: 500 });
+      if (!res.success || !res.data) {
+        throw new Error(res.error || 'No se pudieron cargar los ajustes.');
+      }
+      setAdjustments(res.data);
+    } catch (e: unknown) {
+      toast({
+        variant: 'destructive',
+        title: 'Ajustes',
+        description: e instanceof Error ? e.message : 'Error desconocido',
+      });
+      setAdjustments([]);
+    } finally {
+      setLoadingAdjustments(false);
+    }
+  }, [inventoryDate, toast]);
+
+  useEffect(() => {
+    if (!canAdmin) return;
+    void loadAdjustments();
+  }, [canAdmin, loadAdjustments]);
 
   const loadReport = useCallback(async () => {
     setLoadingReport(true);
@@ -276,6 +335,66 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     await loadLines();
   };
 
+  const handleCreateAdjustment = async () => {
+    if (!canAdmin) return;
+    if (!user?.uid) {
+      toast({ variant: 'destructive', title: 'Sesión', description: 'Inicie sesión.' });
+      return;
+    }
+    const dateKey = inventoryDate.trim();
+    if (!isValidInventoryDateKey(dateKey)) {
+      toast({ variant: 'destructive', title: 'Fecha', description: 'Seleccione una fecha válida (AAAA-MM-DD).' });
+      return;
+    }
+    const n = Math.floor(Number(adjDiscountQty));
+    if (!Number.isFinite(n) || n <= 0) {
+      toast({ variant: 'destructive', title: 'Cantidad', description: 'Ingrese unidades a descontar (> 0).' });
+      return;
+    }
+    setSavingAdjustment(true);
+    try {
+      const res = await createInventoryAdjustment({
+        inventoryDate: dateKey,
+        reference: adjReference,
+        size: adjSize,
+        location: adjLocation,
+        discountQty: n,
+        reason: adjReason,
+        createdBy: user.uid,
+        createdByName: user.displayName || user.email || '',
+      });
+      if (!res.success) {
+        throw new Error(res.error || 'No se pudo crear el ajuste.');
+      }
+      toast({ title: 'Ajuste registrado', description: `Se descontaron ${n} unidades de la expectativa del día.` });
+      setAdjDiscountQty('');
+      setAdjReason('');
+      await loadAdjustments();
+      await loadLines();
+    } catch (e: unknown) {
+      toast({
+        variant: 'destructive',
+        title: 'Ajustes',
+        description: e instanceof Error ? e.message : 'Error',
+      });
+    } finally {
+      setSavingAdjustment(false);
+    }
+  };
+
+  const handleDeleteAdjustment = async (adjustmentId: string) => {
+    if (!canAdmin) return;
+    if (!confirm('¿Eliminar este ajuste? Esto recalculará la expectativa ajustada del día.')) return;
+    const res = await deleteInventoryAdjustment({ adjustmentId });
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Ajustes', description: res.error || 'No se pudo eliminar.' });
+      return;
+    }
+    toast({ title: 'Ajuste eliminado', description: 'Se recalculó la expectativa ajustada.' });
+    await loadAdjustments();
+    await loadLines();
+  };
+
   const diffBadge = (line: CyclicInventoryLine) => {
     const { status, label } = getCyclicCountDiff(line.expectedQty, line.countedQty);
     const variant =
@@ -319,6 +438,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
             <FileSearch className="mr-2 h-4 w-4 inline" />
             Reporte de conteos
           </TabsTrigger>
+          {canAdmin ? <TabsTrigger value="ajustes">Ajustes de inventario</TabsTrigger> : null}
           {canAdmin ? <TabsTrigger value="subir">Subir inventario del día</TabsTrigger> : null}
         </TabsList>
 
@@ -418,7 +538,14 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                         filteredLines.map((line) => (
                           <TableRow key={`${line.reference}|${line.location}`}>
                             <TableCell className="font-mono text-sm">{line.reference}</TableCell>
-                            <TableCell className="text-right font-medium">{line.expectedQty}</TableCell>
+                            <TableCell className="text-right font-medium">
+                              <div>{line.expectedQty}</div>
+                              {(line.expectedQtyDelta ?? 0) !== 0 ? (
+                                <div className="text-[11px] text-muted-foreground">
+                                  base {line.expectedQtyBase ?? line.expectedQty} / ajuste {line.expectedQtyDelta}
+                                </div>
+                              ) : null}
+                            </TableCell>
                             <TableCell className="text-sm text-muted-foreground">{line.location || '—'}</TableCell>
                             <TableCell>
                               <CountInput line={line} onSave={(v) => void handleSaveCount(line, v)} />
@@ -437,6 +564,124 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
             </CardContent>
           </Card>
         </TabsContent>
+
+        {canAdmin ? (
+          <TabsContent value="ajustes" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Descuentos manuales de inventario esperado</CardTitle>
+                <CardDescription>
+                  Registre descuentos para stock que ya salió pero todavía no impacta el esperado. Se aplican por referencia +
+                  ubicación en la fecha seleccionada.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex flex-wrap gap-3 items-end">
+                  <div className="space-y-2">
+                    <Label>Fecha del inventario</Label>
+                    <Input type="date" value={inventoryDate} onChange={(e) => setInventoryDate(e.target.value)} className="w-44" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Referencia</Label>
+                    <Input
+                      value={adjReference}
+                      onChange={(e) => setAdjReference(e.target.value.toUpperCase())}
+                      placeholder="REF"
+                      className="w-44"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Talla (opcional)</Label>
+                    <Input value={adjSize} onChange={(e) => setAdjSize(e.target.value)} placeholder="Opcional" className="w-32" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Ubicación</Label>
+                    <Input value={adjLocation} onChange={(e) => setAdjLocation(e.target.value)} placeholder="Ubicación" className="w-40" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Unidades a descontar</Label>
+                    <Input
+                      inputMode="numeric"
+                      value={adjDiscountQty}
+                      onChange={(e) => setAdjDiscountQty(e.target.value)}
+                      placeholder="0"
+                      className="w-32"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Motivo (opcional)</Label>
+                    <Input value={adjReason} onChange={(e) => setAdjReason(e.target.value)} placeholder="Venta no descontada, etc." className="w-64" />
+                  </div>
+                  <Button type="button" onClick={() => void handleCreateAdjustment()} disabled={savingAdjustment}>
+                    {savingAdjustment ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                    Registrar descuento
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => void loadAdjustments()} disabled={loadingAdjustments}>
+                    <RefreshCw className={`mr-2 h-4 w-4 ${loadingAdjustments ? 'animate-spin' : ''}`} />
+                    Recargar
+                  </Button>
+                </div>
+
+                {loadingAdjustments ? (
+                  <div className="flex justify-center py-12">
+                    <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
+                  </div>
+                ) : (
+                  <div className="rounded-md border overflow-x-auto max-h-[50vh] overflow-y-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Fecha</TableHead>
+                          <TableHead>Referencia</TableHead>
+                          <TableHead>Talla</TableHead>
+                          <TableHead>Ubicación</TableHead>
+                          <TableHead className="text-right">Delta</TableHead>
+                          <TableHead>Motivo</TableHead>
+                          <TableHead>Usuario</TableHead>
+                          <TableHead>Creado</TableHead>
+                          <TableHead className="text-right">Acción</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {adjustments.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                              No hay ajustes para esta fecha.
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          adjustments.map((a) => (
+                            <TableRow key={a.id}>
+                              <TableCell className="font-mono text-xs">{a.inventoryDate}</TableCell>
+                              <TableCell className="font-mono text-sm">{a.reference}</TableCell>
+                              <TableCell className="text-sm text-muted-foreground">{a.size || '—'}</TableCell>
+                              <TableCell className="text-sm text-muted-foreground">{a.location || '—'}</TableCell>
+                              <TableCell className={`text-right font-medium ${a.deltaQty < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                                {a.deltaQty}
+                              </TableCell>
+                              <TableCell className="text-xs max-w-[260px] truncate" title={a.reason || ''}>
+                                {a.reason || '—'}
+                              </TableCell>
+                              <TableCell className="text-xs max-w-[140px] truncate" title={a.createdByName || a.createdBy}>
+                                {a.createdByName || a.createdBy || '—'}
+                              </TableCell>
+                              <TableCell className="text-xs whitespace-nowrap">{formatCountedAt(a.createdAt)}</TableCell>
+                              <TableCell className="text-right">
+                                <Button type="button" variant="ghost" size="sm" onClick={() => void handleDeleteAdjustment(a.id)}>
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        ) : null}
 
         <TabsContent value="reporte" className="space-y-4 mt-4">
           <Card>
