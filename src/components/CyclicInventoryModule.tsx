@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { ArrowLeft, ClipboardList, FileDown, FileSearch, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Barcode, ClipboardList, FileDown, FileSearch, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -25,6 +25,7 @@ import {
   listInventoryAdjustmentsForDate,
   listCyclicInventoryCountRecordsForReport,
   listCyclicInventoryDayMeta,
+  resolveCyclicInventoryBarcode,
   saveCyclicInventoryLineCount,
 } from '@/app/cyclicInventoryActions';
 
@@ -78,6 +79,18 @@ type LocationRecountRecommendation = {
 function refLocKey(reference: string, location: string): string {
   return `${String(reference || '').trim().toUpperCase()}|${String(location || '').trim()}`;
 }
+
+type ScanEventStatus = 'ok' | 'uncataloged' | 'not_in_location' | 'not_in_inventory';
+
+type ScanEvent = {
+  id: string;
+  at: string;
+  barcode: string;
+  reference?: string;
+  location?: string;
+  status: ScanEventStatus;
+  message: string;
+};
 
 function classifyDiffPriority(row: {
   countedQty: number | null;
@@ -215,6 +228,12 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
   const [diffFilterLoc, setDiffFilterLoc] = useState('');
   const [diffOnlySuggested, setDiffOnlySuggested] = useState(true);
   const [diffHideSquare, setDiffHideSquare] = useState(true);
+  const [scanLocation, setScanLocation] = useState('');
+  const [scanBarcode, setScanBarcode] = useState('');
+  const [scanEvents, setScanEvents] = useState<ScanEvent[]>([]);
+  const [scanSessionCounts, setScanSessionCounts] = useState<Record<string, number>>({});
+  const [savingScanCounts, setSavingScanCounts] = useState(false);
+  const [resolvingScan, setResolvingScan] = useState(false);
 
   const canAdmin = role === 'admin' || role === 'supervisor';
 
@@ -341,6 +360,17 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     void loadAdjustments();
   }, [canAdmin, loadAdjustments]);
 
+  useEffect(() => {
+    setScanSessionCounts({});
+    setScanEvents([]);
+  }, [inventoryDate, scanLocation]);
+
+  useEffect(() => {
+    if (!scanLocation && availableLocations.length > 0) {
+      setScanLocation(availableLocations[0]);
+    }
+  }, [availableLocations, scanLocation]);
+
   const loadReport = useCallback(async () => {
     setLoadingReport(true);
     try {
@@ -380,6 +410,41 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       return true;
     });
   }, [lines, filterRef, filterLoc, onlyPending]);
+
+  const availableLocations = useMemo(() => {
+    const set = new Set<string>();
+    for (const line of lines) {
+      const loc = String(line.location || '').trim();
+      if (loc) set.add(loc);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [lines]);
+
+  const linesByRefLoc = useMemo(() => {
+    const map = new Map<string, InventoryLineView>();
+    for (const line of lines) {
+      map.set(refLocKey(line.reference, line.location), line);
+    }
+    return map;
+  }, [lines]);
+
+  const scanRows = useMemo(() => {
+    if (!scanLocation) return [] as Array<{ key: string; line: InventoryLineView; scannedQty: number; diff: number }>;
+    const out: Array<{ key: string; line: InventoryLineView; scannedQty: number; diff: number }> = [];
+    for (const line of lines) {
+      if (String(line.location || '').trim() !== scanLocation) continue;
+      const key = refLocKey(line.reference, line.location);
+      const scannedQty = scanSessionCounts[key] ?? 0;
+      out.push({
+        key,
+        line,
+        scannedQty,
+        diff: scannedQty - Math.max(0, Math.floor(Number(line.expectedQty) || 0)),
+      });
+    }
+    out.sort((a, b) => a.line.reference.localeCompare(b.line.reference));
+    return out;
+  }, [lines, scanLocation, scanSessionCounts]);
 
   const allDiffRows = useMemo<InventoryDiffRow[]>(() => {
     const previousExpectedByKey = new Map<string, number>();
@@ -554,6 +619,114 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     await loadLines();
   };
 
+  const pushScanEvent = useCallback((event: Omit<ScanEvent, 'id' | 'at'>) => {
+    const now = new Date();
+    const row: ScanEvent = {
+      ...event,
+      id: `${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`,
+      at: now.toISOString(),
+    };
+    setScanEvents((prev) => [row, ...prev].slice(0, 120));
+  }, []);
+
+  const handleScanSubmit = async () => {
+    const barcode = scanBarcode.trim();
+    if (!barcode) return;
+    if (!scanLocation) {
+      pushScanEvent({
+        barcode,
+        status: 'not_in_location',
+        message: 'Seleccione ubicación antes de escanear.',
+      });
+      setScanBarcode('');
+      return;
+    }
+    setResolvingScan(true);
+    try {
+      const found = await resolveCyclicInventoryBarcode({ barcode });
+      if (!found.success || !found.data) {
+        pushScanEvent({
+          barcode,
+          status: 'uncataloged',
+          location: scanLocation,
+          message: found.error || 'Código no catalogado.',
+        });
+        return;
+      }
+      const lineKey = refLocKey(found.data.reference, scanLocation);
+      const line = linesByRefLoc.get(lineKey);
+      if (!line) {
+        const hasAnyReference = lines.some((x) => x.reference === found.data.reference);
+        pushScanEvent({
+          barcode,
+          reference: found.data.reference,
+          location: scanLocation,
+          status: hasAnyReference ? 'not_in_location' : 'not_in_inventory',
+          message: hasAnyReference
+            ? `La referencia ${found.data.reference} no pertenece a la ubicación ${scanLocation}.`
+            : `La referencia ${found.data.reference} no está en el inventario del día.`,
+        });
+        return;
+      }
+      setScanSessionCounts((prev) => ({ ...prev, [lineKey]: (prev[lineKey] ?? 0) + 1 }));
+      pushScanEvent({
+        barcode,
+        reference: found.data.reference,
+        location: scanLocation,
+        status: 'ok',
+        message: `${found.data.reference} +1`,
+      });
+    } catch (e: unknown) {
+      pushScanEvent({
+        barcode,
+        location: scanLocation,
+        status: 'uncataloged',
+        message: e instanceof Error ? e.message : 'Error al procesar escaneo.',
+      });
+    } finally {
+      setResolvingScan(false);
+      setScanBarcode('');
+    }
+  };
+
+  const handleSaveScannedRecount = async () => {
+    if (!user?.uid) return;
+    if (!scanLocation) {
+      toast({ variant: 'destructive', title: 'Escaneo', description: 'Seleccione ubicación.' });
+      return;
+    }
+    const targets = scanRows.filter((r) => r.scannedQty > 0);
+    if (targets.length === 0) {
+      toast({ title: 'Escaneo', description: 'No hay conteos escaneados para guardar.' });
+      return;
+    }
+    setSavingScanCounts(true);
+    try {
+      for (const row of targets) {
+        const save = await saveCyclicInventoryLineCount({
+          lineIds: row.line.consolidatedLineIds ?? [row.line.id],
+          countedQty: row.scannedQty,
+          countedBy: user.uid,
+          countedByName: user.displayName || user.email || '',
+        });
+        if (!save.success) {
+          throw new Error(`Error guardando ${row.line.reference}: ${save.error || 'falló el guardado'}`);
+        }
+      }
+      toast({ title: 'Escaneo', description: `Se guardaron ${targets.length} referencias de reconteo.` });
+      setScanSessionCounts({});
+      await loadLines();
+    } catch (e: unknown) {
+      toast({
+        variant: 'destructive',
+        title: 'Escaneo',
+        description: e instanceof Error ? e.message : 'No se pudo guardar el reconteo.',
+      });
+    } finally {
+      setSavingScanCounts(false);
+    }
+  };
+
   const handleCreateAdjustment = async () => {
     if (!canAdmin) return;
     if (!user?.uid) {
@@ -697,6 +870,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
             Reporte de conteos
           </TabsTrigger>
           <TabsTrigger value="diferencias">Diferencias y reconteo</TabsTrigger>
+          <TabsTrigger value="escaneo">Escaneo reconteo</TabsTrigger>
           {canAdmin ? <TabsTrigger value="ajustes">Ajustes de inventario</TabsTrigger> : null}
           {canAdmin ? <TabsTrigger value="subir">Subir inventario del día</TabsTrigger> : null}
         </TabsList>
@@ -979,6 +1153,156 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                     )}
                   </TableBody>
                 </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="escaneo" className="space-y-4 mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Escaneo de reconteo por ubicación</CardTitle>
+              <CardDescription>
+                Escanee códigos para acumular conteo físico en tiempo real. Solo se guarda en inventario cuando pulse
+                <strong> Guardar reconteo escaneado</strong>.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-3 items-end">
+                <div className="space-y-2">
+                  <Label>Fecha inventario</Label>
+                  <Input type="date" value={inventoryDate} onChange={(e) => setInventoryDate(e.target.value)} className="w-44" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Ubicación a recontear</Label>
+                  <Input
+                    list="cyclic-locations"
+                    value={scanLocation}
+                    onChange={(e) => setScanLocation(e.target.value)}
+                    placeholder="Seleccione o escriba ubicación"
+                    className="w-56"
+                  />
+                  <datalist id="cyclic-locations">
+                    {availableLocations.map((loc) => (
+                      <option key={loc} value={loc} />
+                    ))}
+                  </datalist>
+                </div>
+                <div className="space-y-2">
+                  <Label>Código de barras</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={scanBarcode}
+                      onChange={(e) => setScanBarcode(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void handleScanSubmit();
+                        }
+                      }}
+                      placeholder="Escanee y Enter"
+                      className="w-64 font-mono"
+                    />
+                    <Button type="button" onClick={() => void handleScanSubmit()} disabled={resolvingScan}>
+                      {resolvingScan ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Barcode className="mr-2 h-4 w-4" />}
+                      Registrar scan
+                    </Button>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void loadLines()}
+                  disabled={loadingLines || loadingPreviousLines}
+                >
+                  <RefreshCw className={`mr-2 h-4 w-4 ${loadingLines || loadingPreviousLines ? 'animate-spin' : ''}`} />
+                  Recargar líneas
+                </Button>
+                <Button type="button" onClick={() => void handleSaveScannedRecount()} disabled={savingScanCounts}>
+                  {savingScanCounts ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Guardar reconteo escaneado
+                </Button>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Referencias escaneadas (ubicación seleccionada)</p>
+                  <p className="text-2xl font-semibold">{scanRows.filter((r) => r.scannedQty > 0).length}</p>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Escaneos totales de sesión</p>
+                  <p className="text-2xl font-semibold">{scanRows.reduce((sum, r) => sum + r.scannedQty, 0)}</p>
+                </div>
+              </div>
+
+              <div className="rounded-md border overflow-x-auto max-h-[45vh] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Referencia</TableHead>
+                      <TableHead>Ubicación</TableHead>
+                      <TableHead className="text-right">Esperada ajustada</TableHead>
+                      <TableHead className="text-right">Escaneada sesión</TableHead>
+                      <TableHead className="text-right">Delta sesión</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {scanRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                          Seleccione ubicación para empezar el escaneo.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      scanRows.map((row) => (
+                        <TableRow key={row.key}>
+                          <TableCell className="font-mono text-sm">{row.line.reference}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{row.line.location || '—'}</TableCell>
+                          <TableCell className="text-right">{row.line.expectedQty}</TableCell>
+                          <TableCell className="text-right font-medium">{row.scannedQty}</TableCell>
+                          <TableCell className={`text-right font-medium ${row.diff < 0 ? 'text-red-600' : row.diff > 0 ? 'text-amber-600' : ''}`}>
+                            {row.diff}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+
+              <div className="rounded-md border p-3 space-y-3">
+                <p className="text-sm font-medium">Eventos de escaneo</p>
+                {scanEvents.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">Aún no hay eventos en esta sesión.</p>
+                ) : (
+                  <div className="space-y-2 max-h-[28vh] overflow-y-auto">
+                    {scanEvents.map((ev) => (
+                      <div key={ev.id} className="flex items-center justify-between gap-3 rounded border px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="text-xs font-mono truncate">
+                            {ev.barcode} {ev.reference ? `-> ${ev.reference}` : ''}
+                          </p>
+                          <p className="text-xs text-muted-foreground truncate">{ev.message}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {ev.status === 'ok' ? (
+                            <Badge variant="success">OK</Badge>
+                          ) : ev.status === 'uncataloged' ? (
+                            <Badge variant="destructive">
+                              <AlertTriangle className="mr-1 h-3 w-3" />
+                              No catalogado
+                            </Badge>
+                          ) : ev.status === 'not_in_location' ? (
+                            <Badge variant="warning">Fuera ubicación</Badge>
+                          ) : (
+                            <Badge variant="secondary">No esperado</Badge>
+                          )}
+                          <span className="text-[11px] text-muted-foreground whitespace-nowrap">{formatCountedAt(ev.at)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>

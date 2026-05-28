@@ -571,6 +571,66 @@ export async function deleteInventoryAdjustment(input: {
   }
 }
 
+export async function resolveCyclicInventoryBarcode(input: {
+  barcode: string;
+}): Promise<{
+  success: boolean;
+  data?: {
+    barcode: string;
+    reference: string;
+    size: string;
+    productName: string;
+  };
+  error?: string;
+}> {
+  try {
+    const barcode = String(input.barcode || '').trim();
+    if (!barcode) return { success: false, error: 'Código de barras vacío.' };
+
+    const direct = await getDoc(doc(firestore, 'productDatabase', barcode));
+    if (direct.exists()) {
+      const raw = direct.data() as Record<string, unknown>;
+      const reference = normRef(String(raw.referencia ?? raw.reference ?? ''));
+      if (!reference) {
+        return { success: false, error: 'El código existe pero no tiene referencia asociada.' };
+      }
+      return {
+        success: true,
+        data: {
+          barcode,
+          reference,
+          size: normSize(String(raw.talla ?? raw.size ?? '')),
+          productName: String(raw.descripcion_del_producto ?? raw.name ?? raw.nombre_rk ?? '').trim(),
+        },
+      };
+    }
+
+    const qy = query(collection(firestore, 'productDatabase'), where('barcode', '==', barcode), limit(1));
+    const snap = await getDocs(qy);
+    if (!snap.empty) {
+      const raw = snap.docs[0].data() as Record<string, unknown>;
+      const reference = normRef(String(raw.referencia ?? raw.reference ?? ''));
+      if (!reference) {
+        return { success: false, error: 'El código existe pero no tiene referencia asociada.' };
+      }
+      return {
+        success: true,
+        data: {
+          barcode,
+          reference,
+          size: normSize(String(raw.talla ?? raw.size ?? '')),
+          productName: String(raw.descripcion_del_producto ?? raw.name ?? raw.nombre_rk ?? '').trim(),
+        },
+      };
+    }
+
+    return { success: false, error: 'Código no catalogado en productDatabase.' };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'Error al resolver código de barras.';
+    return { success: false, error: msg };
+  }
+}
+
 export async function listCyclicInventoryCountRecordsForReport(input: {
   dateFrom: string;
   dateTo: string;
