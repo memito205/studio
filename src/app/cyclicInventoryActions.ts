@@ -28,6 +28,7 @@ const LINES_COL = 'cyclicInventoryLines';
 const DAYS_COL = 'cyclicInventoryDays';
 const COUNT_RECORDS_COL = 'cyclicInventoryCountRecords';
 const ADJUSTMENTS_COL = 'inventoryAdjustments';
+const RELIABILITY_SNAPSHOTS_COL = 'cyclicInventoryReliabilitySnapshots';
 
 function convertTimestampsToDates(data: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...data };
@@ -68,6 +69,38 @@ type InventoryAdjustmentRecord = {
   location: string;
   deltaQty: number;
   reason?: string;
+  createdAt: string | Date;
+  createdBy: string;
+  createdByName?: string;
+};
+
+type ReliabilityBucket = {
+  key: string;
+  totalLines: number;
+  countedLines: number;
+  accurateLines: number;
+  totalExpected: number;
+  totalCounted: number;
+  absDiffTotal: number;
+  shortageUnits: number;
+  overageUnits: number;
+};
+
+type ReliabilitySnapshot = {
+  id: string;
+  inventoryDate: string;
+  totalLines: number;
+  countedLines: number;
+  accurateLines: number;
+  totalExpected: number;
+  totalCounted: number;
+  absDiffTotal: number;
+  shortageUnits: number;
+  overageUnits: number;
+  accuracyRate: number;
+  countedRate: number;
+  byBrand: ReliabilityBucket[];
+  byLocation: ReliabilityBucket[];
   createdAt: string | Date;
   createdBy: string;
   createdByName?: string;
@@ -627,6 +660,201 @@ export async function resolveCyclicInventoryBarcode(input: {
     return { success: false, error: 'Código no catalogado en productDatabase.' };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Error al resolver código de barras.';
+    return { success: false, error: msg };
+  }
+}
+
+function emptyBucket(key: string): ReliabilityBucket {
+  return {
+    key,
+    totalLines: 0,
+    countedLines: 0,
+    accurateLines: 0,
+    totalExpected: 0,
+    totalCounted: 0,
+    absDiffTotal: 0,
+    shortageUnits: 0,
+    overageUnits: 0,
+  };
+}
+
+function addLineToBucket(
+  bucket: ReliabilityBucket,
+  expectedQty: number,
+  countedQty: number | null | undefined
+): ReliabilityBucket {
+  const expected = Math.max(0, Math.floor(Number(expectedQty) || 0));
+  const counted = countedQty === null || countedQty === undefined ? null : Math.max(0, Math.floor(Number(countedQty) || 0));
+  bucket.totalLines += 1;
+  bucket.totalExpected += expected;
+  if (counted !== null) {
+    const diff = counted - expected;
+    bucket.countedLines += 1;
+    bucket.totalCounted += counted;
+    bucket.absDiffTotal += Math.abs(diff);
+    if (diff === 0) bucket.accurateLines += 1;
+    if (diff < 0) bucket.shortageUnits += Math.abs(diff);
+    if (diff > 0) bucket.overageUnits += diff;
+  }
+  return bucket;
+}
+
+async function fetchBrandByReference(references: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const refs = [...new Set(references.map((r) => normRef(r)).filter(Boolean))];
+  if (refs.length === 0) return out;
+
+  const CHUNK = 20;
+  for (let i = 0; i < refs.length; i += CHUNK) {
+    const chunk = refs.slice(i, i + CHUNK);
+    const qy = query(collection(firestore, 'productDatabase'), where('referencia', 'in', chunk));
+    const snap = await getDocs(qy);
+    for (const d of snap.docs) {
+      const raw = d.data() as Record<string, unknown>;
+      const ref = normRef(String(raw.referencia ?? raw.reference ?? ''));
+      if (!ref) continue;
+      const brandRaw =
+        String(raw.marca ?? '').trim() ||
+        String(raw.brand ?? '').trim() ||
+        String(raw.brandName ?? '').trim() ||
+        String(raw.marca_producto ?? '').trim();
+      out.set(ref, brandRaw || 'SIN_MARCA');
+    }
+  }
+  return out;
+}
+
+export async function buildCyclicInventoryReliabilitySnapshot(input: {
+  inventoryDate: string;
+  createdBy: string;
+  createdByName?: string;
+}): Promise<{ success: boolean; data?: ReliabilitySnapshot; error?: string }> {
+  try {
+    const inventoryDate = String(input.inventoryDate || '').trim();
+    if (!isValidInventoryDateKey(inventoryDate)) {
+      return { success: false, error: 'Fecha inválida. Use AAAA-MM-DD.' };
+    }
+    const createdBy = String(input.createdBy || '').trim();
+    if (!createdBy) return { success: false, error: 'Usuario no identificado.' };
+
+    const linesRes = await getCyclicInventoryLinesForDate(inventoryDate);
+    if (!linesRes.success || !linesRes.data) {
+      return { success: false, error: linesRes.error || 'No se pudieron cargar líneas para snapshot.' };
+    }
+    const lines = linesRes.data;
+    const brandMap = await fetchBrandByReference(lines.map((l) => l.reference));
+
+    let totalLines = 0;
+    let countedLines = 0;
+    let accurateLines = 0;
+    let totalExpected = 0;
+    let totalCounted = 0;
+    let absDiffTotal = 0;
+    let shortageUnits = 0;
+    let overageUnits = 0;
+    const byBrandMap = new Map<string, ReliabilityBucket>();
+    const byLocationMap = new Map<string, ReliabilityBucket>();
+
+    for (const line of lines) {
+      const expected = Math.max(0, Math.floor(Number(line.expectedQty) || 0));
+      const counted = line.countedQty === null || line.countedQty === undefined ? null : Math.max(0, Math.floor(Number(line.countedQty) || 0));
+
+      totalLines += 1;
+      totalExpected += expected;
+      if (counted !== null) {
+        const diff = counted - expected;
+        countedLines += 1;
+        totalCounted += counted;
+        absDiffTotal += Math.abs(diff);
+        if (diff === 0) accurateLines += 1;
+        if (diff < 0) shortageUnits += Math.abs(diff);
+        if (diff > 0) overageUnits += diff;
+      }
+
+      const brandKey = brandMap.get(normRef(line.reference)) || 'SIN_MARCA';
+      const locationKey = normLoc(line.location) || 'SIN_UBICACION';
+
+      const brandBucket = byBrandMap.get(brandKey) ?? emptyBucket(brandKey);
+      byBrandMap.set(brandKey, addLineToBucket(brandBucket, expected, counted));
+
+      const locBucket = byLocationMap.get(locationKey) ?? emptyBucket(locationKey);
+      byLocationMap.set(locationKey, addLineToBucket(locBucket, expected, counted));
+    }
+
+    const snapshotPayload: Omit<ReliabilitySnapshot, 'id' | 'createdAt'> & { createdAt: Timestamp } = {
+      inventoryDate,
+      totalLines,
+      countedLines,
+      accurateLines,
+      totalExpected,
+      totalCounted,
+      absDiffTotal,
+      shortageUnits,
+      overageUnits,
+      accuracyRate: countedLines > 0 ? accurateLines / countedLines : 0,
+      countedRate: totalLines > 0 ? countedLines / totalLines : 0,
+      byBrand: [...byBrandMap.values()].sort((a, b) => b.totalLines - a.totalLines),
+      byLocation: [...byLocationMap.values()].sort((a, b) => b.totalLines - a.totalLines),
+      createdAt: Timestamp.now(),
+      createdBy,
+      createdByName: String(input.createdByName || '').trim(),
+    };
+
+    await setDoc(doc(firestore, RELIABILITY_SNAPSHOTS_COL, inventoryDate), snapshotPayload, { merge: true });
+
+    const uiSnapshot = convertTimestampsToDates({ id: inventoryDate, ...snapshotPayload } as unknown as Record<string, unknown>);
+    return { success: true, data: uiSnapshot as unknown as ReliabilitySnapshot };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'Error creando snapshot de confiabilidad.';
+    if (String(msg).includes('failed-precondition')) {
+      return {
+        success: false,
+        error:
+          'Firestore puede requerir índice en productDatabase por referencia o en snapshots por inventoryDate. Revise el enlace sugerido por Firebase.',
+      };
+    }
+    return { success: false, error: msg };
+  }
+}
+
+export async function listCyclicInventoryReliabilitySnapshots(input: {
+  dateFrom: string;
+  dateTo: string;
+  maxRecords?: number;
+}): Promise<{ success: boolean; data?: ReliabilitySnapshot[]; error?: string }> {
+  try {
+    let from = String(input.dateFrom || '').trim();
+    let to = String(input.dateTo || '').trim();
+    if (!isValidInventoryDateKey(from) || !isValidInventoryDateKey(to)) {
+      return { success: false, error: 'Indique fecha desde y hasta válidas (AAAA-MM-DD).' };
+    }
+    if (from > to) {
+      const tmp = from;
+      from = to;
+      to = tmp;
+    }
+    const max = Math.min(400, Math.max(20, input.maxRecords ?? 120));
+    const qy = query(
+      collection(firestore, RELIABILITY_SNAPSHOTS_COL),
+      where('inventoryDate', '>=', from),
+      where('inventoryDate', '<=', to),
+      orderBy('inventoryDate', 'asc'),
+      limit(max)
+    );
+    const snap = await getDocs(qy);
+    const rows = snap.docs.map((d) =>
+      convertTimestampsToDates({ id: d.id, ...d.data() } as unknown as Record<string, unknown>)
+    ) as unknown as ReliabilitySnapshot[];
+    return { success: true, data: rows };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'Error cargando snapshots de confiabilidad.';
+    if (String(msg).includes('failed-precondition')) {
+      return {
+        success: false,
+        error:
+          'Firestore requiere índice en cyclicInventoryReliabilitySnapshots (inventoryDate asc). Cree el índice desde el enlace de Firebase.',
+      };
+    }
     return { success: false, error: msg };
   }
 }

@@ -18,12 +18,14 @@ import { findCaseInsensitiveKey, parseRobustNumber } from '@/lib/parsingUtils';
 import { getCyclicCountDiff } from '@/lib/cyclicInventoryDiff';
 import { isValidInventoryDateKey } from '@/lib/cyclicInventoryDate';
 import {
+  buildCyclicInventoryReliabilitySnapshot,
   createInventoryAdjustment,
   deleteInventoryAdjustment,
   getCyclicInventoryLinesForDate,
   importCyclicInventoryForDate,
   listInventoryAdjustmentsForDate,
   listCyclicInventoryCountRecordsForReport,
+  listCyclicInventoryReliabilitySnapshots,
   listCyclicInventoryDayMeta,
   resolveCyclicInventoryBarcode,
   saveCyclicInventoryLineCount,
@@ -91,6 +93,42 @@ type ScanEvent = {
   status: ScanEventStatus;
   message: string;
 };
+
+type ReliabilityBucket = {
+  key: string;
+  totalLines: number;
+  countedLines: number;
+  accurateLines: number;
+  totalExpected: number;
+  totalCounted: number;
+  absDiffTotal: number;
+  shortageUnits: number;
+  overageUnits: number;
+};
+
+type ReliabilitySnapshot = {
+  id: string;
+  inventoryDate: string;
+  totalLines: number;
+  countedLines: number;
+  accurateLines: number;
+  totalExpected: number;
+  totalCounted: number;
+  absDiffTotal: number;
+  shortageUnits: number;
+  overageUnits: number;
+  accuracyRate: number;
+  countedRate: number;
+  byBrand: ReliabilityBucket[];
+  byLocation: ReliabilityBucket[];
+  createdAt: string | Date;
+  createdBy: string;
+  createdByName?: string;
+};
+
+function percent(v: number): string {
+  return `${(Number(v || 0) * 100).toFixed(1)}%`;
+}
 
 function classifyDiffPriority(row: {
   countedQty: number | null;
@@ -234,6 +272,11 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
   const [scanSessionCounts, setScanSessionCounts] = useState<Record<string, number>>({});
   const [savingScanCounts, setSavingScanCounts] = useState(false);
   const [resolvingScan, setResolvingScan] = useState(false);
+  const [reliabilityFrom, setReliabilityFrom] = useState(() => ymdDaysAgo(30));
+  const [reliabilityTo, setReliabilityTo] = useState(() => todayYmdLocal());
+  const [reliabilityRows, setReliabilityRows] = useState<ReliabilitySnapshot[]>([]);
+  const [loadingReliability, setLoadingReliability] = useState(false);
+  const [buildingSnapshot, setBuildingSnapshot] = useState(false);
 
   const canAdmin = role === 'admin' || role === 'supervisor';
 
@@ -394,6 +437,67 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     }
   }, [reportDateFrom, reportDateTo, reportFilterRef, reportFilterLoc, toast]);
 
+  const loadReliability = useCallback(async () => {
+    setLoadingReliability(true);
+    try {
+      const res = await listCyclicInventoryReliabilitySnapshots({
+        dateFrom: reliabilityFrom.trim(),
+        dateTo: reliabilityTo.trim(),
+        maxRecords: 365,
+      });
+      if (!res.success || !res.data) {
+        throw new Error(res.error || 'No se pudo cargar confiabilidad.');
+      }
+      setReliabilityRows(res.data);
+    } catch (e: unknown) {
+      toast({
+        variant: 'destructive',
+        title: 'Confiabilidad',
+        description: e instanceof Error ? e.message : 'Error',
+      });
+      setReliabilityRows([]);
+    } finally {
+      setLoadingReliability(false);
+    }
+  }, [reliabilityFrom, reliabilityTo, toast]);
+
+  const handleBuildReliabilitySnapshot = async () => {
+    if (!user?.uid) {
+      toast({ variant: 'destructive', title: 'Sesión', description: 'Inicie sesión.' });
+      return;
+    }
+    const dateKey = inventoryDate.trim();
+    if (!isValidInventoryDateKey(dateKey)) {
+      toast({ variant: 'destructive', title: 'Fecha', description: 'Seleccione una fecha válida.' });
+      return;
+    }
+    setBuildingSnapshot(true);
+    try {
+      const res = await buildCyclicInventoryReliabilitySnapshot({
+        inventoryDate: dateKey,
+        createdBy: user.uid,
+        createdByName: user.displayName || user.email || '',
+      });
+      if (!res.success) {
+        throw new Error(res.error || 'No se pudo generar snapshot.');
+      }
+      toast({ title: 'Confiabilidad', description: `Snapshot generado para ${dateKey}.` });
+      await loadReliability();
+    } catch (e: unknown) {
+      toast({
+        variant: 'destructive',
+        title: 'Confiabilidad',
+        description: e instanceof Error ? e.message : 'Error',
+      });
+    } finally {
+      setBuildingSnapshot(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadReliability();
+  }, [loadReliability]);
+
   const filteredLines = useMemo(() => {
     const fr = filterRef.trim().toUpperCase();
     const fl = filterLoc.trim().toUpperCase();
@@ -537,6 +641,110 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       return b.totalAbsDiff - a.totalAbsDiff;
     });
   }, [filteredDiffRows]);
+
+  const reliabilityKpis = useMemo(() => {
+    const total = reliabilityRows.reduce(
+      (acc, s) => {
+        acc.totalLines += s.totalLines || 0;
+        acc.countedLines += s.countedLines || 0;
+        acc.accurateLines += s.accurateLines || 0;
+        acc.totalExpected += s.totalExpected || 0;
+        acc.totalCounted += s.totalCounted || 0;
+        acc.absDiffTotal += s.absDiffTotal || 0;
+        acc.shortageUnits += s.shortageUnits || 0;
+        acc.overageUnits += s.overageUnits || 0;
+        return acc;
+      },
+      {
+        totalLines: 0,
+        countedLines: 0,
+        accurateLines: 0,
+        totalExpected: 0,
+        totalCounted: 0,
+        absDiffTotal: 0,
+        shortageUnits: 0,
+        overageUnits: 0,
+      }
+    );
+    return {
+      ...total,
+      countedRate: total.totalLines > 0 ? total.countedLines / total.totalLines : 0,
+      accuracyRate: total.countedLines > 0 ? total.accurateLines / total.countedLines : 0,
+    };
+  }, [reliabilityRows]);
+
+  const reliabilityByMonth = useMemo(() => {
+    const map = new Map<string, { month: string; totalLines: number; countedLines: number; accurateLines: number; absDiffTotal: number }>();
+    for (const s of reliabilityRows) {
+      const month = String(s.inventoryDate || '').slice(0, 7);
+      if (!month) continue;
+      const row = map.get(month) ?? { month, totalLines: 0, countedLines: 0, accurateLines: 0, absDiffTotal: 0 };
+      row.totalLines += s.totalLines || 0;
+      row.countedLines += s.countedLines || 0;
+      row.accurateLines += s.accurateLines || 0;
+      row.absDiffTotal += s.absDiffTotal || 0;
+      map.set(month, row);
+    }
+    return [...map.values()].sort((a, b) => b.month.localeCompare(a.month));
+  }, [reliabilityRows]);
+
+  const reliabilityByBrand = useMemo(() => {
+    const map = new Map<string, ReliabilityBucket>();
+    for (const s of reliabilityRows) {
+      for (const b of s.byBrand || []) {
+        const cur = map.get(b.key) ?? {
+          key: b.key,
+          totalLines: 0,
+          countedLines: 0,
+          accurateLines: 0,
+          totalExpected: 0,
+          totalCounted: 0,
+          absDiffTotal: 0,
+          shortageUnits: 0,
+          overageUnits: 0,
+        };
+        cur.totalLines += b.totalLines || 0;
+        cur.countedLines += b.countedLines || 0;
+        cur.accurateLines += b.accurateLines || 0;
+        cur.totalExpected += b.totalExpected || 0;
+        cur.totalCounted += b.totalCounted || 0;
+        cur.absDiffTotal += b.absDiffTotal || 0;
+        cur.shortageUnits += b.shortageUnits || 0;
+        cur.overageUnits += b.overageUnits || 0;
+        map.set(b.key, cur);
+      }
+    }
+    return [...map.values()].sort((a, b) => b.totalLines - a.totalLines).slice(0, 30);
+  }, [reliabilityRows]);
+
+  const reliabilityByLocation = useMemo(() => {
+    const map = new Map<string, ReliabilityBucket>();
+    for (const s of reliabilityRows) {
+      for (const b of s.byLocation || []) {
+        const cur = map.get(b.key) ?? {
+          key: b.key,
+          totalLines: 0,
+          countedLines: 0,
+          accurateLines: 0,
+          totalExpected: 0,
+          totalCounted: 0,
+          absDiffTotal: 0,
+          shortageUnits: 0,
+          overageUnits: 0,
+        };
+        cur.totalLines += b.totalLines || 0;
+        cur.countedLines += b.countedLines || 0;
+        cur.accurateLines += b.accurateLines || 0;
+        cur.totalExpected += b.totalExpected || 0;
+        cur.totalCounted += b.totalCounted || 0;
+        cur.absDiffTotal += b.absDiffTotal || 0;
+        cur.shortageUnits += b.shortageUnits || 0;
+        cur.overageUnits += b.overageUnits || 0;
+        map.set(b.key, cur);
+      }
+    }
+    return [...map.values()].sort((a, b) => b.totalLines - a.totalLines).slice(0, 40);
+  }, [reliabilityRows]);
 
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!user?.uid) {
@@ -869,6 +1077,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
             <FileSearch className="mr-2 h-4 w-4 inline" />
             Reporte de conteos
           </TabsTrigger>
+          <TabsTrigger value="confiabilidad">Confiabilidad</TabsTrigger>
           <TabsTrigger value="diferencias">Diferencias y reconteo</TabsTrigger>
           <TabsTrigger value="escaneo">Escaneo reconteo</TabsTrigger>
           {canAdmin ? <TabsTrigger value="ajustes">Ajustes de inventario</TabsTrigger> : null}
@@ -994,6 +1203,183 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   </Table>
                 </div>
               )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="confiabilidad" className="space-y-4 mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Dashboard de confiabilidad de inventario</CardTitle>
+              <CardDescription>
+                Métricas consolidadas por día, mes, marca y ubicación usando snapshots persistidos por fecha.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-3 items-end">
+                <div className="space-y-2">
+                  <Label>Desde</Label>
+                  <Input type="date" value={reliabilityFrom} onChange={(e) => setReliabilityFrom(e.target.value)} className="w-44" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Hasta</Label>
+                  <Input type="date" value={reliabilityTo} onChange={(e) => setReliabilityTo(e.target.value)} className="w-44" />
+                </div>
+                <Button type="button" variant="outline" onClick={() => void loadReliability()} disabled={loadingReliability}>
+                  <RefreshCw className={`mr-2 h-4 w-4 ${loadingReliability ? 'animate-spin' : ''}`} />
+                  Cargar snapshots
+                </Button>
+                {canAdmin ? (
+                  <Button type="button" onClick={() => void handleBuildReliabilitySnapshot()} disabled={buildingSnapshot}>
+                    {buildingSnapshot ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                    Generar snapshot de {inventoryDate}
+                  </Button>
+                ) : null}
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-4">
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Exactitud (líneas contadas)</p>
+                  <p className="text-2xl font-semibold">{percent(reliabilityKpis.accuracyRate)}</p>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Cobertura de conteo</p>
+                  <p className="text-2xl font-semibold">{percent(reliabilityKpis.countedRate)}</p>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Faltantes (unid)</p>
+                  <p className="text-2xl font-semibold text-red-600">{reliabilityKpis.shortageUnits}</p>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Sobrantes (unid)</p>
+                  <p className="text-2xl font-semibold text-amber-600">{reliabilityKpis.overageUnits}</p>
+                </div>
+              </div>
+
+              <div className="rounded-md border overflow-x-auto max-h-[26vh] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Fecha</TableHead>
+                      <TableHead className="text-right">Líneas</TableHead>
+                      <TableHead className="text-right">Contadas</TableHead>
+                      <TableHead className="text-right">Exactas</TableHead>
+                      <TableHead className="text-right">Exactitud</TableHead>
+                      <TableHead className="text-right">Cobertura</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {reliabilityRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                          No hay snapshots en el rango.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      reliabilityRows.map((r) => (
+                        <TableRow key={r.id}>
+                          <TableCell className="font-mono text-xs">{r.inventoryDate}</TableCell>
+                          <TableCell className="text-right">{r.totalLines}</TableCell>
+                          <TableCell className="text-right">{r.countedLines}</TableCell>
+                          <TableCell className="text-right">{r.accurateLines}</TableCell>
+                          <TableCell className="text-right">{percent(r.accuracyRate)}</TableCell>
+                          <TableCell className="text-right">{percent(r.countedRate)}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="rounded-md border overflow-x-auto max-h-[30vh] overflow-y-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Mes</TableHead>
+                        <TableHead className="text-right">Líneas</TableHead>
+                        <TableHead className="text-right">Exactitud</TableHead>
+                        <TableHead className="text-right">Abs diff</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {reliabilityByMonth.map((m) => (
+                        <TableRow key={m.month}>
+                          <TableCell className="font-mono text-xs">{m.month}</TableCell>
+                          <TableCell className="text-right">{m.totalLines}</TableCell>
+                          <TableCell className="text-right">{percent(m.countedLines > 0 ? m.accurateLines / m.countedLines : 0)}</TableCell>
+                          <TableCell className="text-right">{m.absDiffTotal}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                <div className="rounded-md border overflow-x-auto max-h-[30vh] overflow-y-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Marca</TableHead>
+                        <TableHead className="text-right">Líneas</TableHead>
+                        <TableHead className="text-right">Exactitud</TableHead>
+                        <TableHead className="text-right">Abs diff</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {reliabilityByBrand.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={4} className="text-center text-muted-foreground py-6">
+                            Sin datos por marca.
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        reliabilityByBrand.map((b) => (
+                          <TableRow key={b.key}>
+                            <TableCell className="text-sm">{b.key}</TableCell>
+                            <TableCell className="text-right">{b.totalLines}</TableCell>
+                            <TableCell className="text-right">{percent(b.countedLines > 0 ? b.accurateLines / b.countedLines : 0)}</TableCell>
+                            <TableCell className="text-right">{b.absDiffTotal}</TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+
+              <div className="rounded-md border overflow-x-auto max-h-[30vh] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Ubicación</TableHead>
+                      <TableHead className="text-right">Líneas</TableHead>
+                      <TableHead className="text-right">Exactitud</TableHead>
+                      <TableHead className="text-right">Faltantes</TableHead>
+                      <TableHead className="text-right">Sobrantes</TableHead>
+                      <TableHead className="text-right">Abs diff</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {reliabilityByLocation.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center text-muted-foreground py-6">
+                          Sin datos por ubicación.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      reliabilityByLocation.map((l) => (
+                        <TableRow key={l.key}>
+                          <TableCell className="font-mono text-xs">{l.key}</TableCell>
+                          <TableCell className="text-right">{l.totalLines}</TableCell>
+                          <TableCell className="text-right">{percent(l.countedLines > 0 ? l.accurateLines / l.countedLines : 0)}</TableCell>
+                          <TableCell className="text-right text-red-600">{l.shortageUnits}</TableCell>
+                          <TableCell className="text-right text-amber-600">{l.overageUnits}</TableCell>
+                          <TableCell className="text-right">{l.absDiffTotal}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
