@@ -286,11 +286,16 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
       let largeCount = 0;
 
       groups.forEach(group => {
-        const isBdbol = group.items.some(i => i.origen.toUpperCase() === 'BDBOL');
-        const isLarge = (group.items[0].tftCantidad || 0) >= 5;
+        const isBdbol = group.items.some(i => String(i.origen || '').trim().toUpperCase() === 'BDBOL');
+        const groupTfQty = group.items.reduce((maxQty, i) => {
+          const q = Number(i.tftCantidad || 0);
+          return Number.isFinite(q) ? Math.max(maxQty, q) : maxQty;
+        }, 0);
+        const isLarge = groupTfQty >= 5;
+        const invalidLimit = limit === '' || limit === undefined || (typeof limit === 'number' && Number.isNaN(limit));
 
         // BDBOL and Small TFs are always included
-        if (isBdbol || !isLarge || limit === '' || limit === undefined || limit < 0) {
+        if (isBdbol || !isLarge || invalidLimit || (typeof limit === 'number' && limit < 0)) {
           finalList.push(...group.items);
           stats[dest].filteredUnits += group.items.reduce((sum, i) => sum + i.cant, 0);
           stats[dest].filteredTFs += 1;
@@ -443,7 +448,12 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
   };
 
   const setLimitForDest = (dest: string, limit: number | '') => {
-    setDestLimits(prev => ({ ...prev, [dest]: limit }));
+    if (limit === '') {
+      setDestLimits(prev => ({ ...prev, [dest]: '' }));
+      return;
+    }
+    const safeLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : '';
+    setDestLimits(prev => ({ ...prev, [dest]: safeLimit }));
   };
 
   const clearData = () => {
@@ -623,7 +633,15 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                                       placeholder="Todos"
                                       className="w-full border-b border-border py-0.5 text-[10px]  focus:outline-none bg-transparent"
                                       value={destLimits[dest] || ''}
-                                      onChange={(e) => setLimitForDest(dest, e.target.value === '' ? '' : parseInt(e.target.value))}
+                                      onChange={(e) => {
+                                        const raw = e.target.value;
+                                        if (raw === '') {
+                                          setLimitForDest(dest, '');
+                                          return;
+                                        }
+                                        const parsed = Number.parseInt(raw, 10);
+                                        setLimitForDest(dest, Number.isFinite(parsed) ? parsed : '');
+                                      }}
                                     />
                                   </div>
                                   <div className="bg-muted/30 p-2  text-[9px]  space-y-1">
