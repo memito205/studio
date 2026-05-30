@@ -25,6 +25,7 @@ interface ValidatorLogicuartasProps {
 
 type SiopData = { nombre: string; ped_valor_total: string; ped_guia_tte: string; };
 type TarifaData = { costoManejo: string; valor: string };
+type GuideInvoiceTrace = { guide: string; invoice: string };
 
 
 const extractColumnOptimized = (file: File, columnName: string): Promise<string[]> => {
@@ -49,6 +50,71 @@ const extractColumnOptimized = (file: File, columnName: string): Promise<string[
         
         const columnValues = sheetData.slice(1).map(row => row[columnIndex]).filter(Boolean).map(String);
         resolve(columnValues);
+      } catch (error: any) {
+        reject(new Error(`Error procesando ${file.name}: ${error.message}`));
+      }
+    };
+    reader.onerror = () => reject(new Error(`No se pudo leer ${file.name}.`));
+    reader.readAsArrayBuffer(file);
+  });
+};
+
+const normalizeGuideId = (value: unknown): string => {
+  let guide = String(value ?? '').trim();
+  if (!guide) return '';
+  guide = guide.replace(/[\s\-_/\\]/g, '').toUpperCase();
+  guide = guide.replace(/\.0+$/g, '');
+  if (/^\d+$/.test(guide)) {
+    guide = guide.replace(/^0+/, '');
+  }
+  return guide;
+};
+
+const normalizeInvoiceId = (value: unknown): string => {
+  return String(value ?? '').trim().toUpperCase();
+};
+
+const findHeaderAlias = (headers: string[], aliases: string[]): string | undefined => {
+  const normalizedHeaders = headers.map((h) => String(h || '').trim().toUpperCase());
+  for (const alias of aliases) {
+    const idx = normalizedHeaders.indexOf(alias.toUpperCase());
+    if (idx >= 0) return headers[idx];
+  }
+  return undefined;
+};
+
+const extractGuidesAndInvoicesOptimized = (
+  file: File,
+  guideAliases: string[],
+  invoiceAliases: string[]
+): Promise<GuideInvoiceTrace[]> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = e.target?.result;
+        const workbook = XLSX.read(data, { type: 'array', cellNF: false, cellDates: false });
+        const sheetName = workbook.SheetNames[0];
+        if (!sheetName) return resolve([]);
+        const worksheet = workbook.Sheets[sheetName];
+        const sheetData: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+        if (sheetData.length === 0) return resolve([]);
+
+        const headers = sheetData[0].map((h) => String(h || '').trim());
+        const guideHeader = findHeaderAlias(headers, guideAliases);
+        if (!guideHeader) return resolve([]);
+        const invoiceHeader = findHeaderAlias(headers, invoiceAliases);
+        const guideIndex = headers.indexOf(guideHeader);
+        const invoiceIndex = invoiceHeader ? headers.indexOf(invoiceHeader) : -1;
+
+        const rows: GuideInvoiceTrace[] = [];
+        for (const row of sheetData.slice(1)) {
+          const guide = normalizeGuideId(row[guideIndex]);
+          if (!guide) continue;
+          const invoice = invoiceIndex >= 0 ? normalizeInvoiceId(row[invoiceIndex]) : '';
+          rows.push({ guide, invoice });
+        }
+        resolve(rows);
       } catch (error: any) {
         reject(new Error(`Error procesando ${file.name}: ${error.message}`));
       }
@@ -339,14 +405,26 @@ const ValidatorLogicuartas: React.FC<ValidatorLogicuartasProps> = ({ onReturn })
         ]);
 
         const allFilesForGuideCounting = [...logicuartasFile, ...historicalFiles];
-        const historicalGuidesPromises = allFilesForGuideCounting.map(file => extractColumnOptimized(file, "GUIA"));
-        const allGuidesArrays = await Promise.all(historicalGuidesPromises);
-        const allGuides = allGuidesArrays.flat();
-        
+        const tracesPerFile = await Promise.all(
+          allFilesForGuideCounting.map((file) =>
+            extractGuidesAndInvoicesOptimized(
+              file,
+              ['GUIA', 'GUÍA', 'NUMERO 99', 'NRO GUIA', 'NUMERO GUIA', 'PED_GUIA_TTE'],
+              ['FAC', 'FACTURA', 'NRO FACTURA', 'NO FACTURA', 'NUMERO FACTURA', 'NÚMERO FACTURA']
+            )
+          )
+        );
+        const allGuideTraces = tracesPerFile.flat();
+
         const guidesCountMap = new Map<string, number>();
-        allGuides.forEach(guide => {
-            const guideStr = String(guide).trim();
-            if(guideStr) guidesCountMap.set(guideStr, (guidesCountMap.get(guideStr) || 0) + 1);
+        const guideInvoicesMap = new Map<string, Set<string>>();
+        allGuideTraces.forEach(({ guide, invoice }) => {
+            if (!guide) return;
+            guidesCountMap.set(guide, (guidesCountMap.get(guide) || 0) + 1);
+            if (invoice) {
+              if (!guideInvoicesMap.has(guide)) guideInvoicesMap.set(guide, new Set());
+              guideInvoicesMap.get(guide)!.add(invoice);
+            }
         });
 
         const wbLogicuartas = XLSX.read(logicuartasBuffer, { type: 'array', cellDates: true });
@@ -379,7 +457,8 @@ const ValidatorLogicuartas: React.FC<ValidatorLogicuartasProps> = ({ onReturn })
             const row = siopDataArray[i];
             const guia = row[guiaIndex];
             if (guia !== null && guia !== undefined && String(guia).trim() !== '') {
-                const guiaStr = String(guia).trim();
+                const guiaStr = normalizeGuideId(guia);
+                if (!guiaStr) continue;
                 siopMap.set(guiaStr, {
                     nombre: String(row[nombreIndex] || ''),
                     ped_valor_total: String(row[valorTotalIndex] || ''),
@@ -447,14 +526,14 @@ const ValidatorLogicuartas: React.FC<ValidatorLogicuartasProps> = ({ onReturn })
       const ajusteDefinedHeaders = [
         'FAC', 'DOC_CLI', 'ORIGEN', 'DESTINO', 'UND', 'P_REAL', 'P_FACTURADO', 'FLETE', 'MANEJO', 'TOTAL', 'RECAUDO', 'DECLARA', 'F_ENT', 'F_SOP', 'F_FAC',
         'TIPO COBRO', 'SIOP.NOMBRE', 'SIOP.PED_VALOR_TOTAL', 'SIOP.PED_GUIA_TTE', 'DESTINO_TIPO_COBRO', 'TARIFAS.COSTO MANEJO', 'FLETE FINAL', 'COSTO MANEJO NEGOCIADO',
-        'TOTAL NEGOCIADO', 'DIF FLETE', 'DIF COSTO MANEJO', 'DIF TOTAL', 'DOBLES.CANT COBRO PEDIDOS', 'COBRO DOBLE', 'OBSERVACIONES', 'ACCION', 'CONTABLE',
+        'TOTAL NEGOCIADO', 'DIF FLETE', 'DIF COSTO MANEJO', 'DIF TOTAL', 'DOBLES.CANT COBRO PEDIDOS', 'COBRO DOBLE', 'FACTURAS DONDE SE COBRO', 'OBSERVACIONES', 'ACCION', 'CONTABLE',
         'TIPO', 'CLASIFICACION', 'FECHA FACTURA'
       ];
 
       const processedAjusteData = jsonDataLogicuartas.map((row, index) => {
           const productoValue = row[findCaseInsensitiveKey(row, 'PRODUCTO') || ''] || '';
           const tipoCobro = productoValue === 'ECOMMERCE 1-10K' ? 'ECOMMERCE' : 'BODEGA';
-          const guia = String(row[findCaseInsensitiveKey(row, 'GUIA') || ''] || '').trim();
+          const guia = normalizeGuideId(row[findCaseInsensitiveKey(row, 'GUIA') || '']);
           const siopInfo = siopMap.get(guia);
           const destino = String(row[findCaseInsensitiveKey(row, 'DESTINO') || ''] || '').toUpperCase();
           const destinoTipoCobro = `${destino}-${tipoCobro}`;
@@ -462,6 +541,10 @@ const ValidatorLogicuartas: React.FC<ValidatorLogicuartasProps> = ({ onReturn })
           
           const cantCobroPedidos = guia ? guidesCountMap.get(guia) || 0 : 0;
           const cobroDoble = cantCobroPedidos > 1 ? 'OJO REVISAR COBRO DOBLE' : 'UN SOLO COBRO';
+          const invoiceRefs = guia ? [...(guideInvoicesMap.get(guia) || [])] : [];
+          const billedInvoices = cantCobroPedidos > 1
+            ? (invoiceRefs.length > 0 ? invoiceRefs.join(', ') : (factura ? factura : 'SIN REFERENCIA DE FACTURA'))
+            : '';
 
           const recaudoValue = parseFloat(String(row[findCaseInsensitiveKey(row, 'RECAUDO') || ''] || '0').replace(/[^0-9.-]+/g, ""));
           const clasificacion = recaudoValue > 0 ? 'CONTRAENTREGA' : 'ENVIO NORMAL';
@@ -491,6 +574,7 @@ const ValidatorLogicuartas: React.FC<ValidatorLogicuartasProps> = ({ onReturn })
               'FLETE FINAL': tarifaInfo?.valor || '0', 
               'DOBLES.CANT COBRO PEDIDOS': cantCobroPedidos,
               'COBRO DOBLE': cobroDoble,
+              'FACTURAS DONDE SE COBRO': billedInvoices,
               'TIPO': 'DOMICILIO',
               'CLASIFICACION': clasificacion,
               'FECHA FACTURA': fechaFactura ? new Date(fechaFactura + 'T00:00:00').toLocaleDateString('es-CO') : '',
