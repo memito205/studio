@@ -24,11 +24,13 @@ const NEW_NEGOTIATED_VALUE_COL = 'VALOR A COBRAR NEGOCIADO';
 const NEW_DIF_FLETE_COL = 'DIF FLETE';
 const NEW_TIMES_BILLED_COL = 'VECES COBRADO';
 const NEW_DOUBLE_BILLING_COL = 'COBRO DOBLE';
+const NEW_BILLED_INVOICES_COL = 'FACTURAS DONDE SE COBRO';
 const NEW_OBSERVATIONS_COL = 'OBSERVACIONES';
 const NEW_ACTION_COL = 'ACCION';
 const NEW_FINAL_CLASSIFICATION_COL = 'CLASIFICACION FINAL'; // The new one we generate
 const NEW_CONTABLE_COL = 'CONTABLE';
 const NEW_TIPO_COL = 'TIPO';
+const MINUTOS_INVOICE_COL_ALIASES = ['FACTURA', 'NRO FACTURA', 'NO FACTURA', 'NUMERO FACTURA', 'NÚMERO FACTURA'];
 
 
 // Date columns to format from Excel serial number to readable date
@@ -291,6 +293,33 @@ const findCaseInsensitiveKey = (obj: CsvRow | undefined, key: string): string | 
     return Object.keys(obj).find(k => k.toLowerCase() === lowerCaseKey);
 };
 
+const findFirstCaseInsensitiveKey = (obj: CsvRow | undefined, aliases: string[]): string | undefined => {
+    for (const alias of aliases) {
+        const match = findCaseInsensitiveKey(obj, alias);
+        if (match) return match;
+    }
+    return undefined;
+};
+
+/**
+ * Normaliza una guía para comparación de duplicados entre archivos:
+ * - trim
+ * - sin separadores comunes
+ * - mayúsculas
+ * - elimina ".0" típico de Excel numérico
+ * - si es puramente numérica, elimina ceros a la izquierda
+ */
+const normalizeGuideId = (value: unknown): string => {
+    let guide = String(value ?? '').trim();
+    if (!guide) return '';
+    guide = guide.replace(/[\s\-_/\\]/g, '').toUpperCase();
+    guide = guide.replace(/\.0+$/g, '');
+    if (/^\d+$/.test(guide)) {
+        guide = guide.replace(/^0+/, '');
+    }
+    return guide;
+};
+
 /**
  * Converts an Excel serial date number to a formatted string 'DD/MM/YYYY HH:mm'.
  * Uses the XLSX library's built-in parser for accuracy.
@@ -344,16 +373,13 @@ export const useFileProcessor = () => {
     }
 
     try {
-        const historicalGuidesPromises = historicalFiles.map(file => parseAndExtractColumn(file, MINUTOS_GUIDE_COL));
         const siopColumnsToExtract = [SIOP_GUIDE_COL, SIOP_NAME_COL];
 
-        const [minutosData, siopData, ...historicalGuidesArrays] = await Promise.all([
+        const [minutosData, siopData, ...historicalDataSets] = await Promise.all([
             parseFile(minutosFile),
             parseAndExtractMultipleColumns(siopFile, siopColumnsToExtract),
-            ...historicalGuidesPromises
+            ...historicalFiles.map(file => parseFile(file))
         ]);
-        
-        const allHistoricalGuides = historicalGuidesArrays.flat();
 
         const validationErrors: string[] = [];
         
@@ -367,6 +393,7 @@ export const useFileProcessor = () => {
         const actualMinutosVtaConNacCol = findCaseInsensitiveKey(minutosData[0], MINUTOS_VTA_CON_NAC_COL);
         const actualMinutosNotesCol = findCaseInsensitiveKey(minutosData[0], MINUTOS_NOTES_COL);
         const actualMinutosClassificationCol = findCaseInsensitiveKey(minutosData[0], MINUTOS_ORIGINAL_CLASSIFICATION_COL);
+        const actualMinutosInvoiceCol = findFirstCaseInsensitiveKey(minutosData[0], MINUTOS_INVOICE_COL_ALIASES);
 
         // Validate headers existence in main files
         if (minutosData.length > 0) {
@@ -389,21 +416,48 @@ export const useFileProcessor = () => {
             return;
         }
         
-        // Create total billing count map from all files
+        // Create total billing count map and invoice trace map from all files
         const totalGuidesCount = new Map<string, number>();
+        const guideInvoiceRefs = new Map<string, Set<string>>();
         if (actualMinutosGuideCol) {
             // Count from current "99 Minutos" file
             for (const row of minutosData) {
                 const guide = row[actualMinutosGuideCol];
                 if (guide) {
-                    const guideStr = String(guide).trim();
+                    const guideStr = normalizeGuideId(guide);
+                    if (!guideStr) continue;
                     totalGuidesCount.set(guideStr, (totalGuidesCount.get(guideStr) || 0) + 1);
+                    const invoiceRaw = actualMinutosInvoiceCol ? String(row[actualMinutosInvoiceCol] || '').trim() : '';
+                    if (invoiceRaw) {
+                        if (!guideInvoiceRefs.has(guideStr)) guideInvoiceRefs.set(guideStr, new Set());
+                        guideInvoiceRefs.get(guideStr)!.add(invoiceRaw);
+                    }
                 }
             }
-            // Count from historical files (pre-extracted string array)
-            for (const guide of allHistoricalGuides) {
-                const guideStr = String(guide).trim();
-                totalGuidesCount.set(guideStr, (totalGuidesCount.get(guideStr) || 0) + 1);
+            // Count from historical files (guide + possible invoice aliases)
+            for (const historicalRows of historicalDataSets) {
+                if (!historicalRows.length) continue;
+                const histGuideCol = findFirstCaseInsensitiveKey(historicalRows[0], [
+                    MINUTOS_GUIDE_COL,
+                    'GUIA',
+                    'GUÍA',
+                    'NRO GUIA',
+                    'NUMERO GUIA',
+                    'N° GUIA',
+                ]);
+                if (!histGuideCol) continue;
+                const histInvoiceCol = findFirstCaseInsensitiveKey(historicalRows[0], MINUTOS_INVOICE_COL_ALIASES);
+                for (const hRow of historicalRows) {
+                    const guideVal = hRow[histGuideCol];
+                    const guideStr = normalizeGuideId(guideVal);
+                    if (!guideStr) continue;
+                    totalGuidesCount.set(guideStr, (totalGuidesCount.get(guideStr) || 0) + 1);
+                    const invoiceRaw = histInvoiceCol ? String(hRow[histInvoiceCol] || '').trim() : '';
+                    if (invoiceRaw) {
+                        if (!guideInvoiceRefs.has(guideStr)) guideInvoiceRefs.set(guideStr, new Set());
+                        guideInvoiceRefs.get(guideStr)!.add(invoiceRaw);
+                    }
+                }
             }
         }
 
@@ -477,13 +531,19 @@ export const useFileProcessor = () => {
             
             // 5. Billing count columns
             if (actualMinutosGuideCol) {
-                const minutosGuide = String(newRow[actualMinutosGuideCol] || '').trim();
+                const minutosGuide = normalizeGuideId(newRow[actualMinutosGuideCol]);
                 const timesBilled = minutosGuide ? totalGuidesCount.get(minutosGuide) || 0 : 0;
                 newRow[NEW_TIMES_BILLED_COL] = String(timesBilled);
                 newRow[NEW_DOUBLE_BILLING_COL] = timesBilled > 1 ? 'OJO REVISAR COBRADO MAS DE 1 VEZ' : 'UN SOLO COBRO';
+                const invoiceList = minutosGuide ? [...(guideInvoiceRefs.get(minutosGuide) || [])] : [];
+                newRow[NEW_BILLED_INVOICES_COL] =
+                    timesBilled > 1
+                        ? (invoiceList.length > 0 ? invoiceList.join(', ') : 'SIN REFERENCIA DE FACTURA')
+                        : '';
             } else {
                 newRow[NEW_TIMES_BILLED_COL] = 'N/A';
                 newRow[NEW_DOUBLE_BILLING_COL] = 'N/A';
+                newRow[NEW_BILLED_INVOICES_COL] = 'N/A';
             }
 
             // 6. Get value from original 'CLASIFICACION' column (from the input file).
@@ -534,6 +594,7 @@ export const useFileProcessor = () => {
             NEW_DIF_FLETE_COL,
             NEW_TIMES_BILLED_COL,
             NEW_DOUBLE_BILLING_COL,
+            NEW_BILLED_INVOICES_COL,
             NEW_OBSERVATIONS_COL,
             NEW_ACTION_COL,
             NEW_CONTABLE_COL,
