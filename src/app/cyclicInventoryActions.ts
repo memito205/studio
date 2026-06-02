@@ -1,5 +1,6 @@
 'use server';
 
+import { unstable_noStore as noStore } from 'next/cache';
 import { firestore } from '@/services/firebase';
 import {
   collection,
@@ -67,6 +68,41 @@ function normLoc(s: string) {
 }
 function normSize(s: string) {
   return String(s || '').trim();
+}
+
+/** Talla del catálogo: importaciones usan `talla`; edición manual escribe `size`. Si difieren, prioriza `size`. */
+function resolveCatalogSize(raw: Record<string, unknown>): string {
+  const talla = String(raw.talla ?? '').trim();
+  const size = String(raw.size ?? '').trim();
+  const detalle = String(raw.detalle_ext ?? raw.detalle ?? '').trim();
+  if (size && talla && size !== talla) {
+    return normSize(size);
+  }
+  return normSize(talla || size || detalle);
+}
+
+/** Referencia del catálogo con la misma regla de prioridad que talla cuando hay campos duplicados. */
+function resolveCatalogReference(raw: Record<string, unknown>): string {
+  const referencia = String(raw.referencia ?? '').trim();
+  const reference = String(raw.reference ?? '').trim();
+  if (reference && referencia && normRef(reference) !== normRef(referencia)) {
+    return normRef(reference);
+  }
+  return normRef(referencia || reference);
+}
+
+function mapCatalogBarcodeDoc(
+  barcode: string,
+  raw: Record<string, unknown>
+): { barcode: string; reference: string; size: string; productName: string } | null {
+  const reference = resolveCatalogReference(raw);
+  if (!reference) return null;
+  return {
+    barcode,
+    reference,
+    size: resolveCatalogSize(raw),
+    productName: String(raw.descripcion_del_producto ?? raw.name ?? raw.nombre_rk ?? raw.item ?? '').trim(),
+  };
 }
 
 function lineRefLocSizeKey(reference: string, size: string, location: string): string {
@@ -715,45 +751,38 @@ export async function resolveCyclicInventoryBarcode(input: {
   };
   error?: string;
 }> {
+  noStore();
   try {
     const barcode = String(input.barcode || '').trim();
     if (!barcode) return { success: false, error: 'Código de barras vacío.' };
 
     const direct = await getDoc(doc(firestore, 'productDatabase', barcode));
     if (direct.exists()) {
-      const raw = direct.data() as Record<string, unknown>;
-      const reference = normRef(String(raw.referencia ?? raw.reference ?? ''));
-      if (!reference) {
+      const mapped = mapCatalogBarcodeDoc(barcode, direct.data() as Record<string, unknown>);
+      if (!mapped) {
         return { success: false, error: 'El código existe pero no tiene referencia asociada.' };
       }
-      return {
-        success: true,
-        data: {
-          barcode,
-          reference,
-          size: normSize(String(raw.talla ?? raw.size ?? '')),
-          productName: String(raw.descripcion_del_producto ?? raw.name ?? raw.nombre_rk ?? '').trim(),
-        },
-      };
+      return { success: true, data: mapped };
     }
 
     const qy = query(collection(firestore, 'productDatabase'), where('barcode', '==', barcode), limit(1));
     const snap = await getDocs(qy);
     if (!snap.empty) {
-      const raw = snap.docs[0].data() as Record<string, unknown>;
-      const reference = normRef(String(raw.referencia ?? raw.reference ?? ''));
-      if (!reference) {
+      const mapped = mapCatalogBarcodeDoc(barcode, snap.docs[0].data() as Record<string, unknown>);
+      if (!mapped) {
         return { success: false, error: 'El código existe pero no tiene referencia asociada.' };
       }
-      return {
-        success: true,
-        data: {
-          barcode,
-          reference,
-          size: normSize(String(raw.talla ?? raw.size ?? '')),
-          productName: String(raw.descripcion_del_producto ?? raw.name ?? raw.nombre_rk ?? '').trim(),
-        },
-      };
+      return { success: true, data: mapped };
+    }
+
+    const altQy = query(collection(firestore, 'productDatabase'), where('codigoBarras', '==', barcode), limit(1));
+    const altSnap = await getDocs(altQy);
+    if (!altSnap.empty) {
+      const mapped = mapCatalogBarcodeDoc(barcode, altSnap.docs[0].data() as Record<string, unknown>);
+      if (!mapped) {
+        return { success: false, error: 'El código existe pero no tiene referencia asociada.' };
+      }
+      return { success: true, data: mapped };
     }
 
     return { success: false, error: 'Código no catalogado en productDatabase.' };

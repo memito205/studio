@@ -104,7 +104,9 @@ export const EditProductDialog: React.FC<EditProductDialogProps> = ({
         name: values.name,
         description: values.description || null,
         reference: values.reference || null,
+        referencia: values.reference || null,
         size: values.size || null,
+        talla: values.size || null,
         merchandise_type: brandVal,
         // Catálogo maestro (empaque): classifyProduct lee `marca`; antes solo se guardaba merchandise_type.
         marca: brandVal,
