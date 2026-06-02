@@ -555,11 +555,12 @@ export async function saveCyclicInventoryLineCount(input: {
   }
 }
 
-/** Crea línea con esperada 0 si no existe (sobrantes escaneados en ubicación sin esa referencia). */
+/** Crea línea con esperada 0 si no existe (sobrantes escaneados sin esa ref + talla + ubicación). */
 export async function ensureCyclicInventoryLineForRefLoc(input: {
   inventoryDate: string;
   reference: string;
   location: string;
+  size?: string;
 }): Promise<{ success: boolean; data?: CyclicInventoryLine; error?: string }> {
   try {
     const dateKey = String(input.inventoryDate || '').trim();
@@ -568,6 +569,7 @@ export async function ensureCyclicInventoryLineForRefLoc(input: {
     }
     const reference = normRef(input.reference);
     const location = normLoc(input.location);
+    const size = normSize(input.size ?? '');
     if (!reference) return { success: false, error: 'Referencia requerida.' };
     if (!location) return { success: false, error: 'Ubicación requerida.' };
 
@@ -575,7 +577,11 @@ export async function ensureCyclicInventoryLineForRefLoc(input: {
     const snap = await getDocs(qy);
     const existingDoc = snap.docs.find((d) => {
       const data = d.data() as Record<string, unknown>;
-      return normRef(String(data.reference ?? '')) === reference && normLoc(String(data.location ?? '')) === location;
+      return (
+        normRef(String(data.reference ?? '')) === reference &&
+        normLoc(String(data.location ?? '')) === location &&
+        normSize(String(data.size ?? '')) === size
+      );
     });
     if (existingDoc) {
       const raw = convertTimestampsToDates({ id: existingDoc.id, ...existingDoc.data() } as Record<string, unknown>);
@@ -586,7 +592,7 @@ export async function ensureCyclicInventoryLineForRefLoc(input: {
     const payload = {
       inventoryDate: dateKey,
       reference,
-      size: '',
+      size,
       location,
       expectedQty: 0,
       countedQty: null,

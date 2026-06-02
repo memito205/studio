@@ -80,12 +80,18 @@ type LocationRecountRecommendation = {
   topPriority: DiffPriority;
 };
 
-function refLocKey(reference: string, location: string): string {
-  return `${String(reference || '').trim().toUpperCase()}|${String(location || '').trim()}`;
-}
-
 function refLocSizeKey(reference: string, size: string, location: string): string {
   return `${String(reference || '').trim().toUpperCase()}|${String(size || '').trim()}|${String(location || '').trim()}`;
+}
+
+function parseRefLocSizeKey(key: string): { reference: string; size: string; location: string } | null {
+  const parts = key.split('|');
+  if (parts.length < 3) return null;
+  return {
+    reference: parts[0],
+    size: parts.slice(1, -1).join('|'),
+    location: parts[parts.length - 1],
+  };
 }
 
 function formatSize(size?: string): string {
@@ -139,6 +145,7 @@ type ScanEvent = {
   at: string;
   barcode: string;
   reference?: string;
+  size?: string;
   location?: string;
   correctLocations?: string[];
   status: ScanEventStatus;
@@ -603,10 +610,10 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     }
   }, [availableLocations, scanLocation]);
 
-  const linesByRefLoc = useMemo(() => {
+  const linesByRefLocSize = useMemo(() => {
     const map = new Map<string, InventoryLineView>();
     for (const line of lines) {
-      map.set(refLocKey(line.reference, line.location), line);
+      map.set(refLocSizeKey(line.reference, line.size ?? '', line.location), line);
     }
     return map;
   }, [lines]);
@@ -619,7 +626,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
 
     for (const line of lines) {
       if (String(line.location || '').trim() !== loc) continue;
-      const key = refLocKey(line.reference, line.location);
+      const key = refLocSizeKey(line.reference, line.size ?? '', line.location);
       keysInTable.add(key);
       const expected = Math.max(0, Math.floor(Number(line.expectedQty) || 0));
       const scannedQty = scanSessionCounts[key] ?? 0;
@@ -635,15 +642,19 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     for (const [key, scannedQty] of Object.entries(scanSessionCounts)) {
       if (scannedQty <= 0) continue;
       if (keysInTable.has(key)) continue;
-      const sep = key.indexOf('|');
-      if (sep < 0) continue;
-      const reference = key.slice(0, sep);
-      const rowLoc = key.slice(sep + 1);
+      const parsed = parseRefLocSizeKey(key);
+      if (!parsed) continue;
+      const { reference, size, location: rowLoc } = parsed;
       if (rowLoc !== loc) continue;
       const correctLocations = [
         ...new Set(
           lines
-            .filter((l) => l.reference === reference && String(l.location || '').trim() !== loc)
+            .filter(
+              (l) =>
+                l.reference === reference &&
+                (l.size ?? '') === size &&
+                String(l.location || '').trim() !== loc
+            )
             .map((l) => String(l.location || '').trim())
             .filter(Boolean)
         ),
@@ -652,7 +663,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
         id: `pending-${key}`,
         inventoryDate,
         reference,
-        size: '',
+        size,
         location: rowLoc,
         expectedQty: 0,
         countedQty: null,
@@ -670,7 +681,9 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
 
     out.sort((a, b) => {
       if (a.isExtraneous !== b.isExtraneous) return a.isExtraneous ? 1 : -1;
-      return a.line.reference.localeCompare(b.line.reference);
+      const byRef = a.line.reference.localeCompare(b.line.reference);
+      if (byRef !== 0) return byRef;
+      return String(a.line.size ?? '').localeCompare(String(b.line.size ?? ''));
     });
     return out;
   }, [lines, scanLocation, scanSessionCounts, inventoryDate]);
@@ -1009,31 +1022,51 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
         });
         return;
       }
-      const lineKey = refLocKey(found.data.reference, scanLocation);
-      const line = linesByRefLoc.get(lineKey);
+      const scanSize = found.data.size ?? '';
+      const sizeLabel = scanSize ? ` talla ${scanSize}` : '';
+      const lineKey = refLocSizeKey(found.data.reference, scanSize, scanLocation);
+      const line = linesByRefLocSize.get(lineKey);
       const correctLocations = [
         ...new Set(
           lines
-            .filter((x) => x.reference === found.data.reference)
+            .filter(
+              (x) =>
+                x.reference === found.data.reference &&
+                (x.size ?? '') === scanSize &&
+                String(x.location || '').trim() !== scanLocation.trim()
+            )
             .map((x) => String(x.location || '').trim())
-            .filter((loc) => loc && loc !== scanLocation.trim())
+            .filter(Boolean)
         ),
       ];
 
       if (!line) {
-        const hasAnyReference = lines.some((x) => x.reference === found.data.reference);
+        const hasRefSizeElsewhere = correctLocations.length > 0;
+        const hasReferenceAtScanLoc = lines.some(
+          (x) => x.reference === found.data.reference && String(x.location || '').trim() === scanLocation.trim()
+        );
+        const hasReferenceAnywhere = lines.some((x) => x.reference === found.data.reference);
         setScanSessionCounts((prev) => ({ ...prev, [lineKey]: (prev[lineKey] ?? 0) + 1 }));
         pushScanEvent({
           barcode,
           reference: found.data.reference,
+          size: scanSize || undefined,
           location: scanLocation,
-          correctLocations: hasAnyReference ? correctLocations : undefined,
-          status: hasAnyReference ? 'not_in_location' : 'not_in_inventory',
-          message: hasAnyReference
-            ? correctLocations.length > 0
-              ? `La referencia ${found.data.reference} no pertenece a ${scanLocation}. Según inventario del día está en: ${correctLocations.join(', ')}. Se registró +1 como sobrante en esta ubicación.`
-              : `La referencia ${found.data.reference} no pertenece a ${scanLocation}. Se registró +1 como sobrante en esta ubicación.`
-            : `La referencia ${found.data.reference} no está en el inventario del día. Se registró +1 como sobrante en ${scanLocation}.`,
+          correctLocations: hasRefSizeElsewhere ? correctLocations : undefined,
+          status: hasRefSizeElsewhere
+            ? 'not_in_location'
+            : hasReferenceAnywhere
+              ? hasReferenceAtScanLoc
+                ? 'not_in_inventory'
+                : 'not_in_location'
+              : 'not_in_inventory',
+          message: hasRefSizeElsewhere
+            ? `La referencia ${found.data.reference}${sizeLabel} no pertenece a ${scanLocation}. Según inventario está en: ${correctLocations.join(', ')}. +1 sobrante aquí.`
+            : hasReferenceAtScanLoc
+              ? `La referencia ${found.data.reference}${sizeLabel} no está catalogada en ${scanLocation} (hay otras tallas). +1 sobrante.`
+              : hasReferenceAnywhere
+                ? `La referencia ${found.data.reference}${sizeLabel} no pertenece a ${scanLocation}. +1 sobrante en esta ubicación.`
+                : `La referencia ${found.data.reference}${sizeLabel} no está en el inventario del día. +1 sobrante en ${scanLocation}.`,
         });
         return;
       }
@@ -1041,9 +1074,10 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       pushScanEvent({
         barcode,
         reference: found.data.reference,
+        size: scanSize || undefined,
         location: scanLocation,
         status: 'ok',
-        message: `${found.data.reference} +1`,
+        message: `${found.data.reference}${sizeLabel} +1`,
       });
     } catch (e: unknown) {
       pushScanEvent({
@@ -1083,10 +1117,12 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
             inventoryDate,
             reference: row.line.reference,
             location: row.line.location,
+            size: row.line.size ?? '',
           });
           if (!ensured.success || !ensured.data?.id) {
+            const sizeHint = row.line.size ? ` talla ${row.line.size}` : '';
             throw new Error(
-              `No se pudo registrar sobrante ${row.line.reference}: ${ensured.error || 'sin línea'}`
+              `No se pudo registrar sobrante ${row.line.reference}${sizeHint}: ${ensured.error || 'sin línea'}`
             );
           }
           lineIds = [ensured.data.id];
@@ -1099,10 +1135,11 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
           countedByName: user.displayName || user.email || '',
         });
         if (!save.success) {
-          throw new Error(`Error guardando ${row.line.reference}: ${save.error || 'falló el guardado'}`);
+          const sizeHint = row.line.size ? ` / ${row.line.size}` : '';
+          throw new Error(`Error guardando ${row.line.reference}${sizeHint}: ${save.error || 'falló el guardado'}`);
         }
       }
-      toast({ title: 'Escaneo', description: `Se guardaron ${targets.length} referencias de reconteo.` });
+      toast({ title: 'Escaneo', description: `Se guardaron ${targets.length} línea(s) de reconteo.` });
       setScanSessionCounts({});
       await loadLines();
     } catch (e: unknown) {
@@ -1749,8 +1786,8 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
             <CardHeader>
               <CardTitle>Escaneo de reconteo por ubicación</CardTitle>
               <CardDescription>
-                Escanee códigos para acumular conteo físico en tiempo real. Solo se guarda en inventario cuando pulse
-                <strong> Guardar reconteo escaneado</strong>.
+                Escanee códigos de barras: cada lectura suma +1 a la combinación referencia + talla (del catálogo) + ubicación
+                seleccionada. Solo se guarda en inventario cuando pulse <strong> Guardar reconteo escaneado</strong>.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -1812,7 +1849,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
 
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                 <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">Referencias escaneadas (ubicación seleccionada)</p>
+                  <p className="text-xs text-muted-foreground">Líneas escaneadas (ref + talla en ubicación)</p>
                   <p className="text-2xl font-semibold">{scanRows.filter((r) => r.scannedQty > 0).length}</p>
                 </div>
                 <div className="rounded-md border p-3">
@@ -1859,7 +1896,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                               ) : null}
                               {row.isExtraneous && row.correctLocations && row.correctLocations.length > 0 ? (
                                 <span className="text-[10px] text-muted-foreground font-normal">
-                                  Ubicación esperada: {row.correctLocations.join(', ')}
+                                  Ubicación esperada ({formatSize(row.line.size)}): {row.correctLocations.join(', ')}
                                 </span>
                               ) : null}
                             </div>
@@ -1888,7 +1925,10 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                       <div key={ev.id} className="flex items-center justify-between gap-3 rounded border px-3 py-2">
                         <div className="min-w-0">
                           <p className="text-xs font-mono truncate">
-                            {ev.barcode} {ev.reference ? `-> ${ev.reference}` : ''}
+                            {ev.barcode}{' '}
+                            {ev.reference
+                              ? `-> ${ev.reference}${ev.size ? ` / ${ev.size}` : ''}`
+                              : ''}
                           </p>
                           <p className="text-xs text-muted-foreground truncate">{ev.message}</p>
                         </div>
