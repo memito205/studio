@@ -14,13 +14,14 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import type { CyclicInventoryCountRecord, CyclicInventoryDayMeta, CyclicInventoryLine } from '@/types';
-import { findCaseInsensitiveKey, parseRobustNumber } from '@/lib/parsingUtils';
+import { findCaseInsensitiveKey, normalizeHeader, parseRobustNumber } from '@/lib/parsingUtils';
 import { getCyclicCountDiff } from '@/lib/cyclicInventoryDiff';
 import { isValidInventoryDateKey } from '@/lib/cyclicInventoryDate';
 import {
   buildCyclicInventoryReliabilitySnapshot,
   createInventoryAdjustment,
   deleteInventoryAdjustment,
+  ensureCyclicInventoryLineForRefLoc,
   getCyclicInventoryLinesForDate,
   importCyclicInventoryForDate,
   listInventoryAdjustmentsForDate,
@@ -82,6 +83,45 @@ function refLocKey(reference: string, location: string): string {
   return `${String(reference || '').trim().toUpperCase()}|${String(location || '').trim()}`;
 }
 
+function findColumnKeyIncludes(
+  obj: Record<string, unknown> | undefined,
+  ...needles: string[]
+): string | undefined {
+  if (!obj) return undefined;
+  const exact = findCaseInsensitiveKey(obj, ...needles);
+  if (exact) return exact;
+  const keys = Object.keys(obj);
+  for (const needle of needles) {
+    const n = normalizeHeader(needle);
+    if (!n) continue;
+    const hits = keys.filter((k) => normalizeHeader(k).includes(n));
+    if (hits.length === 0) continue;
+    if (hits.length === 1) return hits[0];
+    const preferred =
+      hits.find((k) => /\b(tot|total)\b/i.test(k)) ||
+      hits.find((k) => normalizeHeader(k).includes('existencia')) ||
+      hits[0];
+    return preferred;
+  }
+  return undefined;
+}
+
+function cyclicUnitAccuracyAggregate(
+  pairs: Array<{ expected: number; counted: number | null | undefined }>
+): number {
+  let match = 0;
+  let compare = 0;
+  for (const { expected, counted } of pairs) {
+    if (counted === null || counted === undefined) continue;
+    const e = Math.max(0, Math.floor(Number(expected) || 0));
+    const c = Math.max(0, Math.floor(Number(counted) || 0));
+    match += Math.min(e, c);
+    compare += Math.max(e, c);
+  }
+  if (compare === 0) return 1;
+  return match / compare;
+}
+
 type ScanEventStatus = 'ok' | 'uncataloged' | 'not_in_location' | 'not_in_inventory';
 
 type ScanEvent = {
@@ -90,8 +130,18 @@ type ScanEvent = {
   barcode: string;
   reference?: string;
   location?: string;
+  correctLocations?: string[];
   status: ScanEventStatus;
   message: string;
+};
+
+type ScanRowView = {
+  key: string;
+  line: InventoryLineView;
+  scannedQty: number;
+  diff: number;
+  isExtraneous: boolean;
+  correctLocations?: string[];
 };
 
 type ReliabilityBucket = {
@@ -118,6 +168,7 @@ type ReliabilitySnapshot = {
   shortageUnits: number;
   overageUnits: number;
   accuracyRate: number;
+  unitAccuracyRate?: number;
   countedRate: number;
   byBrand: ReliabilityBucket[];
   byLocation: ReliabilityBucket[];
@@ -212,15 +263,28 @@ function parseImportRows(raw: unknown[]): { reference: string; size: string; loc
     if (!row || typeof row !== 'object') continue;
     const r = row as Record<string, unknown>;
     const reference = readCell(r, 'referencia', 'ref', 'reference', 'codigo_referencia');
-    const size = readCell(r, 'talla', 'size', 'detalle', 'detalle_ext');
+    const sizeKey =
+      findCaseInsensitiveKey(r, 'talla', 'size', 'detalle_ext', 'detalle') ||
+      findColumnKeyIncludes(r, 'detalle_ext', 'detalle');
+    const size = sizeKey ? String(r[sizeKey] ?? '').trim() : '';
     const location = readCell(r, 'ubicacion', 'location', 'loc', 'ubicación');
     const qtyKey =
       findCaseInsensitiveKey(r, 'cantidad_esperada', 'esperada', 'qty', 'cantidad', 'stock', 'inventario', 'existencia') ||
-      findCaseInsensitiveKey(r, 'cant');
+      findCaseInsensitiveKey(r, 'cant') ||
+      findColumnKeyIncludes(
+        r,
+        'existencia',
+        'cantidad_esperada',
+        'inventario',
+        'stock',
+        'cantidad',
+        'esperada'
+      );
     const qtyRaw = qtyKey ? r[qtyKey] : undefined;
-    const expectedQty = Number.isFinite(Number(qtyRaw))
-      ? Number(qtyRaw)
-      : parseRobustNumber(String(qtyRaw ?? ''));
+    const expectedQty =
+      typeof qtyRaw === 'number' && Number.isFinite(qtyRaw)
+        ? qtyRaw
+        : parseRobustNumber(qtyRaw as string | number | null | undefined);
     if (!reference) continue;
     out.push({
       reference,
@@ -532,23 +596,69 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     return map;
   }, [lines]);
 
-  const scanRows = useMemo(() => {
-    if (!scanLocation) return [] as Array<{ key: string; line: InventoryLineView; scannedQty: number; diff: number }>;
-    const out: Array<{ key: string; line: InventoryLineView; scannedQty: number; diff: number }> = [];
+  const scanRows = useMemo((): ScanRowView[] => {
+    if (!scanLocation) return [];
+    const loc = scanLocation.trim();
+    const out: ScanRowView[] = [];
+    const keysInTable = new Set<string>();
+
     for (const line of lines) {
-      if (String(line.location || '').trim() !== scanLocation) continue;
+      if (String(line.location || '').trim() !== loc) continue;
       const key = refLocKey(line.reference, line.location);
+      keysInTable.add(key);
+      const expected = Math.max(0, Math.floor(Number(line.expectedQty) || 0));
       const scannedQty = scanSessionCounts[key] ?? 0;
       out.push({
         key,
         line,
         scannedQty,
-        diff: scannedQty - Math.max(0, Math.floor(Number(line.expectedQty) || 0)),
+        diff: scannedQty - expected,
+        isExtraneous: false,
       });
     }
-    out.sort((a, b) => a.line.reference.localeCompare(b.line.reference));
+
+    for (const [key, scannedQty] of Object.entries(scanSessionCounts)) {
+      if (scannedQty <= 0) continue;
+      if (keysInTable.has(key)) continue;
+      const sep = key.indexOf('|');
+      if (sep < 0) continue;
+      const reference = key.slice(0, sep);
+      const rowLoc = key.slice(sep + 1);
+      if (rowLoc !== loc) continue;
+      const correctLocations = [
+        ...new Set(
+          lines
+            .filter((l) => l.reference === reference && String(l.location || '').trim() !== loc)
+            .map((l) => String(l.location || '').trim())
+            .filter(Boolean)
+        ),
+      ];
+      const virtualLine: InventoryLineView = {
+        id: `pending-${key}`,
+        inventoryDate,
+        reference,
+        size: '',
+        location: rowLoc,
+        expectedQty: 0,
+        countedQty: null,
+        consolidatedLineIds: [],
+      };
+      out.push({
+        key,
+        line: virtualLine,
+        scannedQty,
+        diff: scannedQty,
+        isExtraneous: true,
+        correctLocations,
+      });
+    }
+
+    out.sort((a, b) => {
+      if (a.isExtraneous !== b.isExtraneous) return a.isExtraneous ? 1 : -1;
+      return a.line.reference.localeCompare(b.line.reference);
+    });
     return out;
-  }, [lines, scanLocation, scanSessionCounts]);
+  }, [lines, scanLocation, scanSessionCounts, inventoryDate]);
 
   const allDiffRows = useMemo<InventoryDiffRow[]>(() => {
     const previousExpectedByKey = new Map<string, number>();
@@ -666,12 +776,25 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
         overageUnits: 0,
       }
     );
+    const unitAccuracyRate =
+      reliabilityRows.length > 0
+        ? reliabilityRows.reduce((sum, s) => sum + (s.unitAccuracyRate ?? 0), 0) / reliabilityRows.length
+        : cyclicUnitAccuracyAggregate(
+            lines
+              .filter((l) => l.countedQty !== null && l.countedQty !== undefined)
+              .map((l) => ({
+                expected: Math.max(0, Math.floor(Number(l.expectedQty) || 0)),
+                counted: l.countedQty,
+              }))
+          );
+
     return {
       ...total,
       countedRate: total.totalLines > 0 ? total.countedLines / total.totalLines : 0,
       accuracyRate: total.countedLines > 0 ? total.accurateLines / total.countedLines : 0,
+      unitAccuracyRate,
     };
-  }, [reliabilityRows]);
+  }, [reliabilityRows, lines]);
 
   const reliabilityByMonth = useMemo(() => {
     const map = new Map<string, { month: string; totalLines: number; countedLines: number; accurateLines: number; absDiffTotal: number }>();
@@ -863,16 +986,29 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       }
       const lineKey = refLocKey(found.data.reference, scanLocation);
       const line = linesByRefLoc.get(lineKey);
+      const correctLocations = [
+        ...new Set(
+          lines
+            .filter((x) => x.reference === found.data.reference)
+            .map((x) => String(x.location || '').trim())
+            .filter((loc) => loc && loc !== scanLocation.trim())
+        ),
+      ];
+
       if (!line) {
         const hasAnyReference = lines.some((x) => x.reference === found.data.reference);
+        setScanSessionCounts((prev) => ({ ...prev, [lineKey]: (prev[lineKey] ?? 0) + 1 }));
         pushScanEvent({
           barcode,
           reference: found.data.reference,
           location: scanLocation,
+          correctLocations: hasAnyReference ? correctLocations : undefined,
           status: hasAnyReference ? 'not_in_location' : 'not_in_inventory',
           message: hasAnyReference
-            ? `La referencia ${found.data.reference} no pertenece a la ubicación ${scanLocation}.`
-            : `La referencia ${found.data.reference} no está en el inventario del día.`,
+            ? correctLocations.length > 0
+              ? `La referencia ${found.data.reference} no pertenece a ${scanLocation}. Según inventario del día está en: ${correctLocations.join(', ')}. Se registró +1 como sobrante en esta ubicación.`
+              : `La referencia ${found.data.reference} no pertenece a ${scanLocation}. Se registró +1 como sobrante en esta ubicación.`
+            : `La referencia ${found.data.reference} no está en el inventario del día. Se registró +1 como sobrante en ${scanLocation}.`,
         });
         return;
       }
@@ -911,8 +1047,28 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     setSavingScanCounts(true);
     try {
       for (const row of targets) {
+        let lineIds = row.line.consolidatedLineIds?.length
+          ? row.line.consolidatedLineIds
+          : row.line.id && !row.line.id.startsWith('pending-')
+            ? [row.line.id]
+            : [];
+
+        if (lineIds.length === 0) {
+          const ensured = await ensureCyclicInventoryLineForRefLoc({
+            inventoryDate,
+            reference: row.line.reference,
+            location: row.line.location,
+          });
+          if (!ensured.success || !ensured.data?.id) {
+            throw new Error(
+              `No se pudo registrar sobrante ${row.line.reference}: ${ensured.error || 'sin línea'}`
+            );
+          }
+          lineIds = [ensured.data.id];
+        }
+
         const save = await saveCyclicInventoryLineCount({
-          lineIds: row.line.consolidatedLineIds ?? [row.line.id],
+          lineIds,
           countedQty: row.scannedQty,
           countedBy: user.uid,
           countedByName: user.displayName || user.email || '',
@@ -1237,9 +1393,14 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                 ) : null}
               </div>
 
-              <div className="grid gap-4 md:grid-cols-4">
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
                 <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">Exactitud (líneas contadas)</p>
+                  <p className="text-xs text-muted-foreground">Exactitud por unidades</p>
+                  <p className="text-2xl font-semibold">{percent(reliabilityKpis.unitAccuracyRate)}</p>
+                  <p className="text-[11px] text-muted-foreground mt-1">Ej. esperada 3 y contada 6 → 50%</p>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Exactitud (líneas cuadradas)</p>
                   <p className="text-2xl font-semibold">{percent(reliabilityKpis.accuracyRate)}</p>
                 </div>
                 <div className="rounded-md border p-3">
@@ -1264,14 +1425,15 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                       <TableHead className="text-right">Líneas</TableHead>
                       <TableHead className="text-right">Contadas</TableHead>
                       <TableHead className="text-right">Exactas</TableHead>
-                      <TableHead className="text-right">Exactitud</TableHead>
+                      <TableHead className="text-right">Exact. unidades</TableHead>
+                      <TableHead className="text-right">Exact. líneas</TableHead>
                       <TableHead className="text-right">Cobertura</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {reliabilityRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                        <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
                           No hay snapshots en el rango.
                         </TableCell>
                       </TableRow>
@@ -1282,6 +1444,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                           <TableCell className="text-right">{r.totalLines}</TableCell>
                           <TableCell className="text-right">{r.countedLines}</TableCell>
                           <TableCell className="text-right">{r.accurateLines}</TableCell>
+                          <TableCell className="text-right">{percent(r.unitAccuracyRate ?? 0)}</TableCell>
                           <TableCell className="text-right">{percent(r.accuracyRate)}</TableCell>
                           <TableCell className="text-right">{percent(r.countedRate)}</TableCell>
                         </TableRow>
@@ -1610,7 +1773,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                 </Button>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                 <div className="rounded-md border p-3">
                   <p className="text-xs text-muted-foreground">Referencias escaneadas (ubicación seleccionada)</p>
                   <p className="text-2xl font-semibold">{scanRows.filter((r) => r.scannedQty > 0).length}</p>
@@ -1618,6 +1781,12 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                 <div className="rounded-md border p-3">
                   <p className="text-xs text-muted-foreground">Escaneos totales de sesión</p>
                   <p className="text-2xl font-semibold">{scanRows.reduce((sum, r) => sum + r.scannedQty, 0)}</p>
+                </div>
+                <div className="rounded-md border p-3 md:col-span-2">
+                  <p className="text-xs text-muted-foreground">Unidades sobrantes en sesión (delta positivo)</p>
+                  <p className="text-2xl font-semibold text-amber-600">
+                    {scanRows.reduce((sum, r) => sum + Math.max(0, r.diff), 0)}
+                  </p>
                 </div>
               </div>
 
@@ -1641,13 +1810,27 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                       </TableRow>
                     ) : (
                       scanRows.map((row) => (
-                        <TableRow key={row.key}>
-                          <TableCell className="font-mono text-sm">{row.line.reference}</TableCell>
+                        <TableRow key={row.key} className={row.isExtraneous ? 'bg-amber-50/60' : undefined}>
+                          <TableCell className="font-mono text-sm">
+                            <div className="flex flex-col gap-1">
+                              <span>{row.line.reference}</span>
+                              {row.isExtraneous ? (
+                                <Badge variant="warning" className="w-fit text-[10px]">
+                                  Sobrante en ubicación
+                                </Badge>
+                              ) : null}
+                              {row.isExtraneous && row.correctLocations && row.correctLocations.length > 0 ? (
+                                <span className="text-[10px] text-muted-foreground font-normal">
+                                  Ubicación esperada: {row.correctLocations.join(', ')}
+                                </span>
+                              ) : null}
+                            </div>
+                          </TableCell>
                           <TableCell className="text-sm text-muted-foreground">{row.line.location || '—'}</TableCell>
                           <TableCell className="text-right">{row.line.expectedQty}</TableCell>
                           <TableCell className="text-right font-medium">{row.scannedQty}</TableCell>
                           <TableCell className={`text-right font-medium ${row.diff < 0 ? 'text-red-600' : row.diff > 0 ? 'text-amber-600' : ''}`}>
-                            {row.diff}
+                            {row.diff > 0 ? `+${row.diff}` : row.diff}
                           </TableCell>
                         </TableRow>
                       ))
@@ -1967,9 +2150,10 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Columnas Excel: <strong>Referencia</strong>, <strong>Ubicación</strong>,{' '}
-                  <strong>Cantidad esperada</strong> (Talla opcional; varias filas con la misma ref + ubicación se suman). También:
-                  Esperada, Stock, Inventario, Existencia. Use la pestaña Reporte de conteos para auditar todos los guardados.
+                  Columnas Excel: <strong>Referencia</strong>, <strong>Ubicación</strong>, cantidad (
+                  <strong>Cantidad esperada</strong>, <strong>Existencia (inv) Tot</strong>, Stock, Inventario, etc.; acepta formato
+                  1,00). Talla opcional (<strong>Detalle ext.</strong>). Varias filas con la misma ref + ubicación se suman. Use la
+                  pestaña Reporte de conteos para auditar todos los guardados.
                 </p>
               </CardContent>
             </Card>

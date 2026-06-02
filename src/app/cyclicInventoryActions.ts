@@ -21,7 +21,22 @@ import {
 } from 'firebase/firestore';
 import type { CyclicInventoryCountRecord, CyclicInventoryDayMeta, CyclicInventoryLine } from '@/types';
 import { isValidInventoryDateKey } from '@/lib/cyclicInventoryDate';
-import { cyclicUnitAccuracyAggregate } from '@/lib/cyclicUnitAccuracy';
+
+function cyclicUnitAccuracyAggregate(
+  pairs: Array<{ expected: number; counted: number | null | undefined }>
+): number {
+  let match = 0;
+  let compare = 0;
+  for (const { expected, counted } of pairs) {
+    if (counted === null || counted === undefined) continue;
+    const e = Math.max(0, Math.floor(Number(expected) || 0));
+    const c = Math.max(0, Math.floor(Number(counted) || 0));
+    match += Math.min(e, c);
+    compare += Math.max(e, c);
+  }
+  if (compare === 0) return 1;
+  return match / compare;
+}
 
 const LINES_BATCH = 400;
 const DELETE_CHUNK = 450;
