@@ -69,16 +69,8 @@ function normSize(s: string) {
   return String(s || '').trim();
 }
 
-function lineRefLocKey(reference: string, location: string): string {
-  return `${normRef(reference)}|${normLoc(location)}`;
-}
-
 function lineRefLocSizeKey(reference: string, size: string, location: string): string {
   return `${normRef(reference)}|${normSize(size)}|${normLoc(location)}`;
-}
-
-function adjustmentRefLocKey(reference: string, location: string): string {
-  return `${normRef(reference)}|${normLoc(location)}`;
 }
 
 function adjustmentRefLocSizeKey(reference: string, size: string, location: string): string {
@@ -145,7 +137,7 @@ async function deleteAllLinesForDate(inventoryDate: string): Promise<void> {
 
 type LatestCountState = { countedQty: number; countedAt: Timestamp; countedBy: string };
 
-/** Último conteo por ref + ubicación (v1 sin talla) desde la colección inmutable. */
+/** Último conteo por ref + talla + ubicación desde la colección inmutable. */
 async function fetchLatestCountStatePerKey(inventoryDate: string): Promise<Map<string, LatestCountState>> {
   const latest = new Map<string, LatestCountState>();
   const col = collection(firestore, COUNT_RECORDS_COL);
@@ -164,7 +156,11 @@ async function fetchLatestCountStatePerKey(inventoryDate: string): Promise<Map<s
     if (snap.empty) break;
     for (const d of snap.docs) {
       const x = d.data();
-      const key = lineRefLocKey(String(x.reference ?? ''), String(x.location ?? ''));
+      const key = lineRefLocSizeKey(
+        String(x.reference ?? ''),
+        String(x.size ?? ''),
+        String(x.location ?? '')
+      );
       const ca = x.countedAt as Timestamp | undefined;
       const t = ca?.toMillis?.() ?? 0;
       const prev = latest.get(key);
@@ -205,7 +201,11 @@ async function mergeLatestCountsOntoLines(inventoryDate: string): Promise<void> 
     let n = 0;
     for (const d of snap.docs) {
       const data = d.data();
-      const key = lineRefLocKey(String(data.reference ?? ''), String(data.location ?? ''));
+      const key = lineRefLocSizeKey(
+        String(data.reference ?? ''),
+        String(data.size ?? ''),
+        String(data.location ?? '')
+      );
       const st = latest.get(key);
       if (!st) continue;
       batch.update(d.ref, {
@@ -354,11 +354,11 @@ function countedAtMillis(v: string | Date | null | undefined): number {
   return Number.isNaN(t) ? -1 : t;
 }
 
-/** Una fila por referencia + ubicación: suma esperados y conserva el conteo más reciente del grupo. */
-function consolidateLinesByRefLoc(raw: CyclicInventoryLine[]): CyclicInventoryLine[] {
+/** Una fila por referencia + talla + ubicación: suma esperados duplicados y conserva el conteo más reciente del grupo. */
+function consolidateLinesByRefLocSize(raw: CyclicInventoryLine[]): CyclicInventoryLine[] {
   const groups = new Map<string, { ids: string[]; lines: CyclicInventoryLine[] }>();
   for (const line of raw) {
-    const key = lineRefLocKey(line.reference, line.location);
+    const key = lineRefLocSizeKey(line.reference, line.size ?? '', line.location);
     if (!groups.has(key)) {
       groups.set(key, { ids: [], lines: [] });
     }
@@ -389,14 +389,15 @@ function consolidateLinesByRefLoc(raw: CyclicInventoryLine[]): CyclicInventoryLi
     out.push({
       ...primary,
       expectedQty: sumExpected,
-      size: '',
       countedQty: bestQty,
       countedAt: bestCountedAt ?? null,
       countedBy: bestCountedBy,
       consolidatedLineIds: g.ids.length > 1 ? g.ids : undefined,
     });
   }
-  out.sort((a, b) => `${a.reference}|${a.location}`.localeCompare(`${b.reference}|${b.location}`));
+  out.sort((a, b) =>
+    `${a.reference}|${a.size ?? ''}|${a.location}`.localeCompare(`${b.reference}|${b.size ?? ''}|${b.location}`)
+  );
   return out;
 }
 
@@ -406,7 +407,11 @@ async function fetchAdjustmentDeltaPerKey(inventoryDate: string): Promise<Map<st
   const snap = await getDocs(qy);
   for (const d of snap.docs) {
     const x = d.data() as Record<string, unknown>;
-    const key = adjustmentRefLocKey(String(x.reference ?? ''), String(x.location ?? ''));
+    const key = adjustmentRefLocSizeKey(
+      String(x.reference ?? ''),
+      String(x.size ?? ''),
+      String(x.location ?? '')
+    );
     const prev = out.get(key) ?? 0;
     const delta = Number(x.deltaQty) || 0;
     out.set(key, prev + Math.trunc(delta));
@@ -430,10 +435,11 @@ export async function getCyclicInventoryLinesForDate(inventoryDate: string): Pro
       const raw = convertTimestampsToDates({ id: d.id, ...d.data() } as Record<string, unknown>);
       return raw as unknown as CyclicInventoryLine;
     });
-    const consolidated = consolidateLinesByRefLoc(data);
+    const consolidated = consolidateLinesByRefLocSize(data);
     const adjustmentMap = await fetchAdjustmentDeltaPerKey(dateKey);
     const withAdjustments = consolidated.map((line) => {
-      const delta = adjustmentMap.get(adjustmentRefLocKey(line.reference, line.location)) ?? 0;
+      const delta =
+        adjustmentMap.get(adjustmentRefLocSizeKey(line.reference, line.size ?? '', line.location)) ?? 0;
       const adjustedExpected = Math.max(0, Math.floor(Number(line.expectedQty) || 0) + delta);
       return {
         ...line,
@@ -497,6 +503,7 @@ export async function saveCyclicInventoryLineCount(input: {
         throw new Error('Línea sin fecha de inventario válida.');
       }
       const wantRef = normRef(String(first.reference ?? ''));
+      const wantSize = normSize(String(first.size ?? ''));
       const wantLoc = normLoc(String(first.location ?? ''));
       let sumExpected = 0;
       let sumExpectedAdjusted = 0;
@@ -505,12 +512,16 @@ export async function saveCyclicInventoryLineCount(input: {
         if (String(d.inventoryDate ?? '') !== inv) {
           throw new Error('Las líneas no comparten la misma fecha de inventario.');
         }
-        if (normRef(String(d.reference ?? '')) !== wantRef || normLoc(String(d.location ?? '')) !== wantLoc) {
-          throw new Error('Las líneas no comparten la misma referencia y ubicación.');
+        if (
+          normRef(String(d.reference ?? '')) !== wantRef ||
+          normSize(String(d.size ?? '')) !== wantSize ||
+          normLoc(String(d.location ?? '')) !== wantLoc
+        ) {
+          throw new Error('Las líneas no comparten la misma referencia, talla y ubicación.');
         }
         sumExpected += Math.max(0, Math.floor(Number(d.expectedQty) || 0));
       }
-      const delta = adjustmentMap.get(adjustmentRefLocKey(wantRef, wantLoc)) ?? 0;
+      const delta = adjustmentMap.get(adjustmentRefLocSizeKey(wantRef, wantSize, wantLoc)) ?? 0;
       sumExpectedAdjusted = Math.max(0, sumExpected + delta);
       for (const lr of lineRefs) {
         tx.update(lr, {
@@ -522,7 +533,7 @@ export async function saveCyclicInventoryLineCount(input: {
       const recordPayload: Record<string, unknown> = {
         inventoryDate: inv,
         reference: wantRef,
-        size: '',
+        size: wantSize,
         location: wantLoc,
         expectedQtyAtSave: sumExpectedAdjusted,
         countedQty: n,

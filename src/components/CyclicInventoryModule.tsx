@@ -83,6 +83,10 @@ function refLocKey(reference: string, location: string): string {
   return `${String(reference || '').trim().toUpperCase()}|${String(location || '').trim()}`;
 }
 
+function refLocSizeKey(reference: string, size: string, location: string): string {
+  return `${String(reference || '').trim().toUpperCase()}|${String(size || '').trim()}|${String(location || '').trim()}`;
+}
+
 function findColumnKeyIncludes(
   obj: Record<string, unknown> | undefined,
   ...needles: string[]
@@ -664,7 +668,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     const previousExpectedByKey = new Map<string, number>();
     for (const prevLine of previousLines) {
       previousExpectedByKey.set(
-        refLocKey(prevLine.reference, prevLine.location),
+        refLocSizeKey(prevLine.reference, prevLine.size ?? '', prevLine.location),
         Math.max(0, Math.floor(Number(prevLine.expectedQty) || 0))
       );
     }
@@ -672,7 +676,8 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       const expectedAdjusted = Math.max(0, Math.floor(Number(line.expectedQty) || 0));
       const expectedBase = Math.max(0, Math.floor(Number(line.expectedQtyBase ?? line.expectedQty) || 0));
       const adjustmentDelta = Math.trunc(Number(line.expectedQtyDelta) || 0);
-      const previousExpectedAdjusted = previousExpectedByKey.get(refLocKey(line.reference, line.location)) ?? 0;
+      const previousExpectedAdjusted =
+        previousExpectedByKey.get(refLocSizeKey(line.reference, line.size ?? '', line.location)) ?? 0;
       const hasMovementVsPrevious = expectedAdjusted !== previousExpectedAdjusted;
       const countedQty = line.countedQty ?? null;
       const diffQty = countedQty === null ? 0 : countedQty - expectedAdjusted;
@@ -1334,7 +1339,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                         </TableRow>
                       ) : (
                         filteredLines.map((line) => (
-                          <TableRow key={`${line.reference}|${line.location}`}>
+                          <TableRow key={line.id}>
                             <TableCell className="font-mono text-sm">{line.reference}</TableCell>
                             <TableCell className="text-right font-medium">
                               <div>{line.expectedQty}</div>

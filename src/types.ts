@@ -1030,7 +1030,7 @@ export interface CyclicInventoryLine {
   countedQty: number | null;
   countedAt?: string | Date | null;
   countedBy?: string | null;
-  /** Si hay varias filas Firestore con la misma ref + ubicación, aquí van todos los ids (v1: conteo consolidado). */
+  /** Si hay varias filas Firestore con la misma ref + talla + ubicación, aquí van todos los ids. */
   consolidatedLineIds?: string[];
 }
 
@@ -1048,7 +1048,7 @@ export interface CyclicInventoryCountRecord {
   countedBy: string;
   countedByName?: string;
   lineId: string;
-  /** Presente si el guardado aplicó a varias líneas (misma ref + ubicación). */
+  /** Presente si el guardado aplicó a varias líneas (misma ref + talla + ubicación). */
   consolidatedLineIds?: string[];
 }
 
