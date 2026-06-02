@@ -189,6 +189,7 @@ type ReliabilitySnapshot = {
   countedRate: number;
   byBrand: ReliabilityBucket[];
   byLocation: ReliabilityBucket[];
+  bySize?: ReliabilityBucket[];
   createdAt: string | Date;
   createdBy: string;
   createdByName?: string;
@@ -342,6 +343,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
   const [savingAdjustment, setSavingAdjustment] = useState(false);
   const [adjReference, setAdjReference] = useState('');
   const [adjSize, setAdjSize] = useState('');
+  const [adjFilterSize, setAdjFilterSize] = useState('');
   const [adjLocation, setAdjLocation] = useState('');
   const [adjDiscountQty, setAdjDiscountQty] = useState('');
   const [adjReason, setAdjReason] = useState('');
@@ -907,6 +909,41 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     return [...map.values()].sort((a, b) => b.totalLines - a.totalLines).slice(0, 40);
   }, [reliabilityRows]);
 
+  const reliabilityBySize = useMemo(() => {
+    const map = new Map<string, ReliabilityBucket>();
+    for (const s of reliabilityRows) {
+      for (const b of s.bySize || []) {
+        const cur = map.get(b.key) ?? {
+          key: b.key,
+          totalLines: 0,
+          countedLines: 0,
+          accurateLines: 0,
+          totalExpected: 0,
+          totalCounted: 0,
+          absDiffTotal: 0,
+          shortageUnits: 0,
+          overageUnits: 0,
+        };
+        cur.totalLines += b.totalLines || 0;
+        cur.countedLines += b.countedLines || 0;
+        cur.accurateLines += b.accurateLines || 0;
+        cur.totalExpected += b.totalExpected || 0;
+        cur.totalCounted += b.totalCounted || 0;
+        cur.absDiffTotal += b.absDiffTotal || 0;
+        cur.shortageUnits += b.shortageUnits || 0;
+        cur.overageUnits += b.overageUnits || 0;
+        map.set(b.key, cur);
+      }
+    }
+    return [...map.values()].sort((a, b) => b.totalLines - a.totalLines).slice(0, 40);
+  }, [reliabilityRows]);
+
+  const filteredAdjustments = useMemo(() => {
+    const fs = adjFilterSize.trim().toUpperCase();
+    if (!fs) return adjustments;
+    return adjustments.filter((a) => (a.size || '').toUpperCase().includes(fs));
+  }, [adjustments, adjFilterSize]);
+
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!user?.uid) {
       toast({ variant: 'destructive', title: 'Sesión', description: 'Inicie sesión.' });
@@ -1436,7 +1473,8 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
             <CardHeader>
               <CardTitle>Dashboard de confiabilidad de inventario</CardTitle>
               <CardDescription>
-                Métricas consolidadas por día, mes, marca y ubicación usando snapshots persistidos por fecha.
+                Métricas por línea (referencia + talla + ubicación). Snapshots persistidos por fecha; desglose por marca,
+                ubicación y talla.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -1575,6 +1613,43 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                     </TableBody>
                   </Table>
                 </div>
+              </div>
+
+              <div className="rounded-md border overflow-x-auto max-h-[30vh] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Talla</TableHead>
+                      <TableHead className="text-right">Líneas</TableHead>
+                      <TableHead className="text-right">Exactitud</TableHead>
+                      <TableHead className="text-right">Faltantes</TableHead>
+                      <TableHead className="text-right">Sobrantes</TableHead>
+                      <TableHead className="text-right">Abs diff</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {reliabilityBySize.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center text-muted-foreground py-6">
+                          Sin datos por talla. Regenera el snapshot del día.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      reliabilityBySize.map((sz) => (
+                        <TableRow key={sz.key}>
+                          <TableCell className="text-sm font-medium">{sz.key === 'SIN_TALLA' ? '—' : sz.key}</TableCell>
+                          <TableCell className="text-right">{sz.totalLines}</TableCell>
+                          <TableCell className="text-right">
+                            {percent(sz.countedLines > 0 ? sz.accurateLines / sz.countedLines : 0)}
+                          </TableCell>
+                          <TableCell className="text-right text-red-600">{sz.shortageUnits}</TableCell>
+                          <TableCell className="text-right text-amber-600">{sz.overageUnits}</TableCell>
+                          <TableCell className="text-right">{sz.absDiffTotal}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
               </div>
 
               <div className="rounded-md border overflow-x-auto max-h-[30vh] overflow-y-auto">
@@ -2013,6 +2088,18 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   </Button>
                 </div>
 
+                <div className="flex flex-wrap gap-3 items-end max-w-md">
+                  <div className="space-y-2">
+                    <Label>Filtrar talla en listado</Label>
+                    <Input
+                      value={adjFilterSize}
+                      onChange={(e) => setAdjFilterSize(e.target.value)}
+                      placeholder="Opcional"
+                      className="w-32"
+                    />
+                  </div>
+                </div>
+
                 {loadingAdjustments ? (
                   <div className="flex justify-center py-12">
                     <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
@@ -2034,14 +2121,16 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {adjustments.length === 0 ? (
+                        {filteredAdjustments.length === 0 ? (
                           <TableRow>
                             <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
-                              No hay ajustes para esta fecha.
+                              {adjustments.length === 0
+                                ? 'No hay ajustes para esta fecha.'
+                                : 'Ningún ajuste coincide con el filtro de talla.'}
                             </TableCell>
                           </TableRow>
                         ) : (
-                          adjustments.map((a) => (
+                          filteredAdjustments.map((a) => (
                             <TableRow key={a.id}>
                               <TableCell className="font-mono text-xs">{a.inventoryDate}</TableCell>
                               <TableCell className="font-mono text-sm">{a.reference}</TableCell>

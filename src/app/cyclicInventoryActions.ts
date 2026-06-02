@@ -154,6 +154,7 @@ type ReliabilitySnapshot = {
   countedRate: number;
   byBrand: ReliabilityBucket[];
   byLocation: ReliabilityBucket[];
+  bySize: ReliabilityBucket[];
   createdAt: string | Date;
   createdBy: string;
   createdByName?: string;
@@ -883,6 +884,7 @@ export async function buildCyclicInventoryReliabilitySnapshot(input: {
     const unitAccuracyPairs: Array<{ expected: number; counted: number | null | undefined }> = [];
     const byBrandMap = new Map<string, ReliabilityBucket>();
     const byLocationMap = new Map<string, ReliabilityBucket>();
+    const bySizeMap = new Map<string, ReliabilityBucket>();
 
     for (const line of lines) {
       const expected = Math.max(0, Math.floor(Number(line.expectedQty) || 0));
@@ -903,12 +905,16 @@ export async function buildCyclicInventoryReliabilitySnapshot(input: {
 
       const brandKey = brandMap.get(normRef(line.reference)) || 'SIN_MARCA';
       const locationKey = normLoc(line.location) || 'SIN_UBICACION';
+      const sizeKey = normSize(line.size ?? '') || 'SIN_TALLA';
 
       const brandBucket = byBrandMap.get(brandKey) ?? emptyBucket(brandKey);
       byBrandMap.set(brandKey, addLineToBucket(brandBucket, expected, counted));
 
       const locBucket = byLocationMap.get(locationKey) ?? emptyBucket(locationKey);
       byLocationMap.set(locationKey, addLineToBucket(locBucket, expected, counted));
+
+      const sizeBucket = bySizeMap.get(sizeKey) ?? emptyBucket(sizeKey);
+      bySizeMap.set(sizeKey, addLineToBucket(sizeBucket, expected, counted));
     }
 
     const snapshotPayload: Omit<ReliabilitySnapshot, 'id' | 'createdAt'> & { createdAt: Timestamp } = {
@@ -926,6 +932,7 @@ export async function buildCyclicInventoryReliabilitySnapshot(input: {
       countedRate: totalLines > 0 ? countedLines / totalLines : 0,
       byBrand: [...byBrandMap.values()].sort((a, b) => b.totalLines - a.totalLines),
       byLocation: [...byLocationMap.values()].sort((a, b) => b.totalLines - a.totalLines),
+      bySize: [...bySizeMap.values()].sort((a, b) => b.totalLines - a.totalLines),
       createdAt: Timestamp.now(),
       createdBy,
       createdByName: String(input.createdByName || '').trim(),
