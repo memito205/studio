@@ -21,6 +21,7 @@ import {
 } from 'firebase/firestore';
 import type { CyclicInventoryCountRecord, CyclicInventoryDayMeta, CyclicInventoryLine } from '@/types';
 import { isValidInventoryDateKey } from '@/lib/cyclicInventoryDate';
+import { cyclicUnitAccuracyAggregate } from '@/lib/cyclicUnitAccuracy';
 
 const LINES_BATCH = 400;
 const DELETE_CHUNK = 450;
@@ -98,6 +99,7 @@ type ReliabilitySnapshot = {
   shortageUnits: number;
   overageUnits: number;
   accuracyRate: number;
+  unitAccuracyRate: number;
   countedRate: number;
   byBrand: ReliabilityBucket[];
   byLocation: ReliabilityBucket[];
@@ -511,6 +513,55 @@ export async function saveCyclicInventoryLineCount(input: {
   }
 }
 
+/** Crea línea con esperada 0 si no existe (sobrantes escaneados en ubicación sin esa referencia). */
+export async function ensureCyclicInventoryLineForRefLoc(input: {
+  inventoryDate: string;
+  reference: string;
+  location: string;
+}): Promise<{ success: boolean; data?: CyclicInventoryLine; error?: string }> {
+  try {
+    const dateKey = String(input.inventoryDate || '').trim();
+    if (!isValidInventoryDateKey(dateKey)) {
+      return { success: false, error: 'Fecha inválida.' };
+    }
+    const reference = normRef(input.reference);
+    const location = normLoc(input.location);
+    if (!reference) return { success: false, error: 'Referencia requerida.' };
+    if (!location) return { success: false, error: 'Ubicación requerida.' };
+
+    const qy = query(collection(firestore, LINES_COL), where('inventoryDate', '==', dateKey), limit(8000));
+    const snap = await getDocs(qy);
+    const existingDoc = snap.docs.find((d) => {
+      const data = d.data() as Record<string, unknown>;
+      return normRef(String(data.reference ?? '')) === reference && normLoc(String(data.location ?? '')) === location;
+    });
+    if (existingDoc) {
+      const raw = convertTimestampsToDates({ id: existingDoc.id, ...existingDoc.data() } as Record<string, unknown>);
+      return { success: true, data: raw as unknown as CyclicInventoryLine };
+    }
+
+    const lineRef = doc(collection(firestore, LINES_COL));
+    const payload = {
+      inventoryDate: dateKey,
+      reference,
+      size: '',
+      location,
+      expectedQty: 0,
+      countedQty: null,
+      countedAt: null,
+      countedBy: null,
+      createdAt: Timestamp.now(),
+      source: 'scan_overage',
+    };
+    await setDoc(lineRef, payload);
+    const raw = convertTimestampsToDates({ id: lineRef.id, ...payload } as Record<string, unknown>);
+    return { success: true, data: raw as unknown as CyclicInventoryLine };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'Error al crear línea de sobrante.';
+    return { success: false, error: msg };
+  }
+}
+
 export async function listInventoryAdjustmentsForDate(input: {
   inventoryDate: string;
   maxRecords?: number;
@@ -752,6 +803,7 @@ export async function buildCyclicInventoryReliabilitySnapshot(input: {
     let absDiffTotal = 0;
     let shortageUnits = 0;
     let overageUnits = 0;
+    const unitAccuracyPairs: Array<{ expected: number; counted: number | null | undefined }> = [];
     const byBrandMap = new Map<string, ReliabilityBucket>();
     const byLocationMap = new Map<string, ReliabilityBucket>();
 
@@ -769,6 +821,7 @@ export async function buildCyclicInventoryReliabilitySnapshot(input: {
         if (diff === 0) accurateLines += 1;
         if (diff < 0) shortageUnits += Math.abs(diff);
         if (diff > 0) overageUnits += diff;
+        unitAccuracyPairs.push({ expected, counted });
       }
 
       const brandKey = brandMap.get(normRef(line.reference)) || 'SIN_MARCA';
@@ -792,6 +845,7 @@ export async function buildCyclicInventoryReliabilitySnapshot(input: {
       shortageUnits,
       overageUnits,
       accuracyRate: countedLines > 0 ? accurateLines / countedLines : 0,
+      unitAccuracyRate: cyclicUnitAccuracyAggregate(unitAccuracyPairs),
       countedRate: totalLines > 0 ? countedLines / totalLines : 0,
       byBrand: [...byBrandMap.values()].sort((a, b) => b.totalLines - a.totalLines),
       byLocation: [...byLocationMap.values()].sort((a, b) => b.totalLines - a.totalLines),
