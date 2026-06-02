@@ -58,8 +58,16 @@ function lineRefLocKey(reference: string, location: string): string {
   return `${normRef(reference)}|${normLoc(location)}`;
 }
 
+function lineRefLocSizeKey(reference: string, size: string, location: string): string {
+  return `${normRef(reference)}|${normSize(size)}|${normLoc(location)}`;
+}
+
 function adjustmentRefLocKey(reference: string, location: string): string {
   return `${normRef(reference)}|${normLoc(location)}`;
+}
+
+function adjustmentRefLocSizeKey(reference: string, size: string, location: string): string {
+  return `${normRef(reference)}|${normSize(size)}|${normLoc(location)}`;
 }
 
 type InventoryAdjustmentRecord = {
@@ -201,7 +209,7 @@ async function mergeLatestCountsOntoLines(inventoryDate: string): Promise<void> 
 
 /**
  * Reemplaza las líneas de inventario esperado del día. Los conteos no se borran: viven en `cyclicInventoryCountRecords`
- * y se vuelven a aplicar a las líneas nuevas por referencia y ubicación (v1 sin talla).
+ * y se vuelven a aplicar a las líneas nuevas por referencia y ubicación (hoy sin talla en re-aplicación; ver consolidate/merge).
  */
 export async function importCyclicInventoryForDate(input: {
   inventoryDate: string;
@@ -234,12 +242,20 @@ export async function importCyclicInventoryForDate(input: {
       return { success: false, error: 'No hay filas válidas para importar.' };
     }
 
-    const merged = new Map<string, { reference: string; location: string; expectedQty: number }>();
+    const merged = new Map<
+      string,
+      { reference: string; size: string; location: string; expectedQty: number }
+    >();
     for (const row of normalized) {
-      const k = lineRefLocKey(row.reference, row.location);
+      const k = lineRefLocSizeKey(row.reference, row.size, row.location);
       const cur = merged.get(k);
       if (!cur) {
-        merged.set(k, { reference: row.reference, location: row.location, expectedQty: row.expectedQty });
+        merged.set(k, {
+          reference: row.reference,
+          size: row.size,
+          location: row.location,
+          expectedQty: row.expectedQty,
+        });
       } else {
         cur.expectedQty += row.expectedQty;
       }
@@ -257,7 +273,7 @@ export async function importCyclicInventoryForDate(input: {
         batch.set(lineRef, {
           inventoryDate: dateKey,
           reference: row.reference,
-          size: '',
+          size: row.size,
           location: row.location,
           expectedQty: row.expectedQty,
           countedQty: null,
