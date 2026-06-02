@@ -55,6 +55,7 @@ type DiffStatus = 'faltante' | 'sobrante' | 'cuadrado' | 'sin_conteo';
 
 type InventoryDiffRow = {
   reference: string;
+  size: string;
   location: string;
   expectedAdjusted: number;
   expectedBase: number;
@@ -85,6 +86,11 @@ function refLocKey(reference: string, location: string): string {
 
 function refLocSizeKey(reference: string, size: string, location: string): string {
   return `${String(reference || '').trim().toUpperCase()}|${String(size || '').trim()}|${String(location || '').trim()}`;
+}
+
+function formatSize(size?: string): string {
+  const s = String(size || '').trim();
+  return s || '—';
 }
 
 function findColumnKeyIncludes(
@@ -312,6 +318,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
   const [previousLines, setPreviousLines] = useState<InventoryLineView[]>([]);
   const [loadingPreviousLines, setLoadingPreviousLines] = useState(false);
   const [filterRef, setFilterRef] = useState('');
+  const [filterSize, setFilterSize] = useState('');
   const [filterLoc, setFilterLoc] = useState('');
   const [onlyPending, setOnlyPending] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -319,6 +326,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
   const [reportDateFrom, setReportDateFrom] = useState(() => ymdDaysAgo(30));
   const [reportDateTo, setReportDateTo] = useState(() => todayYmdLocal());
   const [reportFilterRef, setReportFilterRef] = useState('');
+  const [reportFilterSize, setReportFilterSize] = useState('');
   const [reportFilterLoc, setReportFilterLoc] = useState('');
   const [reportRows, setReportRows] = useState<CyclicInventoryCountRecord[]>([]);
   const [loadingReport, setLoadingReport] = useState(false);
@@ -331,6 +339,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
   const [adjDiscountQty, setAdjDiscountQty] = useState('');
   const [adjReason, setAdjReason] = useState('');
   const [diffFilterRef, setDiffFilterRef] = useState('');
+  const [diffFilterSize, setDiffFilterSize] = useState('');
   const [diffFilterLoc, setDiffFilterLoc] = useState('');
   const [diffOnlySuggested, setDiffOnlySuggested] = useState(true);
   const [diffHideSquare, setDiffHideSquare] = useState(true);
@@ -568,14 +577,16 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
 
   const filteredLines = useMemo(() => {
     const fr = filterRef.trim().toUpperCase();
+    const fs = filterSize.trim().toUpperCase();
     const fl = filterLoc.trim().toUpperCase();
     return lines.filter((l) => {
       if (fr && !l.reference.includes(fr)) return false;
+      if (fs && !(l.size || '').toUpperCase().includes(fs)) return false;
       if (fl && !(l.location || '').toUpperCase().includes(fl)) return false;
       if (onlyPending && l.countedQty !== null && l.countedQty !== undefined) return false;
       return true;
     });
-  }, [lines, filterRef, filterLoc, onlyPending]);
+  }, [lines, filterRef, filterSize, filterLoc, onlyPending]);
 
   const availableLocations = useMemo(() => {
     const set = new Set<string>();
@@ -688,6 +699,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       const recountSuggested = hasMovementVsPrevious && status !== 'cuadrado';
       return {
         reference: line.reference,
+        size: line.size ?? '',
         location: line.location || '',
         expectedAdjusted,
         expectedBase,
@@ -707,10 +719,12 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
 
   const filteredDiffRows = useMemo(() => {
     const ref = diffFilterRef.trim().toUpperCase();
+    const size = diffFilterSize.trim().toUpperCase();
     const loc = diffFilterLoc.trim().toUpperCase();
     return allDiffRows
       .filter((row) => {
         if (ref && !row.reference.includes(ref)) return false;
+        if (size && !row.size.toUpperCase().includes(size)) return false;
         if (loc && !row.location.toUpperCase().includes(loc)) return false;
         if (diffOnlySuggested && !row.recountSuggested) return false;
         if (diffHideSquare && row.status === 'cuadrado') return false;
@@ -721,9 +735,15 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
         if (byPriority !== 0) return byPriority;
         const byAbsDiff = Math.abs(b.diffQty) - Math.abs(a.diffQty);
         if (byAbsDiff !== 0) return byAbsDiff;
-        return `${a.reference}|${a.location}`.localeCompare(`${b.reference}|${b.location}`);
+        return `${a.reference}|${a.size}|${a.location}`.localeCompare(`${b.reference}|${b.size}|${b.location}`);
       });
-  }, [allDiffRows, diffFilterRef, diffFilterLoc, diffOnlySuggested, diffHideSquare]);
+  }, [allDiffRows, diffFilterRef, diffFilterSize, diffFilterLoc, diffOnlySuggested, diffHideSquare]);
+
+  const filteredReportRows = useMemo(() => {
+    const fs = reportFilterSize.trim().toUpperCase();
+    if (!fs) return reportRows;
+    return reportRows.filter((r) => (r.size || '').toUpperCase().includes(fs));
+  }, [reportRows, reportFilterSize]);
 
   const locationRecommendations = useMemo<LocationRecountRecommendation[]>(() => {
     const byLoc = new Map<string, LocationRecountRecommendation>();
@@ -891,7 +911,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     if (
       hasLines &&
       !confirm(
-        '¿Actualizar el inventario esperado de esta fecha? Las cantidades esperadas vendrán del nuevo Excel (filas del mismo Excel con la misma referencia y ubicación se suman). Los conteos ya registrados no se borran: quedan en el historial y se vuelven a aplicar por referencia y ubicación.'
+        '¿Actualizar el inventario esperado de esta fecha? Las cantidades esperadas vendrán del nuevo Excel (filas con la misma referencia, talla y ubicación se suman). Los conteos ya registrados no se borran: quedan en el historial y se vuelven a aplicar por referencia, talla y ubicación.'
       )
     ) {
       if (e.target) e.target.value = '';
@@ -907,7 +927,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       const rows = parseImportRows(json);
       if (rows.length === 0) {
         throw new Error(
-          'No se encontraron filas válidas. Use columnas: Referencia, Ubicación, Cantidad esperada (Talla es opcional y se agrupa sumando cantidades por ref + ubicación).'
+          'No se encontraron filas válidas. Use columnas: Referencia, Talla, Ubicación, Cantidad esperada (filas con la misma ref + talla + ubicación se suman).'
         );
       }
       const res = await importCyclicInventoryForDate({
@@ -1165,6 +1185,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       Fecha: inventoryDate,
       FechaAnteriorComparada: previousDate || '',
       Referencia: row.reference,
+      Talla: row.size || '',
       Ubicacion: row.location || 'SIN UBICACION',
       MovimientoVsAnterior: row.hasMovementVsPrevious ? 'SI' : 'NO',
       EsperadaAnterior: row.previousExpectedAdjusted,
@@ -1220,8 +1241,8 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
           <div>
             <h1 className="text-2xl font-bold">Inventario cíclico</h1>
             <p className="text-sm text-muted-foreground">
-              Cada día se sube el inventario esperado (Excel). El operario elige la fecha; la vista de conteo es por referencia y
-              ubicación (v1 sin talla). Cada guardado queda en historial inmutable para auditoría.
+              Cada día se sube el inventario esperado (Excel). El operario elige la fecha; la vista de conteo es por referencia,
+              talla y ubicación. Cada guardado queda en historial inmutable para auditoría.
             </p>
           </div>
         </div>
@@ -1250,9 +1271,8 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
             <CardHeader>
               <CardTitle>Ejecutar conteo</CardTitle>
               <CardDescription>
-                Elija la fecha del inventario que está contando (la misma del archivo cargado ese día). La grilla está consolidada
-                por <strong>referencia y ubicación</strong> (cantidad esperada sumada). Filtre e ingrese la cantidad física total
-                de esa combinación.
+                Elija la fecha del inventario que está contando (la misma del archivo cargado ese día). La grilla muestra una fila por
+                <strong> referencia, talla y ubicación</strong>. Filtre e ingrese la cantidad física de esa combinación.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -1301,6 +1321,10 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   <Input value={filterRef} onChange={(e) => setFilterRef(e.target.value)} placeholder="REF…" className="w-40" />
                 </div>
                 <div className="space-y-2">
+                  <Label>Filtrar talla</Label>
+                  <Input value={filterSize} onChange={(e) => setFilterSize(e.target.value)} placeholder="Talla…" className="w-32" />
+                </div>
+                <div className="space-y-2">
                   <Label>Filtrar ubicación</Label>
                   <Input value={filterLoc} onChange={(e) => setFilterLoc(e.target.value)} placeholder="Ubicación…" className="w-40" />
                 </div>
@@ -1322,6 +1346,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                     <TableHeader>
                       <TableRow>
                         <TableHead>Referencia</TableHead>
+                        <TableHead>Talla</TableHead>
                         <TableHead className="text-right">Esperada</TableHead>
                         <TableHead>Ubicación</TableHead>
                         <TableHead className="w-36">Físico</TableHead>
@@ -1332,7 +1357,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                     <TableBody>
                       {filteredLines.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                          <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
                             No hay líneas para esta fecha o ninguna coincide con el filtro. Pida a un supervisor que suba el Excel
                             del día.
                           </TableCell>
@@ -1341,6 +1366,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                         filteredLines.map((line) => (
                           <TableRow key={line.id}>
                             <TableCell className="font-mono text-sm">{line.reference}</TableCell>
+                            <TableCell className="text-sm text-muted-foreground">{formatSize(line.size)}</TableCell>
                             <TableCell className="text-right font-medium">
                               <div>{line.expectedQty}</div>
                               {(line.expectedQtyDelta ?? 0) !== 0 ? (
@@ -1572,6 +1598,10 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   <Input value={diffFilterRef} onChange={(e) => setDiffFilterRef(e.target.value)} placeholder="REF..." className="w-40" />
                 </div>
                 <div className="space-y-2">
+                  <Label>Filtrar talla</Label>
+                  <Input value={diffFilterSize} onChange={(e) => setDiffFilterSize(e.target.value)} placeholder="Talla..." className="w-32" />
+                </div>
+                <div className="space-y-2">
                   <Label>Filtrar ubicación</Label>
                   <Input value={diffFilterLoc} onChange={(e) => setDiffFilterLoc(e.target.value)} placeholder="Ubicación..." className="w-40" />
                 </div>
@@ -1659,6 +1689,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   <TableHeader>
                     <TableRow>
                       <TableHead>Referencia</TableHead>
+                      <TableHead>Talla</TableHead>
                       <TableHead>Ubicación</TableHead>
                       <TableHead className="text-right">Esperada anterior</TableHead>
                       <TableHead className="text-right">Esperada base</TableHead>
@@ -1673,14 +1704,15 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   <TableBody>
                     {filteredDiffRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
+                        <TableCell colSpan={11} className="text-center text-muted-foreground py-8">
                           No hay diferencias para el criterio actual.
                         </TableCell>
                       </TableRow>
                     ) : (
                       filteredDiffRows.map((row) => (
-                        <TableRow key={`${row.reference}|${row.location}`}>
+                        <TableRow key={`${row.reference}|${row.size}|${row.location}`}>
                           <TableCell className="font-mono text-sm">{row.reference}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{formatSize(row.size)}</TableCell>
                           <TableCell className="text-sm text-muted-foreground">{row.location || '—'}</TableCell>
                           <TableCell className="text-right">{row.previousExpectedAdjusted}</TableCell>
                           <TableCell className="text-right">{row.expectedBase}</TableCell>
@@ -1800,6 +1832,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   <TableHeader>
                     <TableRow>
                       <TableHead>Referencia</TableHead>
+                      <TableHead>Talla</TableHead>
                       <TableHead>Ubicación</TableHead>
                       <TableHead className="text-right">Esperada ajustada</TableHead>
                       <TableHead className="text-right">Escaneada sesión</TableHead>
@@ -1809,7 +1842,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   <TableBody>
                     {scanRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                        <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
                           Seleccione ubicación para empezar el escaneo.
                         </TableCell>
                       </TableRow>
@@ -1831,6 +1864,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                               ) : null}
                             </div>
                           </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{formatSize(row.line.size)}</TableCell>
                           <TableCell className="text-sm text-muted-foreground">{row.line.location || '—'}</TableCell>
                           <TableCell className="text-right">{row.line.expectedQty}</TableCell>
                           <TableCell className="text-right font-medium">{row.scannedQty}</TableCell>
@@ -1888,8 +1922,8 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
               <CardHeader>
                 <CardTitle>Descuentos manuales de inventario esperado</CardTitle>
                 <CardDescription>
-                  Registre descuentos para stock que ya salió pero todavía no impacta el esperado. Se aplican por referencia +
-                  ubicación en la fecha seleccionada.
+                  Registre descuentos para stock que ya salió pero todavía no impacta el esperado. Se aplican por referencia,
+                  talla y ubicación en la fecha seleccionada.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -1908,8 +1942,8 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>Talla (opcional)</Label>
-                    <Input value={adjSize} onChange={(e) => setAdjSize(e.target.value)} placeholder="Opcional" className="w-32" />
+                    <Label>Talla</Label>
+                    <Input value={adjSize} onChange={(e) => setAdjSize(e.target.value)} placeholder="Ej. M" className="w-32" />
                   </div>
                   <div className="space-y-2">
                     <Label>Ubicación</Label>
@@ -2005,8 +2039,8 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
             <CardHeader>
               <CardTitle>Reporte de conteos registrados</CardTitle>
               <CardDescription>
-                Historial inmutable por cada guardado. Filtre por rango de fechas del inventario y, opcionalmente, por texto en
-                referencia o ubicación (v1 sin talla en pantalla).
+                Historial inmutable por cada guardado. Filtre por rango de fechas y, opcionalmente, por referencia, talla o
+                ubicación.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -2041,6 +2075,15 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   />
                 </div>
                 <div className="space-y-2">
+                  <Label>Talla contiene</Label>
+                  <Input
+                    value={reportFilterSize}
+                    onChange={(e) => setReportFilterSize(e.target.value)}
+                    placeholder="Opcional"
+                    className="w-32"
+                  />
+                </div>
+                <div className="space-y-2">
                   <Label>Ubicación contiene</Label>
                   <Input
                     value={reportFilterLoc}
@@ -2066,6 +2109,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                       <TableRow>
                         <TableHead>Fecha inv.</TableHead>
                         <TableHead>Referencia</TableHead>
+                        <TableHead>Talla</TableHead>
                         <TableHead>Ubicación</TableHead>
                         <TableHead className="text-right">Esperada (al guardar)</TableHead>
                         <TableHead className="text-right">Físico</TableHead>
@@ -2075,14 +2119,14 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {reportRows.length === 0 ? (
+                      {filteredReportRows.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
+                          <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
                             Pulse Buscar para cargar registros (por defecto últimos 30 días).
                           </TableCell>
                         </TableRow>
                       ) : (
-                        reportRows.map((r) => {
+                        filteredReportRows.map((r) => {
                           const { status, label } = getCyclicCountDiff(r.expectedQtyAtSave, r.countedQty);
                           const variant =
                             status === 'cuadrado'
@@ -2096,6 +2140,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                             <TableRow key={r.id}>
                               <TableCell className="font-mono text-xs whitespace-nowrap">{r.inventoryDate}</TableCell>
                               <TableCell className="font-mono text-sm">{r.reference}</TableCell>
+                              <TableCell className="text-sm text-muted-foreground">{formatSize(r.size)}</TableCell>
                               <TableCell className="text-sm text-muted-foreground">{r.location || '—'}</TableCell>
                               <TableCell className="text-right">{r.expectedQtyAtSave}</TableCell>
                               <TableCell className="text-right font-medium">{r.countedQty}</TableCell>
@@ -2116,8 +2161,14 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   </Table>
                 </div>
               )}
-              {reportRows.length > 0 ? (
-                <p className="text-xs text-muted-foreground">Mostrando hasta {reportRows.length} registros (límite de consulta).</p>
+              {filteredReportRows.length > 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  Mostrando {filteredReportRows.length} registro(s)
+                  {reportFilterSize.trim() && reportRows.length !== filteredReportRows.length
+                    ? ` (de ${reportRows.length} cargados)`
+                    : ''}{' '}
+                  — límite de consulta {reportRows.length}.
+                </p>
               ) : null}
             </CardContent>
           </Card>
@@ -2130,8 +2181,9 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                 <CardTitle>Subir inventario del día</CardTitle>
                 <CardDescription>
                   Indique la fecha a la que corresponde el archivo (normalmente hoy). El Excel reemplaza las líneas de inventario
-                  esperado de esa fecha; las filas con la misma referencia y ubicación se consolidan sumando la cantidad esperada.
-                  Los conteos registrados no se eliminan: se guardan en historial y se vuelven a aplicar por referencia y ubicación.
+                  esperado de esa fecha; las filas con la misma referencia, talla y ubicación se consolidan sumando la cantidad
+                  esperada. Los conteos registrados no se eliminan: se guardan en historial y se vuelven a aplicar por referencia,
+                  talla y ubicación.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4 max-w-xl">
