@@ -456,24 +456,23 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
   const updateBatchField = async (batch: WeeklyBatch, field: keyof ExternalServiceRow, value: any) => {
     const coercedValue = field === 'valorFactura' ? cleanNumber(value) : value;
 
-    const matchedRows: ExternalServiceRow[] = [];
-    setData(prev => prev.map(row => {
-      if (!rowMatchesBatch(batch, row)) return row;
-      matchedRows.push(row);
-      const updated = { ...row, [field]: coercedValue };
-      if (field === 'valorFactura') {
-        const cobrar = Number(updated.valorACobrar || 0);
-        const factura = cleanNumber(coercedValue);
-        updated.valorFactura = factura;
-        updated.diferencia = cobrar - factura;
-      }
-      return updated;
-    }));
+    const matchedRows = batch.rows;
+    if (matchedRows.length === 0) return;
 
-    if (matchedRows.length === 0) {
-      toast({ variant: 'destructive', title: 'Sin filas', description: 'No se encontraron operaciones para este lote.' });
-      return;
-    }
+    const idSet = new Set(matchedRows.map((r) => r.id));
+    setData((prev) =>
+      prev.map((row) => {
+        if (!idSet.has(row.id)) return row;
+        const updated = { ...row, [field]: coercedValue };
+        if (field === 'valorFactura') {
+          const cobrar = Number(updated.valorACobrar || 0);
+          const factura = cleanNumber(coercedValue);
+          updated.valorFactura = factura;
+          updated.diferencia = cobrar - factura;
+        }
+        return updated;
+      }),
+    );
 
     const results = await Promise.all(
       matchedRows.map(async (row) => {
@@ -487,7 +486,7 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
       }),
     );
 
-    const failed = results.filter(r => !r.success);
+    const failed = results.filter((r) => !r.success);
     if (failed.length > 0) {
       toast({
         variant: 'destructive',
