@@ -24,11 +24,14 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import { 
     saveExternalServiceRows, 
-    getExternalServiceRows, 
-    updateExternalServiceRow, 
     saveServiceRates, 
     getServiceRates 
 } from '@/app/actions';
+import {
+  formatExternalServicesError,
+  getExternalServiceRows,
+  updateExternalServiceRow,
+} from '@/lib/externalServices/firestoreExternalServicesClient';
 import { ExternalServiceRow, ServiceRate } from '@/types';
 
 interface WeeklyBatch {
@@ -429,36 +432,69 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
         }, 0);
     }
 
-    // Send the explicit updates to the server
-    const res = await updateExternalServiceRow(id, updated);
+    const patch: Partial<ExternalServiceRow> = { [field]: updated[field] };
+    if (field === 'proveedor' && updated.grupoFacturacion === '') {
+      patch.grupoFacturacion = '';
+    }
+    if (field === 'proveedor' || field === 'servicio' || field === 'cantidad') {
+      if (updated.valorACobrar !== oldRow.valorACobrar) patch.valorACobrar = updated.valorACobrar;
+      if (updated.metodoPago !== oldRow.metodoPago) patch.metodoPago = updated.metodoPago;
+    }
+    if (field === 'valorACobrar' || field === 'valorFactura') {
+      patch.valorACobrar = updated.valorACobrar;
+      if (updated.valorFactura !== undefined) patch.valorFactura = updated.valorFactura;
+      patch.diferencia = updated.diferencia;
+    }
+
+    const res = await updateExternalServiceRow(oldRow, patch);
     if (!res.success) {
         toast({ variant: 'destructive', title: 'Error guardando celda', description: res.error || 'Error de base de datos' });
+        setData(prev => prev.map(row => row.id === id ? oldRow : row));
     }
   };
 
   const updateBatchField = async (batch: WeeklyBatch, field: keyof ExternalServiceRow, value: any) => {
     const coercedValue = field === 'valorFactura' ? cleanNumber(value) : value;
 
-    const updatesList: { id: string, data: ExternalServiceRow }[] = [];
-
+    const matchedRows: ExternalServiceRow[] = [];
     setData(prev => prev.map(row => {
-      if (rowMatchesBatch(batch, row)) {
-        const updated = { ...row, [field]: coercedValue };
-        
-        if (field === 'valorFactura') {
-            const cobrar = Number(updated.valorACobrar || 0);
-            const factura = cleanNumber(coercedValue);
-            updated.valorFactura = factura;
-            updated.diferencia = cobrar - factura;
-        }
-
-        updatesList.push({ id: row.id, data: updated });
-        return updated;
+      if (!rowMatchesBatch(batch, row)) return row;
+      matchedRows.push(row);
+      const updated = { ...row, [field]: coercedValue };
+      if (field === 'valorFactura') {
+        const cobrar = Number(updated.valorACobrar || 0);
+        const factura = cleanNumber(coercedValue);
+        updated.valorFactura = factura;
+        updated.diferencia = cobrar - factura;
       }
-      return row;
+      return updated;
     }));
 
-    await Promise.all(updatesList.map(u => updateExternalServiceRow(u.id, u.data)));
+    if (matchedRows.length === 0) {
+      toast({ variant: 'destructive', title: 'Sin filas', description: 'No se encontraron operaciones para este lote.' });
+      return;
+    }
+
+    const results = await Promise.all(
+      matchedRows.map(async (row) => {
+        const rowPatch: Partial<ExternalServiceRow> = { [field]: coercedValue };
+        if (field === 'valorFactura') {
+          const factura = cleanNumber(coercedValue);
+          rowPatch.valorFactura = factura;
+          rowPatch.diferencia = Number(row.valorACobrar || 0) - factura;
+        }
+        return updateExternalServiceRow(row, rowPatch);
+      }),
+    );
+
+    const failed = results.filter(r => !r.success);
+    if (failed.length > 0) {
+      toast({
+        variant: 'destructive',
+        title: 'No se guardó en Firebase',
+        description: failed[0].error ?? formatExternalServicesError('Error desconocido'),
+      });
+    }
   };
 
   const applyBillingGroupToSelected = async () => {
