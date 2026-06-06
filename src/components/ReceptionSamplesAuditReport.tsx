@@ -343,8 +343,16 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
         'Validación guardada (≥ corte)': r.hasVerificationSinceCutoff ? 'Sí' : 'No',
         'Muestra en BD (foto)': r.inSampleDatabase ? 'Sí' : 'No',
         'TF entrega registrado': r.hasTransferDelivery ? 'Sí' : 'No',
-        'Recepción foto': r.photoReceptionStatus === 'none' ? 'Sin registro' : r.photoReceptionStatus,
+        'TF exención': r.transferExemptReason === 'legacy_in_db' ? 'Histórico BD' : '',
+        'Recepción foto': r.photoReceptionStatus === 'none'
+          ? 'Sin registro'
+          : r.photoReceptionStatus === 'legacy_in_db'
+            ? 'Exento (BD)'
+            : r.photoReceptionStatus === 'virtual_adidas'
+              ? 'Virtual Adidas'
+              : r.photoReceptionStatus,
         'Recepción foto (recibidas/total)': `${r.photoReceptionReceivedCount}/${r.photoReceptionTotalCount}`,
+        'Estado verificación (último)': r.latestValidationStatus ?? '',
         'Números TF': r.transferNumbers,
       })),
       'cruce_recepcion_muestras'
@@ -392,7 +400,9 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                 <code className="text-xs bg-muted px-1 rounded">referenceStats</code>), no cada línea escaneada. Las TF del
                 cruce incluyen <code className="text-xs bg-muted px-1 rounded">sampleDeliveries</code> y el{' '}
                 <strong>historial guardado en la verificación</strong> (Adidas: entrega virtual con número de TF =
-                nombre de la sesión y fecha de guardado).
+                nombre de la sesión y fecha de guardado). Referencias validadas como{' '}
+                <strong>En Base de Datos</strong> quedan exentas de TF y recepción foto (histórico pre-sistema); Adidas
+                sin muestra física marca recepción foto como virtual.
               </p>
               {stats && (
                 <p className="text-xs text-muted-foreground border-l-2 border-muted pl-2 space-y-0.5">
@@ -437,6 +447,20 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                         {' · '}
                         <strong>{stats.adidasSyntheticTfFilled}</strong>{' '}
                         <span className="text-muted-foreground">TF Adidas inferidas (sin historial persistido)</span>
+                      </>
+                    ) : null}
+                    {(stats.legacyInDbExemptCount ?? 0) > 0 ? (
+                      <>
+                        {' · '}
+                        <strong>{stats.legacyInDbExemptCount}</strong>{' '}
+                        <span className="text-muted-foreground">exentas por ya en BD (histórico)</span>
+                      </>
+                    ) : null}
+                    {(stats.adidasVirtualPhotoExemptCount ?? 0) > 0 ? (
+                      <>
+                        {' · '}
+                        <strong>{stats.adidasVirtualPhotoExemptCount}</strong>{' '}
+                        <span className="text-muted-foreground">recepción foto virtual Adidas</span>
                       </>
                     ) : null}
                     .
@@ -651,7 +675,11 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                         )}
                       </TableCell>
                       <TableCell className="text-center">
-                        {r.hasTransferDelivery ? (
+                        {r.transferExemptReason === 'legacy_in_db' && r.transferNumbers === '—' ? (
+                          <Badge variant="outline" className="bg-slate-500/10 text-slate-700 border-slate-500/30">
+                            Exento (BD)
+                          </Badge>
+                        ) : r.hasTransferDelivery ? (
                           <Badge variant="default">Sí</Badge>
                         ) : (
                           <Badge variant="outline">No</Badge>
@@ -660,6 +688,14 @@ export const ReceptionSamplesAuditReport: React.FC<ReceptionSamplesAuditReportPr
                       <TableCell className="text-center">
                         {r.photoReceptionStatus === 'received' ? (
                           <Badge variant="success">{`Sí (${r.photoReceptionReceivedCount}/${r.photoReceptionTotalCount})`}</Badge>
+                        ) : r.photoReceptionStatus === 'legacy_in_db' ? (
+                          <Badge variant="outline" className="bg-slate-500/10 text-slate-700 border-slate-500/30">
+                            Exento (BD)
+                          </Badge>
+                        ) : r.photoReceptionStatus === 'virtual_adidas' ? (
+                          <Badge variant="outline" className="bg-violet-500/10 text-violet-700 border-violet-500/30">
+                            Virtual Adidas
+                          </Badge>
                         ) : r.photoReceptionStatus === 'in_progress' ? (
                           <Badge variant="default">{`En proceso (${r.photoReceptionReceivedCount}/${r.photoReceptionTotalCount})`}</Badge>
                         ) : r.photoReceptionStatus === 'pending' ? (

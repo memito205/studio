@@ -30,6 +30,14 @@ import {
 } from 'firebase/firestore';
 import { normalizeReceptionReference } from '@/lib/receptionReference';
 import { RECEPTION_SAMPLE_AUDIT_START_ISO } from '@/lib/receptionSampleAudit';
+import {
+  buildLatestValidationByRef,
+  computeEffectiveReceptionAuditFlags,
+  getRefStatusInSession,
+  isAdidasVerificationSessionName,
+  type AuditPhotoDisplayStatus,
+  type ReceptionAuditExemptReason,
+} from '@/lib/receptionSampleAuditRules';
 import type {
   ReceptionOperation,
   SavedSampleVerification,
@@ -146,12 +154,6 @@ function mergeDeliveriesFromSavedVerificationResults(
   return mergedEntries;
 }
 
-/** Misma heurística que SampleVerification al guardar (nombre sesión AD… / ADIDAS). */
-function isAdidasVerificationSessionName(name: string): boolean {
-  const n = name.trim().toUpperCase();
-  return n.startsWith('AD') || n.includes('ADIDAS');
-}
-
 function sessionMentionsRef(session: SavedSampleVerification, refNorm: string): boolean {
   const inResults =
     session.results?.some((r) => normalizeReceptionReference(r.reference) === refNorm) ?? false;
@@ -189,6 +191,7 @@ function applyAdidasSyntheticTfGapFill(
       const created = new Date(session.createdAt).getTime();
       if (created < cutoffMs) continue;
       if (!sessionMentionsRef(session, ref)) continue;
+      if (getRefStatusInSession(session, ref) === 'En Base de Datos') continue;
 
       list.push({
         id: `synthetic-adidas-${ref}-${session.id}`,
@@ -213,12 +216,18 @@ export interface ReceptionSampleAuditRow {
   inSampleDatabase: boolean;
   hasTransferDelivery: boolean;
   hasPhotoReceptionReceived: boolean;
-  photoReceptionStatus: SamplePhotoReceptionStatus | 'none';
+  photoReceptionStatus: AuditPhotoDisplayStatus;
   photoReceptionReceivedCount: number;
   photoReceptionTotalCount: number;
   transferNumbers: string;
   receptionOperationIds: string[];
   receptionOperationLabels: string[];
+  /** Exención TF: validada como ya en BD (histórico pre-sistema). */
+  transferExemptReason?: ReceptionAuditExemptReason | null;
+  /** Exención recepción foto: histórico BD o virtual Adidas. */
+  photoExemptReason?: ReceptionAuditExemptReason | null;
+  /** Último estado en verificación guardada (≥ corte), si existe. */
+  latestValidationStatus?: string;
 }
 
 function aggregatePhotoReceptionStatus(list: SamplePhotoReception[]): {
@@ -252,6 +261,10 @@ export interface ReceptionSamplesAuditStats {
   verificationDeliveryHistoryEntries?: number;
   /** TF virtual Adidas inferida cuando había validación + sesión AD pero sin historial persistido */
   adidasSyntheticTfFilled?: number;
+  /** Refs exentas de TF/foto por validación "En Base de Datos" */
+  legacyInDbExemptCount?: number;
+  /** Refs con recepción foto virtual Adidas (sin muestra física) */
+  adidasVirtualPhotoExemptCount?: number;
   /** Por operación: referenceStats vacío y se usaron scannedItems de esa OP */
   operationScannedItemsFallback?: boolean;
 }
@@ -505,6 +518,8 @@ export async function getReceptionSamplesAuditReport(
           queryRounds,
           verificationDeliveryHistoryEntries: 0,
           adidasSyntheticTfFilled: 0,
+          legacyInDbExemptCount: 0,
+          adidasVirtualPhotoExemptCount: 0,
           operationScannedItemsFallback: false,
         },
       };
@@ -579,6 +594,8 @@ export async function getReceptionSamplesAuditReport(
       });
     });
 
+    const latestValidationByRef = buildLatestValidationByRef(verRes.data, cutoffMs);
+
     const adidasSyntheticTfFilled = applyAdidasSyntheticTfGapFill(
       deliveriesByRef,
       verRes.data,
@@ -586,6 +603,9 @@ export async function getReceptionSamplesAuditReport(
       validatedRefs,
       cutoffMs
     );
+
+    let legacyInDbExemptCount = 0;
+    let adidasVirtualPhotoExemptCount = 0;
 
     const rows: ReceptionSampleAuditRow[] = refKeys.map((ref) => {
       const opIdsSet = refToOpIds.get(ref) || new Set();
@@ -599,18 +619,33 @@ export async function getReceptionSamplesAuditReport(
       });
       const tfNums = dlist.map((x) => x.transferNumber).filter(Boolean);
       const photoAgg = aggregatePhotoReceptionStatus(photoByRef.get(ref) || []);
+      const effective = computeEffectiveReceptionAuditFlags({
+        inSampleDatabase: !!existence[ref],
+        latestValidation: latestValidationByRef.get(ref),
+        deliveries: dlist,
+        photoReceivedCount: photoAgg.receivedCount,
+        photoTotalCount: photoAgg.totalCount,
+        rawPhotoStatus: photoAgg.status,
+      });
+
+      if (effective.transferExemptReason === 'legacy_in_db') legacyInDbExemptCount += 1;
+      if (effective.photoExemptReason === 'adidas_virtual') adidasVirtualPhotoExemptCount += 1;
+
       return {
         reference: ref,
         hasVerificationSinceCutoff: validatedRefs.has(ref),
         inSampleDatabase: !!existence[ref],
-        hasTransferDelivery: tfNums.length > 0,
-        hasPhotoReceptionReceived: photoAgg.receivedCount > 0,
-        photoReceptionStatus: photoAgg.status,
+        hasTransferDelivery: effective.hasTransferDelivery,
+        hasPhotoReceptionReceived: effective.hasPhotoReceptionReceived,
+        photoReceptionStatus: effective.photoReceptionStatus,
         photoReceptionReceivedCount: photoAgg.receivedCount,
         photoReceptionTotalCount: photoAgg.totalCount,
         transferNumbers: tfNums.length ? [...new Set(tfNums)].join('; ') : '—',
         receptionOperationIds: opIds,
         receptionOperationLabels: labels,
+        transferExemptReason: effective.transferExemptReason,
+        photoExemptReason: effective.photoExemptReason,
+        latestValidationStatus: latestValidationByRef.get(ref)?.status,
       };
     });
 
@@ -632,6 +667,8 @@ export async function getReceptionSamplesAuditReport(
         queryRounds,
         verificationDeliveryHistoryEntries,
         adidasSyntheticTfFilled,
+        legacyInDbExemptCount,
+        adidasVirtualPhotoExemptCount,
         operationScannedItemsFallback,
       },
     };
