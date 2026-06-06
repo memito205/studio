@@ -1151,6 +1151,30 @@ export interface OperationPause {
     is_manual?: boolean; // New optional field
 }
 
+/** Intervalo de inactividad entre escaneos (recepción). */
+export interface ReceptionIdleTimeDetail {
+    id: string;
+    from_ms: number;
+    to_ms: number;
+    idle_duration_minutes: number;
+    userId: string;
+    userName: string;
+}
+
+/** Justificación de un tiempo muerto en recepción (por operación RK). */
+export interface ReceptionIdleJustificationEntry {
+    type: JustificationType;
+    reasonText?: string;
+    customDuration?: number;
+    fromMs: number;
+    toMs: number;
+    userId: string;
+}
+
+export type ReceptionIdleJustifications = {
+    [entryId: string]: ReceptionIdleJustificationEntry;
+};
+
 export interface ReceptionExpectedItem {
     barcode: string;
     expected_quantity: number;

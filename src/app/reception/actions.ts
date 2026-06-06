@@ -4,12 +4,13 @@
 
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { buildReceptionIdleEntryId } from '@/lib/receptionIdleTime';
 import { parseISO } from 'date-fns';
 import { startOfDay, endOfDay, isWithinInterval } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { normalizeHeader, parseFlexibleDate, excelSerialDateToJSDate, findCaseInsensitiveKey } from '@/lib/parsingUtils';
 import { normalizeReceptionReference, normalizeReceptionSize, receptionRefSizeKey } from '@/lib/receptionReference';
-import type { ReceptionOperation, ScannedItem, ItemNovelty, PackingUnit, Location, CsvRow, ReceptionExpectedItem, ReceptionProduct, AlternateBarcodeUploadRow, AppUser, OperationPause, ProductivitySettings, UserGoal, PackedItem, ProductDatabaseItem, DiscardedRecord, LabelingOperation, LabelingActivityLog, LabelingActivityType, LabelingOperationStatus, PackingScanResult, ExternalVendor, LabelingDashboardData, LabelingSummaryKPIs, LabelingEmployeePerformance } from '@/types';
+import type { ReceptionOperation, ScannedItem, ItemNovelty, PackingUnit, Location, CsvRow, ReceptionExpectedItem, ReceptionProduct, AlternateBarcodeUploadRow, AppUser, OperationPause, ProductivitySettings, UserGoal, PackedItem, ProductDatabaseItem, DiscardedRecord, LabelingOperation, LabelingActivityLog, LabelingActivityType, LabelingOperationStatus, PackingScanResult, ExternalVendor, LabelingDashboardData, LabelingSummaryKPIs, LabelingEmployeePerformance, ReceptionIdleTimeDetail, ReceptionIdleJustifications } from '@/types';
 
 
 // Helper function to convert Dates back to Timestamps FOR WRITING to Firestore
@@ -1532,6 +1533,39 @@ export async function createManualPause(pauseData: { receptionId: string; userId
     }
 }
 
+export async function getReceptionIdleJustifications(operationId: string): Promise<{
+  success: boolean;
+  data?: ReceptionIdleJustifications;
+  error?: string;
+}> {
+  try {
+    if (!operationId) return { success: false, error: 'ID de operación no proporcionado.' };
+    const docRef = doc(firestore, 'receptionIdleJustifications', operationId);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) return { success: true, data: {} };
+    const raw = snap.data()?.justifications;
+    return { success: true, data: (raw && typeof raw === 'object' ? raw : {}) as ReceptionIdleJustifications };
+  } catch (error: any) {
+    return { success: false, error: `Error al cargar justificaciones: ${error.message}` };
+  }
+}
+
+export async function saveReceptionIdleJustifications(
+  operationId: string,
+  justifications: ReceptionIdleJustifications
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!operationId) return { success: false, error: 'ID de operación no proporcionado.' };
+    const docRef = doc(firestore, 'receptionIdleJustifications', operationId);
+    await setDoc(docRef, {
+      justifications,
+      updatedAt: Timestamp.now(),
+    }, { merge: true });
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: `Error al guardar justificaciones: ${error.message}` };
+  }
+}
 
 export async function getIdleTimeReport(operationId: string): Promise<{
   success: boolean;
@@ -1539,7 +1573,7 @@ export async function getIdleTimeReport(operationId: string): Promise<{
     reception_id: string;
     rk_identifier: string;
     total_idle_time_minutes: number;
-    details: Array<{ from_scan_time: string; to_scan_time: string; idle_duration_minutes: number; userId?: string; userName?: string }>;
+    details: ReceptionIdleTimeDetail[];
   };
   error?: string
 }> {
@@ -1566,7 +1600,7 @@ export async function getIdleTimeReport(operationId: string): Promise<{
     }, {} as { [key: string]: Date[] });
 
     let totalIdleMinutes = 0;
-    const idleDetails: Array<{ from_scan_time: string; to_scan_time: string; idle_duration_minutes: number; userId?: string; userName?: string }> = [];
+    const idleDetails: ReceptionIdleTimeDetail[] = [];
 
     for (const userId in scansByUser) {
         const userScans = scansByUser[userId].sort((a, b) => a.getTime() - b.getTime());
@@ -1590,11 +1624,13 @@ export async function getIdleTimeReport(operationId: string): Promise<{
             const idleMinutes = idleDurationMs / 60000;
             if (idleMinutes >= 1) { // Only log idle times >= 1 minute
                 totalIdleMinutes += idleMinutes;
+                const fromMs = fromTime.getTime();
                 idleDetails.push({
-                    from_scan_time: fromTime.toLocaleString(),
-                    to_scan_time: toTime.toLocaleString(),
+                    id: buildReceptionIdleEntryId(userId, fromMs),
+                    from_ms: fromMs,
+                    to_ms: toTime.getTime(),
                     idle_duration_minutes: idleMinutes,
-                    userId: userId,
+                    userId,
                     userName: userMap.get(userId) || userId,
                 });
             }

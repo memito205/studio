@@ -11,9 +11,10 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from './ui/button';
 import { Loader2 } from 'lucide-react';
-import { getPausesForOperation, getScannedItemsByReception, getAllUserProfiles, getUserGoals, getProductivitySettings } from '@/app/reception/actions';
+import { getPausesForOperation, getScannedItemsByReception, getAllUserProfiles, getUserGoals, getProductivitySettings, getReceptionIdleJustifications } from '@/app/reception/actions';
 import { getUserPulsesForDay } from '@/app/actions';
 import { showError } from '@/lib/toast';
+import { justifiedIdleIntervalMs } from '@/lib/receptionIdleTime';
 import type { ReceptionOperation, ScannedItem, OperationPause, AppUser, ProductivitySettings, UserGoal, UserProductivity, HourlyOperatorDetail, OperationPulse } from '@/types';
 import { UserProductivityTable } from './UserProductivityTable';
 import { UserHourlyPerformanceTable } from './UserHourlyPerformanceTable';
@@ -155,11 +156,12 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
     setLoading(true);
 
     try {
-      const [allScannedItemsResult, allPausesResult, settingsResult, allUsersResult] = await Promise.all([
+      const [allScannedItemsResult, allPausesResult, settingsResult, allUsersResult, idleJustificationsResult] = await Promise.all([
         getScannedItemsByReception(operation.id),
         getPausesForOperation(operation.id),
         getProductivitySettings(),
         getAllUserProfiles(),
+        getReceptionIdleJustifications(operation.id),
       ]);
 
       const opData = operation;
@@ -169,6 +171,7 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
       setProductivitySettings(settingsResult.data || null);
 
       const allItems = allScannedItemsResult.data || [];
+      const idleJustifications = idleJustificationsResult.data || {};
       const allPausesForOperation = (allPausesResult.data || []).map(p => ({
           ...p,
           start_time: new Date(p.start_time),
@@ -242,7 +245,16 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
             }))
             .filter(p => Number.isFinite(p.start) && Number.isFinite(p.end) && p.end > p.start);
 
-        const mergedPauseIntervals = mergeIntervals([...operationPauseIntervals, ...pulsePauseIntervals]);
+        const justifiedIdlePauseIntervals: PauseInterval[] = Object.values(idleJustifications)
+            .filter(j => j.userId === userId)
+            .map(j => justifiedIdleIntervalMs(j))
+            .filter(p => Number.isFinite(p.start) && Number.isFinite(p.end) && p.end > p.start);
+
+        const mergedPauseIntervals = mergeIntervals([
+          ...operationPauseIntervals,
+          ...pulsePauseIntervals,
+          ...justifiedIdlePauseIntervals,
+        ]);
         const grossDurationMs = Math.max(0, sessionEndTime.getTime() - userFirstActivityTime.getTime());
 
         let totalPauseDurationMs = 0;
@@ -274,7 +286,7 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
           userName: userName,
           totalScanned,
           effectiveTimeMinutes,
-          pausesCount: userPauses.length + pulsePauseIntervals.length,
+          pausesCount: userPauses.length + pulsePauseIntervals.length + justifiedIdlePauseIntervals.length,
           productivityPerHour,
           compliance,
           operation_rk_identifier: opData.rk_identifier,
