@@ -77,7 +77,7 @@ export const DistributionExplanationModal: React.FC<DistributionExplanationModal
         return (
           <>
             <DetailRow indent label="Demanda Diaria General (Ítem)" value={trace.baseItemDailyForecast?.toFixed(2)} />
-            <DetailRow indent label="Participación Histórica (Bodega)" value={`${(trace.bodegaShare || 0 * 100).toFixed(1)}%`} />
+            <DetailRow indent label="Participación Histórica (Bodega)" value={`${((trace.bodegaShare || 0) * 100).toFixed(1)}%`} />
             <DetailRow isCalculation indent label="Demanda Diaria Base (Bodega)" value={(trace.baseItemDailyForecast || 0) * (trace.bodegaShare || 0)} calculation={`${trace.baseItemDailyForecast?.toFixed(2)} * ${(trace.bodegaShare || 0).toFixed(2)}`} />
           </>
         );

@@ -463,12 +463,22 @@ export function calculateDistribution(
                 trace.coverageDays = coverageDays;
 
             } else {
-                trace.calculationMethod = 'Participación Histórica';
-                const bodegaShare = totalItemConsumption > 0 ? totalConsumptionInBodega / totalItemConsumption : 0;
-                const baseItemDailyForecast = item.calculationTrace?.shortfall_dailyRate || ((item.calculationTrace?.shortfall_avgMonthlyDemand || 0) / 30.44);
-                dailyRate = baseItemDailyForecast * bodegaShare;
-                trace.bodegaShare = bodegaShare;
-                trace.baseItemDailyForecast = baseItemDailyForecast;
+                const { average: localMonthlyAverage } = getNormalizedLocalAverageMonthly(bodegaItemHistory);
+
+                // Tiendas con historial corto (<12 meses o CV alto): usar consumo local
+                // en lugar de participación global, que suele ser ~0 en tiendas nuevas.
+                if (localMonthlyAverage > 0 && totalConsumptionInBodega > 0) {
+                    trace.calculationMethod = 'Promedio Histórico Corto';
+                    trace.baseItemMonthlyForecast = localMonthlyAverage;
+                    dailyRate = localMonthlyAverage / 30.44;
+                } else {
+                    trace.calculationMethod = 'Participación Histórica';
+                    const bodegaShare = totalItemConsumption > 0 ? totalConsumptionInBodega / totalItemConsumption : 0;
+                    const baseItemDailyForecast = item.calculationTrace?.shortfall_dailyRate || ((item.calculationTrace?.shortfall_avgMonthlyDemand || 0) / 30.44);
+                    dailyRate = baseItemDailyForecast * bodegaShare;
+                    trace.bodegaShare = bodegaShare;
+                    trace.baseItemDailyForecast = baseItemDailyForecast;
+                }
             }
             
             trace.shortfall_dailyRate = dailyRate;
