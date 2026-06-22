@@ -66,6 +66,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
   const [selectedBrand, setSelectedBrand] = useState<string>('all');
   const [selectedProductType, setSelectedProductType] = useState<string>('all');
   const [selectedSpecificDay, setSelectedSpecificDay] = useState<string>('all');
+  const [activeTab, setActiveTab] = useState<'list' | 'trends'>('list');
 
   const handleQuery = useCallback(async () => {
     if (!dateRange?.from) {
@@ -76,6 +77,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
 
     setIsLoading(true);
     setHasSearched(true);
+    setTrendsData([]);
     
     // Use yyyy-MM-dd format to avoid timezone shifts during transmission
     const result = await loadHistoricalReports({ 
@@ -141,54 +143,79 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [filteredReports]);
 
-  const handleLoadTrends = async () => {
-    if (dailyGroups.length === 0) return;
+  const sortByReportDate = useCallback((a: { reportDate: unknown }, b: { reportDate: unknown }) => {
+    const da = extractLocalDateString(a.reportDate);
+    const db = extractLocalDateString(b.reportDate);
+    return da.localeCompare(db);
+  }, []);
+
+  const handleLoadTrends = useCallback(async () => {
+    if (dailyGroups.length === 0) {
+        setTrendsData([]);
+        return;
+    }
     setIsLoadingTrends(true);
-    
-    // Optimization: Check if we can build trends from the summaries we already have
-    const summariesWithData = reports.filter(r => r.packerProductivity && r.packerProductivity.length > 0);
-    
-    // DEDUPLICATION: Group by reportDate and pick the latest snapshotCreatedAt
-    const groupedSummaries: Record<string, any> = {};
+
+    const reportsForTrends = filteredReports.length > 0 ? filteredReports : reports;
+    const summariesWithData = reportsForTrends.filter(
+        r => r.packerProductivity && r.packerProductivity.length > 0
+    );
+
+    // One enriched summary per operative day (latest snapshot), aligned with dailyGroups
+    const groupedSummaries: Record<string, ReportSummary> = {};
     summariesWithData.forEach(s => {
-        const dateStr = s.reportDate instanceof Date ? s.reportDate.toISOString().split('T')[0] : String(s.reportDate).split('T')[0];
+        const dateStr = extractLocalDateString(s.reportDate);
+        if (!dateStr || dateStr === 'Invalid') return;
         const currentLatest = groupedSummaries[dateStr];
         if (!currentLatest || new Date(s.snapshotCreatedAt).getTime() > new Date(currentLatest.snapshotCreatedAt).getTime()) {
             groupedSummaries[dateStr] = s;
         }
     });
-    
-    const finalSummaries = Object.values(groupedSummaries);
 
-    if (finalSummaries.length > 0 && finalSummaries.length >= Math.min(dailyGroups.length, 5)) {
-        // We have enough enriched summaries to show trends instantly
-        console.log("Loading trends from enriched summaries...");
-        setTrendsData(finalSummaries.map(s => ({
-            ...s,
-            reportDate: s.reportDate instanceof Date ? s.reportDate.toISOString() : s.reportDate,
-        } as any)).sort((a,b) => new Date(a.reportDate).getTime() - new Date(b.reportDate).getTime()));
-        setSelectedSpecificDay('all');
+    const finalSummaries = dailyGroups
+        .map(g => groupedSummaries[g.date])
+        .filter(Boolean) as ReportSummary[];
+
+    const allDaysHaveEnrichedSummary = finalSummaries.length === dailyGroups.length;
+
+    if (allDaysHaveEnrichedSummary) {
+        setTrendsData(
+            finalSummaries
+                .map(s => ({
+                    ...s,
+                    reportDate: extractLocalDateString(s.reportDate),
+                }) as ProcessedReportData)
+                .sort(sortByReportDate)
+        );
         setIsLoadingTrends(false);
         return;
     }
 
-    // Fallback: load full snapshots if summaries are old/light
+    // Fallback: load full snapshots for days missing enriched summary fields
     const snapshotIds = dailyGroups.map(g => {
         if (g.consolidated) return g.consolidated.id;
         if (g.snapshots.length === 0) return null;
-        const sortedDesc = [...g.snapshots].sort((a, b) => new Date(b.snapshotCreatedAt).getTime() - new Date(a.snapshotCreatedAt).getTime());
+        const sortedDesc = [...g.snapshots].sort(
+            (a, b) => new Date(b.snapshotCreatedAt).getTime() - new Date(a.snapshotCreatedAt).getTime()
+        );
         return sortedDesc[0].id;
     }).filter(Boolean) as string[];
 
     const result = await loadFullReportSnapshots(snapshotIds);
     if (result.data) {
-        setTrendsData(result.data.sort((a,b) => new Date(a.reportDate).getTime() - new Date(b.reportDate).getTime()));
+        setTrendsData(result.data.sort(sortByReportDate));
     } else {
         toast({ variant: 'destructive', title: 'Error cargando tendencias', description: result.error });
+        setTrendsData([]);
     }
-    setSelectedSpecificDay('all');
     setIsLoadingTrends(false);
-  };
+  }, [dailyGroups, filteredReports, reports, sortByReportDate, toast]);
+
+  // Recalculate trends whenever the loaded/filtered day set changes
+  useEffect(() => {
+    if (!hasSearched || isLoading || dailyGroups.length === 0) return;
+    handleLoadTrends();
+  }, [dailyGroups, hasSearched, isLoading, handleLoadTrends]);
 
   const handleSnapshotSelection = (id: string) => {
     setSelectedSnapshots(prev => {
@@ -323,9 +350,9 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                complianceVal = matches.length > 0 ? matches.reduce((s, m) => s + (m.compliance || 0), 0) / matches.length : 0;
            }
 
-           const dateStr = d.reportDate instanceof Date ? format(d.reportDate, 'yyyy-MM-dd') : (d.reportDate as any).split('T')[0];
+           const dateStr = extractLocalDateString(d.reportDate);
            return {
-               date: format(new Date(dateStr + 'T00:00:00'), 'dd MMM', { locale: es }),
+               date: format(new Date(dateStr + 'T12:00:00'), 'dd MMM', { locale: es }),
                unidades: totalUnits,
                cumplimiento: Number(complianceVal.toFixed(1))
            };
@@ -583,7 +610,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                 <p className="text-muted-foreground font-medium flex items-center gap-2"><Info className="h-5 w-5"/> No hay reportes procesados en las fechas marcadas.</p>
              </div>
           ) : reports.length > 0 ? (
-             <Tabs defaultValue="list" className="w-full" onValueChange={(val) => val === 'trends' && trendsData.length === 0 && handleLoadTrends()}>
+             <Tabs value={activeTab} onValueChange={(val) => setActiveTab(val as 'list' | 'trends')} className="w-full">
                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
                    <TabsList className="bg-muted p-1 rounded-lg">
                      <TabsTrigger value="list" className="rounded-md px-6 data-[state=active]:shadow-sm"><Clock className="mr-2 h-4 w-4"/> Archivo Diario</TabsTrigger>
