@@ -4562,21 +4562,123 @@ export async function batchUpdateEcommerceOrderDispatchDates(updates: { orderId:
     if (!updates || updates.length === 0) {
         return { success: true, updatedCount: 0 };
     }
-    const batch = writeBatch(firestore);
-    let updatedCount = 0;
     try {
-        updates.forEach(({ orderId, dispatchDate }) => {
-            const orderRef = doc(firestore, 'ecommerceOrders', orderId);
-            batch.update(orderRef, {
-                dispatchDate: Timestamp.fromDate(dispatchDate)
+        const CHUNK_SIZE = 450;
+        let updatedCount = 0;
+        for (let i = 0; i < updates.length; i += CHUNK_SIZE) {
+            const chunk = updates.slice(i, i + CHUNK_SIZE);
+            const batch = writeBatch(firestore);
+            chunk.forEach(({ orderId, dispatchDate }) => {
+                const orderRef = doc(firestore, 'ecommerceOrders', orderId);
+                batch.update(orderRef, {
+                    dispatchDate: Timestamp.fromDate(dispatchDate),
+                });
             });
-            updatedCount++;
-        });
-        await batch.commit();
+            await batch.commit();
+            updatedCount += chunk.length;
+        }
         return { success: true, updatedCount };
     } catch (error: any) {
         console.error('Batch dispatch date update error:', error);
         return { success: false, error: error.message, updatedCount: 0 };
+    }
+}
+
+function ecommerceDispatchDayBounds(dateStr: string): { start: Date; end: Date } {
+    const anchor = new Date(dateStr + 'T12:00:00');
+    if (Number.isNaN(anchor.getTime())) {
+        throw new Error(`Fecha inválida: ${dateStr}`);
+    }
+    return { start: startOfDay(anchor), end: endOfDay(anchor) };
+}
+
+function moveDispatchToCalendarDay(originalDispatch: Date, targetCalendarDay: Date): Date {
+    const result = startOfDay(targetCalendarDay);
+    result.setHours(
+        originalDispatch.getHours(),
+        originalDispatch.getMinutes(),
+        originalDispatch.getSeconds(),
+        0
+    );
+    return result;
+}
+
+export async function previewEcommerceDispatchBulkCorrectionByDate(
+    sourceDateStr: string
+): Promise<{ success: boolean; count?: number; sampleOrderIds?: string[]; error?: string }> {
+    try {
+        const { start, end } = ecommerceDispatchDayBounds(sourceDateStr);
+        const q = query(
+            collection(firestore, 'ecommerceOrders'),
+            where('dispatchDate', '>=', Timestamp.fromDate(start)),
+            where('dispatchDate', '<=', Timestamp.fromDate(end))
+        );
+        const snap = await getDocs(q);
+        const orderIds = snap.docs.map(d => d.id);
+        return {
+            success: true,
+            count: orderIds.length,
+            sampleOrderIds: orderIds.slice(0, 25),
+        };
+    } catch (error: any) {
+        console.error('Preview bulk dispatch correction error:', error);
+        if (error.code === 'failed-precondition') {
+            return {
+                success: false,
+                error: 'Firestore requiere un índice para consultar por dispatchDate. Revise la consola de Firebase.',
+            };
+        }
+        return { success: false, error: error.message };
+    }
+}
+
+export async function batchReassignEcommerceDispatchDateByDay(
+    sourceDateStr: string,
+    targetDate: Date
+): Promise<{ success: boolean; updatedCount: number; error?: string }> {
+    if (!targetDate || Number.isNaN(targetDate.getTime())) {
+        return { success: false, updatedCount: 0, error: 'La fecha destino no es válida.' };
+    }
+
+    try {
+        const { start, end } = ecommerceDispatchDayBounds(sourceDateStr);
+        const q = query(
+            collection(firestore, 'ecommerceOrders'),
+            where('dispatchDate', '>=', Timestamp.fromDate(start)),
+            where('dispatchDate', '<=', Timestamp.fromDate(end))
+        );
+        const snap = await getDocs(q);
+        if (snap.empty) {
+            return { success: true, updatedCount: 0 };
+        }
+
+        const updates: { orderId: string; dispatchDate: Date }[] = [];
+        snap.docs.forEach(docSnap => {
+            const data = convertTimestampsToDates(docSnap.data()) as EcommerceOrder;
+            if (!data.dispatchDate) return;
+            const original = data.dispatchDate instanceof Date ? data.dispatchDate : new Date(data.dispatchDate as any);
+            updates.push({
+                orderId: docSnap.id,
+                dispatchDate: moveDispatchToCalendarDay(original, targetDate),
+            });
+        });
+
+        const result = await batchUpdateEcommerceOrderDispatchDates(updates);
+        return {
+            success: result.success,
+            updatedCount: result.updatedCount,
+            error: result.error,
+        };
+    } catch (error: any) {
+        console.error('Bulk dispatch date reassignment error:', error);
+        if (error.code === 'failed-precondition') {
+            return {
+                success: false,
+                updatedCount: 0,
+                error: 'Firestore requiere un índice para consultar por dispatchDate. Revise la consola de Firebase.',
+            };
+        }
+        return { success: false, updatedCount: 0, error: error.message };
     }
 }
 

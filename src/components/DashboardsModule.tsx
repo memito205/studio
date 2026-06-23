@@ -11,7 +11,7 @@ import dynamic from 'next/dynamic';
 import type { EcommerceOrder, DelayedOrderLog, Filters, FilterCategory } from '@/types';
 import { DateRange } from 'react-day-picker';
 import { useToast } from '@/hooks/use-toast';
-import { loadEcommerceOrders, getDelayedOrderLogs, updateEcommerceOrderDispatchDate, batchUpdateEcommerceOrderDispatchDates, saveHolidays, loadHolidays } from '@/app/actions';
+import { loadEcommerceOrders, getDelayedOrderLogs, updateEcommerceOrderDispatchDate, batchUpdateEcommerceOrderDispatchDates, previewEcommerceDispatchBulkCorrectionByDate, batchReassignEcommerceDispatchDateByDay, saveHolidays, loadHolidays } from '@/app/actions';
 import { calculateSlaHours } from '@/lib/parsingUtils';
 import { isSameDay, startOfDay, endOfDay, format, startOfToday, differenceInDays, startOfWeek, endOfWeek } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -78,6 +78,14 @@ const DailyDispatchDashboard: React.FC<DailyDispatchDashboardProps> = ({ onRetur
   const [foundOrdersForCorrection, setFoundOrdersForCorrection] = useState<EcommerceOrder[]>([]);
   const [isCorrectionDialogOpen, setIsCorrectionDialogOpen] = useState(false);
   const [newDispatchDate, setNewDispatchDate] = useState<Date | undefined>();
+
+  const [bulkSourceDate, setBulkSourceDate] = useState<Date | undefined>();
+  const [bulkTargetDate, setBulkTargetDate] = useState<Date | undefined>();
+  const [bulkPreviewCount, setBulkPreviewCount] = useState<number | null>(null);
+  const [bulkSampleIds, setBulkSampleIds] = useState<string[]>([]);
+  const [isBulkPreviewLoading, setIsBulkPreviewLoading] = useState(false);
+  const [isBulkApplyLoading, setIsBulkApplyLoading] = useState(false);
+  const [isBulkConfirmOpen, setIsBulkConfirmOpen] = useState(false);
 
   const activeDate = useMemo(() => {
     if (dateFilter?.from && !dateFilter.to) {
@@ -623,9 +631,84 @@ const DailyDispatchDashboard: React.FC<DailyDispatchDashboardProps> = ({ onRetur
     }
   };
 
+  const handleBulkPreview = async () => {
+    if (!bulkSourceDate) {
+        toast({ variant: 'destructive', title: 'Fecha requerida', description: 'Seleccione la fecha de despacho actual a corregir.' });
+        return;
+    }
+    setIsBulkPreviewLoading(true);
+    setBulkPreviewCount(null);
+    setBulkSampleIds([]);
+    try {
+        const result = await previewEcommerceDispatchBulkCorrectionByDate(format(bulkSourceDate, 'yyyy-MM-dd'));
+        if (result.success) {
+            setBulkPreviewCount(result.count ?? 0);
+            setBulkSampleIds(result.sampleOrderIds ?? []);
+            if ((result.count ?? 0) === 0) {
+                toast({ title: 'Sin coincidencias', description: 'No hay pedidos con despacho en esa fecha.' });
+            }
+        } else {
+            toast({ variant: 'destructive', title: 'Error en vista previa', description: result.error });
+        }
+    } finally {
+        setIsBulkPreviewLoading(false);
+    }
+  };
+
+  const handleBulkApply = async () => {
+    if (!bulkSourceDate || !bulkTargetDate) return;
+    if (isSameDay(bulkSourceDate, bulkTargetDate)) {
+        toast({ variant: 'destructive', title: 'Fechas iguales', description: 'La fecha destino debe ser distinta a la fecha origen.' });
+        return;
+    }
+
+    setIsBulkApplyLoading(true);
+    try {
+        const result = await batchReassignEcommerceDispatchDateByDay(
+            format(bulkSourceDate, 'yyyy-MM-dd'),
+            bulkTargetDate
+        );
+        if (result.success) {
+            toast({
+                title: 'Corrección masiva aplicada',
+                description: `${result.updatedCount} pedido(s) actualizados de ${format(bulkSourceDate, 'PPP', { locale: es })} a ${format(bulkTargetDate, 'PPP', { locale: es })}.`,
+            });
+            setIsBulkConfirmOpen(false);
+            setBulkPreviewCount(null);
+            setBulkSampleIds([]);
+            onRefresh();
+        } else {
+            toast({ variant: 'destructive', title: 'Error', description: result.error });
+        }
+    } finally {
+        setIsBulkApplyLoading(false);
+    }
+  };
+
 
   return (
     <div className="space-y-8" ref={reportContentRef}>
+      <Dialog open={isBulkConfirmOpen} onOpenChange={setIsBulkConfirmOpen}>
+          <DialogContent>
+              <DialogHeader>
+                  <DialogTitle>Confirmar corrección masiva</DialogTitle>
+                  <DialogDescription>
+                      Se actualizarán <span className="font-bold">{bulkPreviewCount ?? 0}</span> pedidos con despacho del{' '}
+                      <span className="font-semibold">{bulkSourceDate ? format(bulkSourceDate, 'PPP', { locale: es }) : '—'}</span>
+                      {' '}al{' '}
+                      <span className="font-semibold">{bulkTargetDate ? format(bulkTargetDate, 'PPP', { locale: es }) : '—'}</span>.
+                      Se conserva la hora de cada despacho; solo cambia el día calendario.
+                  </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                  <Button variant="outline" onClick={() => setIsBulkConfirmOpen(false)} disabled={isBulkApplyLoading}>Cancelar</Button>
+                  <Button onClick={handleBulkApply} disabled={isBulkApplyLoading || !bulkPreviewCount}>
+                      {isBulkApplyLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                      Confirmar y aplicar
+                  </Button>
+              </DialogFooter>
+          </DialogContent>
+      </Dialog>
       <Dialog open={isCorrectionDialogOpen} onOpenChange={setIsCorrectionDialogOpen}>
           <DialogContent>
               <DialogHeader>
@@ -1068,6 +1151,90 @@ const DailyDispatchDashboard: React.FC<DailyDispatchDashboardProps> = ({ onRetur
                             </Table>
                         </div>
                         <Button className="mt-2" size="sm" variant="outline" onClick={() => setIsCorrectionDialogOpen(true)}><Edit className="mr-2 h-4 w-4"/>Editar Fecha para {foundOrdersForCorrection.length} Pedidos</Button>
+                      </div>
+                  )}
+              </CardContent>
+          </Card>
+
+          <Card className="print-hide border-amber-200/60 dark:border-amber-900/40">
+              <CardHeader>
+                  <CardTitle>Corrección masiva por fecha de despacho</CardTitle>
+                  <CardDescription>
+                      Mueva todos los pedidos despachados en un día (ej. 23 jun) a otro día (ej. 22 jun).
+                      Útil cuando el corte de análisis quedó con la fecha incorrecta al sincronizar el Excel.
+                  </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                  <div className="flex flex-wrap gap-6 items-end">
+                      <div className="space-y-2">
+                          <Label>Fecha de despacho actual (incorrecta)</Label>
+                          <Popover>
+                              <PopoverTrigger asChild>
+                                  <Button variant="outline" className={cn('w-[240px] justify-start', !bulkSourceDate && 'text-muted-foreground')}>
+                                      <CalendarIcon className="mr-2 h-4 w-4" />
+                                      {bulkSourceDate ? format(bulkSourceDate, 'PPP', { locale: es }) : 'Seleccionar fecha'}
+                                  </Button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-auto p-0" align="start">
+                                  <Calendar
+                                      mode="single"
+                                      selected={bulkSourceDate}
+                                      onSelect={(d) => {
+                                          setBulkSourceDate(d);
+                                          setBulkPreviewCount(null);
+                                          setBulkSampleIds([]);
+                                      }}
+                                      initialFocus
+                                      locale={es}
+                                  />
+                              </PopoverContent>
+                          </Popover>
+                      </div>
+                      <div className="space-y-2">
+                          <Label>Nueva fecha de despacho</Label>
+                          <Popover>
+                              <PopoverTrigger asChild>
+                                  <Button variant="outline" className={cn('w-[240px] justify-start', !bulkTargetDate && 'text-muted-foreground')}>
+                                      <CalendarIcon className="mr-2 h-4 w-4" />
+                                      {bulkTargetDate ? format(bulkTargetDate, 'PPP', { locale: es }) : 'Seleccionar fecha'}
+                                  </Button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-auto p-0" align="start">
+                                  <Calendar
+                                      mode="single"
+                                      selected={bulkTargetDate}
+                                      onSelect={setBulkTargetDate}
+                                      initialFocus
+                                      locale={es}
+                                  />
+                              </PopoverContent>
+                          </Popover>
+                      </div>
+                      <Button variant="secondary" onClick={handleBulkPreview} disabled={isBulkPreviewLoading || !bulkSourceDate}>
+                          {isBulkPreviewLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
+                          Vista previa
+                      </Button>
+                      <Button
+                          onClick={() => setIsBulkConfirmOpen(true)}
+                          disabled={!bulkSourceDate || !bulkTargetDate || !bulkPreviewCount || bulkPreviewCount === 0}
+                          className="bg-amber-600 hover:bg-amber-500 text-white"
+                      >
+                          <Edit className="mr-2 h-4 w-4" />
+                          Aplicar corrección masiva
+                      </Button>
+                  </div>
+                  {bulkPreviewCount !== null && (
+                      <div className="rounded-md border bg-muted/30 p-4 space-y-2">
+                          <p className="text-sm">
+                              <span className="font-bold">{bulkPreviewCount}</span> pedido(s) con despacho el{' '}
+                              {bulkSourceDate ? format(bulkSourceDate, 'PPP', { locale: es }) : '—'}.
+                          </p>
+                          {bulkSampleIds.length > 0 && (
+                              <p className="text-xs text-muted-foreground">
+                                  Muestra de IDs: {bulkSampleIds.slice(0, 8).join(', ')}
+                                  {bulkSampleIds.length > 8 ? ` … (+${bulkPreviewCount! - 8} más)` : ''}
+                              </p>
+                          )}
                       </div>
                   )}
               </CardContent>
