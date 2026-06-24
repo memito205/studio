@@ -1,7 +1,7 @@
 
 "use client";
 
-import React, { useState, useCallback, useRef, ChangeEvent } from 'react';
+import React, { useState, useCallback, useRef, ChangeEvent, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -9,9 +9,10 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ArrowLeft, Link2, Loader2, Edit, UploadCloud, PlusCircle } from 'lucide-react';
+import { ArrowLeft, Link2, Loader2, Edit, UploadCloud, PlusCircle, AlertTriangle, FileDown, RefreshCw } from 'lucide-react';
 import type { ReceptionProduct as Product, AlternateBarcodeUploadRow, ProductDatabaseItem } from '@/types';
-import { lookupBarcode, createProduct, getProductByRefAndSize, bulkCreateAlternateBarcodes, bulkCreateProducts } from '@/app/reception/actions';
+import { lookupBarcode, createProduct, getProductByRefAndSize, bulkCreateAlternateBarcodes, bulkCreateProducts, getImportedBrandCatalogProducts } from '@/app/reception/actions';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { EditProductDialog } from './EditProductDialog';
 import { Textarea } from './ui/textarea';
 import { useForm } from 'react-hook-form';
@@ -47,6 +48,11 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
   const [isBulkLoading, setIsBulkLoading] = useState(false);
   const [mainProductDetails, setMainProductDetails] = useState<Product | null>(null);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [importedBrandProducts, setImportedBrandProducts] = useState<ProductDatabaseItem[]>([]);
+  const [isLoadingImportedBrand, setIsLoadingImportedBrand] = useState(false);
+  const [importedBrandFilter, setImportedBrandFilter] = useState('');
+  const [editingImportedProduct, setEditingImportedProduct] = useState<ProductDatabaseItem | null>(null);
+  const [isImportedEditOpen, setIsImportedEditOpen] = useState(false);
   
   const bulkProductsFileInputRef = React.useRef<HTMLInputElement>(null);
   const bulkAlternatesFileInputRef = React.useRef<HTMLInputElement>(null);
@@ -272,6 +278,68 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
     setIsEditDialogOpen(false);
   }, [mainProductDetails]);
 
+  const loadImportedBrandProducts = useCallback(async () => {
+    setIsLoadingImportedBrand(true);
+    try {
+      const result = await getImportedBrandCatalogProducts();
+      if (result.success && result.data) {
+        setImportedBrandProducts(result.data);
+        toast({
+          title: 'Consulta completada',
+          description: `${result.data.length} producto(s) con marca IMPORTADA en el catálogo.`,
+        });
+      } else {
+        throw new Error(result.error || 'Error desconocido');
+      }
+    } catch (error: any) {
+      toast({ variant: 'destructive', title: 'Error al consultar', description: error.message });
+    } finally {
+      setIsLoadingImportedBrand(false);
+    }
+  }, [toast]);
+
+  const filteredImportedBrandProducts = useMemo(() => {
+    if (!importedBrandFilter.trim()) return importedBrandProducts;
+    const q = importedBrandFilter.toLowerCase();
+    return importedBrandProducts.filter((p) => {
+      const ref = String(p.referencia || p.reference || '').toLowerCase();
+      const desc = String(p.item || p.description || p.name || '').toLowerCase();
+      const barcode = String(p.codigoBarras || '').toLowerCase();
+      const talla = String(p.talla || p.size || '').toLowerCase();
+      return ref.includes(q) || desc.includes(q) || barcode.includes(q) || talla.includes(q);
+    });
+  }, [importedBrandProducts, importedBrandFilter]);
+
+  const handleExportImportedBrandCsv = () => {
+    const headers = ['codigo_barras', 'referencia', 'talla', 'descripcion', 'marca', 'grupo'];
+    const rows = importedBrandProducts.map((p) =>
+      [
+        p.codigoBarras,
+        p.referencia || p.reference || '',
+        p.talla || p.size || '',
+        String(p.item || p.description || p.name || '').replace(/"/g, '""'),
+        p.marca || p.merchandise_type || 'IMPORTADA',
+        p.grupo || p.location || '',
+      ]
+        .map((cell) => `"${cell}"`)
+        .join(',')
+    );
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `catalogo_marca_importada_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const onImportedProductUpdated = useCallback(async () => {
+    setIsImportedEditOpen(false);
+    setEditingImportedProduct(null);
+    await loadImportedBrandProducts();
+  }, [loadImportedBrandProducts]);
+
   return (
     <>
       {mainProductDetails && (
@@ -282,6 +350,15 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
           onSave={onProductUpdated}
         >
         </EditProductDialog>
+      )}
+
+      {editingImportedProduct && (
+        <EditProductDialog
+          open={isImportedEditOpen}
+          onOpenChange={setIsImportedEditOpen}
+          product={editingImportedProduct}
+          onSave={onImportedProductUpdated}
+        />
       )}
 
       <div className="space-y-8 max-w-7xl mx-auto">
@@ -297,6 +374,100 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
                   </Button>
               </div>
           </CardHeader>
+        </Card>
+
+        <Card className="border-amber-500/50 bg-amber-950/5">
+          <CardHeader className="flex flex-row flex-wrap justify-between items-start gap-4">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                <AlertTriangle className="h-5 w-5 shrink-0" />
+                Productos con marca IMPORTADA
+              </CardTitle>
+              <CardDescription>
+                Consulte y corrija en el catálogo maestro los códigos que aún tienen marca IMPORTADA (afectan empaque y metas por marca).
+              </CardDescription>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={loadImportedBrandProducts}
+                disabled={isLoadingImportedBrand}
+              >
+                {isLoadingImportedBrand ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                )}
+                Consultar catálogo
+              </Button>
+              {importedBrandProducts.length > 0 && (
+                <Button variant="outline" size="sm" onClick={handleExportImportedBrandCsv}>
+                  <FileDown className="mr-2 h-4 w-4" />
+                  Exportar CSV ({importedBrandProducts.length})
+                </Button>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {importedBrandProducts.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Pulse &quot;Consultar catálogo&quot; para listar todos los productos con marca IMPORTADA.
+              </p>
+            ) : (
+              <>
+                <Input
+                  value={importedBrandFilter}
+                  onChange={(e) => setImportedBrandFilter(e.target.value)}
+                  placeholder="Filtrar por código, referencia, talla o descripción..."
+                  className="max-w-md"
+                />
+                <p className="text-sm text-muted-foreground">
+                  {filteredImportedBrandProducts.length} de {importedBrandProducts.length} producto(s)
+                </p>
+                <div className="max-h-[480px] overflow-y-auto border rounded-md">
+                  <Table>
+                    <TableHeader className="sticky top-0 bg-card z-10">
+                      <TableRow>
+                        <TableHead>Cód. Barras</TableHead>
+                        <TableHead>Referencia</TableHead>
+                        <TableHead>Talla</TableHead>
+                        <TableHead>Descripción</TableHead>
+                        <TableHead>Grupo</TableHead>
+                        <TableHead className="text-right">Acción</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredImportedBrandProducts.map((product) => (
+                        <TableRow key={product.codigoBarras || product.id}>
+                          <TableCell className="font-mono text-sm">{product.codigoBarras}</TableCell>
+                          <TableCell>{product.referencia || product.reference || '—'}</TableCell>
+                          <TableCell>{product.talla || product.size || '—'}</TableCell>
+                          <TableCell className="max-w-xs truncate" title={product.item || product.description || product.name}>
+                            {product.item || product.description || product.name || '—'}
+                          </TableCell>
+                          <TableCell>{product.grupo || product.location || '—'}</TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                setEditingImportedProduct(product);
+                                setIsImportedEditOpen(true);
+                              }}
+                            >
+                              <Edit className="mr-1 h-4 w-4" />
+                              Editar
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </>
+            )}
+          </CardContent>
         </Card>
         
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">

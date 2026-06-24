@@ -19,8 +19,9 @@ import { ReferenceCorrectionEditor } from './reference-correction-editor';
 import { NewOperatorMapper } from './new-operator-mapper';
 import { IncidentLogEditor } from './incident-log-editor';
 import { DiscardedRecordsViewer } from './discarded-records-viewer';
-import { classifyProduct, extractBrandsFromReport, preScanForUnclassifiedProducts, extractUnmappedPackers, extractAllReferencesFromReport } from '@/services/reportProcessor';
+import { classifyProduct, extractBrandsFromReport, preScanForUnclassifiedProducts, extractUnmappedPackers, extractAllReferencesFromReport, extractImportedBrandCatalogItems } from '@/services/reportProcessor';
 import { ReferenceGoalConfiguration } from './reference-goal-configuration';
+import { ImportedBrandCatalogViewer } from './imported-brand-catalog-viewer';
 import {
   Table,
   TableBody,
@@ -154,9 +155,10 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
     const unclassifiedProducts = preScanForUnclassifiedProducts(fullyProcessedData);
     const unmappedPackers = extractUnmappedPackers(rawData, manualOperatorMappings);
     const allReferences = extractAllReferencesFromReport(fullyProcessedData);
+    const importedBrandCatalogItems = extractImportedBrandCatalogItems(rawData, productMap);
 
-    return { brands, unclassifiedProducts, unmappedPackers, allReferences };
-  }, [fullyProcessedData, rawData, manualOperatorMappings]);
+    return { brands, unclassifiedProducts, unmappedPackers, allReferences, importedBrandCatalogItems };
+  }, [fullyProcessedData, rawData, manualOperatorMappings, productMap]);
 
   const remisionSyncedRows = React.useMemo(() => {
     const toLocalDate = (value: Date): string => {
@@ -401,6 +403,8 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
         corrections={referenceCorrections} 
         onCorrectionsChange={onReferenceCorrectionsChange} 
       />
+
+      <ImportedBrandCatalogViewer items={derivedState.importedBrandCatalogItems} />
 
       <NewOperatorMapper 
         unmappedPackers={derivedState.unmappedPackers}

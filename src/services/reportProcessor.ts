@@ -1,4 +1,4 @@
-import { RemisionEntry, PackerProductivity, ProcessedReportData, HourlyProductivity, BrandProductivity, ProductCategory, ProductTypeProductivity, ProductivityGoals, BrandProductTypeGoals, BrandPackerBreakdown, DeadTimeEntry, PackerBrandProductivityDetail, DetectedBreakDetail, DeadTimeSummaryEntry, PackerHourlyPerformance, ManualProductClassifications, ManualJustifications, JustificationType, UniqueReference, ReferenceCorrections, ManualOperatorMappings, IncidentLogEntry, ProductDatabaseItem, DiscardedRecord, ProductTypePackerBreakdown, HourlyOperatorDetail, OperationPulse, PackerReferenceProductivityDetail, ReferenceGoals } from '@/types';
+import { RemisionEntry, PackerProductivity, ProcessedReportData, HourlyProductivity, BrandProductivity, ProductCategory, ProductTypeProductivity, ProductivityGoals, BrandProductTypeGoals, BrandPackerBreakdown, DeadTimeEntry, PackerBrandProductivityDetail, DetectedBreakDetail, DeadTimeSummaryEntry, PackerHourlyPerformance, ManualProductClassifications, ManualJustifications, JustificationType, UniqueReference, ImportedBrandCatalogItem, ReferenceCorrections, ManualOperatorMappings, IncidentLogEntry, ProductDatabaseItem, DiscardedRecord, ProductTypePackerBreakdown, HourlyOperatorDetail, OperationPulse, PackerReferenceProductivityDetail, ReferenceGoals } from '@/types';
 import { parseFlexibleDate, excelSerialDateToJSDate } from '@/lib/parsingUtils';
 
 // Mapeo de columnas para reconocer diferentes variaciones de los encabezados del archivo.
@@ -1848,6 +1848,45 @@ export function extractUniqueReferences(
     });
 
     return Array.from(uniqueRefs.values()).sort((a,b) => a.referencia.localeCompare(b.referencia));
+}
+
+const isImportedBrandMarca = (marca: string | undefined | null): boolean =>
+    (marca || '').trim().toUpperCase() === 'IMPORTADA';
+
+/**
+ * Referencias/códigos del reporte cuyo catálogo maestro tiene marca IMPORTADA (error de datos).
+ */
+export function extractImportedBrandCatalogItems(
+    data: RemisionEntry[],
+    productMap: Map<string, ProductDatabaseItem>
+): ImportedBrandCatalogItem[] {
+    const items = new Map<string, ImportedBrandCatalogItem>();
+
+    data.forEach((entry) => {
+        const dbProduct = productMap.get(entry.codigoBarras);
+        if (!dbProduct || !isImportedBrandMarca(dbProduct.marca)) {
+            return;
+        }
+
+        const key = entry.talla !== undefined ? `${entry.codigoBarras}|${entry.talla}` : String(entry.codigoBarras);
+        const cantidad = typeof entry.cantidad === 'number' && entry.cantidad > 0 ? entry.cantidad : 1;
+
+        if (items.has(key)) {
+            items.get(key)!.unidadesEnReporte += cantidad;
+            return;
+        }
+
+        items.set(key, {
+            codigoBarras: entry.codigoBarras,
+            referencia: dbProduct.referencia || entry.referencia,
+            descripcion: dbProduct.item || entry.descripcion,
+            talla: entry.talla,
+            grupo: dbProduct.grupo || entry.grupo || '',
+            unidadesEnReporte: cantidad,
+        });
+    });
+
+    return Array.from(items.values()).sort((a, b) => a.referencia.localeCompare(b.referencia));
 }
 
 export function extractAllReferencesFromReport(

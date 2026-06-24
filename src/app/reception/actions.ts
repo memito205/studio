@@ -77,6 +77,33 @@ export async function getAllProducts(): Promise<{ success: boolean; data?: Recep
     }
 }
 
+/** Productos del catálogo maestro cuya marca es IMPORTADA (error de datos). */
+export async function getImportedBrandCatalogProducts(): Promise<{ success: boolean; data?: ProductDatabaseItem[]; error?: string }> {
+    try {
+        const querySnapshot = await getDocs(collection(firestore, "productDatabase"));
+        const products = querySnapshot.docs
+            .map((docSnap) => {
+                const data = convertTimestampsToDates(docSnap.data()) as Record<string, unknown>;
+                return {
+                    id: docSnap.id,
+                    codigoBarras: docSnap.id,
+                    ...data,
+                } as ProductDatabaseItem;
+            })
+            .filter((p) => {
+                const marca = String(p.marca || p.merchandise_type || '').trim().toUpperCase();
+                return marca === 'IMPORTADA';
+            })
+            .sort((a, b) =>
+                String(a.referencia || a.reference || '').localeCompare(String(b.referencia || b.reference || ''))
+            );
+        return { success: true, data: products };
+    } catch (error: any) {
+        console.error("Error loading imported-brand catalog products:", error);
+        return { success: false, error: `No se pudo consultar el catálogo: ${error.message}` };
+    }
+}
+
 export async function getProductsByBarcodes(barcodes: string[]): Promise<{ data?: ProductDatabaseItem[]; error?: string }> {
   if (!barcodes || barcodes.length === 0) {
     return { data: [] };

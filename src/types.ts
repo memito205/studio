@@ -492,6 +492,16 @@ export interface UniqueReference {
   productType: ProductCategory;
 }
 
+/** Producto del catálogo maestro con marca IMPORTADA presente en el reporte de empaque. */
+export interface ImportedBrandCatalogItem {
+  codigoBarras: string;
+  referencia: string;
+  descripcion: string;
+  talla?: string;
+  grupo: string;
+  unidadesEnReporte: number;
+}
+
 export interface ReferenceCorrection {
   newReferencia?: string;
   newDescripcion?: string;
