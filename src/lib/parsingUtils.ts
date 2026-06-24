@@ -286,3 +286,22 @@ export const calculateSlaHours = (startDate: Date, endDate: Date, holidays: Date
 
     return totalBusinessMs / (1000 * 60 * 60);
 };
+
+/**
+ * Normaliza códigos de barras leídos desde Excel (número, notación científica, ".0" final).
+ */
+export function normalizeBarcode(value: unknown): string {
+    if (value === undefined || value === null) return '';
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value)) return '';
+        return Number.isInteger(value) ? String(Math.trunc(value)) : String(value).trim();
+    }
+    let s = String(value).trim();
+    if (!s) return '';
+    if (/^\d*\.?\d+[eE][+-]?\d+$/.test(s)) {
+        const n = Number(s);
+        if (Number.isFinite(n) && Number.isInteger(n)) return String(Math.trunc(n));
+    }
+    if (/^\d+\.0+$/.test(s)) return s.replace(/\.0+$/, '');
+    return s;
+}

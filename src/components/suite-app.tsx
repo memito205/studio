@@ -8,7 +8,8 @@ import dynamic from 'next/dynamic';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import type { ProcessedReportData, ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ManualJustificationsUpdate, ReferenceCorrections, UniqueReference, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, ChatMessage, SmartAlert, ActionPlan, Annotations, TaggedReport, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, PackingUnit, PackingSession, AppStep, ReceptionOperation, JustificationType, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReportSummary, CreditCalculationResult, DispatchSessionInfo, RouteEntry, TransferEntry, EcommerceOrder, DelayedOrderLog, OperationPulse, ReferenceGoals } from '@/types';
-import { processReport, getSanitizedData, extractUniqueReferences, extractPackersFromReport, preProcessDeadTimes, classifyProduct } from '@/services/reportProcessor';
+import { processReport, getSanitizedData, extractUniqueReferences, extractPackersFromReport, preProcessDeadTimes, classifyProduct, buildProductLookupMap, enrichEntryFromCatalog } from '@/services/reportProcessor';
+import { normalizeBarcode } from '@/lib/parsingUtils';
 import { handleExecutiveSummary, handleRootCauseAnalysis, handleGenerateSmartAlerts, handleGetJustificationSuggestions, saveReportToHistory, loadHistoricalReports, updateOrderStatus, savePackingSession, loadWholesaleOrders, getPackingSession, loadAllPackingSessions, consolidateDailyReports, previewConsolidatedReport, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, loadFullReportSnapshots, loadOperatorMappings, saveJustificationsForDay, loadJustificationsByDate } from '@/app/actions';
 import { getProductsByBarcodes } from '@/app/reception/actions';
 import { Loader2, AlertTriangle } from 'lucide-react';
@@ -302,8 +303,16 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
         if (!barcodeKey) {
             throw new Error("La columna 'codigo barras' no se encontró.");
         }
-        
-        const uniqueBarcodes = [...new Set(data.map(row => String(row[barcodeKey]).trim()).filter(Boolean))];
+
+        const { sanitizedData, discardedRecords: newDiscardedRecords } = getSanitizedData(
+            data,
+            reportDateStr,
+            manualOperatorMappings
+        );
+
+        const uniqueBarcodes = [...new Set(
+            sanitizedData.map(row => normalizeBarcode(row.codigoBarras)).filter(Boolean)
+        )];
         const productsResult = await getProductsByBarcodes(uniqueBarcodes);
         
         if (productsResult.error) {
@@ -311,23 +320,19 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
         }
         
         const loadedProductDB = productsResult.data || [];
-        const productMap = new Map(loadedProductDB.map(p => [p.codigoBarras, p]));
+        const productMap = buildProductLookupMap(loadedProductDB);
         setProductDB(loadedProductDB);
-        
-        const { sanitizedData, discardedRecords: newDiscardedRecords } = getSanitizedData(
-            data,
-            reportDateStr,
-            manualOperatorMappings
-        );
-        
-        setSanitizedRecordCount(sanitizedData.length);
-        setDiscardedRecords(newDiscardedRecords);
-        setRawData(sanitizedData); // Overwrite with sanitized data
 
-        const referencesToCorrect = extractUniqueReferences(sanitizedData, productMap);
+        const enrichedData = sanitizedData.map(entry => enrichEntryFromCatalog(entry, productMap));
+        
+        setSanitizedRecordCount(enrichedData.length);
+        setDiscardedRecords(newDiscardedRecords);
+        setRawData(enrichedData);
+
+        const referencesToCorrect = extractUniqueReferences(enrichedData, productMap);
         setUniqueReferences(referencesToCorrect);
 
-        const extractedPackers = extractPackersFromReport(sanitizedData, manualOperatorMappings);
+        const extractedPackers = extractPackersFromReport(enrichedData, manualOperatorMappings);
         setInitialPackers(['all', ...extractedPackers]);
         
         setAppStep('configure');
@@ -365,7 +370,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
       setReportData(null);
 
       try {
-        const productMap = new Map(productDB.map(p => [p.codigoBarras, p]));
+        const productMap = buildProductLookupMap(productDB);
         const combinedCorrections = { ...learnedCorrections, ...referenceCorrections };
 
         const processedDataForReport = rawData.map(entry => {

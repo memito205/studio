@@ -19,7 +19,7 @@ import { ReferenceCorrectionEditor } from './reference-correction-editor';
 import { NewOperatorMapper } from './new-operator-mapper';
 import { IncidentLogEditor } from './incident-log-editor';
 import { DiscardedRecordsViewer } from './discarded-records-viewer';
-import { classifyProduct, extractBrandsFromReport, preScanForUnclassifiedProducts, extractUnmappedPackers, extractAllReferencesFromReport, extractImportedBrandCatalogItems } from '@/services/reportProcessor';
+import { classifyProduct, extractBrandsFromReport, preScanForUnclassifiedProducts, extractUnmappedPackers, extractAllReferencesFromReport, extractImportedBrandCatalogItems, buildProductLookupMap } from '@/services/reportProcessor';
 import { ReferenceGoalConfiguration } from './reference-goal-configuration';
 import { ImportedBrandCatalogViewer } from './imported-brand-catalog-viewer';
 import {
@@ -129,7 +129,7 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
   const [shareStatus, setShareStatus] = React.useState<'idle' | 'copied'>('idle');
   const [remisionPulseUserFilter, setRemisionPulseUserFilter] = React.useState('');
   
-  const productMap = React.useMemo(() => new Map(productDB.map(p => [p.codigoBarras, p])), [productDB]);
+  const productMap = React.useMemo(() => buildProductLookupMap(productDB), [productDB]);
   const combinedCorrections = React.useMemo(() => ({ ...learnedCorrections, ...referenceCorrections }), [learnedCorrections, referenceCorrections]);
 
   const fullyProcessedData = React.useMemo(() => {

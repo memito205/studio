@@ -1,5 +1,5 @@
 import { RemisionEntry, PackerProductivity, ProcessedReportData, HourlyProductivity, BrandProductivity, ProductCategory, ProductTypeProductivity, ProductivityGoals, BrandProductTypeGoals, BrandPackerBreakdown, DeadTimeEntry, PackerBrandProductivityDetail, DetectedBreakDetail, DeadTimeSummaryEntry, PackerHourlyPerformance, ManualProductClassifications, ManualJustifications, JustificationType, UniqueReference, ImportedBrandCatalogItem, ReferenceCorrections, ManualOperatorMappings, IncidentLogEntry, ProductDatabaseItem, DiscardedRecord, ProductTypePackerBreakdown, HourlyOperatorDetail, OperationPulse, PackerReferenceProductivityDetail, ReferenceGoals } from '@/types';
-import { parseFlexibleDate, excelSerialDateToJSDate } from '@/lib/parsingUtils';
+import { parseFlexibleDate, excelSerialDateToJSDate, normalizeBarcode } from '@/lib/parsingUtils';
 
 // Mapeo de columnas para reconocer diferentes variaciones de los encabezados del archivo.
 const COLUMN_MAP: { [key: string]: keyof Omit<RemisionEntry, 'fechaDeLectura' | 'productType'> } = {
@@ -98,7 +98,7 @@ function standardizeData(
         const isAlreadyName = Object.values(combinedOperatorMap).includes(empacador);
         newRow.empacador = isAlreadyName ? empacador : (combinedOperatorMap[empacador] || empacador).trim();
         newRow.cantidad = typeof newRow.cantidad === 'number' ? newRow.cantidad : 1;
-        newRow.codigoBarras = String(newRow.codigoBarras || '').trim();
+        newRow.codigoBarras = normalizeBarcode(newRow.codigoBarras);
         newRow.descripcion = String(newRow.descripcion || '').trim();
         newRow.referencia = String(newRow.referencia || '').trim();
         
@@ -153,6 +153,57 @@ function inferClassificationFromDescription(description: string, originalBrand: 
     return { brand, productType };
 }
 
+export function buildProductLookupMap(products: ProductDatabaseItem[]): Map<string, ProductDatabaseItem> {
+    const map = new Map<string, ProductDatabaseItem>();
+    products.forEach((product) => {
+        const key = normalizeBarcode(product.codigoBarras || product.id);
+        if (key) map.set(key, product);
+    });
+    return map;
+}
+
+function lookupProductFromMap(
+    productMap: Map<string, ProductDatabaseItem>,
+    codigoBarras: string
+): ProductDatabaseItem | undefined {
+    const key = normalizeBarcode(codigoBarras);
+    return key ? productMap.get(key) : undefined;
+}
+
+function catalogReference(dbProduct: ProductDatabaseItem): string {
+    return String(dbProduct.referencia || dbProduct.reference || '').trim();
+}
+
+function catalogDescription(dbProduct: ProductDatabaseItem): string {
+    return String(dbProduct.item || dbProduct.description || dbProduct.name || '').trim();
+}
+
+function catalogMarca(dbProduct: ProductDatabaseItem): string {
+    return String(dbProduct.marca || dbProduct.merchandise_type || '').trim().toUpperCase();
+}
+
+function catalogGrupo(dbProduct: ProductDatabaseItem): string {
+    return String(dbProduct.grupo || dbProduct.location || '').trim().toUpperCase();
+}
+
+/** Completa referencia, descripción, marca y grupo vacíos del Excel con datos del catálogo maestro. */
+export function enrichEntryFromCatalog(
+    entry: RemisionEntry,
+    productMap: Map<string, ProductDatabaseItem>
+): RemisionEntry {
+    const dbProduct = lookupProductFromMap(productMap, entry.codigoBarras);
+    if (!dbProduct) return entry;
+
+    return {
+        ...entry,
+        referencia: entry.referencia?.trim() || catalogReference(dbProduct),
+        descripcion: entry.descripcion?.trim() || catalogDescription(dbProduct),
+        marca: entry.marca?.trim() || catalogMarca(dbProduct),
+        grupo: entry.grupo?.trim() || catalogGrupo(dbProduct),
+        talla: entry.talla?.trim() || String(dbProduct.talla || dbProduct.size || '').trim() || entry.talla,
+    };
+}
+
 export function classifyProduct(
     entry: Omit<RemisionEntry, 'productType'>,
     manualClassifications: ManualProductClassifications,
@@ -161,37 +212,52 @@ export function classifyProduct(
 ): { productType: ProductCategory; brand: string; finalDescription: string; finalReference: string } {
     const { codigoBarras, talla, descripcion: originalDescription, grupo, marca: originalMarca, referencia: originalReference } = entry;
     
-    // Prioridad 1: Base de Datos Maestra (Firebase)
-    const dbProduct = productMap.get(codigoBarras);
-    if (dbProduct && dbProduct.grupo && dbProduct.marca) {
-        const productType = dbProduct.grupo.toUpperCase() as ProductCategory;
-        if (['CALZADO', 'ROPA', 'ACCESORIOS'].includes(productType)) {
-             return {
-                productType: productType,
-                brand: dbProduct.marca.trim().toUpperCase(),
-                finalDescription: dbProduct.item || originalDescription,
-                finalReference: dbProduct.referencia || originalReference
-            };
-        }
+    const dbProduct = lookupProductFromMap(productMap, codigoBarras);
+    const correctionKey = talla !== undefined && talla !== '' ? `${normalizeBarcode(codigoBarras)}|${talla}` : normalizeBarcode(codigoBarras);
+    const correction = referenceCorrections[correctionKey];
+
+    const referenceToUse =
+        correction?.newReferencia?.trim() ||
+        originalReference?.trim() ||
+        (dbProduct ? catalogReference(dbProduct) : '');
+    const descriptionToUse =
+        correction?.newDescripcion?.trim() ||
+        originalDescription?.trim() ||
+        (dbProduct ? catalogDescription(dbProduct) : '');
+
+    const dbGrupo = dbProduct ? catalogGrupo(dbProduct) : '';
+    const dbMarca = dbProduct ? catalogMarca(dbProduct) : '';
+
+    // Catálogo completo: marca + grupo válidos
+    if (dbGrupo && dbMarca && ['CALZADO', 'ROPA', 'ACCESORIOS'].includes(dbGrupo)) {
+        return {
+            productType: dbGrupo as ProductCategory,
+            brand: dbMarca,
+            finalDescription: descriptionToUse,
+            finalReference: referenceToUse,
+        };
+    }
+
+    // Catálogo parcial o inferencia desde descripción enriquecida
+    let { brand, productType } = inferClassificationFromDescription(
+        descriptionToUse,
+        dbMarca || originalMarca,
+        dbGrupo || grupo || ''
+    );
+
+    if (dbGrupo && ['CALZADO', 'ROPA', 'ACCESORIOS'].includes(dbGrupo)) {
+        productType = dbGrupo as ProductCategory;
+    }
+    if (dbMarca) {
+        brand = dbMarca;
     }
     
-    // Prioridad 2: Aplicar corrección manual de referencia ANTES de la clasificación.
-    const correctionKey = talla !== undefined && talla !== '' ? `${codigoBarras}|${talla}` : String(codigoBarras);
-    const correction = referenceCorrections[correctionKey];
-    
-    const descriptionToUse = correction?.newDescripcion || originalDescription;
-    const referenceToUse = correction?.newReferencia || originalReference;
-
-    // Prioridad 3: Clasificación automática (incluyendo BRAND_CODE_MAP y palabras clave)
-    let { brand, productType } = inferClassificationFromDescription(descriptionToUse, originalMarca, grupo || '');
-    
-    // Prioridad 4: Anulación por Clasificación Manual Final
     const termToAnalyze = descriptionToUse.toUpperCase().substring(3).trim().split(' ')[0];
     const manualClass = termToAnalyze ? manualClassifications[termToAnalyze] : undefined;
     
     if (manualClass) {
-        if(manualClass.brand) brand = manualClass.brand;
-        if(manualClass.productType) productType = manualClass.productType;
+        if (manualClass.brand) brand = manualClass.brand;
+        if (manualClass.productType) productType = manualClass.productType;
     }
     
     return { productType, brand, finalDescription: descriptionToUse, finalReference: referenceToUse };
@@ -1829,8 +1895,9 @@ export function extractUniqueReferences(
     const uniqueRefs = new Map<string, UniqueReference>();
     
     data.forEach(d => {
-        const productFromDB = productMap.get(d.codigoBarras);
-        const isNotFound = !productFromDB || !productFromDB.marca || !productFromDB.grupo;
+        const productFromDB = productMap.get(normalizeBarcode(d.codigoBarras));
+        const catalogBrand = productFromDB?.marca || productFromDB?.merchandise_type;
+        const isNotFound = !productFromDB || !catalogBrand || !productFromDB.grupo;
 
         if (d.codigoBarras && isNotFound) {
             const key = d.talla !== undefined ? `${d.codigoBarras}|${d.talla}` : String(d.codigoBarras);
@@ -1863,8 +1930,8 @@ export function extractImportedBrandCatalogItems(
     const items = new Map<string, ImportedBrandCatalogItem>();
 
     data.forEach((entry) => {
-        const dbProduct = productMap.get(entry.codigoBarras);
-        if (!dbProduct || !isImportedBrandMarca(dbProduct.marca)) {
+        const dbProduct = productMap.get(normalizeBarcode(entry.codigoBarras));
+        if (!dbProduct || !isImportedBrandMarca(dbProduct.marca || dbProduct.merchandise_type)) {
             return;
         }
 
@@ -1895,13 +1962,14 @@ export function extractAllReferencesFromReport(
     const uniqueRefs = new Map<string, UniqueReference>();
     
     data.forEach(d => {
-        const key = d.referencia; // Group by reference for goal setting
+        const referencia = (d.referencia || '').trim();
+        const key = referencia || `__codigo__:${normalizeBarcode(d.codigoBarras)}`;
         if (!uniqueRefs.has(key)) {
             uniqueRefs.set(key, {
                 codigoBarras: d.codigoBarras,
                 talla: d.talla,
-                referencia: d.referencia,
-                descripcion: d.descripcion,
+                referencia: referencia || normalizeBarcode(d.codigoBarras),
+                descripcion: d.descripcion || '',
                 marca: d.marca,
                 productType: d.productType
             });
