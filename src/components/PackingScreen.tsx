@@ -1214,6 +1214,18 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             acc[refKey].sizes[tallaKey] = { ordered: detail.cantidad, packed };
             return acc;
         }, {} as { [key: string]: GroupedReference });
+
+        // Tallas empaquetadas que no venían en el Excel del pedido (ej. agregadas manualmente en una caja)
+        Object.entries(globalPackingProgress).forEach(([itemKey, packedQty]) => {
+            if (!packedQty) return;
+            const { reference, talla } = parseItemKey(itemKey);
+            if (!reference || !grouped[reference]) return;
+
+            const tallaKey = talla || '';
+            if (!grouped[reference].sizes[tallaKey]) {
+                grouped[reference].sizes[tallaKey] = { ordered: 0, packed: packedQty };
+            }
+        });
         
         let filtered = Object.values(grouped) as GroupedReference[];
         
@@ -1256,11 +1268,13 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             for (const refData of dataToExport) {
                 const ref = refData.Referencia;
                 const detailsForRef = packingOrder.order.details.filter(d => (d.referencia || '').toString().trim() === ref);
+                const exportedTallas = new Set<string>();
                 for (const detail of detailsForRef) {
                     const talla = (detail.talla || '').toString().trim();
                     const itemKey = createItemKey(ref, talla);
                     const packedQty = packedByRefTalla[itemKey] || 0;
                     const diff = packedQty - detail.cantidad;
+                    exportedTallas.add(talla);
                     detailedData.push({
                         'Referencia': ref,
                         'Talla': talla,
@@ -1271,6 +1285,22 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                         'Estado': diff === 0 ? 'Completo' : diff > 0 ? 'Sobrante' : 'Faltante',
                     });
                 }
+                Object.entries(packedByRefTalla)
+                    .filter(([key]) => parseItemKey(key).reference === ref)
+                    .forEach(([key, packedQty]) => {
+                        const { talla } = parseItemKey(key);
+                        const tallaKey = talla || '';
+                        if (exportedTallas.has(tallaKey)) return;
+                        detailedData.push({
+                            'Referencia': ref,
+                            'Talla': tallaKey,
+                            'Item': detailsForRef[0]?.item || '',
+                            'Pedido': 0,
+                            'Leido': packedQty,
+                            'Diferencia': packedQty,
+                            'Estado': 'Sobrante',
+                        });
+                    });
             }
              exportToXlsx(detailedData, `Reporte_Detallado_Pedido_${packingOrder.order.id}`);
         }
