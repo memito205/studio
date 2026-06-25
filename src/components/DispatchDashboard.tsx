@@ -113,7 +113,9 @@ const CreateShipmentDialog: React.FC<CreateShipmentDialogProps> = ({ isOpen, onO
                                 <p className="text-xs text-muted-foreground text-center py-4 italic">No hay pedidos empacados disponibles.</p>
                             )}
                         </div>
-                        <p className="text-[10px] text-muted-foreground italic">* Si no selecciona ninguno, se permitirán todos los pedidos en este despacho.</p>
+                        <p className="text-[10px] text-muted-foreground italic">
+                          * Puede incluir varios pedidos del mismo cliente en un envío. Si no selecciona ninguno, se permitirán todos los pedidos empacados.
+                        </p>
                     </div>
                 </div>
                 <DialogFooter>

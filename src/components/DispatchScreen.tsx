@@ -31,6 +31,116 @@ interface ScanOverlayData {
   message?: string;
 }
 
+type OrderDispatchMaps = {
+  firestoreIdToLabelId: Map<string, string>;
+  labelIdToRefs: Map<string, string[]>;
+};
+
+const normalizeLabelKey = (id: string) =>
+  id.toUpperCase().replace(/\s+/g, '').replace(/'/g, '-').replace(/_/g, '-');
+
+function parseItemKey(itemKey: string): { reference: string; talla: string } {
+  const key = String(itemKey || '').trim();
+  const separatorIndex = key.lastIndexOf('-');
+  if (separatorIndex < 0) return { reference: key, talla: '' };
+  return {
+    reference: key.slice(0, separatorIndex).trim(),
+    talla: key.slice(separatorIndex + 1).trim(),
+  };
+}
+
+function getRefFromPackedItem(item: PackedItem): string {
+  return String(
+    item.item?.referencia || item.item?.reference || parseItemKey(item.itemKey).reference || 'Desconocida'
+  ).trim();
+}
+
+async function buildOrderDispatchMaps(
+  orderId: string,
+  labels: PreprintedLabel[],
+  packedItems: PackedItem[]
+): Promise<OrderDispatchMaps> {
+  const firestoreIdToLabelId = new Map<string, string>();
+  const labelIdToRefs = new Map<string, string[]>();
+  const orderLabels = labels.filter((l) => l.orderId === orderId);
+  const orderItems = packedItems.filter((p) => p.orderId === orderId);
+
+  const sessionRes = await getPackingSession(orderId);
+  (sessionRes?.data?.units || []).forEach((u) => {
+    const lbl = orderLabels.find(
+      (lb) =>
+        lb.unitId === u.id ||
+        (lb.id && u.labelBarcode && normalizeLabelKey(lb.id) === normalizeLabelKey(u.labelBarcode))
+    );
+    if (lbl?.id && u.firestoreId) {
+      firestoreIdToLabelId.set(u.firestoreId, lbl.id);
+    }
+  });
+
+  orderItems.forEach((p) => {
+    const labelId =
+      firestoreIdToLabelId.get(p.packingUnitId) ||
+      orderLabels.find((lb) => normalizeLabelKey(lb.id || '') === normalizeLabelKey(p.packingUnitId))?.id;
+    if (!labelId) return;
+    const ref = getRefFromPackedItem(p);
+    const refs = labelIdToRefs.get(labelId) || [];
+    refs.push(ref);
+    labelIdToRefs.set(labelId, refs);
+  });
+
+  return { firestoreIdToLabelId, labelIdToRefs };
+}
+
+function resolveItemsInBox(
+  matchedLabel: PreprintedLabel,
+  packedItems: PackedItem[],
+  firestoreIdToLabelId: Map<string, string>
+): PackedItem[] {
+  const unitFirestoreId = [...firestoreIdToLabelId.entries()].find(([, lid]) => lid === matchedLabel.id)?.[0];
+  return packedItems.filter(
+    (p) =>
+      p.orderId === matchedLabel.orderId &&
+      ((unitFirestoreId && p.packingUnitId === unitFirestoreId) ||
+        (matchedLabel.id && normalizeLabelKey(p.packingUnitId) === normalizeLabelKey(matchedLabel.id)))
+  );
+}
+
+function buildBoxCountMessage(
+  matchedLabel: PreprintedLabel,
+  mainRef: string | null,
+  orderLabels: PreprintedLabel[],
+  labelIdToRefs: Map<string, string[]>,
+  scannedLabels: Record<string, unknown> | undefined,
+  currentLabelId: string
+): string {
+  const usedLabels = orderLabels.filter((l) => l.status === 'used' || l.status === 'dispatched');
+  const isAlreadyScanned = !!scannedLabels?.[currentLabelId];
+
+  if (mainRef) {
+    let totalBoxesForRef = 0;
+    let scannedBoxesForRef = 0;
+    usedLabels.forEach((l) => {
+      const refs = labelIdToRefs.get(l.id || '') || [];
+      if (!refs.includes(mainRef)) return;
+      totalBoxesForRef++;
+      if (scannedLabels?.[normalizeLabelKey(l.id || '')]) scannedBoxesForRef++;
+    });
+    if (!isAlreadyScanned) scannedBoxesForRef++;
+    if (totalBoxesForRef > 0) {
+      return `\nRef: ${mainRef} (Caja ${scannedBoxesForRef}/${totalBoxesForRef})`;
+    }
+  }
+
+  const totalOrderBoxes = usedLabels.length;
+  if (matchedLabel.unitId != null && totalOrderBoxes > 0) {
+    let scannedOrderBoxes = usedLabels.filter((l) => scannedLabels?.[normalizeLabelKey(l.id || '')]).length;
+    if (!isAlreadyScanned) scannedOrderBoxes++;
+    return `\nPedido (Caja ${matchedLabel.unitId} de ${totalOrderBoxes} — ${scannedOrderBoxes} cargadas)`;
+  }
+
+  return '';
+}
+
 export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onReturnToDispatchDashboard }) => {
   const [sessionInfo, setSessionInfo] = useState<DispatchSessionInfo | null>(null);
   const [scannedLabel, setScannedLabel] = useState('');
@@ -75,10 +185,15 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
       if (ordersResult.data) setAllOrders(ordersResult.data);
 
       // Load labels and packed items for all allowed orders
-      if (shipment?.allowedOrderIds && shipment.allowedOrderIds.length > 0) {
+      const orderIdsToLoad =
+        shipment?.allowedOrderIds && shipment.allowedOrderIds.length > 0
+          ? shipment.allowedOrderIds
+          : [];
+
+      if (orderIdsToLoad.length > 0) {
         const labelsArr: PreprintedLabel[] = [];
         const itemsArr: PackedItem[] = [];
-        for (const ordId of shipment.allowedOrderIds) {
+        for (const ordId of orderIdsToLoad) {
           const labelsRes = await getLabelsForOrder(ordId);
           if (labelsRes.data) labelsArr.push(...labelsRes.data);
           const itemsRes = await getPackedItemsForOrder(ordId);
@@ -150,86 +265,41 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
           }
       }
 
-      let itemsInBox: PackedItem[] = [];
-      let unitReferenceId = matchedLabel?.unitId?.toString();
+      const resolvedOrderId = matchedLabel?.orderId || result.orderId;
+      let dispatchMaps: OrderDispatchMaps | undefined;
 
-      // IMPORTANT FIX: Resolve human readable unit number to firestoreId
-      if (matchedLabel?.orderId && matchedLabel?.unitId) {
-          const sessionRes = await getPackingSession(matchedLabel.orderId);
-          if (sessionRes?.data?.units) {
-              const unitDoc = sessionRes.data.units.find(u => u.id === matchedLabel.unitId);
-              if (unitDoc?.firestoreId) {
-                  unitReferenceId = unitDoc.firestoreId;
-              }
-          }
+      if (resolvedOrderId) {
+        dispatchMaps = await buildOrderDispatchMaps(resolvedOrderId, currentAllLabels, currentAllPackedItems);
       }
 
-      itemsInBox = currentAllPackedItems.filter(p => 
-          (unitReferenceId && p.packingUnitId === unitReferenceId) || 
-          (matchedLabel?.id && p.packingUnitId === matchedLabel.id)
-      );
+      const itemsInBox =
+        matchedLabel && dispatchMaps
+          ? resolveItemsInBox(matchedLabel, currentAllPackedItems, dispatchMaps.firestoreIdToLabelId)
+          : [];
 
       const totalItems = itemsInBox.reduce((sum, item) => sum + item.quantity, 0);
 
       const referenceMap = new Map<string, number>();
-      itemsInBox.forEach(item => {
-          const ref = (item.item?.referencia || item.itemKey.split('-')[0] || 'Desconocida').trim();
-          referenceMap.set(ref, (referenceMap.get(ref) || 0) + item.quantity);
+      itemsInBox.forEach((item) => {
+        const ref = getRefFromPackedItem(item);
+        referenceMap.set(ref, (referenceMap.get(ref) || 0) + item.quantity);
       });
       const itemsList = Array.from(referenceMap.entries());
-      const mainRef = itemsList.length > 0 ? itemsList.sort((a,b) => b[1] - a[1])[0][0] : null;
+      const mainRef = itemsList.length > 0 ? itemsList.sort((a, b) => b[1] - a[1])[0][0] : null;
 
-      let countMsg = '';
-      if (mainRef) {
-          let totalBoxesForRef = 0;
-          let scannedBoxesForRef = 0;
-          
-          const itemsByLabelId = new Map<string, string[]>();
-          const unitIdToFirestoreId = new Map<number, string>();
-          const firestoreIdToLabelId = new Map<string, string>();
-          
-          if (matchedOrder?.id) {
-              const sessionRes = await getPackingSession(matchedOrder.id);
-              if (sessionRes?.data?.units) {
-                  sessionRes.data.units.forEach(u => {
-                      unitIdToFirestoreId.set(u.id, u.firestoreId);
-                      const lbl = currentAllLabels.find(lb => lb.unitId === u.id || lb.id === u.labelBarcode);
-                      if (lbl?.id) firestoreIdToLabelId.set(u.firestoreId, lbl.id);
-                  });
-              }
-          }
+      const countMsg =
+        matchedLabel && matchedOrder
+          ? buildBoxCountMessage(
+              matchedLabel,
+              mainRef,
+              currentAllLabels.filter((l) => l.orderId === matchedOrder.id),
+              dispatchMaps?.labelIdToRefs || new Map(),
+              sessionInfo?.scannedLabels,
+              labelId
+            )
+          : '';
 
-          currentAllPackedItems.forEach(p => {
-              let targetLabelId = firestoreIdToLabelId.get(p.packingUnitId) || 
-                                currentAllLabels.find(lb => lb.id === p.packingUnitId)?.id;
-                                
-              if (targetLabelId) {
-                 const r = (p.item?.referencia || p.itemKey.split('-')[0] || 'Desconocida').trim();
-                 if (!itemsByLabelId.has(targetLabelId)) itemsByLabelId.set(targetLabelId, []);
-                 itemsByLabelId.get(targetLabelId)!.push(r);
-              }
-          });
-
-          currentAllLabels.forEach(l => {
-              if (matchedOrder && l.orderId === matchedOrder.id) {
-                  const refs = itemsByLabelId.get(l.id || '') || [];
-                  if (refs.includes(mainRef)) {
-                      totalBoxesForRef++;
-                      if (sessionInfo?.scannedLabels && sessionInfo.scannedLabels[(l.id || '').toUpperCase()]) {
-                          scannedBoxesForRef++;
-                      }
-                  }
-              }
-          });
-          
-          if (!sessionInfo?.scannedLabels || !sessionInfo.scannedLabels[labelId]) {
-              scannedBoxesForRef++;
-          }
-          
-          countMsg = `\nRef: ${mainRef} (Caja ${scannedBoxesForRef}/${totalBoxesForRef})`;
-      }
-
-      const unitMessage = totalItems > 0 ? `(${totalItems} Unds)${countMsg}` : `${countMsg}`;
+      const unitMessage = totalItems > 0 ? `(${totalItems} Unds)${countMsg}` : countMsg || '';
       const customerName = matchedOrder?.cliente || 'Cliente Desconocido';
 
       if (isDuplicate) {
