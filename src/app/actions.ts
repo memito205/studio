@@ -4183,6 +4183,128 @@ export async function batchUpdateTransferStatus(
     }
 }
 
+export type BulkTransferStatusFileRow = {
+    numeroTF: string;
+    bodegaOrigen: string;
+    bodegaDestino: string;
+    estadoDestino: string;
+};
+
+export type BulkTransferStatusPreviewItem = {
+    transferId: string;
+    numeroTF: string;
+    bodegaOrigen: string;
+    bodegaDestino: string;
+    currentStatus: TransferStatus;
+    newStatus: TransferStatus;
+    marca?: string;
+    grupo?: string;
+    cantidad?: number;
+};
+
+export type BulkTransferStatusPreviewResult = {
+    success: boolean;
+    matched: BulkTransferStatusPreviewItem[];
+    notFound: BulkTransferStatusFileRow[];
+    invalidStatus: BulkTransferStatusFileRow[];
+    error?: string;
+};
+
+export async function previewBulkTransferStatusFromFile(
+    rows: BulkTransferStatusFileRow[]
+): Promise<BulkTransferStatusPreviewResult> {
+    try {
+        const { buildTransferRouteKey, parseTransferStatusValue } = await import('@/lib/transferRouteKey');
+        const snapshot = await getDocs(collection(firestore, 'transfers'));
+        const byRouteKey = new Map<string, TransferEntry[]>();
+
+        snapshot.forEach((docSnap) => {
+            const data = { id: docSnap.id, ...convertTimestampsToDates(docSnap.data()) } as TransferEntry;
+            const key = buildTransferRouteKey(data.numeroTF, data.bodegaOrigen, data.bodegaDestino);
+            if (!byRouteKey.has(key)) byRouteKey.set(key, []);
+            byRouteKey.get(key)!.push(data);
+        });
+
+        const matched: BulkTransferStatusPreviewItem[] = [];
+        const notFound: BulkTransferStatusFileRow[] = [];
+        const invalidStatus: BulkTransferStatusFileRow[] = [];
+
+        for (const row of rows) {
+            const newStatus = parseTransferStatusValue(row.estadoDestino);
+            if (!newStatus) {
+                invalidStatus.push(row);
+                continue;
+            }
+
+            const key = buildTransferRouteKey(row.numeroTF, row.bodegaOrigen, row.bodegaDestino);
+            const entries = byRouteKey.get(key);
+            if (!entries || entries.length === 0) {
+                notFound.push(row);
+                continue;
+            }
+
+            for (const entry of entries) {
+                matched.push({
+                    transferId: entry.id!,
+                    numeroTF: entry.numeroTF,
+                    bodegaOrigen: entry.bodegaOrigen,
+                    bodegaDestino: entry.bodegaDestino,
+                    currentStatus: entry.status,
+                    newStatus,
+                    marca: entry.marca,
+                    grupo: entry.grupo,
+                    cantidad: entry.cantidad,
+                });
+            }
+        }
+
+        return { success: true, matched, notFound, invalidStatus };
+    } catch (error: any) {
+        console.error('Error previewing bulk transfer status from file:', error);
+        return { success: false, matched: [], notFound: [], invalidStatus: [], error: error.message };
+    }
+}
+
+export async function applyBulkTransferStatusUpdates(
+    updates: { transferId: string; newStatus: TransferStatus }[],
+    justification: string,
+    actor?: TransferActor
+): Promise<{ success: boolean; updatedCount?: number; error?: string }> {
+    try {
+        if (!justification?.trim()) {
+            return { success: false, error: 'La justificación es obligatoria.' };
+        }
+        if (updates.length === 0) {
+            return { success: false, error: 'No hay transferencias para actualizar.' };
+        }
+
+        const byStatus = new Map<TransferStatus, string[]>();
+        for (const u of updates) {
+            if (!byStatus.has(u.newStatus)) byStatus.set(u.newStatus, []);
+            byStatus.get(u.newStatus)!.push(u.transferId);
+        }
+
+        let total = 0;
+        const CHUNK = 450;
+
+        for (const [status, ids] of byStatus.entries()) {
+            for (let i = 0; i < ids.length; i += CHUNK) {
+                const chunk = ids.slice(i, i + CHUNK);
+                const result = await updateTransferStatus(chunk, status, justification.trim(), actor);
+                if (!result.success) {
+                    return { success: false, error: result.error, updatedCount: total };
+                }
+                total += chunk.length;
+            }
+        }
+
+        return { success: true, updatedCount: total };
+    } catch (error: any) {
+        console.error('Error applying bulk transfer status updates:', error);
+        return { success: false, error: error.message };
+    }
+}
+
 export async function healInconsistentTransfers(): Promise<{ success: boolean; updatedCount: number; error?: string }> {
     try {
         // Filter from March 1st, 2026

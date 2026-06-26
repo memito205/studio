@@ -5,7 +5,7 @@
 import React, { useState, useMemo, ChangeEvent, useRef, useCallback, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, UploadCloud, Truck, FileSignature, Search, Download, Trash2, Plus, File, Package, X, Check, Save, History, Eye, Printer, PackageCheck, Loader2, ScanLine, CircleDot, FileDown, MoreHorizontal, ChevronsUpDown, Database, RefreshCw, ListOrdered, FileSearch } from 'lucide-react';
+import { ArrowLeft, UploadCloud, Truck, FileSignature, Search, Download, Trash2, Plus, File, Package, X, Check, Save, History, Eye, Printer, PackageCheck, Loader2, ScanLine, CircleDot, FileDown, MoreHorizontal, ChevronsUpDown, Database, RefreshCw, ListOrdered, FileSearch, FileSpreadsheet } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/card';
 import { Input } from './ui/input';
 import { useToast } from '@/hooks/use-toast';
@@ -41,6 +41,7 @@ import { CollectionLogDetailsDialog } from './CollectionLogDetailsDialog';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from './ui/collapsible';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { TransferLogDialog } from './TransferLogDialog';
+import { TransferBulkStatusChangeDialog } from './TransferBulkStatusChangeDialog';
 
 interface GroupedTransfer extends TransferEntry {
     allIds: string[];
@@ -984,6 +985,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     const { toast } = useToast();
     const actor = useMemo(() => toTransferActor(user, userName), [user, userName]);
     const isAdmin = role === 'admin' || role === 'supervisor';
+    const isBulkStatusAdmin = role === 'admin';
     const [manifests, setManifests] = useState<DeliveryManifest[]>([]);
     const [isLoadingManifests, setIsLoadingManifests] = useState(false);
     const [selectedForManifest, setSelectedForManifest] = useState(new Set<string>());
@@ -1002,6 +1004,9 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     
     const [statusChangeState, setStatusChangeState] = useState<{ isOpen: boolean; transfer: TransferEntry | null }>({ isOpen: false, transfer: null });
     const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+    const [selectedForBulkStatus, setSelectedForBulkStatus] = useState(new Set<string>());
+    const [isBulkStatusDialogOpen, setIsBulkStatusDialogOpen] = useState(false);
+    const [bulkStatusDialogTab, setBulkStatusDialogTab] = useState<'selection' | 'file'>('selection');
 
     const [isLabelDialogOpen, setIsLabelDialogOpen] = useState(false);
     const [transferForLabel, setTransferForLabel] = useState<TransferEntry | null>(null);
@@ -1148,6 +1153,20 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             (filters.endDate && t.fecha instanceof Date ? t.fecha <= new Date(filters.endDate + 'T23:59:59') : true)
         );
     }, [transfers, filters]);
+
+    const groupedFilteredTransfers = useMemo(
+        () => groupTransfersByTF(filteredTransfers, transferIdToPlacaMap),
+        [filteredTransfers, transferIdToPlacaMap]
+    );
+
+    const bulkStatusSelectionCount = useMemo(() => {
+        const groupedKeys = new Set<string>();
+        selectedForBulkStatus.forEach((id) => {
+            const t = transfers.find((tr) => tr.id === id);
+            if (t) groupedKeys.add(`${t.numeroTF}|${t.bodegaOrigen}|${t.bodegaDestino}`);
+        });
+        return { lineCount: selectedForBulkStatus.size, tfCount: groupedKeys.size };
+    }, [selectedForBulkStatus, transfers]);
     
     const supervisorValidationTransfers = useMemo(() => {
         const filtered = operationalTransfers.filter(t => t.status === 'Recolectado en Ruta');
@@ -1339,6 +1358,20 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         onConfirm={handleManualStatusUpdate}
         isSaving={isUpdatingStatus}
       />
+      {isBulkStatusAdmin && (
+        <TransferBulkStatusChangeDialog
+          open={isBulkStatusDialogOpen}
+          onOpenChange={setIsBulkStatusDialogOpen}
+          initialTab={bulkStatusDialogTab}
+          selectedTransferIds={Array.from(selectedForBulkStatus)}
+          transfers={transfers}
+          actor={actor}
+          onSuccess={() => {
+            setSelectedForBulkStatus(new Set());
+            onRefresh();
+          }}
+        />
+      )}
       <Dialog open={isCreateManifestOpen} onOpenChange={setIsCreateManifestOpen}>
         <DialogContent>
           <DialogHeader>
@@ -1466,6 +1499,19 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                             )}
                              <Button onClick={() => setIsManualEntryOpen(true)}><Plus className="mr-2 h-4 w-4"/> Agregar Manual</Button>
                             <DownloadTemplateButton/>
+                            {isBulkStatusAdmin && (
+                                <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() => {
+                                        setBulkStatusDialogTab('file');
+                                        setIsBulkStatusDialogOpen(true);
+                                    }}
+                                >
+                                    <FileSpreadsheet className="mr-2 h-4 w-4" />
+                                    Cambio masivo estado
+                                </Button>
+                            )}
                         </div>
                     </div>
                      {isAdmin && (
@@ -1575,13 +1621,52 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                     </div>
                     <div className="flex justify-between items-center mb-2 px-1">
                         <span className="text-sm font-medium text-muted-foreground">
-                            {filteredTransfers.length > 0 ? `Mostrando ${groupTransfersByTF(filteredTransfers).length} TFs únicas (${filteredTransfers.length} líneas halladas)` : 'No hay resultados'}
+                            {filteredTransfers.length > 0 ? `Mostrando ${groupedFilteredTransfers.length} TFs únicas (${filteredTransfers.length} líneas halladas)` : 'No hay resultados'}
                         </span>
+                        {isBulkStatusAdmin && selectedForBulkStatus.size > 0 && (
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs text-muted-foreground">
+                                    {bulkStatusSelectionCount.tfCount} TF(s) / {bulkStatusSelectionCount.lineCount} línea(s)
+                                </span>
+                                <Button
+                                    size="sm"
+                                    onClick={() => {
+                                        setBulkStatusDialogTab('selection');
+                                        setIsBulkStatusDialogOpen(true);
+                                    }}
+                                >
+                                    Cambiar estado seleccionadas
+                                </Button>
+                                <Button size="sm" variant="ghost" onClick={() => setSelectedForBulkStatus(new Set())}>
+                                    Limpiar
+                                </Button>
+                            </div>
+                        )}
                     </div>
                     <div className="border rounded-md max-h-[60vh] overflow-auto">
                         <Table className="min-w-[1500px]">
                             <TableHeader>
                                  <TableRow>
+                                    {isBulkStatusAdmin && (
+                                        <TableHead className="w-[40px]">
+                                            <Checkbox
+                                                checked={
+                                                    groupedFilteredTransfers.length > 0 &&
+                                                    groupedFilteredTransfers.every((t) => t.allIds.every((id) => selectedForBulkStatus.has(id)))
+                                                }
+                                                onCheckedChange={(checked) => {
+                                                    const allIds = groupedFilteredTransfers.flatMap((t) => t.allIds);
+                                                    if (checked) {
+                                                        setSelectedForBulkStatus(new Set([...selectedForBulkStatus, ...allIds]));
+                                                    } else {
+                                                        const next = new Set(selectedForBulkStatus);
+                                                        allIds.forEach((id) => next.delete(id));
+                                                        setSelectedForBulkStatus(next);
+                                                    }
+                                                }}
+                                            />
+                                        </TableHead>
+                                    )}
                                     <TableHead className="w-[80px]">Ord.</TableHead>
                                     <TableHead>Fecha</TableHead>
                                     <TableHead>Número TF</TableHead>
@@ -1599,12 +1684,29 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                             </TableHeader>
                             <TableBody>
                                 {isLoading ? (
-                                    <TableRow><TableCell colSpan={11} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
+                                    <TableRow><TableCell colSpan={isBulkStatusAdmin ? 14 : 13} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
                                 ) : filteredTransfers.length > 0 ? (
-                                    groupTransfersByTF(filteredTransfers, transferIdToPlacaMap).map((t) => {
+                                    groupedFilteredTransfers.map((t) => {
                                         const placa = transferIdToPlacaMap.get(t.id) || 'N/A';
+                                        const allSelected = t.allIds.every((id) => selectedForBulkStatus.has(id));
                                         return (
                                          <TableRow key={t.id}>
+                                            {isBulkStatusAdmin && (
+                                                <TableCell>
+                                                    <Checkbox
+                                                        checked={allSelected}
+                                                        onCheckedChange={(checked) => {
+                                                            const next = new Set(selectedForBulkStatus);
+                                                            if (checked) {
+                                                                t.allIds.forEach((id) => next.add(id));
+                                                            } else {
+                                                                t.allIds.forEach((id) => next.delete(id));
+                                                            }
+                                                            setSelectedForBulkStatus(next);
+                                                        }}
+                                                    />
+                                                </TableCell>
+                                            )}
                                             <TableCell className="font-bold text-blue-600">{t.storageOrder || '---'}</TableCell>
                                             <TableCell>{t.fecha.toLocaleDateString('es-CO')}</TableCell>
                                             <TableCell className="font-medium">{t.numeroTF}</TableCell>
@@ -1697,7 +1799,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                         </TableRow>
                                     )})
                                 ) : (
-                                    <TableRow><TableCell colSpan={11} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
+                                    <TableRow><TableCell colSpan={isBulkStatusAdmin ? 14 : 13} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
                                 )}
                             </TableBody>
                         </Table>
