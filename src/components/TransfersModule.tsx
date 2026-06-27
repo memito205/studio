@@ -112,6 +112,30 @@ const groupTransfersByTF = (transfers: TransferEntry[], placaMap?: Map<string, s
     return Array.from(groups.values());
 };
 
+const buildFilteredTransfersExportRows = (
+    transfers: TransferEntry[],
+    placaMap: Map<string, string | undefined>
+) =>
+    transfers.map((t) => ({
+        'Ord. FIFO': t.storageOrder || '',
+        Fecha: t.fecha instanceof Date ? format(t.fecha, 'dd/MM/yyyy') : '',
+        'Numero TF': t.numeroTF,
+        Origen: t.bodegaOrigen,
+        Destino: t.bodegaDestino,
+        Marca: t.marca || '',
+        Grupo: t.grupo || '',
+        Cantidad: t.cantidad ?? '',
+        Estado: t.status,
+        'Placa Recolección': placaMap.get(t.id) || '',
+        'Fecha Recibido': t.recibidoAt ? format(t.recibidoAt, 'dd/MM/yyyy HH:mm') : '',
+        'Fecha Enviado': t.enviadoAt ? format(t.enviadoAt, 'dd/MM/yyyy HH:mm') : '',
+    }));
+
+const buildFilteredTransfersExportFileName = (statusFilter: string) => {
+    const statusSlug = statusFilter === 'all' ? 'todos' : statusFilter.replace(/\s+/g, '_');
+    return `Transferencias_${statusSlug}_${format(new Date(), 'yyyy-MM-dd_HHmm')}`;
+};
+
 
 const getStatusBadge = (status: TransferStatus) => {
     switch (status) {
@@ -1168,6 +1192,23 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         return { lineCount: selectedForBulkStatus.size, tfCount: groupedKeys.size };
     }, [selectedForBulkStatus, transfers]);
     
+    const handleExportFilteredTransfers = useCallback(() => {
+        if (filteredTransfers.length === 0) {
+            toast({
+                variant: 'destructive',
+                title: 'Sin datos',
+                description: 'No hay transferencias en el filtro actual para exportar.',
+            });
+            return;
+        }
+        const dataToExport = buildFilteredTransfersExportRows(filteredTransfers, transferIdToPlacaMap);
+        exportToXlsx(dataToExport, buildFilteredTransfersExportFileName(filters.status));
+        toast({
+            title: 'Exportación lista',
+            description: `Se exportaron ${filteredTransfers.length} línea(s) al Excel.`,
+        });
+    }, [filteredTransfers, transferIdToPlacaMap, filters.status, toast]);
+
     const supervisorValidationTransfers = useMemo(() => {
         const filtered = operationalTransfers.filter(t => t.status === 'Recolectado en Ruta');
         return filtered.filter(t => 
@@ -1619,11 +1660,24 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                             </Button>
                         </div>
                     </div>
-                    <div className="flex justify-between items-center mb-2 px-1">
+                    <div className="flex justify-between items-center mb-2 px-1 gap-2 flex-wrap">
                         <span className="text-sm font-medium text-muted-foreground">
                             {filteredTransfers.length > 0 ? `Mostrando ${groupedFilteredTransfers.length} TFs únicas (${filteredTransfers.length} líneas halladas)` : 'No hay resultados'}
                         </span>
-                        {isBulkStatusAdmin && selectedForBulkStatus.size > 0 && (
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handleExportFilteredTransfers}
+                                disabled={isLoading || filteredTransfers.length === 0}
+                            >
+                                <FileDown className="mr-2 h-4 w-4" />
+                                Exportar Excel
+                                {filteredTransfers.length > 0 && (
+                                    <span className="ml-2 text-xs">({filteredTransfers.length})</span>
+                                )}
+                            </Button>
+                            {isBulkStatusAdmin && selectedForBulkStatus.size > 0 && (
                             <div className="flex items-center gap-2">
                                 <span className="text-xs text-muted-foreground">
                                     {bulkStatusSelectionCount.tfCount} TF(s) / {bulkStatusSelectionCount.lineCount} línea(s)
@@ -1641,7 +1695,8 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                     Limpiar
                                 </Button>
                             </div>
-                        )}
+                            )}
+                        </div>
                     </div>
                     <div className="border rounded-md max-h-[60vh] overflow-auto">
                         <Table className="min-w-[1500px]">
