@@ -212,15 +212,26 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
       const worksheet = workbook.Sheets[sheetName];
       const json: any[] = XLSX.utils.sheet_to_json(worksheet);
 
-      const productsToCreate: ProductDatabaseItem[] = json.map(row => ({
-          id: String(row.codigo_barras), // id and codigoBarras are the same
-          codigoBarras: String(row.codigo_barras || ''),
-          referencia: String(row.referencia || ''),
-          talla: String(row.talla || ''),
-          item: String(row.descripcion || ''),
-          marca: String(row.marca || ''),
-          grupo: String(row.grupo || ''),
-      })).filter(p => p.codigoBarras);
+      const productsToCreate: ProductDatabaseItem[] = json.map((row) => {
+          const codigoBarras = String(row.codigo_barras || row['Código de barras'] || row['Codigo de barras'] || '').trim();
+          const marca = String(row.marca || row.Marca || '').trim().toUpperCase();
+          const grupo = String(row.grupo || row.Grupo || '').trim().toUpperCase();
+          const referencia = String(row.referencia || row.Referencia || '').trim();
+          const talla = String(row.talla || row.Talla || '').trim();
+          const item = String(row.descripcion || row.Descripcion || row['descripción del producto'] || '').trim();
+
+          const product: ProductDatabaseItem = {
+              id: codigoBarras,
+              codigoBarras,
+          };
+          // Solo escribe campos con valor para poder corregir marca sin borrar el resto del catálogo.
+          if (referencia) product.referencia = referencia;
+          if (talla) product.talla = talla;
+          if (item) product.item = item;
+          if (marca) product.marca = marca;
+          if (grupo) product.grupo = grupo;
+          return product;
+      }).filter(p => p.codigoBarras);
 
       if (productsToCreate.length === 0) {
         throw new Error("El archivo no contiene productos válidos con la columna 'codigo_barras'.");
@@ -318,7 +329,7 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
         p.referencia || p.reference || '',
         p.talla || p.size || '',
         String(p.item || p.description || p.name || '').replace(/"/g, '""'),
-        p.marca || p.merchandise_type || 'IMPORTADA',
+        p.marca || 'IMPORTADA',
         p.grupo || p.location || '',
       ]
         .map((cell) => `"${cell}"`)

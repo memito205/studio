@@ -91,7 +91,8 @@ export async function getImportedBrandCatalogProducts(): Promise<{ success: bool
                 } as ProductDatabaseItem;
             })
             .filter((p) => {
-                const marca = String(p.marca || p.merchandise_type || '').trim().toUpperCase();
+                // Solo marca comercial. merchandise_type/tipo_mercancia puede ser IMPORTADA sin ser error.
+                const marca = String(p.marca || '').trim().toUpperCase();
                 return marca === 'IMPORTADA';
             })
             .sort((a, b) =>
@@ -828,22 +829,46 @@ export async function bulkUploadReceptionDataFromExcel(fileContent: string, user
         const operationsMap = new Map<string, { operationData: Partial<ReceptionOperation>, items: ReceptionExpectedItem[] }>();
         const productsMap = new Map<string, any>();
 
+        const readCell = (row: CsvRow, ...candidates: string[]): string => {
+            const key = findCaseInsensitiveKey(row, ...candidates);
+            if (!key) return '';
+            const value = row[key];
+            if (value === null || value === undefined) return '';
+            const text = String(value).trim();
+            if (!text || text.toLowerCase() === 'null' || text.toLowerCase() === 'undefined') return '';
+            return text;
+        };
+
         for (const row of jsonData) {
-            const barcode = String(row[findCaseInsensitiveKey(row, 'Código de barras') || ''] || '').trim();
+            const barcode = readCell(row, 'Código de barras', 'Codigo de barras', 'Barcode');
             if (!barcode) continue;
-            
-            const productData = {
-                name: String(row[findCaseInsensitiveKey(row, 'descripción del producto') || ''] || ''),
-                item: String(row[findCaseInsensitiveKey(row, 'descripción del producto') || ''] || ''), // Duplicated for compatibility
-                barcode: barcode,
-                reference: String(row[findCaseInsensitiveKey(row, 'Referencia') || ''] || ''),
-                referencia: String(row[findCaseInsensitiveKey(row, 'Referencia') || ''] || ''), // Duplicated for compatibility
-                size: String(row[findCaseInsensitiveKey(row, 'Talla') || ''] || ''),
-                talla: String(row[findCaseInsensitiveKey(row, 'Talla') || ''] || ''), // Duplicated for compatibility
-                merchandise_type: String(row[findCaseInsensitiveKey(row, 'tipo_mercancia') || ''] || null),
-                marca: String(row[findCaseInsensitiveKey(row, 'tipo_mercancia') || ''] || null), // Duplicated for compatibility
+
+            const description = readCell(row, 'descripción del producto', 'descripcion del producto', 'Descripción', 'Descripcion');
+            const reference = readCell(row, 'Referencia', 'Reference');
+            const size = readCell(row, 'Talla', 'Size');
+            // tipo_mercancia = categoría de mercancía (ej. IMPORTADA), NO es la marca comercial.
+            const merchandiseType = readCell(row, 'tipo_mercancia', 'Tipo Mercancia', 'Tipo de Mercancia');
+            // Marca comercial real (NIKE, ADIDAS, etc.). Solo se escribe si viene en el archivo
+            // para no pisar marcas ya corregidas al re-subir plantillas antiguas sin esta columna.
+            const marca = readCell(row, 'Marca', 'Brand').toUpperCase();
+
+            const productData: Record<string, unknown> = {
+                name: description,
+                item: description,
+                barcode,
+                reference,
+                referencia: reference,
+                size,
+                talla: size,
                 updated_at: Timestamp.now(),
             };
+
+            if (merchandiseType) {
+                productData.merchandise_type = merchandiseType;
+            }
+            if (marca) {
+                productData.marca = marca;
+            }
 
             productsMap.set(barcode, productData);
 
@@ -852,11 +877,11 @@ export async function bulkUploadReceptionDataFromExcel(fileContent: string, user
 
             const rkId = String(row[rkIdentifier]);
             if (!operationsMap.has(rkId)) {
-                const arrivalDate = parseFlexibleDate(row[findCaseInsensitiveKey(row, 'Fecha') || '']) || new Date();
+                const arrivalDate = parseFlexibleDate(readCell(row, 'Fecha') || null) || new Date();
                 operationsMap.set(rkId, {
                     operationData: {
                         rk_identifier: rkId,
-                        supplier: String(row[findCaseInsensitiveKey(row, 'Proveedor') || ''] || 'N/A'),
+                        supplier: readCell(row, 'Proveedor') || 'N/A',
                         expected_arrival_date: arrivalDate.toISOString().split('T')[0],
                     },
                     items: []
@@ -865,12 +890,12 @@ export async function bulkUploadReceptionDataFromExcel(fileContent: string, user
             
             const operationEntry = operationsMap.get(rkId)!;
             operationEntry.items.push({
-                barcode: barcode,
-                reference: productData.reference,
-                size: productData.size,
-                item: productData.name,
-                expected_quantity: Number(row[findCaseInsensitiveKey(row, 'Cantidad') || ''] || 0),
-                location: String(row[findCaseInsensitiveKey(row, 'ubicación') || ''] || 'N/A'),
+                barcode,
+                reference,
+                size,
+                item: description,
+                expected_quantity: Number(readCell(row, 'Cantidad') || 0),
+                location: readCell(row, 'ubicación', 'ubicacion') || 'N/A',
             });
         }
         

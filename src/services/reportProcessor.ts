@@ -178,8 +178,19 @@ function catalogDescription(dbProduct: ProductDatabaseItem): string {
     return String(dbProduct.item || dbProduct.description || dbProduct.name || '').trim();
 }
 
+function isPlaceholderBrand(marca: string | undefined | null): boolean {
+    const value = String(marca || '').trim().toUpperCase();
+    return !value || value === 'IMPORTADA' || value === 'SIN MARCA' || value === 'NULL' || value === 'UNDEFINED';
+}
+
+/**
+ * Marca comercial del catálogo.
+ * No usa merchandise_type: en recepción ese campo suele ser la categoría (ej. IMPORTADA), no la marca.
+ * IMPORTADA se trata como vacío para permitir inferencia desde la descripción.
+ */
 function catalogMarca(dbProduct: ProductDatabaseItem): string {
-    return String(dbProduct.marca || dbProduct.merchandise_type || '').trim().toUpperCase();
+    const marca = String(dbProduct.marca || '').trim().toUpperCase();
+    return isPlaceholderBrand(marca) ? '' : marca;
 }
 
 function catalogGrupo(dbProduct: ProductDatabaseItem): string {
@@ -1896,7 +1907,7 @@ export function extractUniqueReferences(
     
     data.forEach(d => {
         const productFromDB = productMap.get(normalizeBarcode(d.codigoBarras));
-        const catalogBrand = productFromDB?.marca || productFromDB?.merchandise_type;
+        const catalogBrand = productFromDB ? catalogMarca(productFromDB) : '';
         const isNotFound = !productFromDB || !catalogBrand || !productFromDB.grupo;
 
         if (d.codigoBarras && isNotFound) {
@@ -1931,7 +1942,8 @@ export function extractImportedBrandCatalogItems(
 
     data.forEach((entry) => {
         const dbProduct = productMap.get(normalizeBarcode(entry.codigoBarras));
-        if (!dbProduct || !isImportedBrandMarca(dbProduct.marca || dbProduct.merchandise_type)) {
+        // Solo marca comercial IMPORTADA (error de datos). tipo_mercancia/merchandise_type puede ser IMPORTADA legítimamente.
+        if (!dbProduct || !isImportedBrandMarca(dbProduct.marca)) {
             return;
         }
 

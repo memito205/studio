@@ -5,7 +5,7 @@ import React, { useState, useEffect, useCallback, ChangeEvent, useMemo } from 'r
 import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
-import { ArrowLeft, PlusCircle, BarChartHorizontal, MapPin, ClipboardList, Boxes, BookUser, ArrowDownUp, ArrowRight, Upload, Settings, AlarmClockOff, FileCheck2, Send, Loader2, Tag, Compass, ClipboardCheck } from 'lucide-react';
+import { ArrowLeft, PlusCircle, BarChartHorizontal, MapPin, ClipboardList, Boxes, BookUser, ArrowDownUp, ArrowRight, Upload, Settings, AlarmClockOff, FileCheck2, Send, Loader2, Tag, Compass, ClipboardCheck, Download } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -43,6 +43,42 @@ import { LabelingPreparationScreen } from './LabelingPreparationScreen';
 import { ReferenceTraceability } from './ReferenceTraceability'; // Import the new component
 import { ReceptionSamplesAuditReport } from './ReceptionSamplesAuditReport';
 
+
+const downloadReceptionImportTemplate = () => {
+    const headers = [
+        'Fecha',
+        'Nombre RK',
+        'Proveedor',
+        'Código de barras',
+        'Referencia',
+        'descripción del producto',
+        'Talla',
+        'Cantidad',
+        'ubicación',
+        'tipo_mercancia',
+        'Marca',
+    ];
+    const exampleRow = {
+        Fecha: '2026-07-04',
+        'Nombre RK': 'RK-EJEMPLO-001',
+        Proveedor: 'PROVEEDOR EJEMPLO',
+        'Código de barras': '7701234567890',
+        Referencia: 'REF-001',
+        'descripción del producto': 'NI CALZADO TENIS HOMBRE',
+        Talla: '40',
+        Cantidad: 10,
+        ubicación: 'BODEGA',
+        tipo_mercancia: 'IMPORTADA',
+        Marca: 'NIKE',
+    };
+    const worksheet = XLSX.utils.json_to_sheet([exampleRow], { header: headers });
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Recepcion');
+    worksheet['!cols'] = headers.map((header) => ({
+        wch: Math.max(header.length, String(exampleRow[header as keyof typeof exampleRow] ?? '').length) + 4,
+    }));
+    XLSX.writeFile(workbook, 'Plantilla_Recepcion_Mercancia.xlsx');
+};
 
 const DataPreviewTable: React.FC<{ data: CsvRow[] }> = ({ data }) => {
     if (data.length === 0) return null;
@@ -414,9 +450,18 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
                   className="w-full md:w-auto md:max-w-xs"
                 />
             </div>
-            <div className="flex w-full md:w-auto gap-2">
+            <div className="flex w-full md:w-auto gap-2 flex-wrap">
                 <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept=".xlsx, .xls" />
                 <input type="file" ref={correctionFileInputRef} onChange={handleCorrectionFileChange} className="hidden" accept=".xlsx, .xls" />
+                <Button
+                    variant="secondary"
+                    onClick={downloadReceptionImportTemplate}
+                    className="flex-1 md:flex-none"
+                    title="Incluye columna Marca al final. tipo_mercancia ya no se usa como marca comercial."
+                >
+                    <Download className="mr-2 h-4 w-4" />
+                    Plantilla
+                </Button>
                 <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={isUploading} className="flex-1 md:flex-none">
                     <Upload className="mr-2 h-4 w-4" />
                     Importar
