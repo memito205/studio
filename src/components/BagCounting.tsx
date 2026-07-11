@@ -34,16 +34,40 @@ import {
   updateBagOperationStatus,
   addBagsToOperation,
   resetBagState,
-  resetAllBags
+  resetAllBags,
+  updateBagOperationSettings
 } from '@/app/actions';
 import { useAuth } from '@/hooks/use-auth-context';
-import type { BagOperation, BagItem } from '@/types';
+import type { BagOperation, BagItem, BagOperationSettings } from '@/types';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from './ui/scroll-area';
+import { Switch } from './ui/switch';
+import { Label } from './ui/label';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+
+function isConcurrentOperation(op: BagOperation): boolean {
+  return op.status === 'concurrent' || op.settings?.allowConcurrentPhases === true;
+}
+
+function allowsPartialClose(op: BagOperation): boolean {
+  return op.settings?.allowPartialClose === true;
+}
+
+function resolveScanPhase(op: BagOperation, selectedPhase: 'cargue' | 'descargue'): 'cargue' | 'descargue' {
+  if (isConcurrentOperation(op)) return selectedPhase;
+  if (op.status === 'descargue') return 'descargue';
+  return 'cargue';
+}
+
+function getOperationPhaseLabel(op: BagOperation): string {
+  if (op.status === 'completed') return '🏁 FIN';
+  if (isConcurrentOperation(op)) return '🔀 CARGUE + DESCARGUE';
+  if (op.status === 'descargue') return '🎯 DESCARGUE';
+  return '🚢 CARGUE';
+}
 
 interface BagCountingProps {
   onReturn: () => void;
@@ -59,10 +83,13 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
   const [isCreating, setIsCreating] = useState(false);
   const [isAddingBags, setIsAddingBags] = useState(false);
   const [extraBagsCount, setExtraBagsCount] = useState(1);
+  const [scanPhase, setScanPhase] = useState<'cargue' | 'descargue'>('cargue');
   
   // Creation Form States
   const [newName, setNewName] = useState('');
   const [newTotal, setNewTotal] = useState(1);
+  const [newAllowConcurrent, setNewAllowConcurrent] = useState(false);
+  const [newAllowPartialClose, setNewAllowPartialClose] = useState(false);
   
   // Scanner States
   const [scanInput, setScanInput] = useState('');
@@ -92,15 +119,27 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
     if (!newName || newTotal < 1 || !user) return;
     
     setIsProcessing(true);
-    const result = await createBagOperation(newName, newTotal, user.uid, user.displayName || 'Sistema');
+    const settings: BagOperationSettings = {
+      allowConcurrentPhases: newAllowConcurrent,
+      allowPartialClose: newAllowPartialClose,
+    };
+    const result = await createBagOperation(newName, newTotal, user.uid, user.displayName || 'Sistema', settings);
     if (result.success && result.data) {
       const newO = { ...result.data, createdAt: new Date() };
       setOperations([newO, ...operations]);
       setActiveOperation(newO);
+      setScanPhase('cargue');
       setIsCreating(false);
       setNewName('');
       setNewTotal(1);
-      toast({ title: "Operación Creada", description: `Lote "${newName}" iniciado en fase de Cargue.` });
+      setNewAllowConcurrent(false);
+      setNewAllowPartialClose(false);
+      toast({
+        title: "Operación Creada",
+        description: newAllowConcurrent
+          ? `Lote "${newName}" iniciado en modo cargue y descargue simultáneo.`
+          : `Lote "${newName}" iniciado en fase de Cargue.`,
+      });
     } else {
       toast({ variant: 'destructive', title: "Error", description: result.error });
     }
@@ -157,7 +196,8 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
     setScanInput(''); // Limpiar inmediatamente para el siguiente escaneo
 
     setIsProcessing(true);
-    const result = await processBagScan(activeOperation.id, barcode, activeOperation.status as 'cargue' | 'descargue');
+    const phase = resolveScanPhase(activeOperation, scanPhase);
+    const result = await processBagScan(activeOperation.id, barcode, phase);
     setIsProcessing(false);
     
     if (result.success) {
@@ -179,8 +219,8 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
           // Actualización optimista del estado local
           setActiveOperation(prev => {
               if (!prev) return null;
-              const statusField = prev.status === 'cargue' ? 'loaded' : 'discharged';
-              const timeField = prev.status === 'cargue' ? 'loadedAt' : 'dischargedAt';
+              const statusField = phase === 'cargue' ? 'loaded' : 'discharged';
+              const timeField = phase === 'cargue' ? 'loadedAt' : 'dischargedAt';
               
               const updatedBags = { 
                 ...prev.bags, 
@@ -242,20 +282,45 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
       if (!activeOperation) return;
       
       const bags = Object.values(activeOperation.bags);
-      const phaseField = activeOperation.status === 'cargue' ? 'loaded' : 'discharged';
-      const processedCount = bags.filter(b => b[phaseField]).length;
-      const pendingCount = activeOperation.totalBags - processedCount;
+      const concurrent = isConcurrentOperation(activeOperation);
+      const partial = allowsPartialClose(activeOperation);
+      const loadedCount = bags.filter(b => b.loaded).length;
+      const dischargedCount = bags.filter(b => b.discharged).length;
+      const notLoadedCount = activeOperation.totalBags - loadedCount;
+      const loadedNotDischarged = bags.filter(b => b.loaded && !b.discharged).length;
       const currentStatus = activeOperation.status;
-      const nextStatus = currentStatus === 'cargue' ? 'descargue' : 'completed';
+      const nextStatus = concurrent ? 'completed' : currentStatus === 'cargue' ? 'descargue' : 'completed';
       
       let confirmMsg = "";
-      if (currentStatus === 'cargue') {
+      if (concurrent) {
+          if (!partial && (notLoadedCount > 0 || loadedNotDischarged > 0)) {
+              toast({
+                  variant: 'destructive',
+                  title: 'Cierre bloqueado',
+                  description: `Faltan ${notLoadedCount} por cargar y ${loadedNotDischarged} cargadas sin descargar. Active "cierre parcial" o complete los escaneos.`,
+              });
+              return;
+          }
+          confirmMsg = partial
+            ? `¿Finalizar operación en modo simultáneo?\n\nCargadas: ${loadedCount}/${activeOperation.totalBags}\nDescargadas: ${dischargedCount}/${activeOperation.totalBags}\nSin cargar: ${notLoadedCount}`
+            : `¿Finalizar operación? Todas las bolsas cargadas fueron descargadas (${dischargedCount}/${activeOperation.totalBags}).`;
+      } else if (currentStatus === 'cargue') {
+          const pendingCount = notLoadedCount;
           confirmMsg = pendingCount > 0 
-            ? `⚠️ ¡ATENCIÓN! Faltan ${pendingCount} bolsas por CARGAR. Si cierra ahora, estas bolsas no podrán completarse en la siguiente fase. ¿Continuar?`
+            ? `⚠️ Faltan ${pendingCount} bolsas por CARGAR. Si cierra ahora, esas bolsas no podrán descargarse después. ¿Continuar?`
             : "¿Desea finalizar la fase de CARGUE? Se habilitará el Descargue.";
       } else {
+          const pendingCount = activeOperation.totalBags - dischargedCount;
+          if (!partial && pendingCount > 0) {
+              toast({
+                  variant: 'destructive',
+                  title: 'Cierre bloqueado',
+                  description: `Faltan ${pendingCount} bolsas por descargar. Active "cierre parcial" o complete el descargue.`,
+              });
+              return;
+          }
           confirmMsg = pendingCount > 0
-            ? `⚠️ ¡AVISO! Hay ${pendingCount} bolsas sin DESCARGAR. ¿Desea cerrar la operación con faltantes?`
+            ? `⚠️ Hay ${pendingCount} bolsas sin DESCARGAR. ¿Desea cerrar la operación con faltantes?`
             : "¿Desea finalizar esta operación por completo?";
       }
 
@@ -264,19 +329,50 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
       setIsProcessing(true);
       const result = await updateBagOperationStatus(activeOperation.id, nextStatus);
       if (result.success) {
-          const updated: BagOperation = { ...activeOperation, status: nextStatus as 'cargue' | 'descargue' | 'completed' };
+          const updated: BagOperation = { ...activeOperation, status: nextStatus as BagOperation['status'] };
           setActiveOperation(updated);
           setOperations(operations.map(o => o.id === activeOperation.id ? updated : o));
           
           if (nextStatus === 'completed') {
             toast({ title: "Operación Finalizada", description: "Generando reporte de cierre..." });
             setTimeout(() => { handleDownloadPDF(); }, 1000);
+          } else if (concurrent) {
+            toast({ title: "Operación Finalizada", description: "Modo simultáneo cerrado." });
           } else {
             toast({ title: "Fase de Cargue Cerrada", description: "Inicie el proceso de Descargue." });
+            setScanPhase('descargue');
           }
       }
       setIsProcessing(false);
   }
+
+  const handleUpdateSettings = async (updates: Partial<BagOperationSettings>) => {
+      if (!activeOperation || activeOperation.status === 'completed') return;
+
+      const nextSettings: BagOperationSettings = {
+          allowConcurrentPhases: activeOperation.settings?.allowConcurrentPhases === true,
+          allowPartialClose: activeOperation.settings?.allowPartialClose === true,
+          ...updates,
+      };
+
+      setIsProcessing(true);
+      const result = await updateBagOperationSettings(activeOperation.id, nextSettings);
+      if (result.success && result.data) {
+          const updated = { ...result.data, createdAt: activeOperation.createdAt };
+          setActiveOperation(updated);
+          setOperations(operations.map(o => o.id === updated.id ? updated : o));
+          if (updated.status === 'concurrent') setScanPhase('cargue');
+          toast({
+              title: 'Configuración actualizada',
+              description: nextSettings.allowConcurrentPhases
+                  ? 'La operación ahora permite cargue y descargue al mismo tiempo.'
+                  : 'Configuración guardada.',
+          });
+      } else {
+          toast({ variant: 'destructive', title: 'Error', description: result.error });
+      }
+      setIsProcessing(false);
+  };
 
   const handleResetBag = async (barcode: string) => {
       if (!activeOperation || !user) return;
@@ -424,9 +520,17 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
 
   if (activeOperation) {
     const bags = Object.values(activeOperation.bags);
-    const phaseField = activeOperation.status === 'cargue' ? 'loaded' : 'discharged';
+    const concurrent = isConcurrentOperation(activeOperation);
+    const partial = allowsPartialClose(activeOperation);
+    const activeScanPhase = resolveScanPhase(activeOperation, scanPhase);
+    const phaseField = activeScanPhase === 'cargue' ? 'loaded' : 'discharged';
     const processedCount = bags.filter(b => b[phaseField]).length;
-    const progress = Math.round((processedCount / activeOperation.totalBags) * 100);
+    const loadedCount = bags.filter(b => b.loaded).length;
+    const dischargedCount = bags.filter(b => b.discharged).length;
+    const progress = concurrent
+      ? Math.round((dischargedCount / activeOperation.totalBags) * 100)
+      : Math.round((processedCount / activeOperation.totalBags) * 100);
+    const canAddBags = activeOperation.status === 'cargue' || activeOperation.status === 'concurrent';
     
     return (
       <div className="relative space-y-6 min-h-screen pb-20">
@@ -463,12 +567,15 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
                 <div className="flex gap-2 items-center mt-2">
                     <Badge variant={activeOperation.status === 'completed' ? 'secondary' : 'default'} className={cn(
                         "px-2 py-0.5 text-[10px] sm:text-xs font-black uppercase tracking-wider",
+                        concurrent ? "bg-violet-600 hover:bg-violet-700" :
                         activeOperation.status === 'cargue' ? "bg-amber-500 hover:bg-amber-600" : 
                         activeOperation.status === 'descargue' ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-500"
                     )}>
-                        {activeOperation.status === 'cargue' ? '🚢 CARGUE' : 
-                         activeOperation.status === 'descargue' ? '🎯 DESCARGUE' : '🏁 FIN'}
+                        {getOperationPhaseLabel(activeOperation)}
                     </Badge>
+                    {partial && activeOperation.status !== 'completed' && (
+                        <Badge variant="outline" className="text-[9px] font-bold">Cierre parcial</Badge>
+                    )}
                 </div>
             </div>
             <div className="flex flex-wrap gap-2 w-full sm:w-auto">
@@ -509,16 +616,44 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
             <div className="lg:col-span-1 space-y-6 order-1 lg:order-none">
                 <Card className={cn(
                     "border-4 shadow-xl overflow-hidden transition-colors duration-300",
+                    concurrent ? "border-violet-500/20" :
                     activeOperation.status === 'cargue' ? "border-amber-500/20" : "border-blue-600/20"
                 )}>
                     <CardHeader className={cn(
                         "pb-4 px-4 sm:px-6",
+                        concurrent ? "bg-violet-500/5" :
                         activeOperation.status === 'cargue' ? "bg-amber-500/5" : "bg-blue-600/5"
                     )}>
-                        <CardTitle className="text-base sm:text-lg">Escáner de Fase: {activeOperation.status.toUpperCase()}</CardTitle>
-                        <CardDescription className="text-xs">Escanee el código de barras</CardDescription>
+                        <CardTitle className="text-base sm:text-lg">
+                            {concurrent ? 'Escáner (elija fase)' : `Escáner de Fase: ${activeOperation.status.toUpperCase()}`}
+                        </CardTitle>
+                        <CardDescription className="text-xs">
+                            {concurrent
+                              ? 'Camiones salen y llegan en paralelo: escanee cargue o descargue según el punto.'
+                              : 'Escanee el código de barras'}
+                        </CardDescription>
                     </CardHeader>
                     <CardContent className="pt-4 sm:pt-6 space-y-4 px-4 sm:px-6">
+                        {concurrent && activeOperation.status !== 'completed' && (
+                            <div className="grid grid-cols-2 gap-2">
+                                <Button
+                                    type="button"
+                                    variant={scanPhase === 'cargue' ? 'default' : 'outline'}
+                                    className={cn("font-black", scanPhase === 'cargue' && "bg-amber-500 hover:bg-amber-600")}
+                                    onClick={() => setScanPhase('cargue')}
+                                >
+                                    🚢 Cargue
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant={scanPhase === 'descargue' ? 'default' : 'outline'}
+                                    className={cn("font-black", scanPhase === 'descargue' && "bg-blue-600 hover:bg-blue-700")}
+                                    onClick={() => setScanPhase('descargue')}
+                                >
+                                    🎯 Descargue
+                                </Button>
+                            </div>
+                        )}
                         <form onSubmit={handleScan} className="space-y-4 relative">
                             <Input 
                                 ref={scanInputRef}
@@ -534,7 +669,7 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
                                 <Button 
                                     className={cn(
                                         "flex-[3] h-12 sm:h-14 text-sm sm:text-xl font-black uppercase tracking-wider",
-                                        activeOperation.status === 'cargue' ? "bg-amber-500 hover:bg-amber-600" : "bg-blue-600 hover:bg-blue-700"
+                                        activeScanPhase === 'cargue' ? "bg-amber-500 hover:bg-amber-600" : "bg-blue-600 hover:bg-blue-700"
                                     )} 
                                     type="submit"
                                     disabled={activeOperation.status === 'completed'}
@@ -567,8 +702,8 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
                     </CardContent>
                 </Card>
 
-                {/* ADD BAGS CARD (Only in Cargue) */}
-                {activeOperation.status === 'cargue' && (
+                {/* ADD BAGS CARD */}
+                {canAddBags && (
                     <Card className="border-2 border-dashed border-muted-foreground/20 bg-muted/5">
                         <CardHeader className="pb-2">
                             <CardTitle className="text-sm font-black uppercase tracking-widest opacity-60">Expandir Lote</CardTitle>
@@ -601,6 +736,39 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
                     </Card>
                 )}
 
+                {activeOperation.status !== 'completed' && (
+                    <Card className="border-2 border-primary/10 bg-primary/5">
+                        <CardHeader className="pb-2">
+                            <CardTitle className="text-sm font-black uppercase tracking-widest opacity-70">Configuración del lote</CardTitle>
+                            <CardDescription className="text-xs">Aplica también a operaciones ya iniciadas.</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                            <div className="flex items-center justify-between gap-3">
+                                <Label htmlFor="allow-concurrent" className="text-xs font-bold leading-tight">
+                                    Cargue y descargue simultáneo
+                                </Label>
+                                <Switch
+                                    id="allow-concurrent"
+                                    checked={isConcurrentOperation(activeOperation)}
+                                    disabled={isProcessing}
+                                    onCheckedChange={(checked) => handleUpdateSettings({ allowConcurrentPhases: checked })}
+                                />
+                            </div>
+                            <div className="flex items-center justify-between gap-3">
+                                <Label htmlFor="allow-partial" className="text-xs font-bold leading-tight">
+                                    Permitir cierre parcial (con faltantes)
+                                </Label>
+                                <Switch
+                                    id="allow-partial"
+                                    checked={partial}
+                                    disabled={isProcessing}
+                                    onCheckedChange={(checked) => handleUpdateSettings({ allowPartialClose: checked })}
+                                />
+                            </div>
+                        </CardContent>
+                    </Card>
+                )}
+
                 <Card className="shadow-lg border-2">
                     <CardHeader className="pb-2">
                         <CardTitle className="text-xs uppercase tracking-widest font-black opacity-40">Resumen de Fase</CardTitle>
@@ -609,11 +777,23 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
                         <div className="flex justify-between items-end">
                             <p className="text-6xl font-black tabular-nums">{progress}%</p>
                             <p className="text-right text-muted-foreground mb-1 leading-none">
-                                <span className={cn(
-                                    "text-2xl font-black",
-                                    activeOperation.status === 'cargue' ? "text-amber-500" : "text-blue-600"
-                                )}>{processedCount}</span><br/>
-                                <span className="text-xs font-bold font-mono">de {activeOperation.totalBags}</span>
+                                {concurrent ? (
+                                  <>
+                                    <span className="text-amber-500 text-lg font-black">{loadedCount}</span>
+                                    <span className="text-xs"> carg / </span>
+                                    <span className="text-blue-600 text-lg font-black">{dischargedCount}</span>
+                                    <br/>
+                                    <span className="text-xs font-bold font-mono">de {activeOperation.totalBags}</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span className={cn(
+                                        "text-2xl font-black",
+                                        activeOperation.status === 'cargue' ? "text-amber-500" : "text-blue-600"
+                                    )}>{processedCount}</span><br/>
+                                    <span className="text-xs font-bold font-mono">de {activeOperation.totalBags}</span>
+                                  </>
+                                )}
                             </p>
                         </div>
                         <div className="w-full bg-muted rounded-full h-5 overflow-hidden shadow-inner border p-1">
@@ -621,6 +801,7 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
                                 className={cn(
                                     "h-full rounded-full transition-all duration-1000 ease-out flex items-center justify-end pr-2",
                                     progress === 100 ? "bg-green-500" : 
+                                    concurrent ? "bg-violet-500" :
                                     activeOperation.status === 'cargue' ? "bg-amber-500" : "bg-blue-600"
                                 )}
                                 style={{ width: `${progress}%` }}
@@ -631,42 +812,56 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
 
                         {activeOperation.status !== 'completed' && (
                             <div className="space-y-3">
-                                {progress < 100 && (
+                                {progress < 100 && !concurrent && (
                                     <p className="text-[10px] font-bold text-amber-600 bg-amber-50 p-2 rounded border border-amber-100 flex items-center gap-2">
-                                        <AlertTriangle className="h-3 w-3" /> Faltan {activeOperation.totalBags - processedCount} bolsas por procesar.
+                                        <AlertTriangle className="h-3 w-3" /> Faltan {activeOperation.totalBags - processedCount} bolsas por procesar en esta fase.
+                                    </p>
+                                )}
+                                {concurrent && (
+                                    <p className="text-[10px] font-bold text-violet-700 bg-violet-50 p-2 rounded border border-violet-100">
+                                        Modo simultáneo: {loadedCount} cargadas, {dischargedCount} descargadas, {activeOperation.totalBags - loadedCount} sin cargar.
                                     </p>
                                 )}
                                 <Button 
                                     className={cn(
                                         "w-full h-12 text-lg font-bold shadow-lg transition-all",
                                         progress === 100 ? "animate-pulse" : "opacity-80 hover:opacity-100",
+                                        concurrent ? "bg-violet-600 hover:bg-violet-700 text-white" :
                                         activeOperation.status === 'cargue' ? "bg-amber-600 hover:bg-amber-700 text-white" : "bg-green-600 hover:bg-green-700"
                                     )} 
                                     onClick={handleFinishPhase}
                                 >
                                     <CheckCircle2 className="mr-2 h-5 w-5" /> 
-                                    {activeOperation.status === 'cargue' ? "Finalizar Cargue" : "Finalizar Todo"}
+                                    {concurrent ? "Finalizar operación" :
+                                     activeOperation.status === 'cargue' ? "Finalizar Cargue" : "Finalizar Todo"}
                                 </Button>
                             </div>
                         )}
 
                         <div className="pt-6 border-t grid grid-cols-2 gap-4">
                             <div className="bg-muted/50 p-3 rounded-lg text-center">
-                                <span className="text-[10px] uppercase font-black opacity-50 block mb-1">Pendientes</span>
-                                <span className="font-black text-xl tabular-nums">{activeOperation.totalBags - processedCount}</span>
+                                <span className="text-[10px] uppercase font-black opacity-50 block mb-1">
+                                    {concurrent ? 'Sin cargar' : 'Pendientes'}
+                                </span>
+                                <span className="font-black text-xl tabular-nums">
+                                    {concurrent ? activeOperation.totalBags - loadedCount : activeOperation.totalBags - processedCount}
+                                </span>
                             </div>
                             <div className={cn(
                                 "p-3 rounded-lg text-center border",
+                                concurrent ? "bg-violet-50 border-violet-100" :
                                 activeOperation.status === 'cargue' ? "bg-amber-50 border-amber-100" : "bg-blue-50 border-blue-100"
                             )}>
                                 <span className={cn(
                                     "text-[10px] uppercase font-black block mb-1",
+                                    concurrent ? "text-violet-600" :
                                     activeOperation.status === 'cargue' ? "text-amber-600" : "text-blue-600"
-                                )}>Leídas</span>
+                                )}>{concurrent ? 'Descargadas' : 'Leídas'}</span>
                                 <span className={cn(
                                     "font-black text-xl tabular-nums",
+                                    concurrent ? "text-violet-600" :
                                     activeOperation.status === 'cargue' ? "text-amber-600" : "text-blue-600"
-                                )}>{processedCount}</span>
+                                )}>{concurrent ? dischargedCount : processedCount}</span>
                             </div>
                         </div>
                     </CardContent>
@@ -694,11 +889,15 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
                             )}
                             <div className="flex gap-3 text-[9px] sm:text-[10px] font-black uppercase tracking-widest">
                                 <div className="flex items-center gap-1.5 sm:gap-2">
-                                    <div className={cn(
-                                        "w-3 h-3 sm:w-4 sm:h-4 rounded shadow-md border",
-                                        activeOperation.status === 'cargue' ? "bg-amber-500 border-amber-600" : "bg-blue-600 border-blue-700"
-                                    )}></div> <span className="hidden sm:inline">Procesada</span>
+                                    <div className="w-3 h-3 sm:w-4 sm:h-4 rounded shadow-md border bg-amber-500 border-amber-600"></div>
+                                    <span className="hidden sm:inline">{concurrent ? 'Cargada' : 'Procesada'}</span>
                                 </div>
+                                {concurrent && (
+                                    <div className="flex items-center gap-1.5 sm:gap-2">
+                                        <div className="w-3 h-3 sm:w-4 sm:h-4 rounded shadow-md border bg-blue-600 border-blue-700"></div>
+                                        <span className="hidden sm:inline">Descargada</span>
+                                    </div>
+                                )}
                                 <div className="flex items-center gap-1.5 sm:gap-2">
                                     <div className="w-3 h-3 sm:w-4 sm:h-4 bg-slate-200 rounded border"></div> <span className="hidden sm:inline">Pendiente</span>
                                 </div>
@@ -709,16 +908,21 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
                         <ScrollArea className="h-[calc(85vh-260px)]">
                             <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12 gap-3 pr-6">
                                 {Object.values(activeOperation.bags).sort((a,b) => a.id.localeCompare(b.id)).map((bag, i) => {
-                                    const isProcessed = bag[phaseField];
+                                    const isProcessed = concurrent
+                                      ? bag.discharged
+                                      : bag[phaseField];
+                                    const isLoadedOnly = concurrent && bag.loaded && !bag.discharged;
                                     return (
                                         <div 
                                             key={bag.id}
                                             className={cn(
                                                 "aspect-square rounded-xl flex flex-col items-center justify-center text-xs font-black transition-all duration-300 border-2 overflow-hidden shadow-sm relative group/item",
                                                 isProcessed 
-                                                    ? (activeOperation.status === 'cargue' 
-                                                        ? "bg-amber-500 border-amber-600 text-white scale-105 shadow-amber-200" 
-                                                        : "bg-blue-600 border-blue-700 text-white scale-105 shadow-blue-200")
+                                                    ? (concurrent || activeOperation.status === 'descargue'
+                                                        ? "bg-blue-600 border-blue-700 text-white scale-105 shadow-blue-200" 
+                                                        : "bg-amber-500 border-amber-600 text-white scale-105 shadow-amber-200")
+                                                    : isLoadedOnly
+                                                        ? "bg-amber-500 border-amber-600 text-white scale-105 shadow-amber-200"
                                                     : "bg-slate-50 border-slate-200 text-slate-300"
                                             )}
                                             title={bag.id}
@@ -795,7 +999,21 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
                             required
                         />
                     </div>
-                    <div className="flex gap-2 w-full pb-1">
+                    <div className="sm:col-span-3 grid sm:grid-cols-2 gap-4 rounded-lg border bg-muted/30 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                            <Label htmlFor="new-concurrent" className="text-xs font-bold leading-tight">
+                                Cargue y descargue simultáneo
+                            </Label>
+                            <Switch id="new-concurrent" checked={newAllowConcurrent} onCheckedChange={setNewAllowConcurrent} />
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                            <Label htmlFor="new-partial" className="text-xs font-bold leading-tight">
+                                Permitir cierre parcial
+                            </Label>
+                            <Switch id="new-partial" checked={newAllowPartialClose} onCheckedChange={setNewAllowPartialClose} />
+                        </div>
+                    </div>
+                    <div className="flex gap-2 w-full pb-1 sm:col-span-3">
                         <Button type="submit" className="flex-[2] h-12 sm:h-14 text-sm sm:text-lg font-black uppercase tracking-wider shadow-xl" disabled={isProcessing}>
                             {isProcessing ? <Loader2 className="h-5 w-5 animate-spin" /> : "Crear"}
                         </Button>
@@ -851,11 +1069,16 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
                             const loaded = bagsArr.filter(b => b.loaded).length;
                             const discharged = bagsArr.filter(b => b.discharged).length;
                             const total = op.totalBags;
+                            const concurrent = isConcurrentOperation(op);
                             const phase = op.status;
-                            const percent = phase === 'cargue' ? Math.round((loaded/total)*100) : Math.round((discharged/total)*100);
+                            const percent = concurrent
+                              ? Math.round((discharged / total) * 100)
+                              : phase === 'cargue'
+                                ? Math.round((loaded / total) * 100)
+                                : Math.round((discharged / total) * 100);
                             
                             return (
-                                <TableRow key={op.id} className="group hover:bg-primary/5 transition-all duration-200 cursor-pointer" onClick={() => setActiveOperation(op)}>
+                                <TableRow key={op.id} className="group hover:bg-primary/5 transition-all duration-200 cursor-pointer" onClick={() => { setActiveOperation(op); setScanPhase(op.status === 'descargue' ? 'descargue' : 'cargue'); }}>
                                     <TableCell className="py-4 sm:py-6 pl-4 sm:pl-6 min-w-[150px]">
                                         <div className="font-black text-sm sm:text-xl text-primary truncate max-w-[120px] sm:max-w-none">{op.name}</div>
                                         <div className="text-[8px] sm:text-[10px] font-bold opacity-40 font-mono">{op.id}</div>
@@ -868,12 +1091,12 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
                                             variant={op.status === 'completed' ? 'secondary' : 'default'}
                                             className={cn(
                                                 "font-black uppercase tracking-tighter px-2 py-0.5 text-[9px] sm:text-xs",
+                                                concurrent ? "bg-violet-600" :
                                                 op.status === 'cargue' ? "bg-amber-500" : 
                                                 op.status === 'descargue' ? "bg-blue-600" : "bg-slate-200 text-slate-600"
                                             )}
                                         >
-                                            {op.status === 'cargue' ? '🚢 Cargue' : 
-                                             op.status === 'descargue' ? '🎯 Descargue' : '🏁 Cerrado'}
+                                            {getOperationPhaseLabel(op)}
                                         </Badge>
                                     </TableCell>
                                     <TableCell className="hidden md:table-cell">
@@ -898,7 +1121,11 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
                                                 />
                                             </div>
                                             <p className="text-[10px] font-bold text-muted-foreground tracking-tight">
-                                                {phase === 'cargue' ? `${loaded} cargadas` : `${discharged} validadas`} de {total}
+                                                {concurrent
+                                                  ? `${loaded} carg / ${discharged} desc de ${total}`
+                                                  : phase === 'cargue'
+                                                    ? `${loaded} cargadas de ${total}`
+                                                    : `${discharged} validadas de ${total}`}
                                             </p>
                                         </div>
                                     </TableCell>
@@ -906,8 +1133,8 @@ Esto borrará todos los registros de cargue y descargue del lote actual. Esta ac
                                         <Button 
                                             variant={op.status !== 'completed' ? 'default' : 'outline'} 
                                             size="sm" 
-                                            className={cn("font-bold px-4 h-10 shadow-sm", op.status === 'cargue' ? "bg-amber-500 hover:bg-amber-600" : "")}
-                                            onClick={() => setActiveOperation(op)}
+                                            className={cn("font-bold px-4 h-10 shadow-sm", concurrent ? "bg-violet-600 hover:bg-violet-700" : op.status === 'cargue' ? "bg-amber-500 hover:bg-amber-600" : "")}
+                                            onClick={() => { setActiveOperation(op); setScanPhase(op.status === 'descargue' ? 'descargue' : 'cargue'); }}
                                         >
                                             <Search className="mr-2 h-4 w-4" /> Gestionar
                                         </Button>

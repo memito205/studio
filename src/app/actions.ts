@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagItem } from "@/types";
+import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -4982,9 +4982,16 @@ export async function loadHolidays(): Promise<{success: boolean; data?: Date[]; 
 }
 
 // BAG COUNTING ACTIONS
-export async function createBagOperation(name: string, totalBags: number, userId: string, userName: string): Promise<{ success: boolean; data?: BagOperation; error?: string }> {
+export async function createBagOperation(
+    name: string,
+    totalBags: number,
+    userId: string,
+    userName: string,
+    settings?: BagOperationSettings
+): Promise<{ success: boolean; data?: BagOperation; error?: string }> {
     try {
         const counterRef = doc(firestore, "metadata", "bagOperations");
+        const allowConcurrent = settings?.allowConcurrentPhases === true;
         
         const result = await runTransaction(firestore, async (transaction) => {
             const counterDoc = await transaction.get(counterRef);
@@ -5010,9 +5017,13 @@ export async function createBagOperation(name: string, totalBags: number, userId
                 totalBags,
                 bags,
                 createdAt: new Date(),
-                status: 'cargue',
+                status: allowConcurrent ? 'concurrent' : 'cargue',
                 createdBy: userId,
-                createdByName: userName
+                createdByName: userName,
+                settings: {
+                    allowConcurrentPhases: allowConcurrent,
+                    allowPartialClose: settings?.allowPartialClose === true,
+                },
             };
 
             const opRef = doc(firestore, "bagOperations", opId);
@@ -5036,6 +5047,9 @@ export async function addBagsToOperation(opId: string, extraQuantity: number): P
             if (!opDoc.exists()) throw new Error("La operación no existe");
 
             const data = opDoc.data() as BagOperation;
+            if (data.status === 'completed') {
+                throw new Error("No se pueden agregar bolsas a una operación cerrada.");
+            }
             const currentTotal = data.totalBags;
             const newTotal = currentTotal + extraQuantity;
             const newBags = { ...data.bags };
@@ -5113,12 +5127,59 @@ export async function processBagScan(opId: string, barcode: string, phase: 'carg
     }
 }
 
-export async function updateBagOperationStatus(opId: string, status: 'cargue' | 'descargue' | 'completed'): Promise<{ success: boolean; error?: string }> {
+export async function updateBagOperationStatus(opId: string, status: 'cargue' | 'descargue' | 'completed' | 'concurrent'): Promise<{ success: boolean; error?: string }> {
     try {
         await updateDoc(doc(firestore, "bagOperations", opId), { status });
         return { success: true };
     } catch (error: any) {
         console.error("Error updating operation status:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function updateBagOperationSettings(
+    opId: string,
+    settings: BagOperationSettings
+): Promise<{ success: boolean; data?: BagOperation; error?: string }> {
+    try {
+        const opRef = doc(firestore, "bagOperations", opId);
+        const opDoc = await getDoc(opRef);
+        if (!opDoc.exists()) {
+            return { success: false, error: 'La operación no existe.' };
+        }
+
+        const current = convertTimestampsToDates(opDoc.data()) as BagOperation;
+        if (current.status === 'completed') {
+            return { success: false, error: 'No se puede modificar una operación cerrada.' };
+        }
+
+        const mergedSettings: BagOperationSettings = {
+            allowConcurrentPhases: settings.allowConcurrentPhases === true,
+            allowPartialClose: settings.allowPartialClose === true,
+        };
+
+        let nextStatus = current.status;
+        if (mergedSettings.allowConcurrentPhases && current.status !== 'completed') {
+            nextStatus = 'concurrent';
+        } else if (!mergedSettings.allowConcurrentPhases && current.status === 'concurrent') {
+            const bags = Object.values(current.bags || {});
+            const allLoaded = bags.length > 0 && bags.every((b) => b.loaded);
+            nextStatus = allLoaded ? 'descargue' : 'cargue';
+        }
+
+        await updateDoc(opRef, {
+            settings: mergedSettings,
+            status: nextStatus,
+        });
+
+        const updated: BagOperation = {
+            ...current,
+            settings: mergedSettings,
+            status: nextStatus,
+        };
+        return { success: true, data: updated };
+    } catch (error: any) {
+        console.error('Error updating bag operation settings:', error);
         return { success: false, error: error.message };
     }
 }

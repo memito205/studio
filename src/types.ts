@@ -1008,15 +1008,23 @@ export interface BagItem {
     dischargedAt?: Date;
 }
 
+export interface BagOperationSettings {
+    /** Permite escanear descargue mientras aún hay cargue pendiente (camiones salen y llegan en paralelo). */
+    allowConcurrentPhases?: boolean;
+    /** Permite cerrar la operación con bolsas sin cargar o sin descargar. */
+    allowPartialClose?: boolean;
+}
+
 export interface BagOperation {
     id: string;
     name: string;
     totalBags: number;
     bags: Record<string, BagItem>;
     createdAt: Date;
-    status: 'cargue' | 'descargue' | 'completed';
+    status: 'cargue' | 'descargue' | 'completed' | 'concurrent';
     createdBy?: string;
     createdByName?: string;
+    settings?: BagOperationSettings;
 }
 
 /** Metadatos del inventario cargado por día (id = yyyy-MM-dd). */
