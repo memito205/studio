@@ -45,6 +45,9 @@ import { TransferBulkStatusChangeDialog } from './TransferBulkStatusChangeDialog
 
 interface GroupedTransfer extends TransferEntry {
     allIds: string[];
+    /** Presente si las líneas del grupo no comparten el mismo estado. */
+    lineStatuses?: TransferStatus[];
+    hasMixedStatus?: boolean;
 }
 
 function toTransferActor(
@@ -81,6 +84,10 @@ const groupTransfersByTF = (transfers: TransferEntry[], placaMap?: Map<string, s
         if (existing) {
             existing.allIds.push(t.id);
             existing.cantidad = Number(existing.cantidad || 0) + Number(t.cantidad || 0);
+            const statuses = existing.lineStatuses || [existing.status];
+            if (!statuses.includes(t.status)) statuses.push(t.status);
+            existing.lineStatuses = statuses;
+            existing.hasMixedStatus = statuses.length > 1;
             
             // Update to most advanced status
             if (statusPriority[t.status] > statusPriority[existing.status]) {
@@ -104,7 +111,9 @@ const groupTransfersByTF = (transfers: TransferEntry[], placaMap?: Map<string, s
             groups.set(key, {
                 ...t,
                 allIds: [t.id],
-                cantidad: Number(t.cantidad || 0)
+                cantidad: Number(t.cantidad || 0),
+                lineStatuses: [t.status],
+                hasMixedStatus: false,
             });
         }
     });
@@ -1105,6 +1114,37 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         }
     };
 
+    /** Alinea todas las líneas del grupo al estado mostrado (máximo), corrigiendo residuales que confunden al Gestor de Despachos. */
+    const handleAlignGroupLineStatuses = async (group: GroupedTransfer) => {
+        if (!group.allIds?.length || !group.hasMixedStatus) return;
+        const statusesLabel = (group.lineStatuses || []).join(', ');
+        const confirmMsg = `Esta TF tiene líneas con estados distintos (${statusesLabel}).\n\nSe alinearán ${group.allIds.length} línea(s) al estado "${group.status}" (el que se muestra en la tabla).\n\n¿Continuar?`;
+        if (!confirm(confirmMsg)) return;
+
+        setIsUpdatingStatus(true);
+        try {
+            const result = await updateTransferStatus(
+                group.allIds,
+                group.status,
+                `Alineación de líneas residuales de TF ${group.numeroTF} (${group.bodegaOrigen} → ${group.bodegaDestino}) al estado ${group.status}`,
+                actor
+            );
+            if (result.success) {
+                toast({
+                    title: 'Líneas alineadas',
+                    description: `${group.allIds.length} línea(s) de ${group.numeroTF} quedaron en "${group.status}".`,
+                });
+                onRefresh();
+            } else {
+                toast({ variant: 'destructive', title: 'Error', description: result.error });
+            }
+        } catch (e: any) {
+            toast({ variant: 'destructive', title: 'Error inesperado', description: e.message });
+        } finally {
+            setIsUpdatingStatus(false);
+        }
+    };
+
     const transferIdToPlacaMap = useMemo(() => {
         const map = new Map<string, string>();
         if (!collectionLogs) return map;
@@ -1770,7 +1810,16 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                             <TableCell className="max-w-[150px] truncate text-xs text-muted-foreground" title={t.marca}>{t.marca || '-'}</TableCell>
                                             <TableCell className="max-w-[150px] truncate text-xs text-muted-foreground" title={t.grupo}>{t.grupo || '-'}</TableCell>
                                             <TableCell className="text-center font-bold text-lg">{t.cantidad}</TableCell>
-                                            <TableCell>{getStatusBadge(t.status)}</TableCell>
+                                            <TableCell>
+                                                <div className="flex flex-col gap-1 items-start">
+                                                    {getStatusBadge(t.status)}
+                                                    {t.hasMixedStatus && (
+                                                        <Badge variant="outline" className="text-[9px] border-amber-500 text-amber-700 bg-amber-50">
+                                                            Estados mixtos
+                                                        </Badge>
+                                                    )}
+                                                </div>
+                                            </TableCell>
                                             <TableCell className="font-mono text-xs">{placa}</TableCell>
                                             <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
                                             <TableCell>{t.enviadoAt ? format(t.enviadoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
@@ -1811,6 +1860,19 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                                                 <DropdownMenuItem onSelect={() => setStatusChangeState({ isOpen: true, transfer: t })}>
                                                                     Cambiar Estado Manualmente
                                                                 </DropdownMenuItem>
+                                                                {t.hasMixedStatus && (
+                                                                    <DropdownMenuItem
+                                                                        onSelect={() => handleAlignGroupLineStatuses(t)}
+                                                                        disabled={isUpdatingStatus}
+                                                                    >
+                                                                        {isUpdatingStatus ? (
+                                                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                                        ) : (
+                                                                            <RefreshCw className="mr-2 h-4 w-4" />
+                                                                        )}
+                                                                        Alinear todas las líneas a &quot;{t.status}&quot;
+                                                                    </DropdownMenuItem>
+                                                                )}
                                                                 <DropdownMenuItem
                                                                     onSelect={() => handleRepairStorageOrder(t)}
                                                                     disabled={repairingTransferId === t.id || t.status === 'Enviado a Destino'}

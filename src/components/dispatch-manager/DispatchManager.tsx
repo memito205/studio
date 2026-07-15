@@ -179,17 +179,20 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
         });
         const consolidatedMerchandiseData = Array.from(merchandiseMap.values());
         
-        const tftMap = new Map<string, TFTItem>();
-        allTransfersFromDB.forEach(t => {
-            const tfKey = t.numeroTF.toUpperCase();
-            const existing = tftMap.get(tfKey);
+        const tftMapByTfDest = new Map<string, TFTItem>();
+        const tftMapByTfOnly = new Map<string, TFTItem>();
+
+        const upsertTftAgg = (map: Map<string, TFTItem>, key: string, t: typeof allTransfersFromDB[number]) => {
+            const existing = map.get(key);
             const currentQty = Number(t.cantidad || 0);
+            const qtyToAdd = currentQty > 0 ? currentQty : 1;
 
             if (!existing) {
-                tftMap.set(tfKey, {
+                map.set(key, {
                     tft: t.numeroTF,
                     fecha: t.fecha,
-                    cantidad: currentQty > 0 ? currentQty : 1,
+                    cantidad: qtyToAdd,
+                    numeroDocumento: '',
                 });
                 return;
             }
@@ -198,16 +201,31 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
             const incomingDate = t.fecha instanceof Date ? t.fecha : new Date(t.fecha as any);
             const earliestDate = incomingDate.getTime() < existingDate.getTime() ? incomingDate : existingDate;
 
-            tftMap.set(tfKey, {
+            map.set(key, {
                 tft: existing.tft || t.numeroTF,
                 fecha: earliestDate,
-                cantidad: Number(existing.cantidad || 0) + (currentQty > 0 ? currentQty : 1),
+                cantidad: Number(existing.cantidad || 0) + qtyToAdd,
+                numeroDocumento: existing.numeroDocumento || '',
             });
+        };
+
+        allTransfersFromDB.forEach(t => {
+            const tfKey = String(t.numeroTF || '').trim().toUpperCase();
+            if (!tfKey) return;
+            const destKey = normalizeDestination(t.bodegaDestino);
+            upsertTftAgg(tftMapByTfDest, `${tfKey}|${destKey}`, t);
+            upsertTftAgg(tftMapByTfOnly, tfKey, t);
         });
 
         const joined = consolidatedMerchandiseData.map(item => {
             const tfForMatch = String(item.tf || item.contenido || '').trim().toUpperCase();
-            const match = tftMap.get(tfForMatch);
+            const destForMatch = normalizeDestination(item.destino);
+            // Preferir TF+destino para no mezclar rutas distintas del mismo número (ej. 44852 BODPN vs otra tienda).
+            const match =
+                (tfForMatch && destForMatch
+                    ? tftMapByTfDest.get(`${tfForMatch}|${destForMatch}`)
+                    : undefined) ||
+                (tfForMatch ? tftMapByTfOnly.get(tfForMatch) : undefined);
             
             return {
                 ...item,
