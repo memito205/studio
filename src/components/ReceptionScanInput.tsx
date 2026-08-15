@@ -15,8 +15,8 @@ import { UnexpectedItemDialog } from './UnexpectedItemDialog';
 
 interface ReceptionScanInputProps {
   receptionId: string;
-  onItemScanned: (product: ProductDatabaseItem) => void;
-  onItemScannedWithNovelty: (product: ProductDatabaseItem) => void;
+  onItemScanned: (product: ProductDatabaseItem) => Promise<{ accepted: boolean }>;
+  onItemScannedWithNovelty: (product: ProductDatabaseItem) => Promise<{ accepted: boolean }>;
   activePackingUnit: PackingUnit | null;
   onProductNotFound: (barcode: string) => void;
   onProductLookedUp: (product: ProductDatabaseItem | null) => void;
@@ -81,8 +81,12 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
 
         if (isExpected) {
              if (knownLocation) productWithCorrectedLocation.location = knownLocation;
-            onItemScanned(productWithCorrectedLocation);
-            onProductLookedUp(productWithCorrectedLocation);
+            // Solo actualizar el panel visual si el escaneo fue aceptado en la caja.
+            // Si se rechaza por mezcla de referencias, mantener ref/ubicación de la caja activa.
+            const scanResult = await onItemScanned(productWithCorrectedLocation);
+            if (scanResult?.accepted) {
+                onProductLookedUp(productWithCorrectedLocation);
+            }
         } else {
             productWithCorrectedLocation.location = knownLocation || 'SIGUIENTE';
             setUnexpectedItem(productWithCorrectedLocation);
@@ -114,12 +118,14 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
     }));
   }, [expectedItems]);
 
-  const handleConfirmUnexpectedItem = () => {
+  const handleConfirmUnexpectedItem = async () => {
       if (unexpectedItem) {
-        onItemScannedWithNovelty(unexpectedItem);
-        onProductLookedUp(unexpectedItem);
-        toast({ title: 'Ítem Añadido con Novedad', description: `Se registró el ítem inesperado ${unexpectedItem.referencia || unexpectedItem.reference}.` });
-        setBarcodeInput('');
+        const scanResult = await onItemScannedWithNovelty(unexpectedItem);
+        if (scanResult?.accepted) {
+          onProductLookedUp(unexpectedItem);
+          toast({ title: 'Ítem Añadido con Novedad', description: `Se registró el ítem inesperado ${unexpectedItem.referencia || unexpectedItem.reference}.` });
+          setBarcodeInput('');
+        }
       }
       setUnexpectedItem(null);
   }

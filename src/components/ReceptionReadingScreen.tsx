@@ -368,8 +368,8 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
     setIsSubmitting(false);
   }
 
-  const handleItemScanned = async (product: ProductDatabaseItem) => {
-    if (!user || !operation) return;
+  const handleItemScanned = async (product: ProductDatabaseItem): Promise<{ accepted: boolean }> => {
+    if (!user || !operation) return { accepted: false };
 
     let unitToUse = activePackingUnit;
     // --- START: SINGLE REFERENCE VALIDATION ---
@@ -386,7 +386,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
 
             if (productRef !== expectedReference) {
                 setMixedReferenceError({ show: true, expected: expectedReference, scanned: productRef });
-                return; // Stop processing
+                return { accepted: false }; // Stop processing — no actualizar panel con la infiltrada
             }
         }
     }
@@ -399,7 +399,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
             unitToUse = await createNewPackingUnitForUser();
             if(!unitToUse) {
                 setIsSubmitting(false);
-                return;
+                return { accepted: false };
             }
         }
         
@@ -434,19 +434,22 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
         
         if (result.success) {
             toast({ title: 'Éxito', description: `Item ${productRef} añadido a la unidad ${unitToUse.id}.` });
+            return { accepted: true };
         } else {
             toast({ variant: 'destructive', title: 'Error al Guardar', description: result.error });
+            return { accepted: false };
         }
     } catch(e: any) {
         toast({ variant: 'destructive', title: 'Error inesperado', description: e.message });
+        return { accepted: false };
     } finally {
         setIsSubmitting(false);
     }
   };
   
-  const handleItemScannedWithNovelty = async (product: ProductDatabaseItem) => {
-    await handleItemScanned(product);
-    if(user?.uid) {
+  const handleItemScannedWithNovelty = async (product: ProductDatabaseItem): Promise<{ accepted: boolean }> => {
+    const scanResult = await handleItemScanned(product);
+    if (scanResult.accepted && user?.uid) {
         await registerNovelty({
             reception_id: operationId,
             barcode: product.codigoBarras,
@@ -454,6 +457,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
             description: `El operario añadió el ítem ${product.referencia} (${product.codigoBarras}) que no se esperaba en la orden.`,
         }, user.uid);
     }
+    return scanResult;
   };
 
   const handlePause = async (reason: string) => {
@@ -679,6 +683,10 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
                         Esta caja es para la referencia <strong className="text-xl text-primary">{mixedReferenceError?.expected}</strong>.
                         <br />
                         No puedes empacar la referencia <strong className="text-xl text-destructive">{mixedReferenceError?.scanned}</strong> aquí.
+                        <br />
+                        <span className="mt-3 block text-base font-semibold text-amber-700 dark:text-amber-400">
+                            Esta lectura NO se agregó. La caja y su ubicación siguen siendo de {mixedReferenceError?.expected}.
+                        </span>
                     </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
