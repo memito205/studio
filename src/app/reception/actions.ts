@@ -77,9 +77,10 @@ export async function getAllProducts(): Promise<{ success: boolean; data?: Recep
     }
 }
 
-/** Productos del catálogo maestro cuya marca es IMPORTADA (error de datos). */
+/** Productos del catálogo maestro cuya marca comercial es IMPORTADA o NACIONAL (requieren corrección). */
 export async function getImportedBrandCatalogProducts(): Promise<{ success: boolean; data?: ProductDatabaseItem[]; error?: string }> {
     try {
+        const PLACEHOLDER_BRANDS = new Set(['IMPORTADA', 'NACIONAL']);
         const querySnapshot = await getDocs(collection(firestore, "productDatabase"));
         const products = querySnapshot.docs
             .map((docSnap) => {
@@ -93,7 +94,7 @@ export async function getImportedBrandCatalogProducts(): Promise<{ success: bool
             .filter((p) => {
                 // Solo marca comercial. merchandise_type/tipo_mercancia puede ser IMPORTADA sin ser error.
                 const marca = String(p.marca || '').trim().toUpperCase();
-                return marca === 'IMPORTADA';
+                return PLACEHOLDER_BRANDS.has(marca);
             })
             .sort((a, b) =>
                 String(a.referencia || a.reference || '').localeCompare(String(b.referencia || b.reference || ''))

@@ -297,7 +297,7 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
         setImportedBrandProducts(result.data);
         toast({
           title: 'Consulta completada',
-          description: `${result.data.length} producto(s) con marca IMPORTADA en el catálogo.`,
+          description: `${result.data.length} producto(s) con marca IMPORTADA o NACIONAL en el catálogo.`,
         });
       } else {
         throw new Error(result.error || 'Error desconocido');
@@ -317,7 +317,8 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
       const desc = String(p.item || p.description || p.name || '').toLowerCase();
       const barcode = String(p.codigoBarras || '').toLowerCase();
       const talla = String(p.talla || p.size || '').toLowerCase();
-      return ref.includes(q) || desc.includes(q) || barcode.includes(q) || talla.includes(q);
+      const marca = String(p.marca || '').toLowerCase();
+      return ref.includes(q) || desc.includes(q) || barcode.includes(q) || talla.includes(q) || marca.includes(q);
     });
   }, [importedBrandProducts, importedBrandFilter]);
 
@@ -329,7 +330,7 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
         p.referencia || p.reference || '',
         p.talla || p.size || '',
         String(p.item || p.description || p.name || '').replace(/"/g, '""'),
-        p.marca || 'IMPORTADA',
+        p.marca || '',
         p.grupo || p.location || '',
       ]
         .map((cell) => `"${cell}"`)
@@ -339,7 +340,7 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `catalogo_marca_importada_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `catalogo_marca_importada_nacional_${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -392,10 +393,10 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
             <div>
               <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
                 <AlertTriangle className="h-5 w-5 shrink-0" />
-                Productos con marca IMPORTADA
+                Productos con marca IMPORTADA o NACIONAL
               </CardTitle>
               <CardDescription>
-                Consulte y corrija en el catálogo maestro los códigos que aún tienen marca IMPORTADA (afectan empaque y metas por marca).
+                Consulte y corrija en el catálogo maestro los códigos que aún tienen marca IMPORTADA o NACIONAL (afectan empaque y metas por marca).
               </CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -423,14 +424,14 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
           <CardContent className="space-y-4">
             {importedBrandProducts.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                Pulse &quot;Consultar catálogo&quot; para listar todos los productos con marca IMPORTADA.
+                Pulse &quot;Consultar catálogo&quot; para listar todos los productos con marca IMPORTADA o NACIONAL.
               </p>
             ) : (
               <>
                 <Input
                   value={importedBrandFilter}
                   onChange={(e) => setImportedBrandFilter(e.target.value)}
-                  placeholder="Filtrar por código, referencia, talla o descripción..."
+                  placeholder="Filtrar por código, referencia, talla, descripción o marca..."
                   className="max-w-md"
                 />
                 <p className="text-sm text-muted-foreground">
@@ -444,6 +445,7 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
                         <TableHead>Referencia</TableHead>
                         <TableHead>Talla</TableHead>
                         <TableHead>Descripción</TableHead>
+                        <TableHead>Marca</TableHead>
                         <TableHead>Grupo</TableHead>
                         <TableHead className="text-right">Acción</TableHead>
                       </TableRow>
@@ -456,6 +458,9 @@ export const ProductsManagement: React.FC<ProductsManagementProps> = ({ onReturn
                           <TableCell>{product.talla || product.size || '—'}</TableCell>
                           <TableCell className="max-w-xs truncate" title={product.item || product.description || product.name}>
                             {product.item || product.description || product.name || '—'}
+                          </TableCell>
+                          <TableCell className="font-semibold text-amber-700 dark:text-amber-400">
+                            {String(product.marca || '').trim() || '—'}
                           </TableCell>
                           <TableCell>{product.grupo || product.location || '—'}</TableCell>
                           <TableCell className="text-right">
