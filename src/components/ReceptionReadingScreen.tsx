@@ -419,6 +419,16 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
             });
         }
 
+        // Misma referencia en la operación (otra talla): heredar ubicación de esta recepción.
+        let locationId = expectedItemData?.location;
+        if (!locationId && productRef && productRef !== 'UNKNOWN') {
+            const sameRefInOperation = expectedItems.find((expItem) => {
+                const expRef = normalizeReceptionReference(expItem.reference || (expItem as any).referencia || '');
+                return expRef === productRef && !!expItem.location;
+            });
+            locationId = sameRefInOperation?.location;
+        }
+
         const itemToAdd = {
             reception_id: operation.id,
             packing_unit_id: unitToUse.firestoreId,
@@ -427,7 +437,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
             reference: productRef || 'UNKNOWN',
             talla: productSize || 'N/A',
             item: productName || 'N/A',
-            location_id: expectedItemData?.location || undefined
+            location_id: locationId || undefined
         };
                 
         const result = await addScannedItem(itemToAdd);
@@ -581,15 +591,17 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
         return expectedItemByBarcode.location;
     }
     
-    // NEW PRIORITY 2: Find in the current operation's expected items by reference and size.
-    const ref = (currentScannedProductDetails.referencia || currentScannedProductDetails.reference || '').trim().toUpperCase();
-    const size = (currentScannedProductDetails.talla || currentScannedProductDetails.size || '').trim().toUpperCase();
+    // PRIORITY 2: Find in the current operation's expected items by reference and size.
+    const ref = (currentScannedProductDetails.referencia || currentScannedProductDetails.reference || '').trim();
+    const size = (currentScannedProductDetails.talla || currentScannedProductDetails.size || '').trim();
+    const normRef = ref ? normalizeReceptionReference(ref) : '';
+    const normSize = size ? normalizeReceptionSize(size) : '';
     
-    if(ref && size) {
+    if (normRef && normSize) {
         const expectedItemByRef = expectedItems.find(item => {
-            const itemRef = (item.reference || (item as any).referencia || '').trim().toUpperCase();
-            const itemSize = (item.size || (item as any).talla || '').trim().toUpperCase();
-            return itemRef === ref && itemSize === size;
+            const itemRef = normalizeReceptionReference(item.reference || (item as any).referencia || '');
+            const itemSize = normalizeReceptionSize(item.size || (item as any).talla || '');
+            return itemRef === normRef && itemSize === normSize;
         });
         
         if (expectedItemByRef && expectedItemByRef.location) {
@@ -597,20 +609,42 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
         }
     }
 
-    // PRIORITY 3 (Fallback): Use the general location from the product master database.
+    // PRIORITY 3: Same reference in this operation (any size) — e.g. unexpected size of a known ref.
+    if (normRef && normRef !== 'UNKNOWN') {
+        const sameRefInOperation = expectedItems.find((item) => {
+            const itemRef = normalizeReceptionReference(item.reference || (item as any).referencia || '');
+            return itemRef === normRef && !!item.location;
+        });
+        if (sameRefInOperation?.location) {
+            return sameRefInOperation.location;
+        }
+    }
+
+    // PRIORITY 4 (Fallback): Use the general location from the product master database.
     return currentScannedProductDetails.location || 'N/A';
   }, [currentScannedProductDetails, expectedItems]);
   
+  /** Ubicación por referencia: primero la de ESTA operación, luego catálogo maestro. */
   const referenceLocationMap = useMemo(() => {
       const map = new Map<string, string>();
-      if (!productDB || productDB.length === 0) return map;
-      productDB.forEach(product => {
-          if (product.referencia && product.location) {
-              map.set(product.referencia.trim(), product.location);
-          }
+      if (productDB && productDB.length > 0) {
+        productDB.forEach(product => {
+            const rawRef = (product.referencia || product.reference || '').trim();
+            if (rawRef && product.location) {
+                map.set(rawRef, product.location);
+                map.set(normalizeReceptionReference(rawRef), product.location);
+            }
+        });
+      }
+      // La ubicación de la operación manda sobre el catálogo (misma ref, cualquier talla).
+      expectedItems.forEach((item) => {
+          const rawRef = (item.reference || '').trim();
+          if (!rawRef || !item.location) return;
+          map.set(rawRef, item.location);
+          map.set(normalizeReceptionReference(rawRef), item.location);
       });
       return map;
-  }, [productDB]);
+  }, [productDB, expectedItems]);
 
   const totalItemsInActiveUnit = useMemo(() => {
     if (!activePackingUnit) return 0;

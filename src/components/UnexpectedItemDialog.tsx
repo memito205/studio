@@ -41,8 +41,13 @@ export const UnexpectedItemDialog: React.FC<UnexpectedItemDialogProps> = ({
               {referencia} ({talla})
             </span>{' '}
             con código <span className="font-mono">{item.codigoBarras}</span>{' '}
-            no se esperaba en esta orden de recepción. ¿Deseas agregarlo de
-            todas formas? Esto registrará automáticamente una novedad.
+            no se esperaba en esta orden de recepción
+            {item.location ? (
+              <>
+                {' '}(ubicación sugerida: <span className="font-semibold">{item.location}</span>)
+              </>
+            ) : null}
+            . ¿Deseas agregarlo de todas formas? Esto registrará automáticamente una novedad.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

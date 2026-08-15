@@ -11,6 +11,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Search, Loader2 } from 'lucide-react';
 import type { PackingUnit, ProductDatabaseItem, PackingScanResult, ReceptionExpectedItem } from '@/types';
 import { UnexpectedItemDialog } from './UnexpectedItemDialog';
+import { normalizeReceptionReference } from '@/lib/receptionReference';
 
 
 interface ReceptionScanInputProps {
@@ -77,7 +78,9 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
         const isExpected = expectedBarcodes.has(result.item.codigoBarras) || expectedRefSizePairs.has(refSizeKey);
         
         const productWithCorrectedLocation = { ...result.item };
-        const knownLocation = referenceLocationMap.get(itemRef);
+        const knownLocation =
+            referenceLocationMap.get(normalizeReceptionReference(itemRef)) ||
+            referenceLocationMap.get(itemRef);
 
         if (isExpected) {
              if (knownLocation) productWithCorrectedLocation.location = knownLocation;
@@ -88,6 +91,8 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
                 onProductLookedUp(productWithCorrectedLocation);
             }
         } else {
+            // Si la referencia ya existe en esta operación (otra talla), hereda esa ubicación.
+            // Solo usa SIGUIENTE cuando no hay ubicación conocida en operación ni catálogo.
             productWithCorrectedLocation.location = knownLocation || 'SIGUIENTE';
             setUnexpectedItem(productWithCorrectedLocation);
         }
