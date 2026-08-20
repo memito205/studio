@@ -345,7 +345,7 @@ const ItemDashboard: React.FC<ItemDashboardProps> = ({
                 <p>* Compra Sugerida Final (+AJS) considera el porcentaje histórico de consumo 'AJS' para ajustar la recomendación base.</p>
                 <p>* Faltante Próx.Per. considera la demanda estimada desde la fecha actual hasta el fin del mes en curso.</p>
            </div>
-          <table className="w-full min-w-[1600px] text-left text-sm">
+          <table className="w-full min-w-[2400px] text-left text-sm">
             <thead className="bg-slate-700 text-slate-300">
               <tr>
                 <th className="p-2">Código Item</th>

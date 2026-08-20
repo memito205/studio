@@ -18,9 +18,11 @@ export const SES_ALPHA: number = 0.3;
 export const WMA_PERIOD: number = 3; // Período para Weighted Moving Average
 export const DAMPING_FACTOR: number = 0.95; // Damping factor for linear regression
 
-// Número total de períodos futuros para los que se generarán pronósticos y se basará la recomendación de compra.
-// (Ej: 1er período siguiente + 3 adicionales = 4 en total)
-export const NUMBER_OF_FUTURE_PERIODS_FOR_RECOMMENDATION: number = 4;
+// Número total de períodos futuros (meses) para los que se generan pronósticos
+// y sobre los que se calcula la recomendación de compra.
+// Mostrar N meses y "Compra Sug. (cubre N per.)" usan el mismo horizonte:
+// la compra sugerida = demanda de esos N meses − inventario actual (con lógica de faltante del mes en curso).
+export const NUMBER_OF_FUTURE_PERIODS_FOR_RECOMMENDATION: number = 12;
 
 
 export const MONTH_NAMES_ES: string[] = [
