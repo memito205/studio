@@ -31,7 +31,7 @@ const SlaAnalysisTable: React.FC<SlaAnalysisTableProps> = ({ data }) => {
                 <h2 className="text-xl font-bold text-gray-800">Análisis de Cumplimiento de SLA por Bodega (3 días)</h2>
             </div>
             <div className="text-center text-gray-500 py-8">
-                No hay datos de cumplimiento para mostrar con los filtros actuales.
+                No hay TF entregadas con fecha finalizado en plataforma para calcular el SLA (carga Quick con fecha de servicio).
             </div>
         </div>
     );
@@ -39,9 +39,14 @@ const SlaAnalysisTable: React.FC<SlaAnalysisTableProps> = ({ data }) => {
 
   return (
     <div className="bg-white rounded-lg shadow-lg p-6 mb-8">
-        <div className="flex items-center mb-4">
-            <ShieldCheckIcon className="h-6 w-6 text-green-600 mr-3"/>
-            <h2 className="text-xl font-bold text-gray-800">Análisis de Cumplimiento de SLA por Bodega (3 días)</h2>
+        <div className="mb-4">
+            <div className="flex items-center">
+                <ShieldCheckIcon className="h-6 w-6 text-green-600 mr-3"/>
+                <h2 className="text-xl font-bold text-gray-800">Análisis de Cumplimiento de SLA por Bodega (3 días)</h2>
+            </div>
+            <p className="text-sm text-gray-500 mt-1 ml-9">
+                Incumplimiento si entre la fecha del documento y la fecha finalizado en plataforma pasan más de 3 días.
+            </p>
         </div>
         <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
