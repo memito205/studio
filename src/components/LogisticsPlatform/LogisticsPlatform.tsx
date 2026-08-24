@@ -813,12 +813,12 @@ const WarehouseAnalyzer: React.FC = () => {
           
           <section>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
-                  <KPI title="Total Documentos" value={kpiData.totalDocs} icon={<FileIcon/>} />
-                  <KPI title="Cantidad Total" value={kpiData.totalQty} icon={<PackageIcon/>} />
-                  <KPI title="Total Bodegas" value={kpiData.totalWarehouses} icon={<TruckIcon/>} />
-                  <KPI title="Docs / Bodega" value={kpiData.avgDocsPerWarehouse} icon={<ChartIcon/>} />
-                  <KPI title="Cumplimiento General" value={kpiData.compliancePercentage} icon={<CheckCircleIcon/>} />
-                  <KPI title="Docs. Entregados" value={kpiData.deliveredCount} icon={<CheckCircleIcon className="text-blue-600"/>} />
+                  <KPI title="Cantidad Documentos" value={kpiData.totalDocs} icon={<FileIcon/>} />
+                  <KPI title="Entregados" value={kpiData.deliveredCount} icon={<CheckCircleIcon className="text-blue-600"/>} />
+                  <KPI title="Por Entregar" value={kpiData.pendingCount} icon={<TruckIcon/>} />
+                  <KPI title="Cant. Productos Entregados" value={kpiData.deliveredQty} icon={<PackageIcon/>} />
+                  <KPI title="Cant. Pendientes de Recibir" value={kpiData.pendingQty} icon={<ChartIcon/>} />
+                  <KPI title="Cumplimiento (Entregados/Total)" value={kpiData.compliancePercentage} icon={<CheckCircleIcon/>} />
               </div>
           </section>
 

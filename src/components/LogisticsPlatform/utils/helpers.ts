@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx';
 import type { SlaAnalysisData, PendingDocsAnalysisData, AnalysisResult, BrandSummaryRecord, PendingSummaryRecord, FinalizedDocDetail, VehiclePlan, ObservationSummary, EntregasPorVehiculo, ExcelDataRow, PendingGoodsItem, PendingDocDetail, RouteTask } from '../types';
-declare const jspdf: any;
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 export const docNumberMapping: { [key: string]: string } = {
     'B1': '201', 'B2': '202', 'B3': '203', 'B4': '204', 'B5': '206',
@@ -173,12 +174,7 @@ export const generateDailySummaryPdf = (
     entregasData: EntregasPorVehiculo[],
     pendingGoodsData: PendingGoodsItem[]
 ) => {
-    if (typeof jspdf === 'undefined' || typeof jspdf.jsPDF === 'undefined') {
-        alert('La librería de generación de PDF (jsPDF) no está disponible.');
-        return;
-    }
-
-    const doc = new jspdf.jsPDF({ orientation: 'l', unit: 'mm', format: 'a4' });
+const doc = new jsPDF({ orientation: 'l', unit: 'mm', format: 'a4' });
     const marginLeft = 15;
     let cursorY = 20;
     const todayStr = new Date().toISOString().split('T')[0];
@@ -280,7 +276,7 @@ export const generateDailySummaryPdf = (
             `Total Etapa 2: ${totals.unitsTodayS2.toLocaleString('es-ES')} unds\n${totalS2Projection}`
         ]);
 
-        doc.autoTable({
+        autoTable(doc, {
             startY: cursorY,
             head: advanceHead,
             body: advanceBody,
@@ -308,7 +304,7 @@ export const generateDailySummaryPdf = (
             }
         });
         
-        cursorY = doc.autoTable.previous.finalY + 5;
+        cursorY = (doc as any).lastAutoTable.finalY + 5;
         doc.setFontSize(8);
         doc.setTextColor(100);
         doc.setFont('helvetica', 'italic');
@@ -353,7 +349,7 @@ export const generateDailySummaryPdf = (
             `${rimTotals.q > 0 ? ((rimTotals.p / rimTotals.q) * 100).toFixed(0) : 0}%`
         ]);
 
-        doc.autoTable({
+        autoTable(doc, {
             startY: cursorY,
             head: summaryHead,
             body: summaryBody,
@@ -397,7 +393,7 @@ export const generateDailySummaryPdf = (
                 }
             }
         });
-        cursorY = doc.autoTable.previous.finalY + 15;
+        cursorY = (doc as any).lastAutoTable.finalY + 15;
     }
     
     if (vxmData.length > 0) {
@@ -434,7 +430,7 @@ export const generateDailySummaryPdf = (
             `${vxmTotals.q > 0 ? ((vxmTotals.p / vxmTotals.q) * 100).toFixed(0) : 0}%`
         ]);
 
-        doc.autoTable({
+        autoTable(doc, {
             startY: cursorY,
             head: vxmHead,
             body: vxmBody,
@@ -478,7 +474,7 @@ export const generateDailySummaryPdf = (
                 }
             }
         });
-        cursorY = doc.autoTable.previous.finalY + 15;
+        cursorY = (doc as any).lastAutoTable.finalY + 15;
     }
 
     if (pendingGoodsData.length > 0) {
@@ -496,7 +492,7 @@ export const generateDailySummaryPdf = (
             item.fechaEntradaAprox ? (item.fechaEntradaAprox.includes('/') ? item.fechaEntradaAprox : formatDate(parseDateString(item.fechaEntradaAprox))) : 'N/D'
         ]);
 
-        doc.autoTable({
+        autoTable(doc, {
             startY: cursorY,
             head: pendingHead,
             body: pendingBody,
@@ -505,7 +501,7 @@ export const generateDailySummaryPdf = (
             styles: { fontSize: 8.5, cellPadding: 2, valign: 'middle' },
             columnStyles: { 1: { halign: 'right' } }
         });
-        cursorY = doc.autoTable.previous.finalY + 15;
+        cursorY = (doc as any).lastAutoTable.finalY + 15;
     }
 
     const dateStr = new Date().toISOString().slice(0, 10);
@@ -513,19 +509,14 @@ export const generateDailySummaryPdf = (
 };
 
 export const generateVehiclePlanPdf = (plans: VehiclePlan[]) => {
-    if (typeof jspdf === 'undefined' || typeof jspdf.jsPDF === 'undefined') {
-        alert('La librería de generación de PDF (jsPDF) no está disponible.');
-        return;
-    }
-
-    const plansWithTasks = plans.filter(p => p.tasks.length > 0 && p.name.toUpperCase() !== 'TAREAS SIN ASIGNAR');
+const plansWithTasks = plans.filter(p => p.tasks.length > 0 && p.name.toUpperCase() !== 'TAREAS SIN ASIGNAR');
     
     if (plansWithTasks.length === 0) {
         alert('No hay tareas asignadas a vehículos para generar el PDF.');
         return;
     }
 
-    const doc = new jspdf.jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
+    const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
     const marginLeft = 15;
     let cursorY = 20;
 
@@ -563,7 +554,7 @@ export const generateVehiclePlanPdf = (plans: VehiclePlan[]) => {
         doc.text(`Vehículo: ${plan.name}`, marginLeft, cursorY);
         cursorY += 8;
         
-        doc.autoTable({
+        autoTable(doc, {
             startY: cursorY,
             head: [['Orden', 'Tipo', 'Número TF', 'Ubicación / Valor']],
             body: tableBody,
@@ -585,7 +576,7 @@ export const generateVehiclePlanPdf = (plans: VehiclePlan[]) => {
             }
         });
 
-        cursorY = doc.autoTable.previous.finalY + 15;
+        cursorY = (doc as any).lastAutoTable.finalY + 15;
     });
 
     const dateStr = new Date().toISOString().slice(0, 10);
@@ -593,12 +584,7 @@ export const generateVehiclePlanPdf = (plans: VehiclePlan[]) => {
 };
 
 export const generateCajonReportPdf = (vehiclePlans: VehiclePlan[]) => {
-    if (typeof jspdf === 'undefined' || typeof jspdf.jsPDF === 'undefined') {
-        alert('La librería de generación de PDF (jsPDF) no está disponible.');
-        return;
-    }
-
-    const doc = new jspdf.jsPDF({ orientation: 'l', unit: 'mm', format: 'a4' });
+const doc = new jsPDF({ orientation: 'l', unit: 'mm', format: 'a4' });
     const marginLeft = 15;
     let cursorY = 20;
 
@@ -653,7 +639,7 @@ export const generateCajonReportPdf = (vehiclePlans: VehiclePlan[]) => {
                 ];
             });
 
-            doc.autoTable({
+            autoTable(doc, {
                 startY: cursorY,
                 head: [['Nro TF', 'Tipo', 'Recogido En', 'Tienda Destino', 'Estado Final']],
                 body: body,
@@ -665,7 +651,7 @@ export const generateCajonReportPdf = (vehiclePlans: VehiclePlan[]) => {
                     3: { fontStyle: 'bold', textColor: '#b91c1c' }
                 }
             });
-            cursorY = doc.autoTable.previous.finalY + 15;
+            cursorY = (doc as any).lastAutoTable.finalY + 15;
         }
     });
 
@@ -680,12 +666,7 @@ export const generateCajonReportPdf = (vehiclePlans: VehiclePlan[]) => {
 };
 
 export const generatePendingSummaryPdf = (data: { [key: string]: any }[]) => {
-    if (typeof jspdf === 'undefined' || typeof jspdf.jsPDF === 'undefined') {
-      alert('La librería de generación de PDF (jsPDF) no está disponible.');
-      return;
-    }
-  
-    const doc = new jspdf.jsPDF({ orientation: 'l', unit: 'mm', format: 'a4' });
+const doc = new jsPDF({ orientation: 'l', unit: 'mm', format: 'a4' });
     const pageTitle = "Reporte de Documentos Pendientes (Pte Envío / En Cargue)";
     const generatedDate = `Generado el: ${new Date().toLocaleDateString('es-ES')} ${new Date().toLocaleTimeString('es-ES')}`;
     const marginLeft = 10;
@@ -741,7 +722,7 @@ export const generatePendingSummaryPdf = (data: { [key: string]: any }[]) => {
     const totalRowSummary = ['TOTAL', totalDocsSummary, totalQuantitySummary.toLocaleString('es-ES')];
     summaryBody.push(totalRowSummary);
     
-    doc.autoTable({
+    autoTable(doc, {
         startY: cursorY,
         head: [['Bodega de Entrada', 'Total Documentos', 'Cantidad Total Pendiente']],
         body: summaryBody,
@@ -852,7 +833,7 @@ export const generatePendingSummaryPdf = (data: { [key: string]: any }[]) => {
     totalRowByBrand.push(grandTotalsByBrand.totalDocs.size);
     bodyByBrand.push(totalRowByBrand);
 
-    doc.autoTable({
+    autoTable(doc, {
         startY: cursorY,
         head: headByBrand,
         body: bodyByBrand,
@@ -957,7 +938,7 @@ export const generatePendingSummaryPdf = (data: { [key: string]: any }[]) => {
     totalRowByDate.push(grandTotalsByDate.totalDocs.size);
     bodyByDate.push(totalRowByDate);
 
-    doc.autoTable({
+    autoTable(doc, {
         startY: cursorY,
         head: headByDate,
         body: bodyByDate,
@@ -986,12 +967,7 @@ export const generateWarehousePdf = (
     pendingData: PendingDocsAnalysisData | undefined,
     brandData: BrandSummaryRecord[] | undefined
 ) => {
-    if (typeof jspdf === 'undefined' || typeof jspdf.jsPDF === 'undefined') {
-        alert('La librería de generación de PDF (jsPDF) no está disponible.');
-        return;
-    }
-
-    const doc = new jspdf.jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
+const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
     const marginLeft = 15;
     const marginRight = 15;
     const pageContentWidth = doc.internal.pageSize.getWidth() - marginLeft - marginRight;
@@ -1054,7 +1030,7 @@ export const generateWarehousePdf = (
             ['Cantidad Total de Unidades', summaryData.cantidad.toLocaleString('es-ES')],
         ];
 
-        doc.autoTable({
+        autoTable(doc, {
             startY: cursorY,
             head: [['Métrica', 'Valor']],
             body: summaryBody,
@@ -1065,14 +1041,14 @@ export const generateWarehousePdf = (
                 1: { halign: 'right' }
             }
         });
-        cursorY = doc.autoTable.previous.finalY + 12;
+        cursorY = (doc as any).lastAutoTable.finalY + 12;
     }
 
     if (brandData && brandData.length > 0) {
         checkPageBreak(40);
         addSectionHeader('Resumen General por Marca', 'Presenta un resumen de la cantidad de documentos y unidades totales por cada marca asociada a la bodega.');
         
-        doc.autoTable({
+        autoTable(doc, {
             startY: cursorY,
             head: [['Marca', 'Total Documentos', 'Cantidad Total de Unidades']],
             body: brandData.map(b => [b.brand, b.docCount, b.quantity.toLocaleString('es-ES')]),
@@ -1083,7 +1059,7 @@ export const generateWarehousePdf = (
                 2: { halign: 'right' }
             },
         });
-        cursorY = doc.autoTable.previous.finalY + 12;
+        cursorY = (doc as any).lastAutoTable.finalY + 12;
     }
 
     if (slaData) {
@@ -1091,7 +1067,7 @@ export const generateWarehousePdf = (
         const slaDesc = 'Esta sección analiza la antigüedad de los documentos ya finalizados. Un TFT se considera "Fuera de Plazo" si han transcurrido 3 días o más desde su fecha de finalización. El objetivo es identificar los documentos finalizados más recientes. Un alto porcentaje de cumplimiento significa que la mayoría de los documentos se finalizaron en los últimos 2 días.';
         addSectionHeader('Análisis de Cumplimiento de SLA', slaDesc);
 
-        doc.autoTable({
+        autoTable(doc, {
             startY: cursorY,
             head: [['Cumplimiento SLA', 'TFT Finalizados', 'TFT Fuera de Plazo']],
             body: [[`${slaData.compliance.toFixed(1)}%`, slaData.totalFinalized, slaData.overdueCount]],
@@ -1099,7 +1075,7 @@ export const generateWarehousePdf = (
             headStyles: { fillColor: '#dc2626', textColor: '#ffffff' },
             columnStyles: { 0: { halign: 'center' }, 1: { halign: 'center' }, 2: { halign: 'center' } },
         });
-        cursorY = doc.autoTable.previous.finalY + 8;
+        cursorY = (doc as any).lastAutoTable.finalY + 8;
         
         if (slaData.finalizedRecords.length > 0) {
             addSubHeader('Detalle de Documentos Finalizados y Entregados');
@@ -1124,7 +1100,7 @@ export const generateWarehousePdf = (
                 ];
             });
 
-            doc.autoTable({
+            autoTable(doc, {
                 startY: cursorY,
                 head: [['Nro TFT', 'Fecha Finalizado', 'Días Desde Finalización', 'Bod. Salida', 'Estado', 'Evidencia']],
                 body: slaDetailBody,
@@ -1152,7 +1128,7 @@ export const generateWarehousePdf = (
                     }
                 }
             });
-            cursorY = doc.autoTable.previous.finalY + 12;
+            cursorY = (doc as any).lastAutoTable.finalY + 12;
         }
     }
 
@@ -1161,7 +1137,7 @@ export const generateWarehousePdf = (
         const pendingDesc = "Esta sección muestra todos los TFT no finalizados. La columna \"En Ruta\" indica el estado logístico:\n- 'ESTA EN RUTA': El TFT ha sido despachado y está en tránsito.\n- 'ESTA EN BODEGA PPAL': El TFT está listo pero aún en la bodega.\n- 'PREGUNTAR ALMACEN DE ORIGEN': El sistema no tiene estado confirmado.";
         addSectionHeader('Análisis de TFT Pendientes', pendingDesc);
         
-        doc.autoTable({
+        autoTable(doc, {
             startY: cursorY,
             head: [['TFT Pendientes', 'Cantidad Pendiente', '% Participación']],
             body: [[ pendingData.pendingCount, pendingData.totalPendingQuantity.toLocaleString('es-ES'), `${pendingData.participationPercentage.toFixed(1)}%`]],
@@ -1169,12 +1145,12 @@ export const generateWarehousePdf = (
             headStyles: { fillColor: '#f97316', textColor: '#ffffff' },
             columnStyles: { 0: { halign: 'center' }, 1: { halign: 'center' }, 2: { halign: 'center' } },
         });
-        cursorY = doc.autoTable.previous.finalY + 8;
+        cursorY = (doc as any).lastAutoTable.finalY + 8;
 
         if (pendingData.pendingRecords.length > 0) {
              addSubHeader('Resumen de Pendientes por Marca y Grupo');
              
-             doc.autoTable({
+             autoTable(doc, {
                 startY: cursorY,
                 head: [['Marca', 'Grupo', 'TFT Pendientes', 'Cantidad Pendiente', 'Antigüedad Prom. (Días)']],
                 body: pendingData.pendingRecords.map(rec => [rec.marca, rec.grupo, rec.docCount, rec.totalQuantity.toLocaleString('es-ES'), rec.avgDaysPending]),
@@ -1186,7 +1162,7 @@ export const generateWarehousePdf = (
                     4: { halign: 'right' } 
                 },
              });
-             cursorY = doc.autoTable.previous.finalY + 12;
+             cursorY = (doc as any).lastAutoTable.finalY + 12;
 
              checkPageBreak(30);
              addSubHeader('Detalle de Documentos Pendientes (Más Antiguos)');
@@ -1217,7 +1193,7 @@ export const generateWarehousePdf = (
                 doc.enRuta,
              ]);
 
-             doc.autoTable({
+             autoTable(doc, {
                 startY: cursorY,
                 head: [['Fecha', 'Nro TFT', 'Cant.', 'Días Pend.', 'Bod. Salida', 'Estado Ruta']],
                 body: pendingDetailBody,
@@ -1229,7 +1205,7 @@ export const generateWarehousePdf = (
                     4: { halign: 'right' } 
                 },
              });
-             cursorY = doc.autoTable.previous.finalY + 12;
+             cursorY = (doc as any).lastAutoTable.finalY + 12;
         }
     }
 

@@ -51,11 +51,11 @@ export const useReportData = (
     const initialReturn: ReportData = {
         kpiData: { 
           totalDocs: '0', 
-          totalQty: '0', 
-          totalWarehouses: '0', 
-          avgDocsPerWarehouse: '0', 
+          deliveredCount: '0',
+          pendingCount: '0',
+          deliveredQty: '0',
+          pendingQty: '0',
           compliancePercentage: '0.0%', 
-          deliveredCount: '0' 
         },
         analysisData: [],
         dailyChartData: [],
@@ -91,6 +91,44 @@ export const useReportData = (
         return `${warehouseIdentifier}-${docNumber}`;
     };
 
+    /** Misma prioridad que ESTADO PLATAFORMA del reporte general. */
+    const classifyPlatformStatus = (row: ExcelDataRow): string => {
+        const hoyVal = String(row[hoyRutaField] || row['hoyRuta'] || '').trim().toUpperCase();
+        const platVal = String(row[estadoPlataformaField] || row['estadoPlataforma'] || '').trim().toUpperCase();
+        const bodegaVal = String(row[estadoBodegaField] || '').trim().toUpperCase();
+        const hasImage = Boolean(String(row[imageField] || row['image'] || '').trim());
+        const hasFechaFin = Boolean(row[fechaFinalizadoField] || row['fechaFinalizado']);
+        const routeKey = buildTfWarehouseKey(row[DOC_COL!], row[WAREHOUSE_COL!]);
+        const routeStatus = routeKey ? routeStatusMap.get(routeKey) : undefined;
+
+        if (
+            platVal === 'ENTREGADO' ||
+            platVal === 'FINALIZADO' ||
+            hasImage ||
+            hasFechaFin
+        ) {
+            return 'ENTREGADO';
+        }
+
+        const isHoyRuta =
+            hoyVal === 'EN RUTA HOY' ||
+            hoyVal === 'TRUE' ||
+            platVal === 'EN RUTA HOY' ||
+            routeStatus === 'EN RUTA HOY' ||
+            routeStatus === 'ESTA EN RUTA' ||
+            routeStatus === 'EN CARGUE';
+
+        if (isHoyRuta) return 'EN RUTA HOY';
+
+        if (bodegaVal === 'EN BODEGA' || platVal === 'EN BODEGA' || routeStatus === 'ESTA EN BODEGA PPAL') {
+            return 'EN BODEGA';
+        }
+
+        if (platVal) return platVal;
+        if (applyUnresolvedPlatformStatus) return 'VALIDAR CON AMBAS TIENDAS';
+        return '';
+    };
+
     let filteredRows = baseData;
 
     if (selectedWarehouse !== 'all') {
@@ -118,19 +156,42 @@ export const useReportData = (
     }
 
     const deliveredDocsKeys = new Set<string>();
-    if (routeStatusMap.size > 0) {
-        filteredRows.forEach(row => {
-            const key = buildTfWarehouseKey(row[DOC_COL!], row[WAREHOUSE_COL!]);
-            if (key && routeStatusMap.get(key) === 'FUE ENTREGADA') {
-                deliveredDocsKeys.add(getUniqueDocKey(row));
-            }
-        });
-    }
     
+    const uniqueDocs = new Set(filteredRows.map(getUniqueDocKey));
+    const totalDocs = uniqueDocs.size;
+
+    const now = new Date();
+    const currentDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+
+    // --- KPIs alineados al ESTADO PLATAFORMA del reporte ---
+    const deliveredKeys = new Set<string>();
+    let deliveredQty = 0;
+    let pendingQty = 0;
+
+    filteredRows.forEach((row) => {
+        const key = getUniqueDocKey(row);
+        const qty = Number(row[QTY_COL!] || 0);
+        const status = classifyPlatformStatus(row);
+        if (status === 'ENTREGADO') {
+            deliveredKeys.add(key);
+            deliveredQty += qty;
+        } else {
+            pendingQty += qty;
+        }
+    });
+
+    // Un doc puede tener varias filas; los sets ya son únicos
+    const deliveredDocCount = deliveredKeys.size;
+    const pendingDocCountFinal = Math.max(0, totalDocs - deliveredDocCount);
+    const compliancePercentage =
+        totalDocs > 0 ? ((deliveredDocCount / totalDocs) * 100).toFixed(1) + '%' : '0.0%';
+
+    deliveredKeys.forEach((k) => deliveredDocsKeys.add(k));
+
     const deliveredDocsByWarehouseMap: { [warehouse: string]: Set<string> } = {};
-    filteredRows.forEach(row => {
+    filteredRows.forEach((row) => {
         const uniqueKey = getUniqueDocKey(row);
-        if (deliveredDocsKeys.has(uniqueKey)) {
+        if (deliveredKeys.has(uniqueKey)) {
             const entryWarehouse = String(row[WAREHOUSE_COL!] || '');
             if (entryWarehouse) {
                 if (!deliveredDocsByWarehouseMap[entryWarehouse]) {
@@ -143,67 +204,16 @@ export const useReportData = (
 
     const deliveredDocsByWarehouse = Object.entries(deliveredDocsByWarehouseMap).map(([warehouse, docSet]) => ({
         warehouse,
-        count: docSet.size
+        count: docSet.size,
     }));
-    
-    const uniqueDocs = new Set(filteredRows.map(getUniqueDocKey));
-    const totalDocs = uniqueDocs.size;
-    const totalQty = filteredRows.reduce((sum, row) => sum + Number(row[QTY_COL!] || 0), 0);
-    const totalWarehouses = new Set(filteredRows.map(r => r[WAREHOUSE_COL!])).size;
-    const avgDocsPerWarehouse = totalWarehouses > 0 ? (totalDocs / totalWarehouses).toFixed(1) : '0';
-
-    const now = new Date();
-    const currentDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-
-    // --- NUEVA LÓGICA DE KPI: ENTREGADOS Y CUMPLIMIENTO ---
-    const platformMatches = new Set<string>();
-    const nonCompliantDocs = new Set<string>();
-
-    filteredRows.forEach(row => {
-        const uniqueKey = getUniqueDocKey(row);
-        const hasPlatformData = row['image'] || row[ESTADO_PLATAFORMA_COL!] || row[FECHA_FINALIZADO_PLATAFORMA_COL!];
-        
-        if (hasPlatformData || deliveredDocsKeys.has(uniqueKey)) {
-            platformMatches.add(uniqueKey);
-            
-            // Regla de Cumplimiento: mas de 3 dias despues de la entrega (o fecha base si no hay fecha fin)
-            const docDate = normalizeDate(row[FECHA_COL!]);
-            const finalDate = normalizeDate(row[FECHA_FINALIZADO_PLATAFORMA_COL!] || row['fechaFinalizado']);
-            
-            if (finalDate && docDate) {
-                const diffTime = finalDate.getTime() - docDate.getTime();
-                const daysToDeliver = Math.max(0, Math.floor(diffTime / (1000 * 3600 * 24)));
-                if (daysToDeliver > 3) {
-                    nonCompliantDocs.add(uniqueKey);
-                }
-            } else if (!finalDate && docDate) {
-                // Si ya pasaron mas de 3 dias y no se ha entregado (sin match)
-                const diffTime = currentDate.getTime() - docDate.getTime();
-                const daysPending = Math.max(0, Math.floor(diffTime / (1000 * 3600 * 24)));
-                if (daysPending > 3 && !hasPlatformData && !deliveredDocsKeys.has(uniqueKey)) {
-                     nonCompliantDocs.add(uniqueKey);
-                }
-            }
-        } else {
-             // Docs sin entrega que ya pasaron de 3 dias
-             const docDate = normalizeDate(row[FECHA_COL!]);
-             if (docDate) {
-                const diffTime = currentDate.getTime() - docDate.getTime();
-                const daysPending = Math.max(0, Math.floor(diffTime / (1000 * 3600 * 24)));
-                if (daysPending > 3) nonCompliantDocs.add(uniqueKey);
-             }
-        }
-    });
-
-    const compliancePercentage = totalDocs > 0 ? (((totalDocs - nonCompliantDocs.size) / totalDocs) * 100).toFixed(1) + '%' : '0.0%';
 
     const kpiData = {
         totalDocs: totalDocs.toLocaleString('es-ES'),
-        totalQty: totalQty.toLocaleString('es-ES'),
-        totalWarehouses: totalWarehouses.toLocaleString('es-ES'),
-        avgDocsPerWarehouse,
+        deliveredCount: deliveredDocCount.toLocaleString('es-ES'),
+        pendingCount: pendingDocCountFinal.toLocaleString('es-ES'),
+        deliveredQty: deliveredQty.toLocaleString('es-ES'),
+        pendingQty: pendingQty.toLocaleString('es-ES'),
         compliancePercentage,
-        deliveredCount: platformMatches.size.toLocaleString('es-ES'),
     };
 
     const warehouseSummary = filteredRows.reduce((acc, row) => {
@@ -239,83 +249,51 @@ export const useReportData = (
         .map(([date, docSet]) => ({ 'FECHA': date, 'Total Documentos': docSet.size }))
         .sort((a, b) => (parseDateString(a.FECHA)?.getTime() || 0) - (parseDateString(b.FECHA)?.getTime() || 0));
     
+    // --- SLA 3 días: TF ENTREGADAS con fecha finalizado; incumplimiento si (fechaFin - fechaDoc) > 3 ---
     const finalizedRecordsByWarehouse: { [warehouse: string]: FinalizedDocDetail[] } = {};
     const pendingDocsByWarehouse: { [warehouse: string]: ExcelDataRow[] } = {};
-    const processedFinalizedDocKeys = new Set<string>();
+    const processedDeliveredDocKeys = new Set<string>();
 
-    if (ESTADO_PLATAFORMA_COL && FECHA_FINALIZADO_PLATAFORMA_COL) {
-        filteredRows.forEach(row => {
-            const estado = String(row[ESTADO_PLATAFORMA_COL!] || '').trim().toLowerCase();
-            if (estado === 'finalizado') {
-                const uniqueKey = getUniqueDocKey(row);
-                const warehouse = String(row[WAREHOUSE_COL!] || '');
-                if (!warehouse) return;
-
-                const fechaFin = normalizeDate(row[FECHA_FINALIZADO_PLATAFORMA_COL!]);
-                const docDate = normalizeDate(row[FECHA_COL!]);
-
-                if (fechaFin && docDate) {
-                    const diffTime = currentDate.getTime() - fechaFin.getTime();
-                    const daysSinceFinalized = Math.max(0, Math.floor(diffTime / (1000 * 3600 * 24)));
-                    const isOverdue = daysSinceFinalized >= 3; 
-
-                    const linkValue = IMAGE_LINK_COL ? String(row[IMAGE_LINK_COL!] || '').trim() : String(row['image'] || '').trim();
-                    const links = linkValue.split('|').map(l => l.trim()).filter(l => l.startsWith('http'));
-                    
-                    const finalizedDetail: FinalizedDocDetail = {
-                        docNumber: String(row[DOC_COL!] || ''),
-                        finalizedDate: formatDate(fechaFin),
-                        daysToFinalize: daysSinceFinalized,
-                        isOverdue,
-                        imageLink: links[0], // Keep for backward compatibility if needed elsewhere
-                        docDate: formatDate(docDate),
-                        quantity: Number(row[QTY_COL!] || 0),
-                        type: 'finalized',
-                        warehouseOut: WAREHOUSE_OUT_COL ? String(row[WAREHOUSE_OUT_COL] || 'N/A') : 'N/A',
-                    };
-                    
-                    if (!finalizedRecordsByWarehouse[warehouse]) finalizedRecordsByWarehouse[warehouse] = [];
-                    finalizedRecordsByWarehouse[warehouse].push(finalizedDetail);
-                    processedFinalizedDocKeys.add(uniqueKey);
-                }
-            }
-        });
-    }
-
-    filteredRows.forEach(row => {
+    filteredRows.forEach((row) => {
         const uniqueKey = getUniqueDocKey(row);
-        if (deliveredDocsKeys.has(uniqueKey) && !processedFinalizedDocKeys.has(uniqueKey)) {
-            const warehouse = String(row[WAREHOUSE_COL!] || '');
-            const docDate = normalizeDate(row[FECHA_COL!]);
-            if (warehouse && docDate) {
-                const diffTime = currentDate.getTime() - docDate.getTime();
-                const daysSinceDelivered = Math.max(0, Math.floor(diffTime / (1000 * 3600 * 24)));
-                const deliveredDetail: FinalizedDocDetail = {
-                    docNumber: String(row[DOC_COL!] || ''),
-                    finalizedDate: formatDate(docDate),
-                    daysToFinalize: daysSinceDelivered,
-                    isOverdue: daysSinceDelivered >= 3,
-                    imageLink: undefined,
-                    docDate: formatDate(docDate),
-                    quantity: Number(row[QTY_COL!] || 0),
-                    type: 'delivered',
-                    warehouseOut: WAREHOUSE_OUT_COL ? String(row[WAREHOUSE_OUT_COL] || 'N/A') : 'N/A',
-                };
-                if (!finalizedRecordsByWarehouse[warehouse]) finalizedRecordsByWarehouse[warehouse] = [];
-                finalizedRecordsByWarehouse[warehouse].push(deliveredDetail);
-                processedFinalizedDocKeys.add(uniqueKey);
-            }
+        const warehouse = String(row[WAREHOUSE_COL!] || '');
+        if (!warehouse) return;
+
+        if (classifyPlatformStatus(row) !== 'ENTREGADO') {
+            if (!pendingDocsByWarehouse[warehouse]) pendingDocsByWarehouse[warehouse] = [];
+            pendingDocsByWarehouse[warehouse].push(row);
+            return;
         }
-    });
-    
-    filteredRows.forEach(row => {
-        const uniqueKey = getUniqueDocKey(row);
-        if (!processedFinalizedDocKeys.has(uniqueKey)) {
-            const warehouse = String(row[WAREHOUSE_COL!] || '');
-            if (warehouse) {
-                if (!pendingDocsByWarehouse[warehouse]) pendingDocsByWarehouse[warehouse] = [];
-                pendingDocsByWarehouse[warehouse].push(row);
-            }
+
+        processedDeliveredDocKeys.add(uniqueKey);
+
+        const fechaFin = normalizeDate(row[fechaFinalizadoField] || row['fechaFinalizado']);
+        const docDate = normalizeDate(row[FECHA_COL!]);
+        if (!fechaFin || !docDate) return;
+
+        const diffTime = fechaFin.getTime() - docDate.getTime();
+        const daysToFinalize = Math.max(0, Math.floor(diffTime / (1000 * 3600 * 24)));
+        const isOverdue = daysToFinalize > 3;
+
+        const linkValue = String(row[imageField] || row['image'] || '').trim();
+        const links = linkValue.split('|').map((l) => l.trim()).filter((l) => l.startsWith('http'));
+
+        const finalizedDetail: FinalizedDocDetail = {
+            docNumber: String(row[DOC_COL!] || ''),
+            finalizedDate: formatDate(fechaFin),
+            daysToFinalize,
+            isOverdue,
+            imageLink: links[0],
+            docDate: formatDate(docDate),
+            quantity: Number(row[QTY_COL!] || 0),
+            type: 'finalized',
+            warehouseOut: WAREHOUSE_OUT_COL ? String(row[WAREHOUSE_OUT_COL] || 'N/A') : 'N/A',
+        };
+
+        if (!finalizedRecordsByWarehouse[warehouse]) finalizedRecordsByWarehouse[warehouse] = [];
+        // Evitar duplicar misma TF+bodega en SLA
+        if (!finalizedRecordsByWarehouse[warehouse].some((r) => String(r.docNumber) === finalizedDetail.docNumber)) {
+            finalizedRecordsByWarehouse[warehouse].push(finalizedDetail);
         }
     });
 
@@ -504,49 +482,7 @@ export const useReportData = (
         'FECHA FINALIZADO PLATAFORMA': { actual: fechaFinalizadoField, type: 'date' }
     };
 
-    const resolvePlatformStatus = (row: ExcelDataRow): string => {
-        const hoyVal = String(row[hoyRutaField] || row['hoyRuta'] || '').trim().toUpperCase();
-        const platVal = String(row[estadoPlataformaField] || row['estadoPlataforma'] || '').trim().toUpperCase();
-        const bodegaVal = String(row[estadoBodegaField] || '').trim().toUpperCase();
-        const hasImage = Boolean(String(row[imageField] || row['image'] || '').trim());
-        const hasFechaFin = Boolean(row[fechaFinalizadoField] || row['fechaFinalizado']);
-        const routeKey = buildTfWarehouseKey(row[DOC_COL!], row[WAREHOUSE_COL!]);
-        const routeStatus = routeKey ? routeStatusMap.get(routeKey) : undefined;
-
-        // 1) Entregado (Quick / evidencia) tiene prioridad
-        if (
-            platVal === 'ENTREGADO' ||
-            platVal === 'FINALIZADO' ||
-            hasImage ||
-            hasFechaFin
-        ) {
-            return 'ENTREGADO';
-        }
-
-        // 2) Paso 2 rutas: TF + destino → EN RUTA HOY
-        const isHoyRuta =
-            hoyVal === 'EN RUTA HOY' ||
-            hoyVal === 'TRUE' ||
-            platVal === 'EN RUTA HOY' ||
-            routeStatus === 'EN RUTA HOY' ||
-            routeStatus === 'ESTA EN RUTA' ||
-            routeStatus === 'EN CARGUE';
-
-        if (isHoyRuta) return 'EN RUTA HOY';
-
-        // 3) Empaque en bodega
-        if (bodegaVal === 'EN BODEGA' || platVal === 'EN BODEGA' || routeStatus === 'ESTA EN BODEGA PPAL') {
-            return 'EN BODEGA';
-        }
-
-        if (platVal) return platVal;
-
-        if (applyUnresolvedPlatformStatus) {
-            return 'VALIDAR CON AMBAS TIENDAS';
-        }
-
-        return '';
-    };
+    const resolvePlatformStatus = (row: ExcelDataRow): string => classifyPlatformStatus(row);
 
     const processRow = (row: ExcelDataRow, forExport: boolean) => {
         const record: { [key: string]: any } = {};
@@ -605,13 +541,13 @@ export const useReportData = (
     };
 
     const deliveredReportExportData = filteredRows
-        .filter(row => platformMatches.has(getUniqueDocKey(row)))
+        .filter(row => deliveredDocsKeys.has(getUniqueDocKey(row)))
         .map(row => ({
             'FECHA': formatDate(normalizeDate(row[FECHA_COL!])),
             'BOD. ENTRADA': String(row[WAREHOUSE_COL!] || ''),
             'NRO DOCUMENTO.2': String(row[DOC_COL!] || ''),
             'CANTIDAD': Number(row[QTY_COL!] || 0),
-            'ESTADO': platformMatches.has(getUniqueDocKey(row)) ? 'ENTREGADO' : 'N/D',
+            'ESTADO': 'ENTREGADO',
             'Origen de Estado': 'Cruce Plataforma / Quick',
         }));
     

@@ -87,11 +87,11 @@ export interface BrandSummaryByWarehouse {
 export interface ReportData {
     kpiData: {
       totalDocs: string;
-      totalQty: string;
-      totalWarehouses: string;
-      avgDocsPerWarehouse: string;
-      compliancePercentage: string;
       deliveredCount: string;
+      pendingCount: string;
+      deliveredQty: string;
+      pendingQty: string;
+      compliancePercentage: string;
     };
     analysisData: AnalysisResult[];
     dailyChartData: { 'FECHA': string; 'Total Documentos': number }[];
