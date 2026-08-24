@@ -29,7 +29,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 const userDocSnap = await getDoc(userDocRef);
                 if (userDocSnap.exists()) {
                     const userData = userDocSnap.data();
-                    setRole(userData.role || null);
+                    const rawRole = String(userData.role || '').trim().toLowerCase();
+                    setRole((rawRole as UserRole) || null);
                     setUserName(userData.displayName || user.displayName || user.email || 'Operario');
                 } else {
                     // Handle cases where user exists in Auth but not in Firestore 'users' collection

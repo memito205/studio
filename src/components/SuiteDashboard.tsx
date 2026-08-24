@@ -194,6 +194,25 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             roles: ['admin', 'supervisor', 'operator', 'conductor']
         },
         {
+            key: 'tf_platform_lookup',
+            icon: Store,
+            title: "Consulta Estado TF",
+            description: "Consulte el estado plataforma de transferencias por número TF o bodega destino (solo estados publicados).",
+            actionText: "Consultar",
+            onAction: () => {
+                if (typeof onNavigateToTfPlatformLookup === 'function') {
+                    onNavigateToTfPlatformLookup();
+                } else {
+                    toast({
+                        variant: 'destructive',
+                        title: 'Navegación no disponible',
+                        description: 'No se pudo abrir Consulta Estado TF. Recargue la aplicación.',
+                    });
+                }
+            },
+            roles: ['admin', 'supervisor', 'tiendas']
+        },
+        {
             key: 'merchandise_labeling',
             icon: Printer,
             title: "Etiquetado Mercancía",
@@ -246,15 +265,6 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Acceder",
             onAction: onNavigateToLogisticsPlatform,
             roles: ['admin', 'supervisor']
-        },
-        {
-            key: 'tf_platform_lookup',
-            icon: Store,
-            title: "Consulta Estado TF",
-            description: "Consulte el estado plataforma de transferencias por número TF o bodega destino (solo estados publicados).",
-            actionText: "Consultar",
-            onAction: onNavigateToTfPlatformLookup,
-            roles: ['admin', 'supervisor', 'tiendas']
         },
         {
             key: 'service_conciliation',
@@ -330,13 +340,26 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
         }
     ];
 
-    let visibleModules = modules.filter(module => module.roles.includes(role || ''));
+    const normalizedRole = String(role || '').trim().toLowerCase();
 
-    if (role === 'conductor') {
-      visibleModules = modules.filter(module => module.key === 'transfers');
+    let visibleModules = modules.filter((module) =>
+      module.roles.some((allowed) => allowed.toLowerCase() === normalizedRole)
+    );
+
+    if (normalizedRole === 'conductor') {
+      visibleModules = modules.filter((module) => module.key === 'transfers');
     }
-    if (role === 'tiendas') {
-      visibleModules = modules.filter(module => module.key === 'tf_platform_lookup');
+    if (normalizedRole === 'tiendas') {
+      visibleModules = modules.filter((module) => module.key === 'tf_platform_lookup');
+    }
+
+    // Red de seguridad: admin/supervisor siempre ven Consulta Estado TF
+    if (normalizedRole === 'admin' || normalizedRole === 'supervisor') {
+      const hasLookup = visibleModules.some((m) => m.key === 'tf_platform_lookup');
+      if (!hasLookup) {
+        const lookup = modules.find((m) => m.key === 'tf_platform_lookup');
+        if (lookup) visibleModules = [lookup, ...visibleModules];
+      }
     }
     
     return (
@@ -355,6 +378,12 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
                         Sincronizar Nueva Versión (GitHub)
                     </Button>
                 </div>
+            )}
+            {(normalizedRole === 'admin' || normalizedRole === 'supervisor') && (
+                <p className="mt-3 text-xs text-muted-foreground">
+                    Rol activo: <span className="font-mono">{role || 'N/D'}</span>
+                    {' · '}Consulta Estado TF está junto a Transferencias.
+                </p>
             )}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-8 mt-12 w-full max-w-screen-2xl">
                  {visibleModules.map(module => (
