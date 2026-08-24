@@ -55,7 +55,8 @@ export const useReportData = (
           pendingCount: '0',
           deliveredQty: '0',
           pendingQty: '0',
-          compliancePercentage: '0.0%', 
+          compliancePercentage: '0.0%',
+          uniqueTfCount: '0',
         },
         analysisData: [],
         dailyChartData: [],
@@ -158,13 +159,16 @@ export const useReportData = (
     const deliveredDocsKeys = new Set<string>();
     
     const uniqueDocs = new Set(filteredRows.map(getUniqueDocKey));
-    const totalDocs = uniqueDocs.size;
+    const uniqueTfCount = uniqueDocs.size;
+    // Misma unidad que el Reporte General: una fila = TF + bodega + marca + grupo
+    const totalLines = filteredRows.length;
 
     const now = new Date();
     const currentDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
-    // --- KPIs alineados al ESTADO PLATAFORMA del reporte ---
-    const deliveredKeys = new Set<string>();
+    // --- KPIs alineados al reporte (cuentan líneas, no solo TF únicas) ---
+    let deliveredLineCount = 0;
+    let pendingLineCount = 0;
     let deliveredQty = 0;
     let pendingQty = 0;
 
@@ -173,25 +177,22 @@ export const useReportData = (
         const qty = Number(row[QTY_COL!] || 0);
         const status = classifyPlatformStatus(row);
         if (status === 'ENTREGADO') {
-            deliveredKeys.add(key);
+            deliveredLineCount++;
             deliveredQty += qty;
+            deliveredDocsKeys.add(key);
         } else {
+            pendingLineCount++;
             pendingQty += qty;
         }
     });
 
-    // Un doc puede tener varias filas; los sets ya son únicos
-    const deliveredDocCount = deliveredKeys.size;
-    const pendingDocCountFinal = Math.max(0, totalDocs - deliveredDocCount);
     const compliancePercentage =
-        totalDocs > 0 ? ((deliveredDocCount / totalDocs) * 100).toFixed(1) + '%' : '0.0%';
-
-    deliveredKeys.forEach((k) => deliveredDocsKeys.add(k));
+        totalLines > 0 ? ((deliveredLineCount / totalLines) * 100).toFixed(1) + '%' : '0.0%';
 
     const deliveredDocsByWarehouseMap: { [warehouse: string]: Set<string> } = {};
     filteredRows.forEach((row) => {
         const uniqueKey = getUniqueDocKey(row);
-        if (deliveredKeys.has(uniqueKey)) {
+        if (deliveredDocsKeys.has(uniqueKey)) {
             const entryWarehouse = String(row[WAREHOUSE_COL!] || '');
             if (entryWarehouse) {
                 if (!deliveredDocsByWarehouseMap[entryWarehouse]) {
@@ -208,12 +209,13 @@ export const useReportData = (
     }));
 
     const kpiData = {
-        totalDocs: totalDocs.toLocaleString('es-ES'),
-        deliveredCount: deliveredDocCount.toLocaleString('es-ES'),
-        pendingCount: pendingDocCountFinal.toLocaleString('es-ES'),
+        totalDocs: totalLines.toLocaleString('es-ES'),
+        deliveredCount: deliveredLineCount.toLocaleString('es-ES'),
+        pendingCount: pendingLineCount.toLocaleString('es-ES'),
         deliveredQty: deliveredQty.toLocaleString('es-ES'),
         pendingQty: pendingQty.toLocaleString('es-ES'),
         compliancePercentage,
+        uniqueTfCount: uniqueTfCount.toLocaleString('es-ES'),
     };
 
     const warehouseSummary = filteredRows.reduce((acc, row) => {
@@ -567,6 +569,8 @@ export const useReportData = (
           data: sortedRows.map(row => processRow(row, false)),
           exportData: sortedRows.map(row => processRow(row, true)),
           headers: desiredHeaders.filter(h => headerMappings[h as keyof typeof headerMappings]?.actual),
+          lineCount: sortedRows.length,
+          uniqueTfCount,
         };
       })(),
       deliveredDocsReport: {

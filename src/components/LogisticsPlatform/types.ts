@@ -92,6 +92,8 @@ export interface ReportData {
       deliveredQty: string;
       pendingQty: string;
       compliancePercentage: string;
+      /** TF únicas (bodega+número); el totalDocs del KPI cuenta líneas como el reporte. */
+      uniqueTfCount: string;
     };
     analysisData: AnalysisResult[];
     dailyChartData: { 'FECHA': string; 'Total Documentos': number }[];
@@ -101,6 +103,8 @@ export interface ReportData {
       data: { [key: string]: React.ReactNode }[];
       exportData: { [key: string]: any }[];
       headers: string[];
+      uniqueTfCount?: number;
+      lineCount?: number;
     };
     deliveredDocsReport: {
       data: { [key: string]: React.ReactNode }[];
