@@ -16,7 +16,7 @@ import RutasModule from './components/RutasModule';
 import WarehouseProcessesModule from './components/WarehouseProcessesModule';
 import NovedadesModule from './components/NovedadesModule';
 import { useReportData } from './hooks/useReportData';
-import { findHeader, normalizeDate, formatDate, parseDateString, generatePendingSummaryPdf, getWeekStartDate, getCalendarDateKey, getTodayCalendarKey, normalizeDocId, buildTfWarehouseKey } from './utils/helpers';
+import { findHeader, normalizeDate, formatDate, parseDateString, generatePendingSummaryPdf, getWeekStartDate, getCalendarDateKey, getTodayCalendarKey, normalizeDocId, buildTfWarehouseKey, getAnalyzerWarehouseMatchKeys, findQuickMatchForAnalyzer } from './utils/helpers';
 import type { ExcelDataRow, BreaksReportData, ProcessedBreak, EmployeeDailyAnalysis, DailyAnalysis, WeeklyTrend, EmployeePerformance } from './types';
 import type { TransferEntry } from '@/types';
 import { loadAnalysisRecords, syncAnalysisRecords, persistTfPlatformStatuses, getTfKeysReceivedInWarehouse } from '@/app/actions';
@@ -502,10 +502,15 @@ const WarehouseAnalyzer: React.FC = () => {
         const routeStatusMap = new Map<string, string>();
         let rowCount = 0;
         jsonData.forEach(row => {
-            const key = buildTfWarehouseKey(row[TF_HEADER], row[DEST_HEADER]);
-            if (!key) return;
-            // Presencia en el archivo de rutas de hoy = EN RUTA HOY (por TF+destino)
-            routeStatusMap.set(key, 'EN RUTA HOY');
+            const tf = row[TF_HEADER];
+            const dest = row[DEST_HEADER];
+            const baseKey = buildTfWarehouseKey(tf, dest);
+            if (!baseKey) return;
+            // Presencia en el archivo de rutas de hoy = EN RUTA HOY (por TF+destino, con alias)
+            const docId = normalizeDocId(tf);
+            getAnalyzerWarehouseMatchKeys(dest).forEach((whs) => {
+                routeStatusMap.set(`${docId}|${whs}`, 'EN RUTA HOY');
+            });
             rowCount++;
         });
 
@@ -518,7 +523,7 @@ const WarehouseAnalyzer: React.FC = () => {
         setRouteData(routeStatusMap);
         setRouteError(null);
         setInfoMessage(
-          `Paso 2 rutas: ${routeStatusMap.size} clave(s) TF+destino (${rowCount} fila(s)). Se marcarán EN RUTA HOY en el reporte.`
+          `Paso 2 rutas: ${rowCount} fila(s) → ${routeStatusMap.size} clave(s) TF+destino (con alias de bodega). Se marcarán EN RUTA HOY en el reporte.`
         );
         void publishPlatformStatusesIfComplete(baseData, columnMap, routeStatusMap, {
           hasMain: baseData.length > 0,
@@ -578,14 +583,20 @@ const WarehouseAnalyzer: React.FC = () => {
         }
 
         const quickMap = new Map<string, any>();
+        const quickByTf = new Map<string, any[]>();
         jsonData.forEach(qRow => {
             const qDoc = normalizeDocId(qRow[QUICK_DOC_COL]);
             const qWhs = String(qRow[QUICK_WHS_COL] || '').trim().toUpperCase();
-            if (qDoc && qWhs) {
-                const key = `${qDoc}-${qWhs}`;
-                if (!quickMap.has(key)) {
-                    quickMap.set(key, qRow);
-                }
+            if (!qDoc) return;
+
+            if (!quickByTf.has(qDoc)) quickByTf.set(qDoc, []);
+            quickByTf.get(qDoc)!.push(qRow);
+
+            if (qWhs) {
+                getAnalyzerWarehouseMatchKeys(qWhs).forEach((whsKey) => {
+                    const key = `${qDoc}-${whsKey}`;
+                    if (!quickMap.has(key)) quickMap.set(key, qRow);
+                });
             }
         });
 
@@ -596,17 +607,25 @@ const WarehouseAnalyzer: React.FC = () => {
 
         let matchesCount = 0;
         let entregadoCount = 0;
+        let aliasOrExactMatches = 0;
+        let tfOnlyMatches = 0;
 
-        // Quick = entregas/evidencias. Ya no marca EN RUTA HOY (eso es Paso 2).
+        // Quick = entregas/evidencias. Match: TF + bodega (exacto/alias). Fallback: TF única en Quick.
         const updatedData = baseData.map(row => {
             const docId = normalizeDocId(row[columnMap.doc!]);
             const whsId = String(row[columnMap.warehouse!] || '').trim().toUpperCase();
-            const lookupKey = `${docId}-${whsId}`;
-
-            const quickMatch = quickMap.get(lookupKey);
+            const { row: quickMatch, matchType } = findQuickMatchForAnalyzer(
+                quickMap,
+                quickByTf,
+                docId,
+                whsId
+            );
 
             if (quickMatch) {
                 matchesCount++;
+                if (matchType === 'tf_unica') tfOnlyMatches++;
+                else aliasOrExactMatches++;
+
                 const newRow = { ...row };
 
                 const imgVal = QUICK_IMG_COL ? String(quickMatch[QUICK_IMG_COL] || '').trim() : '';
@@ -635,7 +654,9 @@ const WarehouseAnalyzer: React.FC = () => {
 
         setBaseData(updatedData);
         setInfoMessage(
-            `Cruce Quick (${quickSheetName}): ${matchesCount} match(es) → ENTREGADO (${entregadoCount}). Hoy calendario: ${todayKey}. En ruta hoy sale del Paso 2 (TF+destino).`
+            `Cruce Quick (${quickSheetName}): ${matchesCount} match(es) → ENTREGADO (${entregadoCount}). ` +
+            `TF+bodega/alias: ${aliasOrExactMatches}; TF única: ${tfOnlyMatches}. ` +
+            `Hoy calendario: ${todayKey}. En ruta hoy sale del Paso 2.`
         );
         const nextMap = {
             ...columnMap,
@@ -929,7 +950,9 @@ const WarehouseAnalyzer: React.FC = () => {
 <section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-blue-500">
             <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 3: Cargar Archivo Quick - Plataforma (Entregados)</h2>
             <p className="text-sm text-gray-600 mb-4">
-                Sube el archivo Quick de entregas/evidencias. Cruce por <b>NUMERO TF</b> + <b>BOD DESTINO</b> → <b>ENTREGADO</b>.
+                Sube el archivo Quick de entregas/evidencias. Cruce por <b>NUMERO TF</b> + <b>BOD DESTINO</b> → <b>ENTREGADO</b>
+                (acepta alias de bodega, ej. <b>40201</b> ↔ <b>B2</b> / <b>BR 402</b>).
+                Si una TF aparece una sola vez en Quick, también cruza solo por TF.
                 La ruta de hoy ya no sale de Quick (usa el Paso 2).
             </p>
             <FileUpload

@@ -122,6 +122,105 @@ export const buildTfWarehouseKey = (tf: any, warehouse: any): string => {
     return `${doc}|${whs}`;
 };
 
+/**
+ * Alias de bodega SOLO para cruces del Analizador de Bodega (Quick / Rutas).
+ * No usar en Transferencias ni en el resto de la suite.
+ * Une códigos operativos (40201) con códigos Quick (B2, BR 402, etc.).
+ */
+export const ANALYZER_WAREHOUSE_ALIAS_GROUPS: string[][] = [
+    ['B1', '201', '20101', 'BR 01', 'BR01', 'BR 1', 'BR1'],
+    ['B2', '202', '20201', 'BR 02', 'BR02', 'BR 2', 'BR2'],
+    // Quick a veces trae B2 para 40201 (misma tienda en distintos orígenes de dato)
+    ['B2', '402', '40201', 'BR 402', 'BR402'],
+    ['B3', '203', '20301', 'BR 03', 'BR03', 'BR 3', 'BR3'],
+    ['B4', '204', '20401', 'BR 04', 'BR04', 'BR 4', 'BR4'],
+    ['B5', '206', '20601', 'BR 05', 'BR05', 'BR 5', 'BR5', '20501'],
+    ['B6', '206', '20601', 'BR 06', 'BR06'],
+    ['B7', '307', '30701', 'BR 07', 'BR07'],
+    ['B8', '208', '20801', 'BR 08', 'BR08'],
+    ['B9', '209', '20901', 'BR 09', 'BR09'],
+    ['B10', '210', '21001', 'BR 10', 'BR10'],
+    ['B11', '211', '21101', 'BR 11', 'BR11'],
+    ['B12', '212', '21201', 'BR 12', 'BR12'],
+    ['B13', '313', '31301', 'BR 13', 'BR13'],
+    ['B14', '214', '21401', 'BR 14', 'BR14'],
+    ['B15', '315', '31501', 'BR 15', 'BR15'],
+    ['B16', '216', '21601', 'BR 16', 'BR16'],
+    ['B17', '417', '41701', 'BR 17', 'BR17', 'BR 17 F'],
+    ['B18', '218', '21801', 'BR 18', 'BR18'],
+    ['B19', '319', '31901', 'BR 19', 'BR19', 'BR 319'],
+    ['B20', '220', '22001', 'BR 20', 'BR20'],
+    ['B21', '221', '22101', 'BR 21', 'BR21'],
+    ['B22', '222', '22201', 'BR 22', 'BR22'],
+    ['B23', '223', '22301', 'BR 23', 'BR23'],
+    ['MOLINOS', '303', '30301', 'ML'],
+    ['BODPP', '999'],
+    ['BODVI', '998', 'INT'],
+    ['PIONEROS', '997', 'BODPN', 'PIO'],
+    ['GARANTIAS', '996'],
+    ['TRYNO', '994'],
+    ['TRASLADOS', '991'],
+    ['OFICINA', '990'],
+];
+
+const normalizeAnalyzerWarehouseToken = (val: any): string =>
+    String(val || '')
+        .trim()
+        .toUpperCase()
+        .replace(/\s+/g, ' ');
+
+/** Todas las formas equivalentes de una bodega para match del analizador. */
+export const getAnalyzerWarehouseMatchKeys = (warehouse: any): string[] => {
+    const raw = normalizeAnalyzerWarehouseToken(warehouse);
+    if (!raw) return [];
+
+    const compact = raw.replace(/\s+/g, '');
+    const keys = new Set<string>([raw, compact]);
+
+    ANALYZER_WAREHOUSE_ALIAS_GROUPS.forEach((group) => {
+        const normalized = group.map((g) => normalizeAnalyzerWarehouseToken(g));
+        const compactGroup = normalized.map((g) => g.replace(/\s+/g, ''));
+        const hit =
+            normalized.includes(raw) ||
+            compactGroup.includes(compact) ||
+            normalized.includes(compact) ||
+            compactGroup.includes(raw);
+        if (hit) {
+            normalized.forEach((g) => keys.add(g));
+            compactGroup.forEach((g) => keys.add(g));
+        }
+    });
+
+    return Array.from(keys).filter(Boolean);
+};
+
+/**
+ * Busca fila Quick por TF + bodega (exacto o alias).
+ * Fallback: si esa TF aparece una sola vez en Quick, usa esa fila (evidencia única).
+ */
+export const findQuickMatchForAnalyzer = (
+    quickByTfWhs: Map<string, any>,
+    quickByTf: Map<string, any[]>,
+    tf: any,
+    warehouse: any
+): { row: any | null; matchType: 'tf_bodega' | 'tf_unica' | null } => {
+    const docId = normalizeDocId(tf);
+    if (!docId) return { row: null, matchType: null };
+
+    const whsKeys = getAnalyzerWarehouseMatchKeys(warehouse);
+    for (const whs of whsKeys) {
+        const hit = quickByTfWhs.get(`${docId}-${whs}`);
+        if (hit) return { row: hit, matchType: 'tf_bodega' };
+    }
+
+    const candidates = quickByTf.get(docId) || [];
+    if (candidates.length === 1) {
+        return { row: candidates[0], matchType: 'tf_unica' };
+    }
+
+    return { row: null, matchType: null };
+};
+
 export const findHeader = (headers: string[], potentialNames: string[]): string | undefined => {
     const normalize = (str: string) =>
         (str || '')
