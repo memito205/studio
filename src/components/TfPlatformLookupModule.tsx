@@ -57,7 +57,7 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
     if (res.error) setError(res.error);
     else {
       setResults(res.data || []);
-      if (!res.data?.length) setError('No se encontraron estados plataforma para esa TF. Verifique el número o que logística ya haya publicado el cruce.');
+      if (!res.data?.length) setError('No se encontraron estados plataforma para esa TF. Deben publicarse desde Plataforma Logística (Analizador, 4 pasos). Colección: tf_platform_status.');
     }
     setIsLoading(false);
   };
@@ -71,7 +71,9 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
     else {
       setResults(res.data || []);
       if (!res.data?.length) {
-        setError('No hay TF publicadas para esa bodega destino.');
+        setError(
+          'No hay TF publicadas para esa bodega destino. Los datos solo aparecen después de que logística complete los 4 pasos del Analizador (Plataforma Logística) y vea el aviso “Estados publicados para tiendas”. Colección Firestore: tf_platform_status.'
+        );
       }
     }
     setIsLoading(false);

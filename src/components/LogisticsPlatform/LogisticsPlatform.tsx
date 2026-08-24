@@ -70,10 +70,41 @@ const WarehouseAnalyzer: React.FC = () => {
       data: ExcelDataRow[],
       map: { [key: string]: string | undefined },
       routes: Map<string, string>,
-      flags: { hasMain: boolean; hasRoutes: boolean; hasQuick: boolean; hasPack: boolean }
+      flags: { hasMain: boolean; hasRoutes: boolean; hasQuick: boolean; hasPack: boolean },
+      options?: { silentIfIncomplete?: boolean }
     ) => {
-      if (!flags.hasMain || !flags.hasRoutes || !flags.hasQuick || !flags.hasPack) return;
-      if (!data.length || !map.doc || !map.warehouse) return;
+      const missing: string[] = [];
+      if (!flags.hasMain) missing.push('Paso 1 (base TF)');
+      if (!flags.hasRoutes) missing.push('Paso 2 (rutas)');
+      if (!flags.hasQuick) missing.push('Paso 3 (Quick)');
+      if (!flags.hasPack) missing.push('Paso 4 (empaque)');
+
+      if (missing.length) {
+        if (!options?.silentIfIncomplete) {
+          toast({
+            title: 'Faltan pasos para publicar',
+            description: `Complete: ${missing.join(', ')}.`,
+            variant: 'destructive',
+          });
+        }
+        return;
+      }
+      if (!data.length) {
+        toast({
+          title: 'Sin datos',
+          description: 'No hay filas de transferencias para publicar.',
+          variant: 'destructive',
+        });
+        return;
+      }
+      if (!map.doc || !map.warehouse) {
+        toast({
+          title: 'Mapeo incompleto',
+          description: `Falta columna ${!map.doc ? 'NRO DOCUMENTO / TF' : 'bodega destino'} en la base. Revise la validación de columnas.`,
+          variant: 'destructive',
+        });
+        return;
+      }
 
       setIsPublishingPlatform(true);
       try {
@@ -109,13 +140,13 @@ const WarehouseAnalyzer: React.FC = () => {
 
         toast({
           title: 'Estados publicados para tiendas',
-          description: `Se publicaron ${result.count} TF (estado plataforma) en Firestore.`,
+          description: `Se publicaron ${result.count} TF (estado plataforma) en Firestore (colección tf_platform_status).`,
         });
       } catch (err: any) {
         console.error(err);
         toast({
           title: 'Error al publicar estados',
-          description: err.message || 'No se pudo guardar el estado plataforma.',
+          description: err.message || 'No se pudo guardar el estado plataforma. Revise reglas de Firestore / consola.',
           variant: 'destructive',
         });
       } finally {
@@ -124,6 +155,15 @@ const WarehouseAnalyzer: React.FC = () => {
     },
     [user?.email, userName]
   );
+
+  const stepFlags = {
+    hasMain: baseData.length > 0,
+    hasRoutes: Boolean(routeFileName) && routeData.size > 0,
+    hasQuick: Boolean(platformFileName),
+    hasPack: Boolean(warehousePackFileName),
+  };
+  const allStepsReady =
+    stepFlags.hasMain && stepFlags.hasRoutes && stepFlags.hasQuick && stepFlags.hasPack;
 
   const fetchTransfersFromDB = React.useCallback(async () => {
     setIsLoading(true);
@@ -452,11 +492,11 @@ const WarehouseAnalyzer: React.FC = () => {
           `Paso 2 rutas: ${routeStatusMap.size} clave(s) TF+destino (${rowCount} fila(s)). Se marcarán EN RUTA HOY en el reporte.`
         );
         void publishPlatformStatusesIfComplete(baseData, columnMap, routeStatusMap, {
-          hasMain: Boolean(mainFileName),
+          hasMain: baseData.length > 0,
           hasRoutes: true,
           hasQuick: Boolean(platformFileName),
           hasPack: Boolean(warehousePackFileName),
-        });
+        }, { silentIfIncomplete: true });
       } catch (err) {
         console.error("Error processing route file:", err);
         setRouteError('Ocurrió un error al procesar el archivo de rutas.');
@@ -575,11 +615,11 @@ const WarehouseAnalyzer: React.FC = () => {
             estadoPlataforma: columnMap.estadoPlataforma || estadoPlatCol,
         };
         void publishPlatformStatusesIfComplete(updatedData, nextMap, routeData, {
-          hasMain: Boolean(mainFileName),
-          hasRoutes: Boolean(routeFileName),
+          hasMain: updatedData.length > 0,
+          hasRoutes: Boolean(routeFileName) && routeData.size > 0,
           hasQuick: true,
           hasPack: Boolean(warehousePackFileName),
-        });
+        }, { silentIfIncomplete: true });
 
       } catch (err: any) {
         console.error(err);
@@ -661,11 +701,11 @@ const WarehouseAnalyzer: React.FC = () => {
                 hoyRuta: columnMap.hoyRuta || hoyRutaCol,
             };
             void publishPlatformStatusesIfComplete(updatedData, nextMap, routeData, {
-              hasMain: Boolean(mainFileName),
-              hasRoutes: Boolean(routeFileName),
+              hasMain: updatedData.length > 0,
+              hasRoutes: Boolean(routeFileName) && routeData.size > 0,
               hasQuick: Boolean(platformFileName),
               hasPack: true,
-            });
+            }, { silentIfIncomplete: false });
         } catch (err: any) {
             console.error(err);
             setError(`Error al procesar empaque: ${err.message || 'Error desconocido'}`);
@@ -887,28 +927,47 @@ const WarehouseAnalyzer: React.FC = () => {
               subText="Columna requerida: TF"
               loadedSubText="Archivo de empaque cruzado."
             />
-            {mainFileName && routeFileName && platformFileName && warehousePackFileName && (
-              <div className="mt-4 flex flex-wrap items-center gap-3">
-                <Button
-                  type="button"
-                  onClick={() =>
-                    void publishPlatformStatusesIfComplete(baseData, columnMap, routeData, {
-                      hasMain: true,
-                      hasRoutes: true,
-                      hasQuick: true,
-                      hasPack: true,
-                    })
-                  }
-                  disabled={isPublishingPlatform || baseData.length === 0}
-                  className="bg-indigo-600 hover:bg-indigo-700"
-                >
-                  <Store className={`w-4 h-4 mr-2 ${isPublishingPlatform ? 'animate-pulse' : ''}`} />
-                  {isPublishingPlatform ? 'Publicando estados…' : 'Publicar estados para tiendas'}
-                </Button>
-                <p className="text-xs text-muted-foreground">
-                  Al completar los 4 pasos se publica automáticamente el estado plataforma (ENTREGADO / EN RUTA HOY / EN BODEGA / VALIDAR).
-                </p>
+          </section>
+
+          <section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-indigo-600">
+            <h2 className="text-xl font-bold text-gray-800 mb-2">Publicar estados para tiendas</h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Solo cuando los 4 pasos estén listos se guarda en Firestore (<code>tf_platform_status</code>).
+              Luego el rol tiendas puede consultar por TF o bodega destino.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-4 text-sm">
+              <div className={`rounded-md border px-3 py-2 ${stepFlags.hasMain ? 'bg-green-50 border-green-300 text-green-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                1. Base TF: {stepFlags.hasMain ? 'Listo' : 'Pendiente (Actualizar Datos)'}
               </div>
+              <div className={`rounded-md border px-3 py-2 ${stepFlags.hasRoutes ? 'bg-green-50 border-green-300 text-green-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                2. Rutas: {stepFlags.hasRoutes ? 'Listo' : 'Pendiente'}
+              </div>
+              <div className={`rounded-md border px-3 py-2 ${stepFlags.hasQuick ? 'bg-green-50 border-green-300 text-green-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                3. Quick: {stepFlags.hasQuick ? 'Listo' : 'Pendiente'}
+              </div>
+              <div className={`rounded-md border px-3 py-2 ${stepFlags.hasPack ? 'bg-green-50 border-green-300 text-green-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                4. Empaque: {stepFlags.hasPack ? 'Listo' : 'Pendiente'}
+              </div>
+            </div>
+            <Button
+              type="button"
+              onClick={() =>
+                void publishPlatformStatusesIfComplete(baseData, columnMap, routeData, stepFlags)
+              }
+              disabled={isPublishingPlatform || baseData.length === 0}
+              className="bg-indigo-600 hover:bg-indigo-700"
+            >
+              <Store className={`w-4 h-4 mr-2 ${isPublishingPlatform ? 'animate-pulse' : ''}`} />
+              {isPublishingPlatform
+                ? 'Publicando estados…'
+                : allStepsReady
+                  ? 'Publicar estados para tiendas'
+                  : 'Publicar (completa los 4 pasos)'}
+            </Button>
+            {!allStepsReady && (
+              <p className="text-xs text-amber-700 mt-2">
+                El botón está visible, pero la publicación exige los 4 pasos en verde en esta misma sesión.
+              </p>
             )}
           </section>
           
