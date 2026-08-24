@@ -100,6 +100,7 @@ export function buildTfPlatformStatusRecords(
   columnMap: {
     doc?: string;
     warehouse?: string;
+    warehouseOut?: string;
     qty?: string;
     fecha?: string;
     marca?: string;
@@ -145,6 +146,10 @@ export function buildTfPlatformStatusRecords(
     const links = extractEvidenceLinks(row, columnMap.image);
     const marca = columnMap.marca ? String(row[columnMap.marca] || '').trim() : '';
     const grupo = columnMap.grupo ? String(row[columnMap.grupo] || '').trim() : '';
+    const origenRaw = columnMap.warehouseOut
+      ? row[columnMap.warehouseOut]
+      : row['Bod. salida'] || row['Bodega Origen'] || row['bodegaOrigen'] || '';
+    const bodegaOrigen = normalizeWarehouse(origenRaw) || undefined;
     const fechaDocumento = columnMap.fecha ? row[columnMap.fecha] : row['Fecha'] || null;
     const fechaFinalizado =
       row[columnMap.fechaFinalizado || 'fechaFinalizado'] || row['fechaFinalizado'] || null;
@@ -155,6 +160,7 @@ export function buildTfPlatformStatusRecords(
         id,
         numeroTF,
         bodegaDestino,
+        bodegaOrigen,
         estadoPlataforma: estado,
         evidenceLinks: links,
         fechaDocumento: fechaDocumento instanceof Date ? fechaDocumento : fechaDocumento || null,
@@ -170,6 +176,7 @@ export function buildTfPlatformStatusRecords(
     }
 
     existing.cantidad += qty;
+    if (bodegaOrigen && !existing.bodegaOrigen) existing.bodegaOrigen = bodegaOrigen;
     if (marca) {
       const parts = (existing.marca || '').split(',').map((p) => p.trim()).filter(Boolean);
       if (!parts.includes(marca)) existing.marca = parts.length ? `${parts.join(', ')}, ${marca}` : marca;

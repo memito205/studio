@@ -173,6 +173,10 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                   <div>
+                    <p className="text-muted-foreground">Bodega origen</p>
+                    <p className="font-medium">{row.bodegaOrigen || 'N/D'}</p>
+                  </div>
+                  <div>
                     <p className="text-muted-foreground">Bodega destino</p>
                     <p className="font-medium">{row.bodegaDestino}</p>
                   </div>
@@ -189,6 +193,11 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
                     <p className="font-medium">{formatMaybeDate(row.fechaFinalizado)}</p>
                   </div>
                 </div>
+                {row.estadoPlataforma === 'VALIDAR CON AMBAS TIENDAS' && (
+                  <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
+                    Validar entre bodegas: origen <b>{row.bodegaOrigen || 'N/D'}</b> → destino <b>{row.bodegaDestino}</b>
+                  </p>
+                )}
                 {(row.marca || row.grupo) && (
                   <p className="text-xs text-muted-foreground">
                     {row.marca ? `Marca: ${row.marca}` : ''}

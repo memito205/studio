@@ -32,6 +32,18 @@ export interface Transaction {
   returnReason: 'CLIENTE NO ENCONTRADO' | 'TALLA GRANDE' | 'CAMBIO POR REFERENCIA' | 'TALLA PEQUEÑA' | 'NO ERA LO QUE ESPERABA' | 'OTRO' | null;
   pdv: string;
   reference: string;
+  /** Nro documento (FVE-xxxx / NCE-xxxx). Opcional — datos históricos sin re-ingesta. */
+  docNumber?: string;
+  /** Factura base en NCE (FVE-xxxx). */
+  baseInvoiceDoc?: string | null;
+  /** Orden de compra compartida entre FVE y NCE. */
+  purchaseOrder?: string | null;
+  /** Mes de la factura origen (para vista "Mes factura"). FVE = misma que date. */
+  attributionDate?: Date;
+  /** NCE sin match: se imputa al mes del documento con alerta. */
+  attributionUnmatched?: boolean;
+  /** Cómo se resolvió el vínculo NC → factura. */
+  attributionSource?: 'sale_self' | 'base_invoice' | 'purchase_order' | 'unmatched';
 }
 
 
@@ -402,6 +414,8 @@ export interface TfPlatformStatusRecord {
   id: string;
   numeroTF: string;
   bodegaDestino: string;
+  /** Bod. salida / origen del documento de transferencia */
+  bodegaOrigen?: string;
   estadoPlataforma: TfPlatformEstado;
   evidenceLinks: string[];
   fechaDocumento?: Date | null;

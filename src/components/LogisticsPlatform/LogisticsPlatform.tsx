@@ -139,6 +139,7 @@ const WarehouseAnalyzer: React.FC = () => {
           {
             doc: map.doc,
             warehouse: map.warehouse,
+            warehouseOut: map.warehouseOut,
             qty: map.qty,
             fecha: map.fecha,
             marca: map.marca,

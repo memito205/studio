@@ -3980,6 +3980,7 @@ export async function persistTfPlatformStatuses(
         id: string;
         numeroTF: string;
         bodegaDestino: string;
+        bodegaOrigen?: string;
         estadoPlataforma: string;
         evidenceLinks: string[];
         fechaDocumento?: any;
