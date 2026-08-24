@@ -156,41 +156,123 @@ export const useReportData = (
       });
     }
 
+    // --- Unificar por documento (bodega + NRO TF): 1 fila por TF, cantidad = suma de líneas ---
+    const statusPriority = (status: string): number => {
+        switch (status) {
+            case 'ENTREGADO': return 40;
+            case 'EN RUTA HOY': return 30;
+            case 'EN BODEGA': return 20;
+            case 'VALIDAR CON AMBAS TIENDAS': return 10;
+            default: return status ? 5 : 0;
+        }
+    };
+
+    const mergeUniqueLabels = (current: string, next: string): string => {
+        const a = (current || '').trim();
+        const b = (next || '').trim();
+        if (!b || b === 'N/A') return a || b;
+        if (!a || a === 'N/A') return b;
+        const parts = a.split(',').map((p) => p.trim()).filter(Boolean);
+        if (!parts.includes(b)) parts.push(b);
+        return parts.join(', ');
+    };
+
+    const copyPlatformSignals = (target: ExcelDataRow, source: ExcelDataRow) => {
+        const fields = [
+            estadoPlataformaField, hoyRutaField, fechaFinalizadoField, imageField,
+            'estadoPlataforma', 'hoyRuta', 'fechaFinalizado', 'image', 'estadoBodega',
+        ];
+        fields.forEach((field) => {
+            if (!field) return;
+            const val = source[field];
+            if (val !== undefined && val !== null && String(val).trim() !== '') {
+                target[field] = val;
+            }
+        });
+    };
+
+    const documentRowsMap = new Map<string, ExcelDataRow>();
+    filteredRows.forEach((row) => {
+        const key = getUniqueDocKey(row);
+        const qty = Number(row[QTY_COL!] || 0);
+        const existing = documentRowsMap.get(key);
+
+        if (!existing) {
+            const clone: ExcelDataRow = { ...row };
+            clone[QTY_COL!] = qty;
+            documentRowsMap.set(key, clone);
+            return;
+        }
+
+        existing[QTY_COL!] = Number(existing[QTY_COL!] || 0) + qty;
+
+        if (MARCA_COL) {
+            existing[MARCA_COL] = mergeUniqueLabels(String(existing[MARCA_COL] || ''), String(row[MARCA_COL] || ''));
+        }
+        if (GRUPO_COL) {
+            existing[GRUPO_COL] = mergeUniqueLabels(String(existing[GRUPO_COL] || ''), String(row[GRUPO_COL] || ''));
+        }
+
+        // Unir links de imagen si vienen en distintas líneas
+        const existingImg = String(existing[imageField] || existing['image'] || '').trim();
+        const rowImg = String(row[imageField] || row['image'] || '').trim();
+        if (rowImg) {
+            if (!existingImg) {
+                existing[imageField] = rowImg;
+                existing['image'] = rowImg;
+            } else if (!existingImg.includes(rowImg)) {
+                const merged = `${existingImg}|${rowImg}`;
+                existing[imageField] = merged;
+                existing['image'] = merged;
+            }
+        }
+
+        const existingStatus = classifyPlatformStatus(existing);
+        const rowStatus = classifyPlatformStatus(row);
+        if (statusPriority(rowStatus) > statusPriority(existingStatus)) {
+            copyPlatformSignals(existing, row);
+        } else if (statusPriority(rowStatus) === statusPriority(existingStatus)) {
+            // Completar fecha finalizado / evidencia si la fila actual no la tenía
+            if (!(existing[fechaFinalizadoField] || existing['fechaFinalizado']) && (row[fechaFinalizadoField] || row['fechaFinalizado'])) {
+                copyPlatformSignals(existing, row);
+            }
+        }
+    });
+
+    const documentRows = Array.from(documentRowsMap.values());
+
     const deliveredDocsKeys = new Set<string>();
-    
-    const uniqueDocs = new Set(filteredRows.map(getUniqueDocKey));
-    const uniqueTfCount = uniqueDocs.size;
-    // Misma unidad que el Reporte General: una fila = TF + bodega + marca + grupo
-    const totalLines = filteredRows.length;
+    const uniqueTfCount = documentRows.length;
+    const totalDocs = documentRows.length;
 
     const now = new Date();
     const currentDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
-    // --- KPIs alineados al reporte (cuentan líneas, no solo TF únicas) ---
-    let deliveredLineCount = 0;
-    let pendingLineCount = 0;
+    // --- KPIs por documento unificado; cantidades = suma de líneas ---
+    let deliveredDocCount = 0;
+    let pendingDocCount = 0;
     let deliveredQty = 0;
     let pendingQty = 0;
 
-    filteredRows.forEach((row) => {
+    documentRows.forEach((row) => {
         const key = getUniqueDocKey(row);
         const qty = Number(row[QTY_COL!] || 0);
         const status = classifyPlatformStatus(row);
         if (status === 'ENTREGADO') {
-            deliveredLineCount++;
+            deliveredDocCount++;
             deliveredQty += qty;
             deliveredDocsKeys.add(key);
         } else {
-            pendingLineCount++;
+            pendingDocCount++;
             pendingQty += qty;
         }
     });
 
     const compliancePercentage =
-        totalLines > 0 ? ((deliveredLineCount / totalLines) * 100).toFixed(1) + '%' : '0.0%';
+        totalDocs > 0 ? ((deliveredDocCount / totalDocs) * 100).toFixed(1) + '%' : '0.0%';
 
     const deliveredDocsByWarehouseMap: { [warehouse: string]: Set<string> } = {};
-    filteredRows.forEach((row) => {
+    documentRows.forEach((row) => {
         const uniqueKey = getUniqueDocKey(row);
         if (deliveredDocsKeys.has(uniqueKey)) {
             const entryWarehouse = String(row[WAREHOUSE_COL!] || '');
@@ -209,9 +291,9 @@ export const useReportData = (
     }));
 
     const kpiData = {
-        totalDocs: totalLines.toLocaleString('es-ES'),
-        deliveredCount: deliveredLineCount.toLocaleString('es-ES'),
-        pendingCount: pendingLineCount.toLocaleString('es-ES'),
+        totalDocs: totalDocs.toLocaleString('es-ES'),
+        deliveredCount: deliveredDocCount.toLocaleString('es-ES'),
+        pendingCount: pendingDocCount.toLocaleString('es-ES'),
         deliveredQty: deliveredQty.toLocaleString('es-ES'),
         pendingQty: pendingQty.toLocaleString('es-ES'),
         compliancePercentage,
@@ -251,12 +333,11 @@ export const useReportData = (
         .map(([date, docSet]) => ({ 'FECHA': date, 'Total Documentos': docSet.size }))
         .sort((a, b) => (parseDateString(a.FECHA)?.getTime() || 0) - (parseDateString(b.FECHA)?.getTime() || 0));
     
-    // --- SLA 3 días: TF ENTREGADAS con fecha finalizado; incumplimiento si (fechaFin - fechaDoc) > 3 ---
+    // --- SLA / pendientes sobre documentos unificados ---
     const finalizedRecordsByWarehouse: { [warehouse: string]: FinalizedDocDetail[] } = {};
     const pendingDocsByWarehouse: { [warehouse: string]: ExcelDataRow[] } = {};
-    const processedDeliveredDocKeys = new Set<string>();
 
-    filteredRows.forEach((row) => {
+    documentRows.forEach((row) => {
         const uniqueKey = getUniqueDocKey(row);
         const warehouse = String(row[WAREHOUSE_COL!] || '');
         if (!warehouse) return;
@@ -266,8 +347,6 @@ export const useReportData = (
             pendingDocsByWarehouse[warehouse].push(row);
             return;
         }
-
-        processedDeliveredDocKeys.add(uniqueKey);
 
         const fechaFin = normalizeDate(row[fechaFinalizadoField] || row['fechaFinalizado']);
         const docDate = normalizeDate(row[FECHA_COL!]);
@@ -293,7 +372,6 @@ export const useReportData = (
         };
 
         if (!finalizedRecordsByWarehouse[warehouse]) finalizedRecordsByWarehouse[warehouse] = [];
-        // Evitar duplicar misma TF+bodega en SLA
         if (!finalizedRecordsByWarehouse[warehouse].some((r) => String(r.docNumber) === finalizedDetail.docNumber)) {
             finalizedRecordsByWarehouse[warehouse].push(finalizedDetail);
         }
@@ -542,7 +620,7 @@ export const useReportData = (
         return record;
     };
 
-    const deliveredReportExportData = filteredRows
+    const deliveredReportExportData = documentRows
         .filter(row => deliveredDocsKeys.has(getUniqueDocKey(row)))
         .map(row => ({
             'FECHA': formatDate(normalizeDate(row[FECHA_COL!])),
@@ -560,7 +638,7 @@ export const useReportData = (
       slaAnalysisData,
       pendingDocsAnalysisData,
       generalReport: (() => {
-        const sortedRows = [...filteredRows].sort((a, b) => {
+        const sortedRows = [...documentRows].sort((a, b) => {
           const da = normalizeDate(a[FECHA_COL!])?.getTime() ?? 0;
           const db = normalizeDate(b[FECHA_COL!])?.getTime() ?? 0;
           return da - db; // más viejo → más nuevo

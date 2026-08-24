@@ -29,7 +29,7 @@ const ReportTable: React.FC<ReportTableProps> = ({ title, data, headers, exportD
           <div className="flex items-center">
             {icon}
             <h2 className="text-xl font-bold text-gray-800">
-              {title} ({data.length} {data.length === 1 ? 'línea' : 'líneas'})
+              {title} ({data.length} {data.length === 1 ? 'documento' : 'documentos'})
             </h2>
           </div>
           {summaryText && (

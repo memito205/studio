@@ -813,17 +813,15 @@ const WarehouseAnalyzer: React.FC = () => {
           
           <section>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
-                  <KPI title="Líneas en reporte" value={kpiData.totalDocs} icon={<FileIcon/>} />
-                  <KPI title="Entregadas" value={kpiData.deliveredCount} icon={<CheckCircleIcon className="text-blue-600"/>} />
-                  <KPI title="Por entregar" value={kpiData.pendingCount} icon={<TruckIcon/>} />
+                  <KPI title="Cantidad Documentos" value={kpiData.totalDocs} icon={<FileIcon/>} />
+                  <KPI title="Entregados" value={kpiData.deliveredCount} icon={<CheckCircleIcon className="text-blue-600"/>} />
+                  <KPI title="Por Entregar" value={kpiData.pendingCount} icon={<TruckIcon/>} />
                   <KPI title="Cant. Productos Entregados" value={kpiData.deliveredQty} icon={<PackageIcon/>} />
                   <KPI title="Cant. Pendientes de Recibir" value={kpiData.pendingQty} icon={<ChartIcon/>} />
-                  <KPI title="Cumplimiento (Entregadas/Total)" value={kpiData.compliancePercentage} icon={<CheckCircleIcon/>} />
+                  <KPI title="Cumplimiento (Entregados/Total)" value={kpiData.compliancePercentage} icon={<CheckCircleIcon/>} />
               </div>
               <p className="text-xs text-muted-foreground mt-2">
-                Los KPIs cuentan las mismas <b>líneas</b> del Reporte General (una fila por TF + marca + grupo).
-                TF únicas (solo bodega + número): <span className="font-semibold text-foreground">{kpiData.uniqueTfCount}</span>.
-                Si TF únicas &lt; líneas, no se omiten documentos: es la misma TF repetida con otra marca/grupo.
+                Todo se unifica por <b>documento</b> (bodega + NRO TF). La cantidad de productos suma las líneas de marca/grupo de cada TF.
               </p>
           </section>
 
@@ -852,11 +850,7 @@ const WarehouseAnalyzer: React.FC = () => {
               data={generalReport.data}
               headers={generalReport.headers}
               exportData={generalReport.exportData}
-              summaryText={
-                generalReport.uniqueTfCount != null
-                  ? `${generalReport.uniqueTfCount} TF únicas (bodega+número)`
-                  : undefined
-              }
+              summaryText="1 fila = 1 documento (TF+bodega); cantidad = suma de líneas"
               icon={<TableIcon className="h-6 w-6 text-green-600 mr-3"/>}
           />
 
