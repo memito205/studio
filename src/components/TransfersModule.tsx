@@ -12,7 +12,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { TransferEntry, TransferStatus, DeliveryManifest, UserRole, CollectionLog, AppUser, RouteEntry, TransferActor } from '@/types';
-import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders, repairSingleTransferStorageOrder, reindexTransferStorageOrdersByDestination } from '@/app/actions';
+import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, findMixedStatusTransfers, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders, repairSingleTransferStorageOrder, reindexTransferStorageOrdersByDestination } from '@/app/actions';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -140,9 +140,28 @@ const buildFilteredTransfersExportRows = (
         'Fecha Enviado': t.enviadoAt ? format(t.enviadoAt, 'dd/MM/yyyy HH:mm') : '',
     }));
 
+const MIXED_STATUS_FILTER = '__mixed__';
+
 const buildFilteredTransfersExportFileName = (statusFilter: string) => {
-    const statusSlug = statusFilter === 'all' ? 'todos' : statusFilter.replace(/\s+/g, '_');
+    const statusSlug =
+        statusFilter === 'all'
+            ? 'todos'
+            : statusFilter === MIXED_STATUS_FILTER
+              ? 'estados_mixtos'
+              : statusFilter.replace(/\s+/g, '_');
     return `Transferencias_${statusSlug}_${format(new Date(), 'yyyy-MM-dd_HHmm')}`;
+};
+
+/** Líneas cuya TF (origen→destino[+placa]) tiene más de un estado. */
+const filterToMixedStatusLines = (
+    transfers: TransferEntry[],
+    placaMap?: Map<string, string>
+): TransferEntry[] => {
+    const grouped = groupTransfersByTF(transfers, placaMap);
+    const mixedIds = new Set(
+        grouped.filter((g) => g.hasMixedStatus).flatMap((g) => g.allIds)
+    );
+    return transfers.filter((t) => mixedIds.has(t.id));
 };
 
 
@@ -1030,6 +1049,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     const [selectedCollectionLog, setSelectedCollectionLog] = useState<CollectionLog | null>(null);
     const [isMigrating, setIsMigrating] = useState(false);
     const [isHealing, setIsHealing] = useState(false);
+    const [isAligningMixed, setIsAligningMixed] = useState(false);
     
     // State for manifest creation tab
     const [manifestFilters, setManifestFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' });
@@ -1170,15 +1190,22 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     };
     
     const handleHealClick = async () => {
-        setIsHealing(true);
+        setIsAligningMixed(true);
         const result = await healInconsistentTransfers();
         if (result.success) {
-            toast({ title: 'Reparación Finalizada', description: `Se sincronizaron ${result.updatedCount} líneas de transferencia.` });
+            toast({
+                title: 'Estados mixtos alineados',
+                description:
+                    result.updatedCount === 0
+                        ? 'No había líneas residuales por corregir.'
+                        : `Se sincronizaron ${result.updatedCount} línea(s) al estado más avanzado de su TF.`,
+            });
             onRefresh();
+            onSearch();
         } else {
-            toast({ variant: 'destructive', title: 'Error en Reparación', description: result.error });
+            toast({ variant: 'destructive', title: 'Error al alinear', description: result.error });
         }
-        setIsHealing(false);
+        setIsAligningMixed(false);
     };
 
     const handleRepairStorageOrder = async (transfer: GroupedTransfer) => {
@@ -1208,15 +1235,19 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     }, [fetchManifestData]);
 
     const filteredTransfers = useMemo(() => {
-        return transfers.filter(t => 
+        const base = transfers.filter(t =>
             (filters.numeroTF ? t.numeroTF.toLowerCase().includes(filters.numeroTF.toLowerCase()) : true) &&
             (filters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(filters.bodegaOrigen.toLowerCase()) : true) &&
             (filters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(filters.bodegaDestino.toLowerCase()) : true) &&
-            (filters.status === 'all' ? true : t.status === filters.status) &&
             (filters.startDate && t.fecha instanceof Date ? t.fecha >= new Date(filters.startDate + 'T00:00:00') : true) &&
             (filters.endDate && t.fecha instanceof Date ? t.fecha <= new Date(filters.endDate + 'T23:59:59') : true)
         );
-    }, [transfers, filters]);
+        if (filters.status === 'all') return base;
+        if (filters.status === MIXED_STATUS_FILTER) {
+            return filterToMixedStatusLines(base, transferIdToPlacaMap);
+        }
+        return base.filter((t) => t.status === filters.status);
+    }, [transfers, filters, transferIdToPlacaMap]);
 
     const groupedFilteredTransfers = useMemo(
         () => groupTransfersByTF(filteredTransfers, transferIdToPlacaMap),
@@ -1618,6 +1649,27 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                             </AlertDialogContent>
                         </AlertDialog>
 
+                        <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                                <Button variant="secondary" size="sm" disabled={isAligningMixed}>
+                                    {isAligningMixed ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <RefreshCw className="mr-2 h-4 w-4" />}
+                                    Alinear estados mixtos
+                                </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                                <AlertDialogHeader>
+                                    <AlertDialogTitle>¿Alinear todas las TF con estados mixtos?</AlertDialogTitle>
+                                    <AlertDialogDescription>
+                                        Busca transferencias (desde marzo 2026) cuyas líneas tienen estados distintos y las deja en el estado más avanzado de cada TF. Use el filtro &quot;Estados mixtos&quot; antes/después para verificar.
+                                    </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                    <AlertDialogAction onClick={handleHealClick}>Sí, alinear</AlertDialogAction>
+                                </AlertDialogFooter>
+                            </AlertDialogContent>
+                        </AlertDialog>
+
                             <AlertDialog>
                             <AlertDialogTrigger asChild>
                                 <Button variant="secondary" size="sm" disabled={isHealing}>
@@ -1671,6 +1723,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                 <SelectTrigger><SelectValue placeholder="Estado..." /></SelectTrigger>
                                 <SelectContent>
                                     <SelectItem value="all">Todos</SelectItem>
+                                    <SelectItem value={MIXED_STATUS_FILTER}>Estados mixtos</SelectItem>
                                     <SelectItem value="En Tránsito">En Tránsito</SelectItem>
                                     <SelectItem value="Recolectado en Ruta">Recolectado en Ruta</SelectItem>
                                     <SelectItem value="Entregado en Ruta">Entregado en Ruta</SelectItem>
@@ -1702,7 +1755,13 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                     </div>
                     <div className="flex justify-between items-center mb-2 px-1 gap-2 flex-wrap">
                         <span className="text-sm font-medium text-muted-foreground">
-                            {filteredTransfers.length > 0 ? `Mostrando ${groupedFilteredTransfers.length} TFs únicas (${filteredTransfers.length} líneas halladas)` : 'No hay resultados'}
+                            {filteredTransfers.length > 0
+                                ? `Mostrando ${groupedFilteredTransfers.length} TFs únicas (${filteredTransfers.length} líneas halladas)${
+                                      filters.status === MIXED_STATUS_FILTER
+                                          ? ` · filtro estados mixtos`
+                                          : ''
+                                  }`
+                                : 'No hay resultados'}
                         </span>
                         <div className="flex items-center gap-2 flex-wrap">
                             <Button
@@ -2643,6 +2702,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
 
     const handleSearch = useCallback(async () => {
         const { numeroTF, bodegaOrigen, bodegaDestino, status, startDate, endDate } = filters;
+        const isMixedFilter = status === MIXED_STATUS_FILTER;
 
         if (!numeroTF && !bodegaOrigen && !bodegaDestino && status === 'all' && !startDate && !endDate) {
             toast({ title: "Filtros vacíos", description: "Por favor ingrese al menos un criterio de búsqueda (TF, Origen, Destino, Estado o Fecha)." });
@@ -2650,8 +2710,14 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
         }
 
         setIsLoading(true);
-        let result;
-        if (numeroTF) {
+        let result: { data?: TransferEntry[]; error?: string; mixedGroupCount?: number };
+        if (isMixedFilter && !numeroTF && !bodegaOrigen && !bodegaDestino) {
+            // Escaneo dedicado: solo TF con estados mixtos (por defecto desde mar-2026).
+            result = await findMixedStatusTransfers({
+                startDate: startDate ? new Date(startDate) : undefined,
+                endDate: endDate ? new Date(endDate) : undefined,
+            });
+        } else if (numeroTF) {
             result = await getTransfersByQuery(numeroTF, 'number');
         } else if (bodegaOrigen) {
             result = await getTransfersByQuery(bodegaOrigen, 'origin');
@@ -2662,7 +2728,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             const end = endDate ? new Date(endDate) : new Date();
             result = await getTransfersByDateRange(start, end);
         } else {
-            // Status only search
+            // Status only search (estados normales)
             result = await getTransfersByStatus(status as TransferStatus);
         }
 
@@ -2672,7 +2738,17 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             const sorted = (result.data || []).sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
             setSearchResults(sorted);
             if (sorted.length === 0) {
-                toast({ title: 'Sin resultados', description: 'No se encontraron transferencias con esos criterios.' });
+                toast({
+                    title: 'Sin resultados',
+                    description: isMixedFilter
+                        ? 'No hay transferencias con estados mixtos en ese alcance.'
+                        : 'No se encontraron transferencias con esos criterios.',
+                });
+            } else if (isMixedFilter && result.mixedGroupCount != null) {
+                toast({
+                    title: 'Estados mixtos',
+                    description: `Se encontraron ${result.mixedGroupCount} TF(s) con líneas en estados distintos.`,
+                });
             }
         }
         setIsLoading(false);

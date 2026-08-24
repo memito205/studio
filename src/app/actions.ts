@@ -4039,6 +4039,55 @@ export async function getTransfersByDateRange(startDate: Date, endDate: Date): P
     }
 }
 
+/** Devuelve solo líneas de TF (origen→destino) con más de un estado en el rango. */
+export async function findMixedStatusTransfers(options?: {
+    startDate?: Date;
+    endDate?: Date;
+}): Promise<{ data?: TransferEntry[]; mixedGroupCount?: number; error?: string }> {
+    try {
+        const start = options?.startDate ? new Date(options.startDate) : new Date(2026, 2, 1);
+        start.setHours(0, 0, 0, 0);
+        const end = options?.endDate ? new Date(options.endDate) : new Date();
+        end.setHours(23, 59, 59, 999);
+
+        const q = query(
+            collection(firestore, 'transfers'),
+            where('fecha', '>=', Timestamp.fromDate(start)),
+            where('fecha', '<=', Timestamp.fromDate(end))
+        );
+
+        const querySnapshot = await getDocs(q);
+        const allTransfers = querySnapshot.docs.map((d) => ({
+            id: d.id,
+            ...convertTimestampsToDates(d.data()),
+        })) as TransferEntry[];
+
+        const groups = new Map<string, TransferEntry[]>();
+        allTransfers.forEach((t) => {
+            const key = `${t.numeroTF}|${t.bodegaOrigen}|${t.bodegaDestino}`;
+            const list = groups.get(key) || [];
+            list.push(t);
+            groups.set(key, list);
+        });
+
+        const mixedLines: TransferEntry[] = [];
+        let mixedGroupCount = 0;
+        groups.forEach((lines) => {
+            const statuses = new Set(lines.map((l) => l.status));
+            if (statuses.size > 1) {
+                mixedGroupCount++;
+                mixedLines.push(...lines);
+            }
+        });
+
+        mixedLines.sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
+        return { data: mixedLines, mixedGroupCount };
+    } catch (error: any) {
+        console.error('Error finding mixed-status transfers:', error);
+        return { error: error.message };
+    }
+}
+
 
 export async function loadAllTransfers(): Promise<{ data?: TransferEntry[]; error?: string }> {
     try {
