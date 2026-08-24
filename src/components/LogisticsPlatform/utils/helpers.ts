@@ -75,6 +75,44 @@ export const normalizeDate = (dateValue: any): Date | null => {
     return null;
 };
 
+/** YYYY-MM-DD en calendario local (Colombia) — evita desfases UTC al comparar “hoy”. */
+export const getCalendarDateKey = (dateValue: any): string | null => {
+    if (dateValue == null || dateValue === '') return null;
+
+    if (dateValue instanceof Date && !isNaN(dateValue.getTime())) {
+        const y = dateValue.getFullYear();
+        const m = String(dateValue.getMonth() + 1).padStart(2, '0');
+        const d = String(dateValue.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+    }
+
+    if (typeof dateValue === 'number' && !isNaN(dateValue)) {
+        // Serial Excel → día UTC del serial
+        const excelEpoch = Date.UTC(1899, 11, 30);
+        const dt = new Date(excelEpoch + dateValue * 86400000);
+        return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+    }
+
+    if (typeof dateValue === 'string') {
+        const parsed = parseDateString(dateValue.trim());
+        if (!parsed) return null;
+        return `${parsed.getUTCFullYear()}-${String(parsed.getUTCMonth() + 1).padStart(2, '0')}-${String(parsed.getUTCDate()).padStart(2, '0')}`;
+    }
+
+    return null;
+};
+
+export const getTodayCalendarKey = (): string => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+};
+
+export const normalizeDocId = (val: any): string => {
+    const strVal = String(val || '').trim();
+    const digitsOnly = strVal.replace(/\D/g, '');
+    return digitsOnly ? String(Number(digitsOnly)) : '';
+};
+
 export const findHeader = (headers: string[], potentialNames: string[]): string | undefined => {
     const normalize = (str: string) =>
         (str || '')

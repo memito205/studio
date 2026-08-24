@@ -20,7 +20,9 @@ export const useReportData = (
   startDate: string,
   endDate: string,
   documentNumberFilter: string,
-  routeStatusMap: Map<string, string>
+  routeStatusMap: Map<string, string>,
+  /** Tras cruce Quick y/o empaque: filas sin estado → Validar con ambas tiendas */
+  applyUnresolvedPlatformStatus = false
 ): ReportData => {
   return useMemo(() => {
     const { 
@@ -38,6 +40,13 @@ export const useReportData = (
         estadoGeneral: ESTADO_GENERAL_COL,
         hoyRuta: HOY_RUTA_COL
     } = columnMap;
+
+    // Claves sintéticas usadas al cruzar Quick/empaque si el Excel principal no trae esas columnas
+    const hoyRutaField = HOY_RUTA_COL || 'hoyRuta';
+    const estadoPlataformaField = ESTADO_PLATAFORMA_COL || 'estadoPlataforma';
+    const fechaFinalizadoField = FECHA_FINALIZADO_PLATAFORMA_COL || 'fechaFinalizado';
+    const imageField = IMAGE_LINK_COL || 'image';
+    const estadoBodegaField = 'estadoBodega';
 
     const initialReturn: ReportData = {
         kpiData: { 
@@ -350,15 +359,16 @@ export const useReportData = (
 
             let enRuta = '';
             const routeStatus = cleanDocNumber ? routeStatusMap.get(cleanDocNumber) : undefined;
-            const isInHoyRuta = HOY_RUTA_COL && row[HOY_RUTA_COL!];
+            const hoyRutaRaw = String(row[hoyRutaField] || row['hoyRuta'] || '').trim().toUpperCase();
+            const isInHoyRuta = hoyRutaRaw === 'EN RUTA HOY' || hoyRutaRaw === 'TRUE';
 
             if (isInHoyRuta && !routeStatus) enRuta = 'EN RUTA HOY';
             else if (routeStatus) enRuta = routeStatus;
             else {
                 const estadoGeneralValue = ESTADO_GENERAL_COL ? String(row[ESTADO_GENERAL_COL!] || '').trim().toLowerCase() : '';
-                const estadoPlataformaValue = ESTADO_PLATAFORMA_COL ? String(row[ESTADO_PLATAFORMA_COL!] || '').trim().toLowerCase() : '';
+                const estadoPlataformaValue = String(row[estadoPlataformaField] || row['estadoPlataforma'] || '').trim().toLowerCase();
                 if (estadoGeneralValue === 'en tte' || estadoPlataformaValue === 'asignado') enRuta = 'ESTA EN RUTA';
-                else if (estadoGeneralValue === 'pte envio') enRuta = 'ESTA EN BODEGA PPAL';
+                else if (estadoGeneralValue === 'pte envio' || estadoPlataformaValue === 'en bodega') enRuta = 'ESTA EN BODEGA PPAL';
                 else enRuta = 'PREGUNTAR ALMACEN DE ORIGEN';
             }
 
@@ -486,21 +496,49 @@ export const useReportData = (
         'NRO DOCUMENTO.2': { actual: DOC_COL, type: 'string' },
         'CANTIDAD': { actual: QTY_COL, type: 'number' },
         'ESTADO': { actual: ESTADO_GENERAL_COL, type: 'string' },
-        'ESTADO PLATAFORMA': { actual: ESTADO_PLATAFORMA_COL || 'estadoPlataforma', type: 'statusOverride' },
-        'LINK IMAGENES.1.1.1': { actual: IMAGE_LINK_COL || 'image', type: 'link' },
-        'FECHA FINALIZADO PLATAFORMA': { actual: FECHA_FINALIZADO_PLATAFORMA_COL || 'fechaFinalizado', type: 'date' }
+        'ESTADO PLATAFORMA': { actual: estadoPlataformaField, type: 'statusOverride' },
+        'LINK IMAGENES.1.1.1': { actual: imageField, type: 'link' },
+        'FECHA FINALIZADO PLATAFORMA': { actual: fechaFinalizadoField, type: 'date' }
+    };
+
+    const resolvePlatformStatus = (row: ExcelDataRow): string => {
+        const hoyVal = String(row[hoyRutaField] || row['hoyRuta'] || '').trim().toUpperCase();
+        const platVal = String(row[estadoPlataformaField] || row['estadoPlataforma'] || '').trim().toUpperCase();
+        const bodegaVal = String(row[estadoBodegaField] || '').trim().toUpperCase();
+        const hasImage = Boolean(String(row[imageField] || row['image'] || '').trim());
+        const hasFechaFin = Boolean(row[fechaFinalizadoField] || row['fechaFinalizado']);
+
+        const isHoyRuta =
+            hoyVal === 'EN RUTA HOY' ||
+            hoyVal === 'TRUE' ||
+            platVal === 'EN RUTA HOY';
+
+        if (isHoyRuta) return 'EN RUTA HOY';
+
+        if (
+            platVal === 'ENTREGADO' ||
+            platVal === 'FINALIZADO' ||
+            hasImage ||
+            hasFechaFin
+        ) {
+            return 'ENTREGADO';
+        }
+
+        if (bodegaVal === 'EN BODEGA' || platVal === 'EN BODEGA') {
+            return 'EN BODEGA';
+        }
+
+        if (platVal) return platVal;
+
+        if (applyUnresolvedPlatformStatus) {
+            return 'VALIDAR CON AMBAS TIENDAS';
+        }
+
+        return '';
     };
 
     const processRow = (row: ExcelDataRow, forExport: boolean) => {
         const record: { [key: string]: any } = {};
-        const uniqueKey = getUniqueDocKey(row);
-        const hasMatch = row['image'] || row[ESTADO_PLATAFORMA_COL!] || row[FECHA_FINALIZADO_PLATAFORMA_COL!];
-        // Determinar si es hoy ruta
-        let isHoyRuta = false;
-        if (HOY_RUTA_COL && row[HOY_RUTA_COL!]) {
-            const val = String(row[HOY_RUTA_COL!]).toUpperCase();
-            if (val === 'EN RUTA HOY' || val === 'TRUE') isHoyRuta = true;
-        }
 
         desiredHeaders.forEach(header => {
             const mapping = headerMappings[header as keyof typeof headerMappings];
@@ -510,9 +548,7 @@ export const useReportData = (
             }
 
             if (mapping.type === 'statusOverride') {
-                if (isHoyRuta) record[header] = "EN PROCESO DE ENTREGA";
-                else if (hasMatch) record[header] = "ENTREGADO";
-                else record[header] = String(row[mapping.actual] || '').toUpperCase();
+                record[header] = resolvePlatformStatus(row);
                 return;
             }
 
@@ -574,11 +610,18 @@ export const useReportData = (
       dailyChartData,
       slaAnalysisData,
       pendingDocsAnalysisData,
-      generalReport: {
-        data: filteredRows.map(row => processRow(row, false)),
-        exportData: filteredRows.map(row => processRow(row, true)),
-        headers: desiredHeaders.filter(h => headerMappings[h as keyof typeof headerMappings]?.actual),
-      },
+      generalReport: (() => {
+        const sortedRows = [...filteredRows].sort((a, b) => {
+          const da = normalizeDate(a[FECHA_COL!])?.getTime() ?? 0;
+          const db = normalizeDate(b[FECHA_COL!])?.getTime() ?? 0;
+          return da - db; // más viejo → más nuevo
+        });
+        return {
+          data: sortedRows.map(row => processRow(row, false)),
+          exportData: sortedRows.map(row => processRow(row, true)),
+          headers: desiredHeaders.filter(h => headerMappings[h as keyof typeof headerMappings]?.actual),
+        };
+      })(),
       deliveredDocsReport: {
         data: [],
         exportData: deliveredReportExportData,
@@ -589,5 +632,5 @@ export const useReportData = (
       deliveredDocsByWarehouse,
       pendingRows: allPendingRows,
     };
-  }, [baseData, columnMap, selectedWarehouse, startDate, endDate, documentNumberFilter, routeStatusMap]);
+  }, [baseData, columnMap, selectedWarehouse, startDate, endDate, documentNumberFilter, routeStatusMap, applyUnresolvedPlatformStatus]);
 };

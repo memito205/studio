@@ -16,7 +16,7 @@ import RutasModule from './components/RutasModule';
 import WarehouseProcessesModule from './components/WarehouseProcessesModule';
 import NovedadesModule from './components/NovedadesModule';
 import { useReportData } from './hooks/useReportData';
-import { findHeader, normalizeDate, formatDate, parseDateString, generatePendingSummaryPdf, getWeekStartDate } from './utils/helpers';
+import { findHeader, normalizeDate, formatDate, parseDateString, generatePendingSummaryPdf, getWeekStartDate, getCalendarDateKey, getTodayCalendarKey, normalizeDocId } from './utils/helpers';
 import type { ExcelDataRow, BreaksReportData, ProcessedBreak, EmployeeDailyAnalysis, DailyAnalysis, WeeklyTrend, EmployeePerformance } from './types';
 import type { TransferEntry } from '@/types';
 import { loadAnalysisRecords, syncAnalysisRecords } from '@/app/actions';
@@ -58,6 +58,8 @@ const WarehouseAnalyzer: React.FC = () => {
   const [dataCount, setDataCount] = React.useState(0);
   const [isSyncing, setIsSyncing] = React.useState(false);
   const [platformFileName, setPlatformFileName] = React.useState<string | null>(null);
+  const [warehousePackFileName, setWarehousePackFileName] = React.useState<string | null>(null);
+  const [isWarehousePackLoading, setIsWarehousePackLoading] = React.useState(false);
 
   const fetchTransfersFromDB = React.useCallback(async () => {
     setIsLoading(true);
@@ -447,26 +449,19 @@ const WarehouseAnalyzer: React.FC = () => {
         // --- Mapeo de Columnas Quick ---
         const headers = Object.keys(jsonData[0] || {});
         
-        const QUICK_DOC_COL = findHeader(headers, ['NUMERO TF', 'Numero TF', 'NumeroTF']);
-        const QUICK_WHS_COL = findHeader(headers, ['BOD DESTINO', 'Bod Destino', 'Bodega Destino']);
-        const QUICK_IMG_COL = findHeader(headers, ['link de imagenes', 'link imagenes']);
-        const QUICK_DATE_COL = findHeader(headers, ['fecha de servicio', 'fecha servicio']);
+        const QUICK_DOC_COL = findHeader(headers, ['NUMERO TF', 'Numero TF', 'NumeroTF', 'TF', 'Nro documento.2']);
+        const QUICK_WHS_COL = findHeader(headers, ['BOD DESTINO', 'Bod Destino', 'Bodega Destino', 'DESTINO']);
+        const QUICK_IMG_COL = findHeader(headers, ['link de imagenes', 'link imagenes', 'LINK IMAGENES']);
+        const QUICK_DATE_COL = findHeader(headers, ['fecha de servicio', 'fecha servicio', 'FECHA SERVICIO']);
+        const QUICK_STATUS_COL = findHeader(headers, ['ESTADO', 'Estado', 'ESTADO PLATAFORMA', 'Estado Plataforma', 'ESTADO SERVICIO']);
 
         if (!QUICK_DOC_COL || !QUICK_WHS_COL) {
             throw new Error(`Faltan columnas requeridas en "${quickSheetName}": se requiere NUMERO TF y BOD DESTINO.`);
         }
 
-        // --- Función de Normalización de Documento (Eliminar ceros y no dígitos) ---
-        const normalizeDoc = (val: any): string => {
-            const strVal = String(val || '').trim();
-            const digitsOnly = strVal.replace(/\D/g, '');
-            return digitsOnly ? String(Number(digitsOnly)) : '';
-        };
-
-        // --- OPTIMIZACIÓN: Crear un Mapa de búsqueda O(1) con IDs normalizados ---
         const quickMap = new Map<string, any>();
         jsonData.forEach(qRow => {
-            const qDoc = normalizeDoc(qRow[QUICK_DOC_COL]);
+            const qDoc = normalizeDocId(qRow[QUICK_DOC_COL]);
             const qWhs = String(qRow[QUICK_WHS_COL] || '').trim().toUpperCase();
             if (qDoc && qWhs) {
                 const key = `${qDoc}-${qWhs}`;
@@ -476,15 +471,23 @@ const WarehouseAnalyzer: React.FC = () => {
             }
         });
 
-        // --- Lógica de Intersección y Mezcla ---
-        const todayStr = formatDate(new Date());
-        let matchesCount = 0;
-
-        // Asegurar que columnMap tenga una entrada para imagen si es undefined
+        const todayKey = getTodayCalendarKey();
+        const hoyRutaCol = columnMap.hoyRuta || 'hoyRuta';
+        const fechaFinCol = columnMap.fechaFinalizado || 'fechaFinalizado';
+        const estadoPlatCol = columnMap.estadoPlataforma || 'estadoPlataforma';
         const targetImageCol = columnMap.image || 'image';
 
+        let matchesCount = 0;
+        let hoyRutaCount = 0;
+        let entregadoCount = 0;
+
+        const isQuickFinalizado = (statusRaw: string) => {
+            const s = statusRaw.trim().toUpperCase();
+            return s.includes('FINALIZ') || s === 'ENTREGADO' || s.includes('ENTREGAD');
+        };
+
         const updatedData = baseData.map(row => {
-            const docId = normalizeDoc(row[columnMap.doc!]);
+            const docId = normalizeDocId(row[columnMap.doc!]);
             const whsId = String(row[columnMap.warehouse!] || '').trim().toUpperCase();
             const lookupKey = `${docId}-${whsId}`;
 
@@ -493,28 +496,59 @@ const WarehouseAnalyzer: React.FC = () => {
             if (quickMatch) {
                 matchesCount++;
                 const newRow = { ...row };
-                
-                if (QUICK_IMG_COL) {
-                    newRow[targetImageCol] = quickMatch[QUICK_IMG_COL];
+
+                const quickStatus = QUICK_STATUS_COL ? String(quickMatch[QUICK_STATUS_COL] || '') : '';
+                const finalized = isQuickFinalizado(quickStatus);
+                const serviceDateKey = QUICK_DATE_COL ? getCalendarDateKey(quickMatch[QUICK_DATE_COL]) : null;
+                const isToday = Boolean(serviceDateKey && serviceDateKey === todayKey);
+                const imgVal = QUICK_IMG_COL ? String(quickMatch[QUICK_IMG_COL] || '').trim() : '';
+
+                if (imgVal) {
+                    newRow[targetImageCol] = imgVal;
                 }
-                
-                if (QUICK_DATE_COL) {
-                    const serviceDateRaw = quickMatch[QUICK_DATE_COL];
-                    const serviceDateObj = normalizeDate(serviceDateRaw);
-                    newRow[columnMap.fechaFinalizado || 'fechaFinalizado'] = serviceDateRaw;
-                    
-                    if (serviceDateObj && formatDate(serviceDateObj) === todayStr) {
-                        newRow[columnMap.hoyRuta || 'hoyRuta'] = 'EN RUTA HOY';
+
+                // Hoy + no finalizado → EN RUTA HOY (no marcar fechaFinalizado: eso lo convertía en ENTREGADO)
+                if (isToday && !finalized) {
+                    newRow[hoyRutaCol] = 'EN RUTA HOY';
+                    newRow[estadoPlatCol] = 'EN RUTA HOY';
+                    // Limpiar señal de entregado residual
+                    if (!imgVal) {
+                        delete newRow[fechaFinCol];
                     }
+                    hoyRutaCount++;
+                    return newRow;
                 }
-                
+
+                // Finalizado, con evidencia, o servicio en fecha distinta de hoy → ENTREGADO
+                if (finalized || imgVal || (serviceDateKey && !isToday)) {
+                    if (QUICK_DATE_COL && quickMatch[QUICK_DATE_COL] !== undefined && quickMatch[QUICK_DATE_COL] !== '') {
+                        newRow[fechaFinCol] = quickMatch[QUICK_DATE_COL];
+                    }
+                    newRow[estadoPlatCol] = 'ENTREGADO';
+                    newRow[hoyRutaCol] = '';
+                    entregadoCount++;
+                    return newRow;
+                }
+
+                // Match sin fecha/estado útil: dejar para empaque / validar
                 return newRow;
             }
             return row;
         });
 
+        // Asegurar que processRow lea las claves sintéticas escritas arriba
+        setColumnMap(prev => ({
+            ...prev,
+            hoyRuta: prev.hoyRuta || hoyRutaCol,
+            fechaFinalizado: prev.fechaFinalizado || fechaFinCol,
+            image: prev.image || targetImageCol,
+            estadoPlataforma: prev.estadoPlataforma || estadoPlatCol,
+        }));
+
         setBaseData(updatedData);
-        setInfoMessage(`Cruce finalizado (Hoja: ${quickSheetName}). Se encontraron ${matchesCount} coincidencias.`);
+        setInfoMessage(
+            `Cruce Quick (${quickSheetName}): ${matchesCount} match(es). En ruta hoy: ${hoyRutaCount}. Entregados: ${entregadoCount}. Hoy calendario: ${todayKey}.`
+        );
 
       } catch (err: any) {
         console.error(err);
@@ -526,6 +560,82 @@ const WarehouseAnalyzer: React.FC = () => {
     reader.readAsArrayBuffer(file);
   };
 
+  const handleWarehousePackFileProcess = (file: File) => {
+    if (baseData.length === 0) {
+        setError('Primero debes cargar el archivo principal de Transferencias.');
+        return;
+    }
+
+    setIsWarehousePackLoading(true);
+    setWarehousePackFileName(file.name);
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        try {
+            const data = new Uint8Array(e.target!.result as ArrayBuffer);
+            const workbook = XLSX.read(data, { type: 'array', cellDates: true, codepage: 65001 });
+            const sheetName = workbook.SheetNames[0];
+            if (!sheetName) throw new Error('El archivo no tiene hojas.');
+
+            const jsonData: any[] = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' });
+            if (jsonData.length === 0) throw new Error('La hoja está vacía.');
+
+            const headers = Object.keys(jsonData[0] || {});
+            const TF_COL = findHeader(headers, ['TF', 'Numero TF', 'NUMERO TF', 'NumeroTF', 'Nro documento.2', 'NRO DOCUMENTO.2']);
+            if (!TF_COL) {
+                throw new Error('No se encontró la columna TF en el archivo de unidades de empaque.');
+            }
+
+            const tfInWarehouse = new Set<string>();
+            jsonData.forEach((row) => {
+                const id = normalizeDocId(row[TF_COL]);
+                if (id) tfInWarehouse.add(id);
+            });
+
+            const estadoPlatCol = columnMap.estadoPlataforma || 'estadoPlataforma';
+            const hoyRutaCol = columnMap.hoyRuta || 'hoyRuta';
+            let matched = 0;
+
+            const updatedData = baseData.map((row) => {
+                const docId = normalizeDocId(row[columnMap.doc!]);
+                if (!docId || !tfInWarehouse.has(docId)) return row;
+
+                const plat = String(row[estadoPlatCol] || row['estadoPlataforma'] || '').toUpperCase();
+                const hoy = String(row[hoyRutaCol] || row['hoyRuta'] || '').toUpperCase();
+                // No pisar entregado ni en ruta hoy
+                if (plat === 'ENTREGADO' || plat === 'FINALIZADO' || plat === 'EN RUTA HOY' || hoy === 'EN RUTA HOY' || hoy === 'TRUE') {
+                    return row;
+                }
+
+                matched++;
+                return {
+                    ...row,
+                    estadoBodega: 'EN BODEGA',
+                    [estadoPlatCol]: plat || 'EN BODEGA',
+                };
+            });
+
+            setColumnMap((prev) => ({
+                ...prev,
+                estadoPlataforma: prev.estadoPlataforma || estadoPlatCol,
+                hoyRuta: prev.hoyRuta || hoyRutaCol,
+            }));
+            setBaseData(updatedData);
+            setInfoMessage(
+                `Cruce empaque (columna ${TF_COL}): ${tfInWarehouse.size} TF en archivo; ${matched} línea(s) marcadas EN BODEGA.`
+            );
+        } catch (err: any) {
+            console.error(err);
+            setError(`Error al procesar empaque: ${err.message || 'Error desconocido'}`);
+        } finally {
+            setIsWarehousePackLoading(false);
+        }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const applyUnresolvedPlatformStatus = Boolean(platformFileName || warehousePackFileName);
+
   const { kpiData, analysisData, dailyChartData, slaAnalysisData, pendingDocsAnalysisData, generalReport, deliveredDocsReport, brandReport, brandSummaryByWarehouse, deliveredDocsByWarehouse, pendingRows } = useReportData(
     baseData,
     columnMap,
@@ -533,7 +643,8 @@ const WarehouseAnalyzer: React.FC = () => {
     startDate,
     endDate,
     documentNumberFilter,
-    routeData
+    routeData,
+    applyUnresolvedPlatformStatus
   );
 
   const handleGenerateSpecialPdf = React.useCallback(() => {
@@ -708,7 +819,8 @@ const WarehouseAnalyzer: React.FC = () => {
           <section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-blue-500">
             <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 3: Cargar Archivo Quick - Plataforma (Intersección)</h2>
             <p className="text-sm text-gray-600 mb-4">
-                Sube el archivo de plataforma (Quick) con +15,000 registros. El sistema filtrará automáticamente y solo conservará los matches basados en <b>NUMERO TF</b> y <b>BOD DESTINO</b>.
+                Sube el archivo Quick. Cruce por <b>NUMERO TF</b> + <b>BOD DESTINO</b>.
+                Fecha de servicio = hoy y no finalizado → <b>EN RUTA HOY</b>; finalizado/evidencia → <b>ENTREGADO</b>.
             </p>
             <FileUpload
               onFileProcess={handlePlatformFileProcess}
@@ -717,6 +829,23 @@ const WarehouseAnalyzer: React.FC = () => {
               mainText="Subir Archivo Quick (Estado/Evidencias)"
               subText="Cruce por NUMERO TF y BOD DESTINO"
               loadedSubText="Archivo Quick cruzado exitosamente."
+            />
+          </section>
+
+          <section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-amber-500">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 4: Unidades de empaque en bodega</h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Sube el Excel de unidades de empaque. Se cruza por la columna <b>TF</b> con <b>NRO DOCUMENTO.2</b>.
+              Las que coincidan (y no estén entregadas / en ruta hoy) quedan en <b>EN BODEGA</b>.
+              Tras Quick y/o este archivo, lo que quede sin estado → <b>VALIDAR CON AMBAS TIENDAS</b>.
+            </p>
+            <FileUpload
+              onFileProcess={handleWarehousePackFileProcess}
+              isLoading={isWarehousePackLoading}
+              fileName={warehousePackFileName}
+              mainText="Subir unidades de empaque (TF en bodega)"
+              subText="Columna requerida: TF"
+              loadedSubText="Archivo de empaque cruzado."
             />
           </section>
           
