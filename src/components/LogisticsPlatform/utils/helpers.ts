@@ -113,6 +113,14 @@ export const normalizeDocId = (val: any): string => {
     return digitsOnly ? String(Number(digitsOnly)) : '';
 };
 
+/** Clave de cruce TF + almacén destino (misma TF puede ir a destinos distintos). */
+export const buildTfWarehouseKey = (tf: any, warehouse: any): string => {
+    const doc = normalizeDocId(tf);
+    const whs = String(warehouse || '').trim().toUpperCase();
+    if (!doc || !whs) return '';
+    return `${doc}|${whs}`;
+};
+
 export const findHeader = (headers: string[], potentialNames: string[]): string | undefined => {
     const normalize = (str: string) =>
         (str || '')

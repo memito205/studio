@@ -16,7 +16,7 @@ import RutasModule from './components/RutasModule';
 import WarehouseProcessesModule from './components/WarehouseProcessesModule';
 import NovedadesModule from './components/NovedadesModule';
 import { useReportData } from './hooks/useReportData';
-import { findHeader, normalizeDate, formatDate, parseDateString, generatePendingSummaryPdf, getWeekStartDate, getCalendarDateKey, getTodayCalendarKey, normalizeDocId } from './utils/helpers';
+import { findHeader, normalizeDate, formatDate, parseDateString, generatePendingSummaryPdf, getWeekStartDate, getCalendarDateKey, getTodayCalendarKey, normalizeDocId, buildTfWarehouseKey } from './utils/helpers';
 import type { ExcelDataRow, BreaksReportData, ProcessedBreak, EmployeeDailyAnalysis, DailyAnalysis, WeeklyTrend, EmployeePerformance } from './types';
 import type { TransferEntry } from '@/types';
 import { loadAnalysisRecords, syncAnalysisRecords } from '@/app/actions';
@@ -319,6 +319,11 @@ const WarehouseAnalyzer: React.FC = () => {
   };
   
   const handleRouteFileProcess = (file: File) => {
+    if (baseData.length === 0) {
+      setRouteError('Primero carga el archivo principal de Transferencias para poder cruzar por TF + destino.');
+      return;
+    }
+
     setIsRouteLoading(true);
     setRouteError(null);
     setRouteFileName(file.name);
@@ -341,72 +346,47 @@ const WarehouseAnalyzer: React.FC = () => {
         const headers = Object.keys(jsonData[0] || {});
         setRawRouteHeaders(headers);
         
-        const TF_HEADER_NAMES = ['Número TF', 'TF'];
-        const TIPO_HEADER_NAMES = ['TIPO'];
-        const CONTENIDO_HEADER_NAMES = ['CONTENIDO', 'Contenido'];
-        const ESTADO_HEADER_NAMES = ['ESTADO', 'Estado'];
-
-        let primaryDocIdHeader = findHeader(headers, TF_HEADER_NAMES) || findHeader(headers, TIPO_HEADER_NAMES);
-        let contentHeader = findHeader(headers, CONTENIDO_HEADER_NAMES);
-
-        const ESTADO_HEADER = findHeader(headers, ESTADO_HEADER_NAMES);
-
-        setRouteDebugMapping([
-            { expected: 'Número TF / TIPO (Identificador Principal)', found: primaryDocIdHeader || 'No encontrado', isFallback: false },
-            { expected: 'CONTENIDO (Identificador Alternativo)', found: contentHeader || 'No encontrado', isFallback: true },
-            { expected: 'ESTADO (Opcional)', found: ESTADO_HEADER || 'No encontrado', isFallback: false },
+        const TF_HEADER = findHeader(headers, [
+          'Número TF', 'Numero TF', 'NUMERO TF', 'TF', 'Nro documento.2', 'NRO DOCUMENTO.2'
+        ]);
+        const DEST_HEADER = findHeader(headers, [
+          'Almacen Destino', 'Almacén Destino', 'BOD DESTINO', 'Bod Destino', 'Bodega Destino',
+          'DESTINO', 'Destino', 'Bod. entrada', 'Bodega entrada'
         ]);
 
-        if (!primaryDocIdHeader && !contentHeader) {
-            setRouteError("El archivo de rutas no contiene ninguna de las columnas de identificación requeridas: 'Número TF', 'TIPO' o 'CONTENIDO'.");
+        setRouteDebugMapping([
+            { expected: 'Número TF / TF (obligatorio)', found: TF_HEADER || 'No encontrado', isFallback: false },
+            { expected: 'Almacén / Bodega Destino (obligatorio)', found: DEST_HEADER || 'No encontrado', isFallback: false },
+            { expected: 'Cruce', found: 'TF + Destino → EN RUTA HOY', isFallback: false },
+        ]);
+
+        if (!TF_HEADER || !DEST_HEADER) {
+            setRouteError("El archivo de rutas debe traer columna TF (Número TF) y Almacén/Bodega Destino.");
             setIsRouteLoading(false);
             return;
         }
 
         const routeStatusMap = new Map<string, string>();
+        let rowCount = 0;
         jsonData.forEach(row => {
-            let docId: string | number | Date | null = null;
-            
-            // Try extracting from CONTENIDO first, as it may contain 'TFT 12345'
-            if (contentHeader && row[contentHeader]) {
-                const contentValue = String(row[contentHeader]);
-                const match = contentValue.match(/(\d+)/);
-                if (match) {
-                    docId = match[1];
-                }
-            }
-
-            // If not found in CONTENIDO, try the primary header
-            if (!docId && primaryDocIdHeader && row[primaryDocIdHeader]) {
-                docId = row[primaryDocIdHeader];
-            }
-          
-            if (docId === null || docId === undefined || String(docId).trim() === '') return;
-
-            // Robustly clean the document ID to handle potential leading zeros and non-numeric characters.
-            const digitsOnly = String(docId).replace(/\D/g, '');
-            if (!digitsOnly) return;
-            
-            const cleanDocId = String(Number(digitsOnly)); // Normalizes by removing leading zeros.
-
-            if (ESTADO_HEADER) {
-                const status = String(row[ESTADO_HEADER] || '').trim().toLowerCase();
-                if (status === 'en tte') {
-                    routeStatusMap.set(cleanDocId, 'ESTA EN RUTA');
-                } else if (status === 'pte envio') {
-                    routeStatusMap.set(cleanDocId, 'ESTA EN BODEGA PPAL');
-                } else if (status === 'recibida') {
-                    routeStatusMap.set(cleanDocId, 'FUE ENTREGADA');
-                } else if (status === 'en cargue') {
-                    routeStatusMap.set(cleanDocId, 'EN CARGUE');
-                }
-            } else {
-                routeStatusMap.set(cleanDocId, 'ESTA EN RUTA');
-            }
+            const key = buildTfWarehouseKey(row[TF_HEADER], row[DEST_HEADER]);
+            if (!key) return;
+            // Presencia en el archivo de rutas de hoy = EN RUTA HOY (por TF+destino)
+            routeStatusMap.set(key, 'EN RUTA HOY');
+            rowCount++;
         });
+
+        if (routeStatusMap.size === 0) {
+          setRouteError('No se pudo armar ningún cruce TF+destino. Revisa que ambas columnas tengan datos.');
+          setIsRouteLoading(false);
+          return;
+        }
 
         setRouteData(routeStatusMap);
         setRouteError(null);
+        setInfoMessage(
+          `Paso 2 rutas: ${routeStatusMap.size} clave(s) TF+destino (${rowCount} fila(s)). Se marcarán EN RUTA HOY en el reporte.`
+        );
       } catch (err) {
         console.error("Error processing route file:", err);
         setRouteError('Ocurrió un error al procesar el archivo de rutas.');
@@ -453,7 +433,6 @@ const WarehouseAnalyzer: React.FC = () => {
         const QUICK_WHS_COL = findHeader(headers, ['BOD DESTINO', 'Bod Destino', 'Bodega Destino', 'DESTINO']);
         const QUICK_IMG_COL = findHeader(headers, ['link de imagenes', 'link imagenes', 'LINK IMAGENES']);
         const QUICK_DATE_COL = findHeader(headers, ['fecha de servicio', 'fecha servicio', 'FECHA SERVICIO']);
-        const QUICK_STATUS_COL = findHeader(headers, ['ESTADO', 'Estado', 'ESTADO PLATAFORMA', 'Estado Plataforma', 'ESTADO SERVICIO']);
 
         if (!QUICK_DOC_COL || !QUICK_WHS_COL) {
             throw new Error(`Faltan columnas requeridas en "${quickSheetName}": se requiere NUMERO TF y BOD DESTINO.`);
@@ -472,20 +451,14 @@ const WarehouseAnalyzer: React.FC = () => {
         });
 
         const todayKey = getTodayCalendarKey();
-        const hoyRutaCol = columnMap.hoyRuta || 'hoyRuta';
         const fechaFinCol = columnMap.fechaFinalizado || 'fechaFinalizado';
         const estadoPlatCol = columnMap.estadoPlataforma || 'estadoPlataforma';
         const targetImageCol = columnMap.image || 'image';
 
         let matchesCount = 0;
-        let hoyRutaCount = 0;
         let entregadoCount = 0;
 
-        const isQuickFinalizado = (statusRaw: string) => {
-            const s = statusRaw.trim().toUpperCase();
-            return s.includes('FINALIZ') || s === 'ENTREGADO' || s.includes('ENTREGAD');
-        };
-
+        // Quick = entregas/evidencias. Ya no marca EN RUTA HOY (eso es Paso 2).
         const updatedData = baseData.map(row => {
             const docId = normalizeDocId(row[columnMap.doc!]);
             const whsId = String(row[columnMap.warehouse!] || '').trim().toUpperCase();
@@ -497,49 +470,25 @@ const WarehouseAnalyzer: React.FC = () => {
                 matchesCount++;
                 const newRow = { ...row };
 
-                const quickStatus = QUICK_STATUS_COL ? String(quickMatch[QUICK_STATUS_COL] || '') : '';
-                const finalized = isQuickFinalizado(quickStatus);
-                const serviceDateKey = QUICK_DATE_COL ? getCalendarDateKey(quickMatch[QUICK_DATE_COL]) : null;
-                const isToday = Boolean(serviceDateKey && serviceDateKey === todayKey);
                 const imgVal = QUICK_IMG_COL ? String(quickMatch[QUICK_IMG_COL] || '').trim() : '';
-
                 if (imgVal) {
                     newRow[targetImageCol] = imgVal;
                 }
-
-                // Hoy + no finalizado → EN RUTA HOY (no marcar fechaFinalizado: eso lo convertía en ENTREGADO)
-                if (isToday && !finalized) {
-                    newRow[hoyRutaCol] = 'EN RUTA HOY';
-                    newRow[estadoPlatCol] = 'EN RUTA HOY';
-                    // Limpiar señal de entregado residual
-                    if (!imgVal) {
-                        delete newRow[fechaFinCol];
-                    }
-                    hoyRutaCount++;
-                    return newRow;
+                if (QUICK_DATE_COL && quickMatch[QUICK_DATE_COL] !== undefined && quickMatch[QUICK_DATE_COL] !== '') {
+                    newRow[fechaFinCol] = quickMatch[QUICK_DATE_COL];
                 }
-
-                // Finalizado, con evidencia, o servicio en fecha distinta de hoy → ENTREGADO
-                if (finalized || imgVal || (serviceDateKey && !isToday)) {
-                    if (QUICK_DATE_COL && quickMatch[QUICK_DATE_COL] !== undefined && quickMatch[QUICK_DATE_COL] !== '') {
-                        newRow[fechaFinCol] = quickMatch[QUICK_DATE_COL];
-                    }
-                    newRow[estadoPlatCol] = 'ENTREGADO';
-                    newRow[hoyRutaCol] = '';
-                    entregadoCount++;
-                    return newRow;
-                }
-
-                // Match sin fecha/estado útil: dejar para empaque / validar
+                newRow[estadoPlatCol] = 'ENTREGADO';
+                // Limpiar marca de ruta si venía de un cruce anterior
+                if (columnMap.hoyRuta) newRow[columnMap.hoyRuta] = '';
+                newRow['hoyRuta'] = '';
+                entregadoCount++;
                 return newRow;
             }
             return row;
         });
 
-        // Asegurar que processRow lea las claves sintéticas escritas arriba
         setColumnMap(prev => ({
             ...prev,
-            hoyRuta: prev.hoyRuta || hoyRutaCol,
             fechaFinalizado: prev.fechaFinalizado || fechaFinCol,
             image: prev.image || targetImageCol,
             estadoPlataforma: prev.estadoPlataforma || estadoPlatCol,
@@ -547,7 +496,7 @@ const WarehouseAnalyzer: React.FC = () => {
 
         setBaseData(updatedData);
         setInfoMessage(
-            `Cruce Quick (${quickSheetName}): ${matchesCount} match(es). En ruta hoy: ${hoyRutaCount}. Entregados: ${entregadoCount}. Hoy calendario: ${todayKey}.`
+            `Cruce Quick (${quickSheetName}): ${matchesCount} match(es) → ENTREGADO (${entregadoCount}). Hoy calendario: ${todayKey}. En ruta hoy sale del Paso 2 (TF+destino).`
         );
 
       } catch (err: any) {
@@ -634,7 +583,7 @@ const WarehouseAnalyzer: React.FC = () => {
     reader.readAsArrayBuffer(file);
   };
 
-  const applyUnresolvedPlatformStatus = Boolean(platformFileName || warehousePackFileName);
+  const applyUnresolvedPlatformStatus = Boolean(platformFileName || warehousePackFileName || routeFileName);
 
   const { kpiData, analysisData, dailyChartData, slaAnalysisData, pendingDocsAnalysisData, generalReport, deliveredDocsReport, brandReport, brandSummaryByWarehouse, deliveredDocsByWarehouse, pendingRows } = useReportData(
     baseData,
@@ -665,23 +614,19 @@ const WarehouseAnalyzer: React.FC = () => {
     
     // Ahora es obligatorio cargar el archivo de rutas para este reporte específico.
     if (routeData.size === 0) {
-        alert("Para generar este reporte, es necesario cargar el 'Archivo de Rutas' que contiene el estado de los envíos.");
+        alert("Para generar este reporte, es necesario cargar el 'Archivo de Rutas' (Paso 2: TF + destino).");
         return;
     }
 
     const filteredForPdf = pendingRows.filter(row => {
-        const docNumber = String(row[DOC_COL!]);
-        const digitsOnly = docNumber.replace(/\D/g, '');
-        const cleanDocNumber = digitsOnly ? String(Number(digitsOnly)) : null;
-
-        const routeStatus = cleanDocNumber ? routeData.get(cleanDocNumber) : undefined;
-        // El PDF debe incluir documentos que están pendientes de envío ('pte envio' -> 'ESTA EN BODEGA PPAL') 
-        // o que se están cargando actualmente ('en cargue').
-        return routeStatus === 'ESTA EN BODEGA PPAL' || routeStatus === 'EN CARGUE';
+        const key = buildTfWarehouseKey(row[DOC_COL!], row[WAREHOUSE_COL!]);
+        const routeStatus = key ? routeData.get(key) : undefined;
+        // Con el nuevo Paso 2 (TF+destino) las claves en ruta quedan EN RUTA HOY.
+        return routeStatus === 'EN RUTA HOY' || routeStatus === 'ESTA EN BODEGA PPAL' || routeStatus === 'EN CARGUE';
     });
 
     if (filteredForPdf.length === 0) {
-        alert("No se encontraron documentos pendientes con estado 'Pte Envío' o 'En Cargue' en el archivo de rutas cargado.");
+        alert("No se encontraron documentos pendientes que coincidan con TF+destino del archivo de rutas.");
         return;
     }
 
@@ -776,18 +721,20 @@ const WarehouseAnalyzer: React.FC = () => {
       
       {hasData && (
         <>
-          <section className="bg-white rounded-lg shadow-lg p-6">
-            <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 2: Cargar Archivo de Rutas (Opcional)</h2>
+                    <section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-emerald-500">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 2: Cargar Archivo de Rutas (En ruta hoy)</h2>
             <p className="text-sm text-gray-600 mb-4">
-              Sube un archivo de Excel para marcar automáticamente los documentos que están "En Ruta". La aplicación buscará una columna llamada 'Número TF', 'TIPO' o 'CONTENIDO'.
+              Sube un Excel con <b>Número TF</b> y <b>Almacén/Bodega Destino</b>.
+              El cruce es <b>TF + destino</b> (la misma TF en otro almacén no se mezcla).
+              Las coincidencias quedan en <b>EN RUTA HOY</b> en ESTADO PLATAFORMA.
             </p>
             <FileUpload
               onFileProcess={handleRouteFileProcess}
               isLoading={isRouteLoading}
               fileName={routeFileName}
-              mainText="Arrastra o selecciona el archivo de rutas"
-              subText="Solo archivos .xlsx o .xls"
-              loadedSubText="Archivo de rutas cargado."
+              mainText="Arrastra o selecciona el archivo de rutas (TF + destino)"
+              subText="Columnas requeridas: TF y Almacén/Bodega Destino (.xlsx / .xls)"
+              loadedSubText="Archivo de rutas cargado (cruce TF+destino)."
             />
             {isRouteLoading && <Loader />}
             {routeError && <div className="mt-4 text-center text-red-600 bg-red-100 p-3 rounded-md">{routeError}</div>}
@@ -816,11 +763,11 @@ const WarehouseAnalyzer: React.FC = () => {
             )}
           </section>
 
-          <section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-blue-500">
-            <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 3: Cargar Archivo Quick - Plataforma (Intersección)</h2>
+<section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-blue-500">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 3: Cargar Archivo Quick - Plataforma (Entregados)</h2>
             <p className="text-sm text-gray-600 mb-4">
-                Sube el archivo Quick. Cruce por <b>NUMERO TF</b> + <b>BOD DESTINO</b>.
-                Fecha de servicio = hoy y no finalizado → <b>EN RUTA HOY</b>; finalizado/evidencia → <b>ENTREGADO</b>.
+                Sube el archivo Quick de entregas/evidencias. Cruce por <b>NUMERO TF</b> + <b>BOD DESTINO</b> → <b>ENTREGADO</b>.
+                La ruta de hoy ya no sale de Quick (usa el Paso 2).
             </p>
             <FileUpload
               onFileProcess={handlePlatformFileProcess}
@@ -837,7 +784,7 @@ const WarehouseAnalyzer: React.FC = () => {
             <p className="text-sm text-gray-600 mb-4">
               Sube el Excel de unidades de empaque. Se cruza por la columna <b>TF</b> con <b>NRO DOCUMENTO.2</b>.
               Las que coincidan (y no estén entregadas / en ruta hoy) quedan en <b>EN BODEGA</b>.
-              Tras Quick y/o este archivo, lo que quede sin estado → <b>VALIDAR CON AMBAS TIENDAS</b>.
+              Tras rutas, Quick y/o empaque, lo que quede sin estado → <b>VALIDAR CON AMBAS TIENDAS</b>.
             </p>
             <FileUpload
               onFileProcess={handleWarehousePackFileProcess}

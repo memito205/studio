@@ -11,7 +11,7 @@ import type {
   ReportData, 
   BrandSummaryByWarehouse 
 } from '../types';
-import { formatDate, parseDateString, normalizeDate } from '../utils/helpers';
+import { formatDate, parseDateString, normalizeDate, buildTfWarehouseKey } from '../utils/helpers';
 
 export const useReportData = (
   baseData: ExcelDataRow[],
@@ -120,9 +120,8 @@ export const useReportData = (
     const deliveredDocsKeys = new Set<string>();
     if (routeStatusMap.size > 0) {
         filteredRows.forEach(row => {
-            const digitsOnly = String(row[DOC_COL!] || '').replace(/\D/g, '');
-            const cleanDocNumber = digitsOnly ? String(Number(digitsOnly)) : null;
-            if (cleanDocNumber && routeStatusMap.get(cleanDocNumber) === 'FUE ENTREGADA') {
+            const key = buildTfWarehouseKey(row[DOC_COL!], row[WAREHOUSE_COL!]);
+            if (key && routeStatusMap.get(key) === 'FUE ENTREGADA') {
                 deliveredDocsKeys.add(getUniqueDocKey(row));
             }
         });
@@ -358,11 +357,15 @@ export const useReportData = (
             const cleanDocNumber = digitsOnly ? String(Number(digitsOnly)) : null;
 
             let enRuta = '';
-            const routeStatus = cleanDocNumber ? routeStatusMap.get(cleanDocNumber) : undefined;
+            const routeKey = buildTfWarehouseKey(row[DOC_COL!], row[WAREHOUSE_COL!]);
+            const routeStatus = routeKey ? routeStatusMap.get(routeKey) : undefined;
             const hoyRutaRaw = String(row[hoyRutaField] || row['hoyRuta'] || '').trim().toUpperCase();
-            const isInHoyRuta = hoyRutaRaw === 'EN RUTA HOY' || hoyRutaRaw === 'TRUE';
+            const isInHoyRuta =
+                hoyRutaRaw === 'EN RUTA HOY' ||
+                hoyRutaRaw === 'TRUE' ||
+                routeStatus === 'EN RUTA HOY';
 
-            if (isInHoyRuta && !routeStatus) enRuta = 'EN RUTA HOY';
+            if (isInHoyRuta && (!routeStatus || routeStatus === 'EN RUTA HOY')) enRuta = 'EN RUTA HOY';
             else if (routeStatus) enRuta = routeStatus;
             else {
                 const estadoGeneralValue = ESTADO_GENERAL_COL ? String(row[ESTADO_GENERAL_COL!] || '').trim().toLowerCase() : '';
@@ -507,14 +510,10 @@ export const useReportData = (
         const bodegaVal = String(row[estadoBodegaField] || '').trim().toUpperCase();
         const hasImage = Boolean(String(row[imageField] || row['image'] || '').trim());
         const hasFechaFin = Boolean(row[fechaFinalizadoField] || row['fechaFinalizado']);
+        const routeKey = buildTfWarehouseKey(row[DOC_COL!], row[WAREHOUSE_COL!]);
+        const routeStatus = routeKey ? routeStatusMap.get(routeKey) : undefined;
 
-        const isHoyRuta =
-            hoyVal === 'EN RUTA HOY' ||
-            hoyVal === 'TRUE' ||
-            platVal === 'EN RUTA HOY';
-
-        if (isHoyRuta) return 'EN RUTA HOY';
-
+        // 1) Entregado (Quick / evidencia) tiene prioridad
         if (
             platVal === 'ENTREGADO' ||
             platVal === 'FINALIZADO' ||
@@ -524,7 +523,19 @@ export const useReportData = (
             return 'ENTREGADO';
         }
 
-        if (bodegaVal === 'EN BODEGA' || platVal === 'EN BODEGA') {
+        // 2) Paso 2 rutas: TF + destino → EN RUTA HOY
+        const isHoyRuta =
+            hoyVal === 'EN RUTA HOY' ||
+            hoyVal === 'TRUE' ||
+            platVal === 'EN RUTA HOY' ||
+            routeStatus === 'EN RUTA HOY' ||
+            routeStatus === 'ESTA EN RUTA' ||
+            routeStatus === 'EN CARGUE';
+
+        if (isHoyRuta) return 'EN RUTA HOY';
+
+        // 3) Empaque en bodega
+        if (bodegaVal === 'EN BODEGA' || platVal === 'EN BODEGA' || routeStatus === 'ESTA EN BODEGA PPAL') {
             return 'EN BODEGA';
         }
 
