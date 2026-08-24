@@ -19,11 +19,13 @@ import { useReportData } from './hooks/useReportData';
 import { findHeader, normalizeDate, formatDate, parseDateString, generatePendingSummaryPdf, getWeekStartDate, getCalendarDateKey, getTodayCalendarKey, normalizeDocId, buildTfWarehouseKey } from './utils/helpers';
 import type { ExcelDataRow, BreaksReportData, ProcessedBreak, EmployeeDailyAnalysis, DailyAnalysis, WeeklyTrend, EmployeePerformance } from './types';
 import type { TransferEntry } from '@/types';
-import { loadAnalysisRecords, syncAnalysisRecords } from '@/app/actions';
+import { loadAnalysisRecords, syncAnalysisRecords, persistTfPlatformStatuses } from '@/app/actions';
+import { buildTfPlatformStatusRecords } from '@/lib/tfPlatformStatus';
 import { FileIcon, PackageIcon, TruckIcon, ChartIcon, CheckCircleIcon, TableIcon, UserCheckIcon, PdfFileIcon } from './components/icons';
 import { Button } from '@/components/ui/button';
-import { RefreshCw, Database, CloudUpload } from 'lucide-react';
+import { RefreshCw, Database, CloudUpload, Store } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
+import { useAuth } from '@/hooks/use-auth-context';
 import * as XLSX from 'xlsx';
 
 
@@ -60,6 +62,68 @@ const WarehouseAnalyzer: React.FC = () => {
   const [platformFileName, setPlatformFileName] = React.useState<string | null>(null);
   const [warehousePackFileName, setWarehousePackFileName] = React.useState<string | null>(null);
   const [isWarehousePackLoading, setIsWarehousePackLoading] = React.useState(false);
+  const [isPublishingPlatform, setIsPublishingPlatform] = React.useState(false);
+  const { user, userName } = useAuth();
+
+  const publishPlatformStatusesIfComplete = React.useCallback(
+    async (
+      data: ExcelDataRow[],
+      map: { [key: string]: string | undefined },
+      routes: Map<string, string>,
+      flags: { hasMain: boolean; hasRoutes: boolean; hasQuick: boolean; hasPack: boolean }
+    ) => {
+      if (!flags.hasMain || !flags.hasRoutes || !flags.hasQuick || !flags.hasPack) return;
+      if (!data.length || !map.doc || !map.warehouse) return;
+
+      setIsPublishingPlatform(true);
+      try {
+        const records = buildTfPlatformStatusRecords(
+          data,
+          {
+            doc: map.doc,
+            warehouse: map.warehouse,
+            qty: map.qty,
+            fecha: map.fecha,
+            marca: map.marca,
+            grupo: map.grupo,
+            estadoPlataforma: map.estadoPlataforma || 'estadoPlataforma',
+            hoyRuta: map.hoyRuta || 'hoyRuta',
+            fechaFinalizado: map.fechaFinalizado || 'fechaFinalizado',
+            image: map.image || 'image',
+          },
+          routes,
+          userName || user?.email || undefined
+        );
+
+        if (!records.length) {
+          toast({
+            title: 'Sin estados para publicar',
+            description: 'No se generaron registros TF+destino a partir del cruce.',
+            variant: 'destructive',
+          });
+          return;
+        }
+
+        const result = await persistTfPlatformStatuses(records);
+        if (!result.success) throw new Error(result.error || 'Error al publicar');
+
+        toast({
+          title: 'Estados publicados para tiendas',
+          description: `Se publicaron ${result.count} TF (estado plataforma) en Firestore.`,
+        });
+      } catch (err: any) {
+        console.error(err);
+        toast({
+          title: 'Error al publicar estados',
+          description: err.message || 'No se pudo guardar el estado plataforma.',
+          variant: 'destructive',
+        });
+      } finally {
+        setIsPublishingPlatform(false);
+      }
+    },
+    [user?.email, userName]
+  );
 
   const fetchTransfersFromDB = React.useCallback(async () => {
     setIsLoading(true);
@@ -387,6 +451,12 @@ const WarehouseAnalyzer: React.FC = () => {
         setInfoMessage(
           `Paso 2 rutas: ${routeStatusMap.size} clave(s) TF+destino (${rowCount} fila(s)). Se marcarán EN RUTA HOY en el reporte.`
         );
+        void publishPlatformStatusesIfComplete(baseData, columnMap, routeStatusMap, {
+          hasMain: Boolean(mainFileName),
+          hasRoutes: true,
+          hasQuick: Boolean(platformFileName),
+          hasPack: Boolean(warehousePackFileName),
+        });
       } catch (err) {
         console.error("Error processing route file:", err);
         setRouteError('Ocurrió un error al procesar el archivo de rutas.');
@@ -498,6 +568,18 @@ const WarehouseAnalyzer: React.FC = () => {
         setInfoMessage(
             `Cruce Quick (${quickSheetName}): ${matchesCount} match(es) → ENTREGADO (${entregadoCount}). Hoy calendario: ${todayKey}. En ruta hoy sale del Paso 2 (TF+destino).`
         );
+        const nextMap = {
+            ...columnMap,
+            fechaFinalizado: columnMap.fechaFinalizado || fechaFinCol,
+            image: columnMap.image || targetImageCol,
+            estadoPlataforma: columnMap.estadoPlataforma || estadoPlatCol,
+        };
+        void publishPlatformStatusesIfComplete(updatedData, nextMap, routeData, {
+          hasMain: Boolean(mainFileName),
+          hasRoutes: Boolean(routeFileName),
+          hasQuick: true,
+          hasPack: Boolean(warehousePackFileName),
+        });
 
       } catch (err: any) {
         console.error(err);
@@ -573,6 +655,17 @@ const WarehouseAnalyzer: React.FC = () => {
             setInfoMessage(
                 `Cruce empaque (columna ${TF_COL}): ${tfInWarehouse.size} TF en archivo; ${matched} línea(s) marcadas EN BODEGA.`
             );
+            const nextMap = {
+                ...columnMap,
+                estadoPlataforma: columnMap.estadoPlataforma || estadoPlatCol,
+                hoyRuta: columnMap.hoyRuta || hoyRutaCol,
+            };
+            void publishPlatformStatusesIfComplete(updatedData, nextMap, routeData, {
+              hasMain: Boolean(mainFileName),
+              hasRoutes: Boolean(routeFileName),
+              hasQuick: Boolean(platformFileName),
+              hasPack: true,
+            });
         } catch (err: any) {
             console.error(err);
             setError(`Error al procesar empaque: ${err.message || 'Error desconocido'}`);
@@ -794,6 +887,29 @@ const WarehouseAnalyzer: React.FC = () => {
               subText="Columna requerida: TF"
               loadedSubText="Archivo de empaque cruzado."
             />
+            {mainFileName && routeFileName && platformFileName && warehousePackFileName && (
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <Button
+                  type="button"
+                  onClick={() =>
+                    void publishPlatformStatusesIfComplete(baseData, columnMap, routeData, {
+                      hasMain: true,
+                      hasRoutes: true,
+                      hasQuick: true,
+                      hasPack: true,
+                    })
+                  }
+                  disabled={isPublishingPlatform || baseData.length === 0}
+                  className="bg-indigo-600 hover:bg-indigo-700"
+                >
+                  <Store className={`w-4 h-4 mr-2 ${isPublishingPlatform ? 'animate-pulse' : ''}`} />
+                  {isPublishingPlatform ? 'Publicando estados…' : 'Publicar estados para tiendas'}
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  Al completar los 4 pasos se publica automáticamente el estado plataforma (ENTREGADO / EN RUTA HOY / EN BODEGA / VALIDAR).
+                </p>
+              </div>
+            )}
           </section>
           
           <FilterPanel

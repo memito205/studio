@@ -388,8 +388,31 @@ export interface TransferNovelty {
 }
 
 // Types for Transfers Module
-export type UserRole = 'admin' | 'supervisor' | 'operator' | 'office' | 'conductor';
+export type UserRole = 'admin' | 'supervisor' | 'operator' | 'office' | 'conductor' | 'tiendas';
 export type TransferStatus = 'En Tránsito' | 'Recolectado en Ruta' | 'Entregado en Ruta' | 'Recibido en Bodega' | 'Validado Supervisor' | 'Enviado a Destino';
+
+/** Estado plataforma (Analizador) consultable por tiendas — distinto del status operativo de transfers. */
+export type TfPlatformEstado =
+  | 'ENTREGADO'
+  | 'EN RUTA HOY'
+  | 'EN BODEGA'
+  | 'VALIDAR CON AMBAS TIENDAS';
+
+export interface TfPlatformStatusRecord {
+  id: string;
+  numeroTF: string;
+  bodegaDestino: string;
+  estadoPlataforma: TfPlatformEstado;
+  evidenceLinks: string[];
+  fechaDocumento?: Date | null;
+  fechaFinalizado?: Date | null;
+  cantidad: number;
+  marca?: string;
+  grupo?: string;
+  updatedAt: Date;
+  updatedBy?: string;
+  source?: string;
+}
 
 
 export interface TransferActor {
@@ -1070,7 +1093,7 @@ export interface CyclicInventoryCountRecord {
   consolidatedLineIds?: string[];
 }
 
-export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory';
+export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'tf_platform_lookup' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory';
 
 // Types for Merchandise Reception
 export interface ReceptionOperation {

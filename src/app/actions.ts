@@ -3972,6 +3972,100 @@ export async function loadAnalysisRecords(): Promise<{ data?: any[]; error?: str
     }
 }
 
+const TF_PLATFORM_STATUS_COLLECTION = 'tf_platform_status';
+
+/** Publica estados plataforma (post cruces analizador) para consulta de tiendas. */
+export async function persistTfPlatformStatuses(
+    records: Array<{
+        id: string;
+        numeroTF: string;
+        bodegaDestino: string;
+        estadoPlataforma: string;
+        evidenceLinks: string[];
+        fechaDocumento?: any;
+        fechaFinalizado?: any;
+        cantidad: number;
+        marca?: string;
+        grupo?: string;
+        updatedBy?: string;
+        source?: string;
+    }>
+): Promise<{ success: boolean; count?: number; error?: string }> {
+    try {
+        if (!records.length) {
+            return { success: false, error: 'No hay registros de estado plataforma para guardar.' };
+        }
+
+        const CHUNK = 400;
+        let written = 0;
+        for (let i = 0; i < records.length; i += CHUNK) {
+            const chunk = records.slice(i, i + CHUNK);
+            const batch = writeBatch(firestore);
+            chunk.forEach((r) => {
+                const ref = doc(firestore, TF_PLATFORM_STATUS_COLLECTION, r.id);
+                batch.set(
+                    ref,
+                    convertDatesToTimestamps({
+                        ...r,
+                        updatedAt: new Date(),
+                    }),
+                    { merge: true }
+                );
+            });
+            await batch.commit();
+            written += chunk.length;
+        }
+        return { success: true, count: written };
+    } catch (error: any) {
+        console.error('Error persisting tf platform statuses:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function getTfPlatformStatusByTf(
+    numeroTF: string
+): Promise<{ data?: any[]; error?: string }> {
+    try {
+        const digits = String(numeroTF || '').replace(/\D/g, '');
+        const normalized = digits ? String(Number(digits)) : '';
+        if (!normalized) return { error: 'Número TF inválido.' };
+
+        const q = query(
+            collection(firestore, TF_PLATFORM_STATUS_COLLECTION),
+            where('numeroTF', '==', normalized),
+            limit(50)
+        );
+        const snap = await getDocs(q);
+        const data = snap.docs.map((d) => ({ id: d.id, ...convertTimestampsToDates(d.data()) }));
+        return { data };
+    } catch (error: any) {
+        console.error('Error getTfPlatformStatusByTf:', error);
+        return { error: error.message };
+    }
+}
+
+export async function getTfPlatformStatusByWarehouse(
+    bodegaDestino: string
+): Promise<{ data?: any[]; error?: string }> {
+    try {
+        const whs = String(bodegaDestino || '').trim().toUpperCase();
+        if (!whs) return { error: 'Bodega destino inválida.' };
+
+        const q = query(
+            collection(firestore, TF_PLATFORM_STATUS_COLLECTION),
+            where('bodegaDestino', '==', whs),
+            limit(500)
+        );
+        const snap = await getDocs(q);
+        const data = snap.docs.map((d) => ({ id: d.id, ...convertTimestampsToDates(d.data()) }));
+        data.sort((a: any, b: any) => String(b.numeroTF).localeCompare(String(a.numeroTF)));
+        return { data };
+    } catch (error: any) {
+        console.error('Error getTfPlatformStatusByWarehouse:', error);
+        return { error: error.message };
+    }
+}
+
 export async function getTransfersByStatus(status: TransferStatus): Promise<{ data?: TransferEntry[]; error?: string }> {
     try {
         const q = query(collection(firestore, "transfers"), where("status", "==", status), limit(1000));

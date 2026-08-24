@@ -2,7 +2,7 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle, Timer, ClipboardList } from 'lucide-react';
+import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle, Timer, ClipboardList, Store } from 'lucide-react';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -62,6 +62,7 @@ interface SuiteDashboardProps {
     onNavigateToControlPiso: () => void;
     onNavigateToExternalPortal: () => void;
     onNavigateToLogisticsPlatform: () => void;
+    onNavigateToTfPlatformLookup: () => void;
     onNavigateToServiceConciliation: () => void;
     onNavigateToTransferNovelties: () => void;
     onNavigateToRemisionModule: () => void;
@@ -87,6 +88,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToControlPiso,
     onNavigateToExternalPortal,
     onNavigateToLogisticsPlatform,
+    onNavigateToTfPlatformLookup,
     onNavigateToServiceConciliation,
     onNavigateToTransferNovelties,
     onNavigateToRemisionModule,
@@ -243,7 +245,16 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             description: "Analice y gestione indicadores de bodega, procesos, descansos y rutas de forma centralizada.",
             actionText: "Acceder",
             onAction: onNavigateToLogisticsPlatform,
-            roles: ['admin']
+            roles: ['admin', 'supervisor']
+        },
+        {
+            key: 'tf_platform_lookup',
+            icon: Store,
+            title: "Consulta Estado TF",
+            description: "Consulte el estado plataforma de transferencias por número TF o bodega destino (solo estados publicados).",
+            actionText: "Consultar",
+            onAction: onNavigateToTfPlatformLookup,
+            roles: ['admin', 'supervisor', 'tiendas']
         },
         {
             key: 'service_conciliation',
@@ -323,6 +334,9 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
 
     if (role === 'conductor') {
       visibleModules = modules.filter(module => module.key === 'transfers');
+    }
+    if (role === 'tiendas') {
+      visibleModules = modules.filter(module => module.key === 'tf_platform_lookup');
     }
     
     return (

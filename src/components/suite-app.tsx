@@ -74,6 +74,7 @@ const ControlPiso = dynamic(() => import('@/components/ControlPiso').then(mod =>
 const ExternalLabelingPortal = dynamic(() => import('@/components/ExternalLabelingPortal').then(mod => mod.ExternalLabelingPortal), { loading: () => <LoadingSpinner /> });
 const LabelingDashboard = dynamic(() => import('@/components/LabelingDashboard').then(mod => mod.LabelingDashboard), { loading: () => <LoadingSpinner /> });
 const LogisticsPlatform = dynamic(() => import('@/components/LogisticsPlatform/LogisticsPlatform'), { loading: () => <LoadingSpinner /> });
+const TfPlatformLookupModule = dynamic(() => import('@/components/TfPlatformLookupModule').then(mod => mod.TfPlatformLookupModule), { loading: () => <LoadingSpinner /> });
 const OperatorMappingsManager = dynamic(() => import('@/components/OperatorMappingsManager').then(mod => mod.OperatorMappingsManager), { loading: () => <LoadingSpinner /> });
 const ServiceConciliation = dynamic(() => import('@/components/ServiceConciliation').then(mod => mod.ServiceConciliation), { loading: () => <LoadingSpinner /> });
 const TransferNovelties = dynamic(() => import('@/components/TransferNovelties').then(mod => mod.TransferNovelties), { loading: () => <LoadingSpinner /> });
@@ -620,6 +621,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const handleNavigateToControlPiso = () => setAppStep('control_piso');
   const handleNavigateToExternalPortal = () => setAppStep('external_labeling_portal');
   const handleNavigateToLogisticsPlatform = () => setAppStep('logistics_platform');
+  const handleNavigateToTfPlatformLookup = () => setAppStep('tf_platform_lookup');
   const handleNavigateToServiceConciliation = () => setAppStep('service_conciliation');
   const handleNavigateToTransferNovelties = () => setAppStep('transfer_novelties');
   const handleNavigateToRemisionModule = () => setAppStep('remision');
@@ -780,6 +782,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToControlPiso={handleNavigateToControlPiso}
                 onNavigateToExternalPortal={handleNavigateToExternalPortal}
                 onNavigateToLogisticsPlatform={handleNavigateToLogisticsPlatform}
+                onNavigateToTfPlatformLookup={handleNavigateToTfPlatformLookup}
                 onNavigateToServiceConciliation={handleNavigateToServiceConciliation}
                 onNavigateToTransferNovelties={handleNavigateToTransferNovelties}
                 onNavigateToRemisionModule={handleNavigateToRemisionModule}
@@ -825,6 +828,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           case 'credit_simulator': return <CreditSimulator onReturn={() => setAppStep('other_features')} />;
           case 'returns_module': return <ReturnsModule onReturn={() => setAppStep('other_features')} />;
           case 'logistics_platform': return <LogisticsPlatform onReturn={handleReturnToSuite} />;
+          case 'tf_platform_lookup': return <TfPlatformLookupModule onReturn={handleReturnToSuite} />;
           case 'service_conciliation': return <ServiceConciliation onReturn={handleReturnToSuite} />;
           case 'remision': return <RemisionModule onReturn={handleReturnToSuite} />;
           case 'cyclic_inventory': return <CyclicInventoryModule onReturnToSuite={handleReturnToSuite} />;
@@ -877,6 +881,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToControlPiso={handleNavigateToControlPiso}
                 onNavigateToExternalPortal={handleNavigateToExternalPortal}
                 onNavigateToLogisticsPlatform={handleNavigateToLogisticsPlatform}
+                onNavigateToTfPlatformLookup={handleNavigateToTfPlatformLookup}
                 onNavigateToServiceConciliation={handleNavigateToServiceConciliation}
                 onNavigateToTransferNovelties={() => setAppStep('transfer_novelties' as any)}
                 onNavigateToRemisionModule={handleNavigateToRemisionModule}
