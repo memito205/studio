@@ -45,7 +45,8 @@ const SlaAnalysisTable: React.FC<SlaAnalysisTableProps> = ({ data }) => {
                 <h2 className="text-xl font-bold text-gray-800">Análisis de Cumplimiento de SLA por Bodega (3 días)</h2>
             </div>
             <p className="text-sm text-gray-500 mt-1 ml-9">
-                Incumplimiento si entre la fecha del documento y la fecha finalizado en plataforma pasan más de 3 días.
+                Incumplimiento si desde la <b>fecha finalizado en plataforma</b> hasta <b>hoy</b> pasan más de 3 días.
+                Ejemplo: finalizado el 11/08 y hoy 24/08 → 13 días → Fuera de plazo.
             </p>
         </div>
         <div className="overflow-x-auto">
@@ -94,8 +95,9 @@ const SlaAnalysisTable: React.FC<SlaAnalysisTableProps> = ({ data }) => {
                                                         <thead className="bg-gray-100 sticky top-0">
                                                             <tr>
                                                                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nro TFT</th>
+                                                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fecha Documento</th>
                                                                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fecha Finalizado</th>
-                                                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Días Desde Finalización</th>
+                                                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Días desde finalizado (hasta hoy)</th>
                                                                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
                                                                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Evidencia</th>
                                                             </tr>
@@ -104,6 +106,7 @@ const SlaAnalysisTable: React.FC<SlaAnalysisTableProps> = ({ data }) => {
                                                             {item.finalizedRecords.map(rec => (
                                                                 <tr key={String(rec.docNumber)} className={rec.isOverdue ? 'bg-red-50 hover:bg-red-100' : 'hover:bg-gray-50'}>
                                                                     <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-600">{rec.docNumber}</td>
+                                                                    <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-600">{rec.docDate}</td>
                                                                     <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-600">{rec.finalizedDate}</td>
                                                                     <td className={`px-4 py-2 whitespace-nowrap text-sm font-semibold ${rec.isOverdue ? 'text-red-600' : 'text-gray-600'}`}>{rec.daysToFinalize}</td>
                                                                     <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-600">

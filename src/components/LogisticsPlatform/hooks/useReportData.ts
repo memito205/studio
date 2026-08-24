@@ -352,9 +352,10 @@ export const useReportData = (
         const docDate = normalizeDate(row[FECHA_COL!]);
         if (!fechaFin || !docDate) return;
 
-        const diffTime = fechaFin.getTime() - docDate.getTime();
-        const daysToFinalize = Math.max(0, Math.floor(diffTime / (1000 * 3600 * 24)));
-        const isOverdue = daysToFinalize > 3;
+        // SLA 3 días: días desde la fecha finalizado en plataforma hasta HOY
+        const diffTime = currentDate.getTime() - fechaFin.getTime();
+        const daysSinceFinalization = Math.max(0, Math.floor(diffTime / (1000 * 3600 * 24)));
+        const isOverdue = daysSinceFinalization > 3;
 
         const linkValue = String(row[imageField] || row['image'] || '').trim();
         const links = linkValue.split('|').map((l) => l.trim()).filter((l) => l.startsWith('http'));
@@ -362,7 +363,7 @@ export const useReportData = (
         const finalizedDetail: FinalizedDocDetail = {
             docNumber: String(row[DOC_COL!] || ''),
             finalizedDate: formatDate(fechaFin),
-            daysToFinalize,
+            daysToFinalize: daysSinceFinalization,
             isOverdue,
             imageLink: links[0],
             docDate: formatDate(docDate),
