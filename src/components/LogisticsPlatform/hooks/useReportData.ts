@@ -22,9 +22,12 @@ export const useReportData = (
   documentNumberFilter: string,
   routeStatusMap: Map<string, string>,
   /** Tras cruce Quick y/o empaque: filas sin estado → Validar con ambas tiendas */
-  applyUnresolvedPlatformStatus = false
+  applyUnresolvedPlatformStatus = false,
+  /** TF|DESTINO con status Recibido en Bodega en módulo Transferencias */
+  receivedInWarehouseKeys: string[] = []
 ): ReportData => {
   return useMemo(() => {
+    const receivedSet = new Set(receivedInWarehouseKeys);
     const { 
         fecha: FECHA_COL, 
         warehouse: WAREHOUSE_COL, 
@@ -101,6 +104,7 @@ export const useReportData = (
         const hasFechaFin = Boolean(row[fechaFinalizadoField] || row['fechaFinalizado']);
         const routeKey = buildTfWarehouseKey(row[DOC_COL!], row[WAREHOUSE_COL!]);
         const routeStatus = routeKey ? routeStatusMap.get(routeKey) : undefined;
+        const receivedInWarehouse = routeKey ? receivedSet.has(routeKey) : false;
 
         if (
             platVal === 'ENTREGADO' ||
@@ -121,7 +125,12 @@ export const useReportData = (
 
         if (isHoyRuta) return 'EN RUTA HOY';
 
-        if (bodegaVal === 'EN BODEGA' || platVal === 'EN BODEGA' || routeStatus === 'ESTA EN BODEGA PPAL') {
+        if (
+            bodegaVal === 'EN BODEGA' ||
+            platVal === 'EN BODEGA' ||
+            routeStatus === 'ESTA EN BODEGA PPAL' ||
+            receivedInWarehouse
+        ) {
             return 'EN BODEGA';
         }
 
@@ -662,5 +671,5 @@ export const useReportData = (
       deliveredDocsByWarehouse,
       pendingRows: allPendingRows,
     };
-  }, [baseData, columnMap, selectedWarehouse, startDate, endDate, documentNumberFilter, routeStatusMap, applyUnresolvedPlatformStatus]);
+  }, [baseData, columnMap, selectedWarehouse, startDate, endDate, documentNumberFilter, routeStatusMap, applyUnresolvedPlatformStatus, receivedInWarehouseKeys]);
 };

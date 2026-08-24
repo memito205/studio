@@ -19,7 +19,7 @@ import { useReportData } from './hooks/useReportData';
 import { findHeader, normalizeDate, formatDate, parseDateString, generatePendingSummaryPdf, getWeekStartDate, getCalendarDateKey, getTodayCalendarKey, normalizeDocId, buildTfWarehouseKey } from './utils/helpers';
 import type { ExcelDataRow, BreaksReportData, ProcessedBreak, EmployeeDailyAnalysis, DailyAnalysis, WeeklyTrend, EmployeePerformance } from './types';
 import type { TransferEntry } from '@/types';
-import { loadAnalysisRecords, syncAnalysisRecords, persistTfPlatformStatuses } from '@/app/actions';
+import { loadAnalysisRecords, syncAnalysisRecords, persistTfPlatformStatuses, getTfKeysReceivedInWarehouse } from '@/app/actions';
 import { buildTfPlatformStatusRecords } from '@/lib/tfPlatformStatus';
 import { FileIcon, PackageIcon, TruckIcon, ChartIcon, CheckCircleIcon, TableIcon, UserCheckIcon, PdfFileIcon } from './components/icons';
 import { Button } from '@/components/ui/button';
@@ -63,7 +63,21 @@ const WarehouseAnalyzer: React.FC = () => {
   const [warehousePackFileName, setWarehousePackFileName] = React.useState<string | null>(null);
   const [isWarehousePackLoading, setIsWarehousePackLoading] = React.useState(false);
   const [isPublishingPlatform, setIsPublishingPlatform] = React.useState(false);
+  const [receivedInWarehouseKeys, setReceivedInWarehouseKeys] = React.useState<string[]>([]);
   const { user, userName } = useAuth();
+
+  const refreshReceivedInWarehouseKeys = React.useCallback(async () => {
+    try {
+      const res = await getTfKeysReceivedInWarehouse();
+      if (res.keys) setReceivedInWarehouseKeys(res.keys);
+    } catch (err) {
+      console.error('No se pudieron cargar TF Recibido en Bodega:', err);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void refreshReceivedInWarehouseKeys();
+  }, [refreshReceivedInWarehouseKeys]);
 
   const publishPlatformStatusesIfComplete = React.useCallback(
     async (
@@ -108,6 +122,18 @@ const WarehouseAnalyzer: React.FC = () => {
 
       setIsPublishingPlatform(true);
       try {
+        // Refresco justo antes de publicar para no perder Recibido en Bodega recientes
+        let receivedKeys = receivedInWarehouseKeys;
+        try {
+          const fresh = await getTfKeysReceivedInWarehouse();
+          if (fresh.keys) {
+            receivedKeys = fresh.keys;
+            setReceivedInWarehouseKeys(fresh.keys);
+          }
+        } catch {
+          /* usar cache local */
+        }
+
         const records = buildTfPlatformStatusRecords(
           data,
           {
@@ -123,7 +149,8 @@ const WarehouseAnalyzer: React.FC = () => {
             image: map.image || 'image',
           },
           routes,
-          userName || user?.email || undefined
+          userName || user?.email || undefined,
+          receivedKeys
         );
 
         if (!records.length) {
@@ -153,7 +180,7 @@ const WarehouseAnalyzer: React.FC = () => {
         setIsPublishingPlatform(false);
       }
     },
-    [user?.email, userName]
+    [user?.email, userName, receivedInWarehouseKeys]
   );
 
   const stepFlags = {
@@ -179,6 +206,7 @@ const WarehouseAnalyzer: React.FC = () => {
             processData(result.data);
             setDataCount(result.data.length);
             setMainFileName("Base de Datos (Análisis Raw)");
+            void refreshReceivedInWarehouseKeys();
         }
     } catch (err: any) {
         setError(`Error al cargar datos desde la base de datos: ${err.message}`);
@@ -726,7 +754,8 @@ const WarehouseAnalyzer: React.FC = () => {
     endDate,
     documentNumberFilter,
     routeData,
-    applyUnresolvedPlatformStatus
+    applyUnresolvedPlatformStatus,
+    receivedInWarehouseKeys
   );
 
   const handleGenerateSpecialPdf = React.useCallback(() => {
@@ -917,6 +946,8 @@ const WarehouseAnalyzer: React.FC = () => {
             <p className="text-sm text-gray-600 mb-4">
               Sube el Excel de unidades de empaque. Se cruza por la columna <b>TF</b> con <b>NRO DOCUMENTO.2</b>.
               Las que coincidan (y no estén entregadas / en ruta hoy) quedan en <b>EN BODEGA</b>.
+              También se marca <b>EN BODEGA</b> si en Transferencias la TF+destino está en <b>Recibido en Bodega</b>
+              (sin pisar ENTREGADO ni EN RUTA HOY).
               Tras rutas, Quick y/o empaque, lo que quede sin estado → <b>VALIDAR CON AMBAS TIENDAS</b>.
             </p>
             <FileUpload

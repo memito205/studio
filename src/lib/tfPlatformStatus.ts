@@ -49,7 +49,8 @@ const classifyRow = (
     fechaFinalizado?: string;
     image?: string;
   },
-  routeStatusMap: Map<string, string>
+  routeStatusMap: Map<string, string>,
+  receivedInWarehouseKeys: Set<string> = new Set()
 ): TfPlatformEstado => {
   const platVal = String(row[fields.estadoPlataforma || 'estadoPlataforma'] || row['estadoPlataforma'] || '')
     .trim()
@@ -63,7 +64,9 @@ const classifyRow = (
 
   const tf = normalizeDocId(row[fields.doc]);
   const whs = normalizeWarehouse(row[fields.warehouse]);
-  const routeStatus = tf && whs ? routeStatusMap.get(`${tf}|${whs}`) : undefined;
+  const routeKey = tf && whs ? `${tf}|${whs}` : '';
+  const routeStatus = routeKey ? routeStatusMap.get(routeKey) : undefined;
+  const receivedInWarehouse = routeKey ? receivedInWarehouseKeys.has(routeKey) : false;
 
   if (platVal === 'ENTREGADO' || platVal === 'FINALIZADO' || hasImage || hasFechaFin) {
     return 'ENTREGADO';
@@ -78,7 +81,12 @@ const classifyRow = (
   ) {
     return 'EN RUTA HOY';
   }
-  if (bodegaVal === 'EN BODEGA' || platVal === 'EN BODEGA' || routeStatus === 'ESTA EN BODEGA PPAL') {
+  if (
+    bodegaVal === 'EN BODEGA' ||
+    platVal === 'EN BODEGA' ||
+    routeStatus === 'ESTA EN BODEGA PPAL' ||
+    receivedInWarehouse
+  ) {
     return 'EN BODEGA';
   }
   return 'VALIDAR CON AMBAS TIENDAS';
@@ -102,9 +110,15 @@ export function buildTfPlatformStatusRecords(
     image?: string;
   },
   routeStatusMap: Map<string, string> = new Map(),
-  updatedBy?: string
+  updatedBy?: string,
+  receivedInWarehouseKeys: Set<string> | string[] = new Set()
 ): Omit<TfPlatformStatusRecord, 'updatedAt'>[] {
   if (!columnMap.doc || !columnMap.warehouse) return [];
+
+  const receivedSet =
+    receivedInWarehouseKeys instanceof Set
+      ? receivedInWarehouseKeys
+      : new Set(receivedInWarehouseKeys || []);
 
   const map = new Map<string, Omit<TfPlatformStatusRecord, 'updatedAt'> & { _priority: number }>();
 
@@ -125,7 +139,8 @@ export function buildTfPlatformStatusRecords(
         fechaFinalizado: columnMap.fechaFinalizado,
         image: columnMap.image,
       },
-      routeStatusMap
+      routeStatusMap,
+      receivedSet
     );
     const links = extractEvidenceLinks(row, columnMap.image);
     const marca = columnMap.marca ? String(row[columnMap.marca] || '').trim() : '';

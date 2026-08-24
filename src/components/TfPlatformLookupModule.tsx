@@ -102,7 +102,9 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
       <Card>
         <CardHeader>
           <CardTitle>Buscar</CardTitle>
-          <CardDescription>Filtre por número de TF o por bodega destino.</CardDescription>
+          <CardDescription>
+            Filtre por número de TF o por bodega destino (por bodega: de fecha más antigua a más nueva).
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="tf">

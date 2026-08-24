@@ -4058,10 +4058,45 @@ export async function getTfPlatformStatusByWarehouse(
         );
         const snap = await getDocs(q);
         const data = snap.docs.map((d) => ({ id: d.id, ...convertTimestampsToDates(d.data()) }));
-        data.sort((a: any, b: any) => String(b.numeroTF).localeCompare(String(a.numeroTF)));
+        const toTime = (value: any): number => {
+            if (!value) return Number.POSITIVE_INFINITY;
+            const d = value instanceof Date ? value : new Date(value);
+            const t = d.getTime();
+            return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+        };
+        // Más antigua → más nueva (fecha documento)
+        data.sort((a: any, b: any) => {
+            const diff = toTime(a.fechaDocumento) - toTime(b.fechaDocumento);
+            if (diff !== 0) return diff;
+            return String(a.numeroTF || '').localeCompare(String(b.numeroTF || ''));
+        });
         return { data };
     } catch (error: any) {
         console.error('Error getTfPlatformStatusByWarehouse:', error);
+        return { error: error.message };
+    }
+}
+
+/** Claves TF|DESTINO con status operativo Recibido en Bodega (módulo Transferencias). */
+export async function getTfKeysReceivedInWarehouse(): Promise<{ keys?: string[]; error?: string }> {
+    try {
+        const q = query(
+            collection(firestore, 'transfers'),
+            where('status', '==', 'Recibido en Bodega'),
+            limit(2000)
+        );
+        const snap = await getDocs(q);
+        const keys = new Set<string>();
+        snap.docs.forEach((d) => {
+            const raw = d.data() as any;
+            const digits = String(raw.numeroTF || '').replace(/\D/g, '');
+            const tf = digits ? String(Number(digits)) : '';
+            const whs = String(raw.bodegaDestino || '').trim().toUpperCase();
+            if (tf && whs) keys.add(`${tf}|${whs}`);
+        });
+        return { keys: Array.from(keys) };
+    } catch (error: any) {
+        console.error('Error getTfKeysReceivedInWarehouse:', error);
         return { error: error.message };
     }
 }
