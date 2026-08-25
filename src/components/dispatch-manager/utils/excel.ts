@@ -94,6 +94,7 @@ export const parseMerchandiseExcel = (file: File): Promise<MerchandiseItem[]> =>
           const ordDespKey = findCaseInsensitiveKey(row, 'ORD DESP');
           const fechaEmpaqueKey = findCaseInsensitiveKey(row, 'FECHA EMPAQUE');
           const empacadorKey = findCaseInsensitiveKey(row, 'EMPACADOR');
+          const marcaKey = findCaseInsensitiveKey(row, 'MARCA');
 
           const tfValue = cleanToNumeric(tfKey ? row[tfKey] : '');
           const contenidoValue = cleanToNumeric(contenidoKey ? row[contenidoKey] : '');
@@ -120,6 +121,7 @@ export const parseMerchandiseExcel = (file: File): Promise<MerchandiseItem[]> =>
             ordDesp: String(ordDespKey ? row[ordDespKey] : ''),
             fechaEmpaque: String(fechaEmpaqueKey ? row[fechaEmpaqueKey] : ''),
             empacador: String(empacadorKey ? row[empacadorKey] : ''),
+            marca: String(marcaKey ? row[marcaKey] : '').trim().toUpperCase() || undefined,
           };
         });
 

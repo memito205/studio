@@ -1,23 +1,33 @@
-
 "use client";
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { loadVerificationSessions, saveVerificationSession, updateVerificationSession } from '@/app/actions';
+import { loadVerificationSessions, deleteVerificationSession } from '@/app/actions';
 import { SavedVerification, VerificationItem } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Badge } from '@/components/ui/badge';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
-import { Loader2, Search, Eye, CheckCircle2, FileDown, AlertCircle } from 'lucide-react';
+import { Loader2, Search, Eye, FileDown, Trash2 } from 'lucide-react';
 import { cn } from '@/components/dispatch-manager/utils/cn';
-import { exportVerificationToExcel, exportToExcel } from '../utils/excel';
+import { exportVerificationToExcel } from '../utils/excel';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useAuth } from '@/hooks/use-auth-context';
 
 
 const VerificationDetailDialog: React.FC<{
@@ -99,24 +109,47 @@ const VerificationDetailDialog: React.FC<{
 
 const VerificationHistory: React.FC = () => {
     const { toast } = useToast();
+    const { role } = useAuth();
+    const isAdmin = role === 'admin';
     const [sessions, setSessions] = useState<SavedVerification[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const [deletingId, setDeletingId] = useState<string | null>(null);
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedSession, setSelectedSession] = useState<SavedVerification | null>(null);
 
+    const fetchSessions = async () => {
+        setIsLoading(true);
+        const { data, error } = await loadVerificationSessions();
+        if (error) {
+            toast({ variant: 'destructive', title: 'Error', description: `Error al cargar el historial: ${error}`});
+        } else {
+            setSessions(data || []);
+        }
+        setIsLoading(false);
+    };
+
     useEffect(() => {
-        const fetchSessions = async () => {
-            setIsLoading(true);
-            const { data, error } = await loadVerificationSessions();
-            if (error) {
-                toast({ variant: 'destructive', title: 'Error', description: `Error al cargar el historial: ${error}`});
-            } else {
-                setSessions(data || []);
-            }
-            setIsLoading(false);
-        };
         fetchSessions();
-    }, [toast]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const handleDelete = async (session: SavedVerification) => {
+        if (!session.id) return;
+        setDeletingId(session.id);
+        const result = await deleteVerificationSession(session.id);
+        setDeletingId(null);
+        if (!result.success) {
+            toast({
+                variant: 'destructive',
+                title: 'No se pudo eliminar',
+                description: result.error || 'Error desconocido',
+            });
+            return;
+        }
+        setSessions((prev) => prev.filter((s) => s.id !== session.id));
+        if (selectedSession?.id === session.id) setSelectedSession(null);
+        toast({ title: 'Verificación eliminada', description: `Se eliminó “${session.name}”.` });
+    };
 
     const filteredSessions = useMemo(() => {
         if (!searchTerm) return sessions;
@@ -136,7 +169,7 @@ const VerificationHistory: React.FC = () => {
             />
             <CardHeader>
                 <CardTitle>Historial de Verificaciones</CardTitle>
-                <CardDescription>Busca y revisa sesiones de verificación guardadas anteriormente.</CardDescription>
+                <CardDescription>Busca, revisa o elimina sesiones de verificación guardadas.</CardDescription>
             </CardHeader>
             <CardContent>
                 <div className="relative mb-4">
@@ -177,10 +210,46 @@ const VerificationHistory: React.FC = () => {
                                         <TableCell className="text-green-600">{session.stats.scanned}</TableCell>
                                         <TableCell className="text-orange-600">{session.stats.pending}</TableCell>
                                         <TableCell className="text-right">
-                                            <Button variant="outline" size="sm" onClick={() => setSelectedSession(session)}>
-                                                <Eye className="mr-2 h-4 w-4"/>
-                                                Ver Detalles
-                                            </Button>
+                                            <div className="flex justify-end gap-2">
+                                                <Button variant="outline" size="sm" onClick={() => setSelectedSession(session)}>
+                                                    <Eye className="mr-2 h-4 w-4"/>
+                                                    Ver
+                                                </Button>
+                                                {isAdmin && (
+                                                    <AlertDialog>
+                                                        <AlertDialogTrigger asChild>
+                                                            <Button
+                                                                variant="outline"
+                                                                size="sm"
+                                                                className="text-destructive border-destructive/40 hover:bg-destructive/10"
+                                                                disabled={deletingId === session.id}
+                                                            >
+                                                                {deletingId === session.id
+                                                                    ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                                    : <Trash2 className="mr-2 h-4 w-4" />}
+                                                                Eliminar
+                                                            </Button>
+                                                        </AlertDialogTrigger>
+                                                        <AlertDialogContent>
+                                                            <AlertDialogHeader>
+                                                                <AlertDialogTitle>¿Eliminar verificación?</AlertDialogTitle>
+                                                                <AlertDialogDescription>
+                                                                    Se eliminará permanentemente la sesión “{session.name}” del historial. Esta acción no se puede deshacer.
+                                                                </AlertDialogDescription>
+                                                            </AlertDialogHeader>
+                                                            <AlertDialogFooter>
+                                                                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                                                <AlertDialogAction
+                                                                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                                                    onClick={() => handleDelete(session)}
+                                                                >
+                                                                    Eliminar
+                                                                </AlertDialogAction>
+                                                            </AlertDialogFooter>
+                                                        </AlertDialogContent>
+                                                    </AlertDialog>
+                                                )}
+                                            </div>
                                         </TableCell>
                                     </TableRow>
                                 ))

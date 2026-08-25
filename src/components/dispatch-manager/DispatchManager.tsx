@@ -106,6 +106,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
   const [allUnmatchedData, setAllUnmatchedData] = useState<MerchandiseItem[]>([]);
   const [selectedDestinos, setSelectedDestinos] = useState<string[]>([]);
   const [destLimits, setDestLimits] = useState<Record<string, number | ''>>({});
+  const [priorityBrands, setPriorityBrands] = useState<string[]>([]);
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -151,7 +152,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                 contenido: t.numeroTF,
                 tf: t.numeroTF,
                 origen: t.bodegaOrigen,
-                destino: normalizedDest, // Use normalized for display
+                destino: normalizedDest,
                 cant: t.cantidad || 1,
                 pKg: 0,
                 vM3: 0,
@@ -163,6 +164,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                 ordDesp: '',
                 fechaEmpaque: '',
                 empacador: 'SISTEMA',
+                marca: String(t.marca || '').trim().toUpperCase() || undefined,
             };
         });
         
@@ -193,6 +195,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                     fecha: t.fecha,
                     cantidad: qtyToAdd,
                     numeroDocumento: '',
+                    marca: String(t.marca || '').trim().toUpperCase() || undefined,
                 });
                 return;
             }
@@ -200,12 +203,14 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
             const existingDate = existing.fecha instanceof Date ? existing.fecha : new Date(existing.fecha);
             const incomingDate = t.fecha instanceof Date ? t.fecha : new Date(t.fecha as any);
             const earliestDate = incomingDate.getTime() < existingDate.getTime() ? incomingDate : existingDate;
+            const incomingMarca = String(t.marca || '').trim().toUpperCase();
 
             map.set(key, {
                 tft: existing.tft || t.numeroTF,
                 fecha: earliestDate,
                 cantidad: Number(existing.cantidad || 0) + qtyToAdd,
                 numeroDocumento: existing.numeroDocumento || '',
+                marca: existing.marca || incomingMarca || undefined,
             });
         };
 
@@ -231,7 +236,8 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                 ...item,
                 tftMatch: match?.tft,
                 tftFecha: match?.fecha,
-                tftCantidad: match?.cantidad
+                tftCantidad: match?.cantidad,
+                marca: item.marca || match?.marca,
             };
         });
 
@@ -272,6 +278,35 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
       return numA - numB;
     };
 
+    const prioritySet = new Set(priorityBrands.map((b) => b.trim().toUpperCase()).filter(Boolean));
+    const groupHasPriorityBrand = (items: MerchandiseItem[]) =>
+      prioritySet.size > 0 &&
+      items.some((i) => {
+        const m = String(i.marca || '').trim().toUpperCase();
+        return m && prioritySet.has(m);
+      });
+
+    const sortForSelection = (a: MerchandiseItem, b: MerchandiseItem) => {
+      if (prioritySet.size > 0) {
+        const aPri = groupHasPriorityBrand([a]) ? 0 : 1;
+        const bPri = groupHasPriorityBrand([b]) ? 0 : 1;
+        if (aPri !== bPri) return aPri - bPri;
+      }
+      return sortByDateAndTf(a, b);
+    };
+
+    const sortGroupsForSelection = (
+      a: { items: MerchandiseItem[] },
+      b: { items: MerchandiseItem[] }
+    ) => {
+      if (prioritySet.size > 0) {
+        const aPri = groupHasPriorityBrand(a.items) ? 0 : 1;
+        const bPri = groupHasPriorityBrand(b.items) ? 0 : 1;
+        if (aPri !== bPri) return aPri - bPri;
+      }
+      return sortByDateAndTf(a.items[0], b.items[0]);
+    };
+
     // Calculate Original Stats per destination
     const groupedByTF: Record<string, MerchandiseItem[]> = {};
     initialMatched.forEach(item => {
@@ -299,7 +334,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
 
     // Process each destination separately to apply its limit
     Object.keys(destGroups).forEach(dest => {
-      const groups = destGroups[dest].sort((a, b) => sortByDateAndTf(a.items[0], b.items[0]));
+      const groups = destGroups[dest].sort(sortGroupsForSelection);
       const limit = destLimits[dest];
       let largeCount = 0;
 
@@ -332,17 +367,32 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
     });
 
     return {
-      filteredMatchedData: finalList.sort(sortByDateAndTf),
+      filteredMatchedData: finalList.sort(sortForSelection),
       filteredUnmatchedData: initialUnmatched,
       excludedMatchedData: excludedList,
       dispatchStats: stats
     };
-  }, [allMatchedData, allUnmatchedData, selectedDestinos, searchTerm, destLimits]);
+  }, [allMatchedData, allUnmatchedData, selectedDestinos, searchTerm, destLimits, priorityBrands]);
 
 
   const uniqueDestinos = useMemo(() => {
     return Array.from(new Set([...allMatchedData, ...allUnmatchedData].map(item => item.destino))).sort();
   }, [allMatchedData, allUnmatchedData]);
+
+  const uniqueBrands = useMemo(() => {
+    const brands = new Set<string>();
+    allMatchedData.forEach((item) => {
+      const m = String(item.marca || '').trim().toUpperCase();
+      if (m) brands.add(m);
+    });
+    return Array.from(brands).sort();
+  }, [allMatchedData]);
+
+  const togglePriorityBrand = (brand: string) => {
+    setPriorityBrands((prev) =>
+      prev.includes(brand) ? prev.filter((b) => b !== brand) : [...prev, brand]
+    );
+  };
 
   const handleExportPDF = async () => {
     if (isExporting) return;
@@ -481,6 +531,8 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
       setAllUnmatchedData([]);
       setSelectedDestinos([]);
       setDestLimits({});
+      setPriorityBrands([]);
+      setSearchTerm('');
     }
   };
   
@@ -681,6 +733,41 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                           ))}
                         </div>
                       </div>
+
+                      {uniqueBrands.length > 0 && (
+                        <div className="bg-white p-4 border border-border">
+                          <h3 className="text-xs font-bold mb-2">Prioridad por marca</h3>
+                          <p className="text-[10px] text-muted-foreground mb-3 leading-snug">
+                            Las marcas marcadas entran primero al límite de TFs, aunque sean más nuevas.
+                          </p>
+                          <div className="max-h-[180px] overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
+                            {uniqueBrands.map((brand) => (
+                              <label key={brand} className="flex items-center gap-2 cursor-pointer text-xs">
+                                <input
+                                  type="checkbox"
+                                  className="w-3.5 h-3.5 accent-primary"
+                                  checked={priorityBrands.includes(brand)}
+                                  onChange={() => togglePriorityBrand(brand)}
+                                />
+                                <span className={cn(priorityBrands.includes(brand) ? 'font-bold' : 'opacity-70')}>
+                                  {brand}
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                          {priorityBrands.length > 0 && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="mt-2 h-7 text-[10px] px-2"
+                              onClick={() => setPriorityBrands([])}
+                            >
+                              Limpiar prioridad
+                            </Button>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <div className="lg:col-span-3 space-y-6">
@@ -698,7 +785,11 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
 
                         <div className="flex items-center gap-2 px-4 py-2 bg-muted  text-xs ">
                           <ArrowUpDown size={14} />
-                          <span>Orden: Fecha TFT (Vieja a Nueva)</span>
+                          <span>
+                            {priorityBrands.length > 0
+                              ? `Orden: Marca prioritaria (${priorityBrands.join(', ')}) → luego fecha TFT (vieja→nueva)`
+                              : 'Orden: Fecha TFT (Vieja a Nueva)'}
+                          </span>
                         </div>
                       </div>
                       

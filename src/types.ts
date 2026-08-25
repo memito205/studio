@@ -1601,6 +1601,8 @@ export interface MerchandiseItem {
   ordDesp: string;
   fechaEmpaque: string;
   empacador: string;
+  /** Marca (Excel o transferencia cruzada) — usada para prioridad en límites de despacho */
+  marca?: string;
   // Joined fields from File 2
   tftMatch?: string;
   tftFecha?: Date;
@@ -1612,6 +1614,7 @@ export interface TFTItem {
   fecha: Date;
   cantidad: number;
   numeroDocumento: string; // Añadido para consistencia
+  marca?: string;
 }
 
 export interface VerificationItem {

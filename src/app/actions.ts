@@ -5132,6 +5132,19 @@ export async function updateVerificationSession(sessionId: string, sessionData: 
   }
 }
 
+export async function deleteVerificationSession(sessionId: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!sessionId?.trim()) {
+      return { success: false, error: 'ID de sesión inválido.' };
+    }
+    await deleteDoc(doc(firestore, 'verificationSessions', sessionId));
+    return { success: true };
+  } catch (error: any) {
+    console.error('Error deleting verification session:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 
 
 export async function saveHolidays(holidays: Date[]): Promise<{success: boolean; error?: string}> {
