@@ -457,43 +457,109 @@ export const useReportData = (
             };
         }).filter((rec): rec is NonNullable<typeof rec> => rec !== null);
 
-        const summaryByMarcaGrupo = detailedRecords.reduce((acc, record) => {
-            const key = `${record.marca}-${record.grupo}`;
-            if (!acc[key]) {
-                acc[key] = {
-                    marca: record.marca,
-                    grupo: record.grupo,
-                    docKeys: new Set<string>(),
-                    totalQuantity: 0,
-                    totalDaysPending: 0,
-                    recordCount: 0,
-                    detailedDocs: [],
-                };
-            }
-            acc[key].docKeys.add(record.docKey);
-            acc[key].totalQuantity += record.quantity;
-            acc[key].totalDaysPending += record.daysPending;
-            acc[key].recordCount += 1;
-            acc[key].detailedDocs.push({
-                docNumber: record.docNumber,
-                quantity: record.quantity,
-                daysPending: record.daysPending,
-                imageLink: record.imageLink,
-                docDate: record.docDate,
-                enRuta: record.enRuta,
-                warehouseOut: record.warehouseOut,
+        // Resumen por marca/grupo a nivel LÍNEA (como Resumen General por Marca).
+        // No usar la marca concatenada del TF unificado ("NIKE, ADIDAS, ...").
+        const pendingDocKeys = new Set(rows.map(getUniqueDocKey));
+        const pendingLineRows = filteredRows.filter(
+          (r) =>
+            String(r[WAREHOUSE_COL!] || '') === warehouseName &&
+            pendingDocKeys.has(getUniqueDocKey(r))
+        );
+
+        const summaryByMarcaGrupo = pendingLineRows.reduce((acc, row) => {
+            const rawMarca = MARCA_COL ? String(row[MARCA_COL!] || 'SIN MARCA').trim() : 'SIN MARCA';
+            const rawGrupo = GRUPO_COL ? String(row[GRUPO_COL!] || 'N/A').trim() : 'N/A';
+            // Por si alguna línea ya viniera concatenada, partir y atribuir qty a cada par
+            const marcas = (rawMarca || 'SIN MARCA').split(',').map((s) => s.trim()).filter(Boolean);
+            const grupos = (rawGrupo || 'N/A').split(',').map((s) => s.trim()).filter(Boolean);
+            const marcaList = marcas.length ? marcas : ['SIN MARCA'];
+            const grupoList = grupos.length ? grupos : ['N/A'];
+
+            const docDate = normalizeDate(row[FECHA_COL!]);
+            const daysPending = docDate
+              ? Math.max(0, Math.floor((currentDate.getTime() - docDate.getTime()) / (1000 * 3600 * 24)))
+              : 0;
+            const qty = Number(row[QTY_COL!] || 0);
+            const docKey = getUniqueDocKey(row);
+            const docNumber = String(row[DOC_COL!] || '');
+            const linkValue = String(row[imageField] || row['image'] || '').trim();
+            const links = linkValue.split('|').map((l) => l.trim()).filter((l) => l.startsWith('http'));
+
+            let enRuta = '';
+            const routeKey = buildTfWarehouseKey(row[DOC_COL!], row[WAREHOUSE_COL!]);
+            const routeStatus = routeKey ? routeStatusMap.get(routeKey) : undefined;
+            const hoyRutaRaw = String(row[hoyRutaField] || row['hoyRuta'] || '').trim().toUpperCase();
+            const isInHoyRuta =
+                hoyRutaRaw === 'EN RUTA HOY' ||
+                hoyRutaRaw === 'TRUE' ||
+                routeStatus === 'EN RUTA HOY';
+            if (isInHoyRuta && (!routeStatus || routeStatus === 'EN RUTA HOY')) enRuta = 'EN RUTA HOY';
+            else if (routeStatus) enRuta = routeStatus;
+            else enRuta = 'PREGUNTAR ALMACEN DE ORIGEN';
+
+            // Una línea = una marca y un grupo (caso normal). Si vienen listas, repartir qty.
+            const pairs: { marca: string; grupo: string }[] = [];
+            marcaList.forEach((m) => grupoList.forEach((g) => pairs.push({ marca: m, grupo: g })));
+            const qtyEach = pairs.length > 0 ? qty / pairs.length : qty;
+
+            pairs.forEach(({ marca, grupo }) => {
+              const key = `${marca}|${grupo}`;
+              if (!acc[key]) {
+                  acc[key] = {
+                      marca,
+                      grupo,
+                      docKeys: new Set<string>(),
+                      totalQuantity: 0,
+                      totalDaysPending: 0,
+                      recordCount: 0,
+                      detailedDocs: [],
+                      detailedDocKeys: new Set<string>(),
+                  };
+              }
+              acc[key].docKeys.add(docKey);
+              acc[key].totalQuantity += qtyEach;
+              acc[key].totalDaysPending += daysPending;
+              acc[key].recordCount += 1;
+              if (!acc[key].detailedDocKeys.has(docKey)) {
+                acc[key].detailedDocKeys.add(docKey);
+                acc[key].detailedDocs.push({
+                    docNumber,
+                    quantity: Math.round(qtyEach * 1000) / 1000,
+                    daysPending,
+                    imageLink: links[0],
+                    docDate: docDate ? formatDate(docDate) : 'N/D',
+                    enRuta,
+                    warehouseOut: WAREHOUSE_OUT_COL ? String(row[WAREHOUSE_OUT_COL!] || 'N/A') : 'N/A',
+                });
+              } else {
+                const existingDoc = acc[key].detailedDocs.find((d) => d.docNumber === docNumber);
+                if (existingDoc) {
+                  existingDoc.quantity = Math.round((existingDoc.quantity + qtyEach) * 1000) / 1000;
+                }
+              }
             });
             return acc;
-        }, {} as { [key: string]: { marca: string; grupo: string; docKeys: Set<string>; totalQuantity: number; totalDaysPending: number; recordCount: number; detailedDocs: PendingDocDetail[] } });
+        }, {} as {
+          [key: string]: {
+            marca: string;
+            grupo: string;
+            docKeys: Set<string>;
+            totalQuantity: number;
+            totalDaysPending: number;
+            recordCount: number;
+            detailedDocs: PendingDocDetail[];
+            detailedDocKeys: Set<string>;
+          }
+        });
         
         const pendingSummaryRecords: PendingSummaryRecord[] = Object.values(summaryByMarcaGrupo).map(summary => ({
             marca: summary.marca,
             grupo: summary.grupo,
             docCount: summary.docKeys.size,
-            totalQuantity: summary.totalQuantity,
+            totalQuantity: Math.round(summary.totalQuantity),
             avgDaysPending: summary.recordCount > 0 ? Math.round(summary.totalDaysPending / summary.recordCount) : 0,
             detailedDocs: summary.detailedDocs.sort((a,b) => b.daysPending - a.daysPending),
-        })).sort((a,b) => b.avgDaysPending - a.avgDaysPending);
+        })).sort((a,b) => b.totalQuantity - a.totalQuantity);
 
         return {
             warehouse: warehouseName,
