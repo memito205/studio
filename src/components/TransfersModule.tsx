@@ -5,14 +5,14 @@
 import React, { useState, useMemo, ChangeEvent, useRef, useCallback, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, UploadCloud, Truck, FileSignature, Search, Download, Trash2, Plus, File, Package, X, Check, Save, History, Eye, Printer, PackageCheck, Loader2, ScanLine, CircleDot, FileDown, MoreHorizontal, ChevronsUpDown, Database, RefreshCw, ListOrdered, FileSearch, FileSpreadsheet } from 'lucide-react';
+import { ArrowLeft, UploadCloud, Truck, FileSignature, Search, Download, Trash2, Plus, File, Package, X, Check, Save, History, Eye, Printer, PackageCheck, Loader2, ScanLine, CircleDot, FileDown, MoreHorizontal, ChevronsUpDown, Database, RefreshCw, ListOrdered, FileSearch, FileSpreadsheet, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/card';
 import { Input } from './ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import type { TransferEntry, TransferStatus, DeliveryManifest, UserRole, CollectionLog, AppUser, RouteEntry, TransferActor } from '@/types';
-import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, findMixedStatusTransfers, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders, repairSingleTransferStorageOrder, reindexTransferStorageOrdersByDestination } from '@/app/actions';
+import type { TransferEntry, TransferStatus, DeliveryManifest, DeliveryManifestDraft, UserRole, CollectionLog, AppUser, RouteEntry, TransferActor } from '@/types';
+import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, findMixedStatusTransfers, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders, repairSingleTransferStorageOrder, reindexTransferStorageOrdersByDestination, getOpenDeliveryManifestDrafts, upsertDeliveryManifestDraft, closeDeliveryManifestDraft, discardDeliveryManifestDraft } from '@/app/actions';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -1054,6 +1054,16 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     // State for manifest creation tab
     const [manifestFilters, setManifestFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' });
     const [scanInput, setScanInput] = useState('');
+    const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
+    const [activeDraftNumber, setActiveDraftNumber] = useState<number | null>(null);
+    const [openDrafts, setOpenDrafts] = useState<DeliveryManifestDraft[]>([]);
+    const [draftSaveStatus, setDraftSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('saved');
+    const [isLoadingDrafts, setIsLoadingDrafts] = useState(false);
+    const draftAutosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const skipDraftAutosaveRef = useRef(false);
+    const draftHydratedRef = useRef(false);
+    const activeDraftIdRef = useRef<string | null>(null);
+    activeDraftIdRef.current = activeDraftId;
     
     const [statusChangeState, setStatusChangeState] = useState<{ isOpen: boolean; transfer: TransferEntry | null }>({ isOpen: false, transfer: null });
     const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
@@ -1230,9 +1240,133 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         setIsLoadingManifests(false);
     }, []);
 
+    const applyManifestDraft = useCallback((draft: DeliveryManifestDraft, eligibleIds?: Set<string>) => {
+        skipDraftAutosaveRef.current = true;
+        const ids = (draft.transferIds || []).filter((id) => !eligibleIds || eligibleIds.has(id));
+        setActiveDraftId(draft.id);
+        setActiveDraftNumber(draft.draftNumber);
+        setSelectedForManifest(new Set(ids));
+        setManifestDetails({
+            resource: draft.resource || '',
+            driver: draft.driver || '',
+            assistants: draft.assistants || '',
+        });
+        setDraftSaveStatus('saved');
+    }, []);
+
+    const refreshOpenDrafts = useCallback(async () => {
+        setIsLoadingDrafts(true);
+        const result = await getOpenDeliveryManifestDrafts();
+        if (result.success && result.data) {
+            setOpenDrafts(result.data);
+            return result.data;
+        }
+        return [] as DeliveryManifestDraft[];
+    }, []);
+
+    const handleStartNewManifestDraft = useCallback(() => {
+        skipDraftAutosaveRef.current = true;
+        setActiveDraftId(null);
+        setActiveDraftNumber(null);
+        setSelectedForManifest(new Set());
+        setManifestDetails({ resource: '', driver: '', assistants: '' });
+        setDraftSaveStatus('saved');
+        toast({
+            title: 'Nuevo cargue',
+            description: 'Al escanear la primera TF se creará un borrador con consecutivo.',
+        });
+    }, [toast]);
+
+    const handleDiscardActiveDraft = useCallback(async () => {
+        if (activeDraftId) {
+            const result = await discardDeliveryManifestDraft(activeDraftId);
+            if (!result.success) {
+                toast({ variant: 'destructive', title: 'No se pudo descartar', description: result.error });
+                return;
+            }
+        }
+        skipDraftAutosaveRef.current = true;
+        setActiveDraftId(null);
+        setActiveDraftNumber(null);
+        setSelectedForManifest(new Set());
+        setManifestDetails({ resource: '', driver: '', assistants: '' });
+        setDraftSaveStatus('saved');
+        await refreshOpenDrafts();
+        toast({ title: 'Borrador descartado', description: 'La selección de cargue se limpió.' });
+    }, [activeDraftId, refreshOpenDrafts, toast]);
+
     useEffect(() => {
         fetchManifestData();
     }, [fetchManifestData]);
+
+    // Restaurar borradores abiertos al entrar (sobrevive salir del módulo)
+    useEffect(() => {
+        if (draftHydratedRef.current) return;
+        draftHydratedRef.current = true;
+        (async () => {
+            const drafts = await refreshOpenDrafts();
+            if (!drafts.length) return;
+            const preferred =
+                drafts.find((d) => d.createdBy && user?.uid && d.createdBy === user.uid) || drafts[0];
+            applyManifestDraft(preferred);
+            toast({
+                title: `Borrador #${preferred.draftNumber} restaurado`,
+                description: `${preferred.transferIds?.length || 0} línea(s) de cargue recuperadas. Puede continuar o descartar.`,
+            });
+        })();
+    }, [applyManifestDraft, refreshOpenDrafts, toast, user?.uid]);
+
+    // Autoguardado del cargue en curso
+    useEffect(() => {
+        if (skipDraftAutosaveRef.current) {
+            skipDraftAutosaveRef.current = false;
+            return;
+        }
+        const currentDraftId = activeDraftIdRef.current;
+        const hasContent =
+            selectedForManifest.size > 0 ||
+            Boolean(manifestDetails.resource?.trim()) ||
+            Boolean(manifestDetails.driver?.trim()) ||
+            Boolean(currentDraftId);
+        if (!hasContent) return;
+
+        setDraftSaveStatus('idle');
+        if (draftAutosaveTimer.current) clearTimeout(draftAutosaveTimer.current);
+        draftAutosaveTimer.current = setTimeout(async () => {
+            setDraftSaveStatus('saving');
+            const result = await upsertDeliveryManifestDraft({
+                id: activeDraftIdRef.current || undefined,
+                transferIds: Array.from(selectedForManifest),
+                resource: manifestDetails.resource,
+                driver: manifestDetails.driver,
+                assistants: manifestDetails.assistants,
+                createdBy: user?.uid,
+                createdByName: userName || user?.email || undefined,
+            });
+            if (result.success && result.id) {
+                setActiveDraftId(result.id);
+                activeDraftIdRef.current = result.id;
+                if (typeof result.draftNumber === 'number') setActiveDraftNumber(result.draftNumber);
+                setDraftSaveStatus('saved');
+                void refreshOpenDrafts();
+            } else {
+                setDraftSaveStatus('error');
+            }
+        }, 900);
+
+        return () => {
+            if (draftAutosaveTimer.current) clearTimeout(draftAutosaveTimer.current);
+        };
+    }, [
+        selectedForManifest,
+        manifestDetails.resource,
+        manifestDetails.driver,
+        manifestDetails.assistants,
+        user?.uid,
+        user?.email,
+        userName,
+        refreshOpenDrafts,
+    ]);
 
     const filteredTransfers = useMemo(() => {
         const base = transfers.filter(t =>
@@ -1347,11 +1481,19 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             }
         }, actor);
         if (result.success) {
+            if (activeDraftId) {
+                await closeDeliveryManifestDraft(activeDraftId);
+            }
             toast({ title: 'Manifiesto Creado', description: 'La relación de entrega ha sido guardada.' });
             onRefresh();
+            skipDraftAutosaveRef.current = true;
             setSelectedForManifest(new Set());
+            setActiveDraftId(null);
+            setActiveDraftNumber(null);
+            setManifestDetails({ resource: '', driver: '', assistants: '' });
             setIsCreateManifestOpen(false);
-            fetchManifestData(); // Refresh the manifest history tab
+            fetchManifestData();
+            void refreshOpenDrafts();
         } else {
             toast({ variant: 'destructive', title: 'Error al Crear', description: result.error });
         }
@@ -1989,10 +2131,93 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             <TabsContent value="manifest" className="mt-6">
                 <Card>
                     <CardHeader>
-                        <CardTitle>Crear Relación de Entrega (Manifiesto)</CardTitle>
-                        <CardDescription>Seleccione las transferencias recibidas en bodega para generar un nuevo manifiesto de despacho.</CardDescription>
+                        <CardTitle className="flex flex-wrap items-center gap-2">
+                            Crear Relación de Entrega (Manifiesto)
+                            {activeDraftNumber != null && (
+                                <Badge variant="secondary">Borrador #{activeDraftNumber}</Badge>
+                            )}
+                        </CardTitle>
+                        <CardDescription>
+                            Seleccione o escanee transferencias recibidas. El cargue se autoguarda con consecutivo;
+                            si sale del módulo puede retomar el borrador.
+                        </CardDescription>
+                        <div className="flex flex-wrap items-center gap-2 pt-2 text-xs">
+                            {draftSaveStatus === 'saving' && (
+                                <span className="flex items-center gap-1 text-primary">
+                                    <Loader2 className="h-3 w-3 animate-spin" /> Guardando borrador...
+                                </span>
+                            )}
+                            {draftSaveStatus === 'saved' && (activeDraftId || selectedForManifest.size > 0) && (
+                                <span className="flex items-center gap-1 text-green-600">
+                                    <CheckCircle2 className="h-3 w-3" /> Cargue guardado
+                                </span>
+                            )}
+                            {draftSaveStatus === 'idle' && (
+                                <span className="flex items-center gap-1 text-orange-500">Cambios pendientes...</span>
+                            )}
+                            {draftSaveStatus === 'error' && (
+                                <span className="flex items-center gap-1 text-red-600">
+                                    <AlertCircle className="h-3 w-3" /> Error al autoguardar
+                                </span>
+                            )}
+                            {isLoadingDrafts && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+                        </div>
                     </CardHeader>
                     <CardContent>
+                       {(openDrafts.length > 0 || activeDraftId) && (
+                         <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 p-3 space-y-2">
+                           <p className="text-sm font-medium text-emerald-900">
+                             Borradores de cargue abiertos ({openDrafts.length})
+                           </p>
+                           <div className="flex flex-wrap gap-2">
+                             {openDrafts.map((d) => (
+                               <Button
+                                 key={d.id}
+                                 size="sm"
+                                 variant={d.id === activeDraftId ? 'default' : 'outline'}
+                                 onClick={() => {
+                                   applyManifestDraft(d);
+                                   toast({
+                                     title: `Borrador #${d.draftNumber}`,
+                                     description: `${d.transferIds?.length || 0} línea(s) · ${d.resource || 'sin placa'}`,
+                                   });
+                                 }}
+                               >
+                                 #{d.draftNumber}
+                                 {d.resource ? ` · ${d.resource}` : ''}
+                                 {` (${d.transferIds?.length || 0})`}
+                               </Button>
+                             ))}
+                             <Button size="sm" variant="secondary" onClick={handleStartNewManifestDraft}>
+                               <Plus className="mr-1 h-3 w-3" /> Nuevo cargue
+                             </Button>
+                             {(activeDraftId || selectedForManifest.size > 0) && (
+                               <AlertDialog>
+                                 <AlertDialogTrigger asChild>
+                                   <Button size="sm" variant="destructive">
+                                     <Trash2 className="mr-1 h-3 w-3" /> Descartar actual
+                                   </Button>
+                                 </AlertDialogTrigger>
+                                 <AlertDialogContent>
+                                   <AlertDialogHeader>
+                                     <AlertDialogTitle>¿Descartar borrador de cargue?</AlertDialogTitle>
+                                     <AlertDialogDescription>
+                                       Se eliminará el borrador
+                                       {activeDraftNumber != null ? ` #${activeDraftNumber}` : ''} y la selección actual.
+                                     </AlertDialogDescription>
+                                   </AlertDialogHeader>
+                                   <AlertDialogFooter>
+                                     <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                     <AlertDialogAction onClick={() => void handleDiscardActiveDraft()}>
+                                       Descartar
+                                     </AlertDialogAction>
+                                   </AlertDialogFooter>
+                                 </AlertDialogContent>
+                               </AlertDialog>
+                             )}
+                           </div>
+                         </div>
+                       )}
                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
                          <div className="md:col-span-2 space-y-4">
                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">

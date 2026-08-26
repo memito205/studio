@@ -407,6 +407,7 @@ export type TransferStatus = 'En Tránsito' | 'Recolectado en Ruta' | 'Entregado
 export type TfPlatformEstado =
   | 'ENTREGADO'
   | 'EN RUTA HOY'
+  | 'RECOLECTADO EN RUTA'
   | 'EN BODEGA'
   | 'VALIDAR CON AMBAS TIENDAS';
 
@@ -418,6 +419,10 @@ export interface TfPlatformStatusRecord {
   bodegaOrigen?: string;
   estadoPlataforma: TfPlatformEstado;
   evidenceLinks: string[];
+  /** Placa/recurso de entrega (Excel Paso 2 rutas) */
+  placaEntrega?: string;
+  /** Placa de recolección (misma fila del Excel Paso 2) */
+  placaRecoleccion?: string;
   fechaDocumento?: Date | null;
   fechaFinalizado?: Date | null;
   cantidad: number;
@@ -485,6 +490,21 @@ export interface DeliveryManifest {
         totalTransfers: number;
         destinations: { [key: string]: number };
     };
+}
+
+/** Borrador de cargue / relación de entrega (autoguardado antes de confirmar). */
+export interface DeliveryManifestDraft {
+  id: string;
+  draftNumber: number;
+  status: 'open' | 'closed';
+  transferIds: string[];
+  resource?: string;
+  driver?: string;
+  assistants?: string;
+  createdBy?: string;
+  createdByName?: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface CollectionLog {

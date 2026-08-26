@@ -221,6 +221,7 @@ const PendingDocsAnalysisTable: React.FC<PendingDocsAnalysisTableProps> = ({ rep
                                                                                                         const isInRoute = doc.enRuta === 'ESTA EN RUTA';
                                                                                                         const isDelivered = doc.enRuta === 'FUE ENTREGADA';
                                                                                                         const isTodayRoute = doc.enRuta === 'EN RUTA HOY';
+                                                                                                        const isCollectedOnRoute = doc.enRuta === 'RECOLECTADO EN RUTA';
                                                                                                         const isInCharge = doc.enRuta === 'EN CARGUE';
                                                                                                         return (
                                                                                                             <tr key={`${doc.docNumber}-${docIndex}`}>
@@ -231,12 +232,13 @@ const PendingDocsAnalysisTable: React.FC<PendingDocsAnalysisTableProps> = ({ rep
                                                                                                                 <td className={`px-3 py-2 whitespace-nowrap text-sm flex items-center ${
                                                                                                                     isInCharge ? 'text-cyan-600 font-semibold' :
                                                                                                                     isTodayRoute ? 'text-purple-600 font-semibold' :
+                                                                                                                    isCollectedOnRoute ? 'text-violet-600 font-semibold' :
                                                                                                                     isPlaceholder ? 'text-gray-500 italic' : 
                                                                                                                     isWarehouse ? 'text-blue-600 font-semibold' : 
                                                                                                                     isInRoute ? 'text-teal-600 font-semibold' : 
                                                                                                                     isDelivered ? 'text-green-600 font-semibold' : 'text-gray-700'
                                                                                                                 }`}>
-                                                                                                                    {(isInRoute || isTodayRoute) && <TruckIcon className="h-4 w-4 mr-1.5 flex-shrink-0"/>}
+                                                                                                                    {(isInRoute || isTodayRoute || isCollectedOnRoute) && <TruckIcon className="h-4 w-4 mr-1.5 flex-shrink-0"/>}
                                                                                                                     {isDelivered && <CheckCircleIcon className="h-4 w-4 mr-1.5 flex-shrink-0"/>}
                                                                                                                     {isInCharge && <PackageIcon className="h-4 w-4 mr-1.5 flex-shrink-0"/>}
                                                                                                                     {doc.enRuta}

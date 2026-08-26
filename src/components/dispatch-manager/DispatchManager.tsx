@@ -15,7 +15,8 @@ import {
   ArrowLeft,
   UploadCloud,
   ChevronsUpDown,
-  Save
+  Save,
+  AlertTriangle
 } from 'lucide-react';
 import type { MerchandiseItem, TFTItem, VerificationItem, SavedVerification } from '@/types';
 import { parseMerchandiseExcel, exportToExcel, normalizeDestination } from './utils/excel';
@@ -23,6 +24,7 @@ import { generatePDF } from './utils/pdf';
 import { format } from 'date-fns';
 import { cn } from './utils/cn';
 import VerificationModule from './components/VerificationModule';
+import DuplicateVerificationAlerts from './DuplicateVerificationAlerts';
 import { useAuth } from '@/hooks/use-auth-context';
 import VerificationHistory from './components/VerificationHistory';
 import { useToast } from '@/hooks/use-toast';
@@ -99,7 +101,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
   const isSupervisor = role === 'supervisor';
 
   const { toast } = useToast();
-  const [activeModule, setActiveModule] = useState<'cruce' | 'verificacion' | 'historial'>(isAdmin ? 'cruce' : 'verificacion');
+  const [activeModule, setActiveModule] = useState<'cruce' | 'verificacion' | 'historial' | 'alertas'>(isAdmin ? 'cruce' : 'verificacion');
   
   // State for 'cruce' module
   const [allMatchedData, setAllMatchedData] = useState<MerchandiseItem[]>([]);
@@ -594,6 +596,18 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                     <History size={14} />
                     Historial
                 </button>
+                <button
+                    onClick={() => setActiveModule('alertas')}
+                    className={cn(
+                    "flex items-center gap-2 px-4 py-2  text-[10px]  transition-all",
+                    activeModule === 'alertas'
+                        ? "bg-white text-foreground shadow-md" 
+                        : "hover:bg-white/10 opacity-60"
+                    )}
+                >
+                    <AlertTriangle size={14} />
+                    TF repetidas
+                </button>
               </div>
             )}
             
@@ -878,9 +892,32 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
             )}
             {activeModule === 'verificacion' && <VerificationModule />}
             {activeModule === 'historial' && <VerificationHistory />}
+            {activeModule === 'alertas' && <DuplicateVerificationAlerts />}
           </>
         ) : (
-          <VerificationModule />
+          <div className="space-y-6">
+            <div className="flex bg-muted p-1 rounded-md w-fit gap-1">
+              <button
+                onClick={() => setActiveModule('verificacion')}
+                className={cn(
+                  'px-3 py-1.5 text-xs rounded',
+                  activeModule === 'verificacion' ? 'bg-white shadow font-semibold' : 'opacity-60'
+                )}
+              >
+                Verificación
+              </button>
+              <button
+                onClick={() => setActiveModule('alertas')}
+                className={cn(
+                  'px-3 py-1.5 text-xs rounded flex items-center gap-1',
+                  activeModule === 'alertas' ? 'bg-white shadow font-semibold' : 'opacity-60'
+                )}
+              >
+                <AlertTriangle size={12} /> TF repetidas
+              </button>
+            </div>
+            {activeModule === 'alertas' ? <DuplicateVerificationAlerts /> : <VerificationModule />}
+          </div>
         )}
       </main>
 

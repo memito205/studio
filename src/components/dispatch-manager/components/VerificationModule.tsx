@@ -15,11 +15,17 @@ import {
   Save,
   Loader2,
   PlayCircle,
-  ArrowLeft
+  ArrowLeft,
+  AlertTriangle
 } from 'lucide-react';
 import type { VerificationItem, SavedVerification } from '@/types';
 import { parseVerificationExcel, exportVerificationToExcel } from '@/components/dispatch-manager/utils/excel';
 import { cn } from '@/components/dispatch-manager/utils/cn';
+import {
+  buildTfVerificationIndex,
+  getOtherSessionsForTf,
+  normalizeTfKey,
+} from '@/components/dispatch-manager/utils/duplicateVerifications';
 import { saveVerificationSession, loadVerificationSessions, updateVerificationSession } from '@/app/actions';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
@@ -81,14 +87,16 @@ const SaveVerificationDialog: React.FC<{
 
 const ScanningInterface: React.FC<{
   session: SavedVerification;
+  allSessions: SavedVerification[];
   onBack: () => void;
-}> = ({ session, onBack }) => {
+}> = ({ session, allSessions, onBack }) => {
   const [data, setData] = useState<VerificationItem[]>(session.results);
   const [scanInput, setScanInput] = useState('');
   const [lastScanStatus, setLastScanStatus] = useState<{
-    type: 'success' | 'error' | 'duplicate';
+    type: 'success' | 'error' | 'duplicate' | 'multi-session';
     message: string;
     code: string;
+    detail?: string;
   } | null>(null);
   
   const [isSaving, setIsSaving] = useState(false);
@@ -99,6 +107,20 @@ const ScanningInterface: React.FC<{
   const { toast } = useToast();
   
   const [filters, setFilters] = useState({ codigo: '', destino: '', tft: '', status: 'all' });
+
+  const tfIndex = useMemo(() => buildTfVerificationIndex(allSessions), [allSessions]);
+
+  const sessionDuplicateCount = useMemo(() => {
+    let count = 0;
+    const seen = new Set<string>();
+    data.forEach((item) => {
+      const key = normalizeTfKey(item.tftCruce) || normalizeTfKey(item.tfOriginal);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      if (getOtherSessionsForTf(tfIndex, key, session.id).length > 0) count += 1;
+    });
+    return count;
+  }, [data, tfIndex, session.id]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -166,10 +188,30 @@ const ScanningInterface: React.FC<{
         variant: 'default',
       });
     } else {
+      const item = data[index];
+      const tfKey = normalizeTfKey(item.tftCruce) || normalizeTfKey(item.tfOriginal);
+      const otherHits = tfKey ? getOtherSessionsForTf(tfIndex, tfKey, session.id) : [];
+
       const newData = [...data];
       newData[index] = { ...newData[index], scanned: true, scanTime: new Date() };
       setData(newData);
-      setLastScanStatus({ type: 'success', message: '¡CÓDIGO VALIDADO!', code });
+
+      if (otherHits.length > 0) {
+        const otherNames = otherHits.map((h) => h.sessionName).join(', ');
+        setLastScanStatus({
+          type: 'multi-session',
+          message: '¡ALERTA: TF EN OTRA VALIDACIÓN!',
+          code,
+          detail: `TF ${tfKey} también está en: ${otherNames}. Posible no despacho en la primera oportunidad.`,
+        });
+        toast({
+          title: 'TF en múltiples validaciones',
+          description: `TF ${tfKey} aparece también en: ${otherNames}`,
+          variant: 'destructive',
+        });
+      } else {
+        setLastScanStatus({ type: 'success', message: '¡CÓDIGO VALIDADO!', code });
+      }
       setSaveStatus('idle'); // Trigger auto-save
     }
     setScanInput('');
@@ -263,10 +305,30 @@ const ScanningInterface: React.FC<{
                 </div>
             </CardContent>
           </Card>
+           {sessionDuplicateCount > 0 && (
+                <div className="p-4 border-l-4 rounded-md bg-amber-50 border-amber-600 text-amber-900">
+                    <p className="font-bold text-sm uppercase flex items-center gap-2">
+                      <AlertTriangle className="h-4 w-4" />
+                      {sessionDuplicateCount} TF(s) de esta sesión también están en otras validaciones
+                    </p>
+                    <p className="text-xs mt-1 opacity-80">
+                      Revise el menú &quot;TF repetidas&quot; del Gestor de Despachos para el detalle.
+                    </p>
+                </div>
+            )}
            {lastScanStatus && (
-                <div className={cn("p-4 border-l-4 rounded-md", lastScanStatus.type === 'success' && "bg-green-50 border-green-600 text-green-800 dark:bg-green-900/20 dark:border-green-700 dark:text-green-300", lastScanStatus.type === 'error' && "bg-red-50 border-red-600 text-red-800 dark:bg-red-900/20 dark:border-red-700 dark:text-red-300", lastScanStatus.type === 'duplicate' && "bg-orange-50 border-orange-600 text-orange-800 dark:bg-orange-900/20 dark:border-orange-700 dark:text-orange-300")}>
+                <div className={cn(
+                  "p-4 border-l-4 rounded-md",
+                  lastScanStatus.type === 'success' && "bg-green-50 border-green-600 text-green-800 dark:bg-green-900/20 dark:border-green-700 dark:text-green-300",
+                  lastScanStatus.type === 'error' && "bg-red-50 border-red-600 text-red-800 dark:bg-red-900/20 dark:border-red-700 dark:text-red-300",
+                  lastScanStatus.type === 'duplicate' && "bg-orange-50 border-orange-600 text-orange-800 dark:bg-orange-900/20 dark:border-orange-700 dark:text-orange-300",
+                  lastScanStatus.type === 'multi-session' && "bg-amber-50 border-amber-700 text-amber-950"
+                )}>
                     <p className="font-bold text-sm uppercase">{lastScanStatus.message}</p>
                     <p className=" text-xs mt-1 opacity-70">Código: {lastScanStatus.code}</p>
+                    {lastScanStatus.detail && (
+                      <p className="text-xs mt-2 font-medium">{lastScanStatus.detail}</p>
+                    )}
                 </div>
             )}
             <Card>
@@ -328,15 +390,36 @@ const ScanningInterface: React.FC<{
             <Table>
                 <TableHeader className="sticky top-0 bg-secondary z-10"><TableRow><TableHead>Estado</TableHead><TableHead>Código</TableHead><TableHead>Destino</TableHead><TableHead>TFT</TableHead><TableHead>Cant.</TableHead></TableRow></TableHeader>
                 <TableBody>
-                    {filteredData.map((item, idx) => (
-                    <TableRow key={item.codigo + idx} className={cn(item.scanned && "bg-green-100/50 dark:bg-green-900/20")}>
-                        <TableCell>{item.scanned ? <Badge variant="success">LISTO</Badge> : <Badge variant="outline">PENDIENTE</Badge>}</TableCell>
+                    {filteredData.map((item, idx) => {
+                    const tfKey = normalizeTfKey(item.tftCruce) || normalizeTfKey(item.tfOriginal);
+                    const multiSession = tfKey
+                      ? getOtherSessionsForTf(tfIndex, tfKey, session.id).length > 0
+                      : false;
+                    return (
+                    <TableRow
+                      key={item.codigo + idx}
+                      className={cn(
+                        item.scanned && "bg-green-100/50 dark:bg-green-900/20",
+                        multiSession && "bg-amber-50 dark:bg-amber-950/30"
+                      )}
+                    >
+                        <TableCell>
+                          <div className="flex flex-col gap-1 items-start">
+                            {item.scanned ? <Badge variant="success">LISTO</Badge> : <Badge variant="outline">PENDIENTE</Badge>}
+                            {multiSession && (
+                              <Badge variant="destructive" className="text-[9px]">
+                                Multi-validación
+                              </Badge>
+                            )}
+                          </div>
+                        </TableCell>
                         <TableCell className=" text-xs font-bold">{item.codigo}</TableCell>
                         <TableCell className="text-xs">{item.destino}</TableCell>
                         <TableCell className=" text-xs opacity-60">{item.tftCruce}</TableCell>
                         <TableCell className="text-center font-medium">{item.cantTft}</TableCell>
                     </TableRow>
-                    ))}
+                    );
+                    })}
                 </TableBody>
             </Table>
             </ScrollArea>
@@ -486,7 +569,16 @@ export default function VerificationModule() {
   }
 
   if (activeSession) {
-    return <ScanningInterface session={activeSession} onBack={() => { setActiveSession(null); fetchSessions(); }} />;
+    return (
+      <ScanningInterface
+        session={activeSession}
+        allSessions={sessions}
+        onBack={() => {
+          setActiveSession(null);
+          fetchSessions();
+        }}
+      />
+    );
   }
   
   if (isAdmin) {

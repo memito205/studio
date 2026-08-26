@@ -18,6 +18,8 @@ const statusBadge = (status: string) => {
       return <Badge className="bg-green-600 hover:bg-green-600">ENTREGADO</Badge>;
     case 'EN RUTA HOY':
       return <Badge className="bg-blue-600 hover:bg-blue-600">EN RUTA HOY</Badge>;
+    case 'RECOLECTADO EN RUTA':
+      return <Badge className="bg-violet-600 hover:bg-violet-600">RECOLECTADO EN RUTA</Badge>;
     case 'EN BODEGA':
       return <Badge className="bg-amber-500 hover:bg-amber-500 text-white">EN BODEGA</Badge>;
     case 'VALIDAR CON AMBAS TIENDAS':
@@ -89,7 +91,8 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
           <div>
             <h1 className="text-2xl font-bold">Consulta Estado TF (Plataforma)</h1>
             <p className="text-sm text-muted-foreground">
-              Solo estado plataforma: entregado, en ruta hoy, en bodega o validar — con evidencias si existen.
+              Solo estado plataforma: entregado, en ruta hoy, recolectado en ruta, en bodega o validar —
+              con placas y evidencias si existen.
             </p>
           </div>
         </div>
@@ -179,6 +182,14 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
                   <div>
                     <p className="text-muted-foreground">Bodega destino</p>
                     <p className="font-medium">{row.bodegaDestino}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Placa entrega</p>
+                    <p className="font-medium">{row.placaEntrega || 'N/D'}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Placa recolección</p>
+                    <p className="font-medium">{row.placaRecoleccion || 'N/D'}</p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">Cantidad</p>

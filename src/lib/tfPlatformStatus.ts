@@ -1,4 +1,6 @@
 import type { TfPlatformEstado, TfPlatformStatusRecord } from '@/types';
+import type { AnalyzerRouteMatch } from '@/components/LogisticsPlatform/utils/helpers';
+import { getRouteMatchInfo, getRouteMatchStatus } from '@/components/LogisticsPlatform/utils/helpers';
 
 export type AnalyzerRowInput = Record<string, any>;
 
@@ -21,6 +23,8 @@ const statusPriority = (status: string): number => {
       return 40;
     case 'EN RUTA HOY':
       return 30;
+    case 'RECOLECTADO EN RUTA':
+      return 25;
     case 'EN BODEGA':
       return 20;
     case 'VALIDAR CON AMBAS TIENDAS':
@@ -49,8 +53,9 @@ const classifyRow = (
     fechaFinalizado?: string;
     image?: string;
   },
-  routeStatusMap: Map<string, string>,
-  receivedInWarehouseKeys: Set<string> = new Set()
+  routeStatusMap: Map<string, AnalyzerRouteMatch | string>,
+  receivedInWarehouseKeys: Set<string> = new Set(),
+  collectedOnRouteKeys: Set<string> = new Set()
 ): TfPlatformEstado => {
   const platVal = String(row[fields.estadoPlataforma || 'estadoPlataforma'] || row['estadoPlataforma'] || '')
     .trim()
@@ -65,8 +70,9 @@ const classifyRow = (
   const tf = normalizeDocId(row[fields.doc]);
   const whs = normalizeWarehouse(row[fields.warehouse]);
   const routeKey = tf && whs ? `${tf}|${whs}` : '';
-  const routeStatus = routeKey ? routeStatusMap.get(routeKey) : undefined;
+  const routeStatus = routeKey ? getRouteMatchStatus(routeStatusMap, routeKey) : undefined;
   const receivedInWarehouse = routeKey ? receivedInWarehouseKeys.has(routeKey) : false;
+  const collectedOnRoute = routeKey ? collectedOnRouteKeys.has(routeKey) : false;
 
   if (platVal === 'ENTREGADO' || platVal === 'FINALIZADO' || hasImage || hasFechaFin) {
     return 'ENTREGADO';
@@ -80,6 +86,12 @@ const classifyRow = (
     routeStatus === 'EN CARGUE'
   ) {
     return 'EN RUTA HOY';
+  }
+  if (
+    platVal === 'RECOLECTADO EN RUTA' ||
+    collectedOnRoute
+  ) {
+    return 'RECOLECTADO EN RUTA';
   }
   if (
     bodegaVal === 'EN BODEGA' ||
@@ -110,9 +122,10 @@ export function buildTfPlatformStatusRecords(
     fechaFinalizado?: string;
     image?: string;
   },
-  routeStatusMap: Map<string, string> = new Map(),
+  routeStatusMap: Map<string, AnalyzerRouteMatch | string> = new Map(),
   updatedBy?: string,
-  receivedInWarehouseKeys: Set<string> | string[] = new Set()
+  receivedInWarehouseKeys: Set<string> | string[] = new Set(),
+  collectedOnRouteKeys: Set<string> | string[] = new Set()
 ): Omit<TfPlatformStatusRecord, 'updatedAt'>[] {
   if (!columnMap.doc || !columnMap.warehouse) return [];
 
@@ -120,6 +133,10 @@ export function buildTfPlatformStatusRecords(
     receivedInWarehouseKeys instanceof Set
       ? receivedInWarehouseKeys
       : new Set(receivedInWarehouseKeys || []);
+  const collectedSet =
+    collectedOnRouteKeys instanceof Set
+      ? collectedOnRouteKeys
+      : new Set(collectedOnRouteKeys || []);
 
   const map = new Map<string, Omit<TfPlatformStatusRecord, 'updatedAt'> & { _priority: number }>();
 
@@ -141,7 +158,8 @@ export function buildTfPlatformStatusRecords(
         image: columnMap.image,
       },
       routeStatusMap,
-      receivedSet
+      receivedSet,
+      collectedSet
     );
     const links = extractEvidenceLinks(row, columnMap.image);
     const marca = columnMap.marca ? String(row[columnMap.marca] || '').trim() : '';
@@ -154,6 +172,10 @@ export function buildTfPlatformStatusRecords(
     const fechaFinalizado =
       row[columnMap.fechaFinalizado || 'fechaFinalizado'] || row['fechaFinalizado'] || null;
 
+    const routeInfo = getRouteMatchInfo(routeStatusMap, `${numeroTF}|${bodegaDestino}`);
+    const placaEntrega = routeInfo?.placaEntrega;
+    const placaRecoleccion = routeInfo?.placaRecoleccion;
+
     const existing = map.get(id);
     if (!existing) {
       map.set(id, {
@@ -163,6 +185,8 @@ export function buildTfPlatformStatusRecords(
         bodegaOrigen,
         estadoPlataforma: estado,
         evidenceLinks: links,
+        placaEntrega,
+        placaRecoleccion,
         fechaDocumento: fechaDocumento instanceof Date ? fechaDocumento : fechaDocumento || null,
         fechaFinalizado: fechaFinalizado instanceof Date ? fechaFinalizado : fechaFinalizado || null,
         cantidad: qty,
@@ -177,6 +201,8 @@ export function buildTfPlatformStatusRecords(
 
     existing.cantidad += qty;
     if (bodegaOrigen && !existing.bodegaOrigen) existing.bodegaOrigen = bodegaOrigen;
+    if (placaEntrega && !existing.placaEntrega) existing.placaEntrega = placaEntrega;
+    if (placaRecoleccion && !existing.placaRecoleccion) existing.placaRecoleccion = placaRecoleccion;
     if (marca) {
       const parts = (existing.marca || '').split(',').map((p) => p.trim()).filter(Boolean);
       if (!parts.includes(marca)) existing.marca = parts.length ? `${parts.join(', ')}, ${marca}` : marca;

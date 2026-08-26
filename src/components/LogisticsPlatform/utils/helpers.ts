@@ -114,6 +114,39 @@ export const normalizeDocId = (val: any): string => {
     return digitsOnly ? String(Number(digitsOnly)) : '';
 };
 
+/** Info de cruce Paso 2 (rutas hoy) — status + placas opcionales. */
+export type AnalyzerRouteMatch = {
+  status: string;
+  placaEntrega?: string;
+  placaRecoleccion?: string;
+};
+
+export const getRouteMatchStatus = (
+  map: Map<string, AnalyzerRouteMatch | string> | undefined,
+  key: string
+): string | undefined => {
+  if (!map || !key) return undefined;
+  const v = map.get(key);
+  if (!v) return undefined;
+  return typeof v === 'string' ? v : v.status;
+};
+
+export const getRouteMatchInfo = (
+  map: Map<string, AnalyzerRouteMatch | string> | undefined,
+  key: string
+): AnalyzerRouteMatch | undefined => {
+  if (!map || !key) return undefined;
+  const v = map.get(key);
+  if (!v) return undefined;
+  if (typeof v === 'string') return { status: v };
+  return v;
+};
+
+export const normalizePlate = (val: any): string | undefined => {
+  const s = String(val || '').trim().toUpperCase();
+  return s || undefined;
+};
+
 /** Clave de cruce TF + almacén destino (misma TF puede ir a destinos distintos). */
 export const buildTfWarehouseKey = (tf: any, warehouse: any): string => {
     const doc = normalizeDocId(tf);

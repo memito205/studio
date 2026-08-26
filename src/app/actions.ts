@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem } from "@/types";
+import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DeliveryManifestDraft, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -3983,6 +3983,8 @@ export async function persistTfPlatformStatuses(
         bodegaOrigen?: string;
         estadoPlataforma: string;
         evidenceLinks: string[];
+        placaEntrega?: string;
+        placaRecoleccion?: string;
         fechaDocumento?: any;
         fechaFinalizado?: any;
         cantidad: number;
@@ -4098,6 +4100,30 @@ export async function getTfKeysReceivedInWarehouse(): Promise<{ keys?: string[];
         return { keys: Array.from(keys) };
     } catch (error: any) {
         console.error('Error getTfKeysReceivedInWarehouse:', error);
+        return { error: error.message };
+    }
+}
+
+/** Claves TF|DESTINO con status operativo Recolectado en Ruta. */
+export async function getTfKeysCollectedOnRoute(): Promise<{ keys?: string[]; error?: string }> {
+    try {
+        const q = query(
+            collection(firestore, 'transfers'),
+            where('status', '==', 'Recolectado en Ruta'),
+            limit(2000)
+        );
+        const snap = await getDocs(q);
+        const keys = new Set<string>();
+        snap.docs.forEach((d) => {
+            const raw = d.data() as any;
+            const digits = String(raw.numeroTF || '').replace(/\D/g, '');
+            const tf = digits ? String(Number(digits)) : '';
+            const whs = String(raw.bodegaDestino || '').trim().toUpperCase();
+            if (tf && whs) keys.add(`${tf}|${whs}`);
+        });
+        return { keys: Array.from(keys) };
+    } catch (error: any) {
+        console.error('Error getTfKeysCollectedOnRoute:', error);
         return { error: error.message };
     }
 }
@@ -4647,6 +4673,128 @@ export async function getDeliveryManifests(): Promise<{ success: boolean; data?:
     } catch (error: any) {
         console.error("Error loading delivery manifests:", error);
         return { success: false, error: `Failed to load manifests: ${error.message}` };
+    }
+}
+
+const MANIFEST_DRAFTS_COLLECTION = 'deliveryManifestDrafts';
+
+/** Lista borradores abiertos de relación de entrega (cargue en curso). */
+export async function getOpenDeliveryManifestDrafts(): Promise<{
+    success: boolean;
+    data?: DeliveryManifestDraft[];
+    error?: string;
+}> {
+    try {
+        const q = query(
+            collection(firestore, MANIFEST_DRAFTS_COLLECTION),
+            where('status', '==', 'open'),
+            limit(50)
+        );
+        const snap = await getDocs(q);
+        const data = snap.docs
+            .map((d) => convertTimestampsToDates({ id: d.id, ...d.data() }) as DeliveryManifestDraft)
+            .sort((a, b) => {
+                const ta = a.updatedAt instanceof Date ? a.updatedAt.getTime() : 0;
+                const tb = b.updatedAt instanceof Date ? b.updatedAt.getTime() : 0;
+                return tb - ta;
+            });
+        return { success: true, data };
+    } catch (error: any) {
+        console.error('Error loading delivery manifest drafts:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * Crea o actualiza un borrador de cargue. Asigna consecutivo en la primera creación.
+ * Si transferIds queda vacío y hay id, igual persiste (permite reabrir y seguir).
+ */
+export async function upsertDeliveryManifestDraft(payload: {
+    id?: string;
+    transferIds: string[];
+    resource?: string;
+    driver?: string;
+    assistants?: string;
+    createdBy?: string;
+    createdByName?: string;
+}): Promise<{ success: boolean; id?: string; draftNumber?: number; error?: string }> {
+    try {
+        const now = new Date();
+        if (payload.id) {
+            const ref = doc(firestore, MANIFEST_DRAFTS_COLLECTION, payload.id);
+            await updateDoc(
+                ref,
+                convertDatesToTimestamps({
+                    transferIds: payload.transferIds,
+                    resource: payload.resource || '',
+                    driver: payload.driver || '',
+                    assistants: payload.assistants || '',
+                    updatedAt: now,
+                    status: 'open',
+                })
+            );
+            const snap = await getDoc(ref);
+            const draftNumber = snap.exists() ? Number(snap.data()?.draftNumber || 0) : undefined;
+            return { success: true, id: payload.id, draftNumber };
+        }
+
+        const counterRef = doc(firestore, 'counters', 'manifestDraftCounter');
+        const draftRef = doc(collection(firestore, MANIFEST_DRAFTS_COLLECTION));
+        let draftNumber = 0;
+
+        await runTransaction(firestore, async (transaction) => {
+            const counterDoc = await transaction.get(counterRef);
+            draftNumber = (counterDoc.data()?.count || 0) + 1;
+            const draft: DeliveryManifestDraft = {
+                id: draftRef.id,
+                draftNumber,
+                status: 'open',
+                transferIds: payload.transferIds,
+                resource: payload.resource || '',
+                driver: payload.driver || '',
+                assistants: payload.assistants || '',
+                createdBy: payload.createdBy,
+                createdByName: payload.createdByName,
+                createdAt: now,
+                updatedAt: now,
+            };
+            transaction.set(draftRef, convertDatesToTimestamps(draft));
+            transaction.set(counterRef, { count: draftNumber }, { merge: true });
+        });
+
+        return { success: true, id: draftRef.id, draftNumber };
+    } catch (error: any) {
+        console.error('Error upserting delivery manifest draft:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function closeDeliveryManifestDraft(
+    draftId: string
+): Promise<{ success: boolean; error?: string }> {
+    try {
+        if (!draftId?.trim()) return { success: false, error: 'ID de borrador inválido.' };
+        await updateDoc(doc(firestore, MANIFEST_DRAFTS_COLLECTION, draftId), {
+            status: 'closed',
+            updatedAt: Timestamp.now(),
+        });
+        return { success: true };
+    } catch (error: any) {
+        console.error('Error closing delivery manifest draft:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function discardDeliveryManifestDraft(
+    draftId: string
+): Promise<{ success: boolean; error?: string }> {
+    try {
+        if (!draftId?.trim()) return { success: false, error: 'ID de borrador inválido.' };
+        await deleteDoc(doc(firestore, MANIFEST_DRAFTS_COLLECTION, draftId));
+        return { success: true };
+    } catch (error: any) {
+        console.error('Error discarding delivery manifest draft:', error);
+        return { success: false, error: error.message };
     }
 }
 
