@@ -1076,6 +1076,8 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     const [isPrinting, setIsPrinting] = useState(false);
     const [printMode, setPrintMode] = useState<'receive' | 'standalone'>('receive');
     const [repairingTransferId, setRepairingTransferId] = useState<string | null>(null);
+    const [transfersToPrint, setTransfersToPrint] = useState<GroupedTransfer[]>([]);
+    const [isBulkPrintReceiving, setIsBulkPrintReceiving] = useState(false);
 
     const [isLogOpen, setIsLogOpen] = useState(false);
     const [selectedTransferForLog, setSelectedTransferForLog] = useState<TransferEntry | null>(null);
@@ -1117,6 +1119,105 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             setIsLabelDialogOpen(false); // Close the dialog after everything
         }
     }, [onRefresh, toast, actor]);
+
+    /** Solo Consulta General: recibir + imprimir rótulos de varias TF seleccionadas. */
+    const handleBulkPrintAndReceiveGeneral = useCallback(async () => {
+        if (selectedForBulkStatus.size === 0) {
+            toast({
+                variant: 'destructive',
+                title: 'Sin selección',
+                description: 'Seleccione al menos una transferencia en Consulta General.',
+            });
+            return;
+        }
+
+        const selectedLines = transfers.filter((t) => selectedForBulkStatus.has(t.id));
+        const eligibleLines = selectedLines.filter(
+            (t) => t.status !== 'Enviado a Destino' && t.status !== 'Entregado en Ruta'
+        );
+        const skipped = selectedLines.length - eligibleLines.length;
+
+        if (eligibleLines.length === 0) {
+            toast({
+                variant: 'destructive',
+                title: 'Sin elegibles',
+                description:
+                    'Ninguna TF seleccionada se puede recibir (Enviado a Destino / Entregado en Ruta).',
+            });
+            return;
+        }
+
+        setIsBulkPrintReceiving(true);
+        try {
+            const ids = eligibleLines.map((t) => t.id);
+            const result = await batchUpdateTransferStatus(ids, 'Recibido en Bodega', actor);
+            if (!result.success) throw new Error(result.error || 'No se pudo actualizar el estado.');
+
+            const grouped = groupTransfersByTF(eligibleLines);
+            setTransfersToPrint(grouped);
+            setSelectedForBulkStatus(new Set());
+            onRefresh();
+            toast({
+                title: 'Recibido en Bodega',
+                description:
+                    `${grouped.length} TF(s) / ${ids.length} línea(s) marcadas como Recibido en Bodega.` +
+                    (skipped > 0 ? ` Se omitieron ${skipped} línea(s) no elegibles.` : '') +
+                    ' Generando rótulos…',
+            });
+        } catch (error: any) {
+            toast({ variant: 'destructive', title: 'Error', description: error.message });
+        } finally {
+            setIsBulkPrintReceiving(false);
+        }
+    }, [selectedForBulkStatus, transfers, actor, onRefresh, toast]);
+
+    useEffect(() => {
+        const generateBulkPdf = async () => {
+            if (transfersToPrint.length === 0 || isPrinting) return;
+
+            setIsPrinting(true);
+            try {
+                await new Promise((resolve) => setTimeout(resolve, 150));
+                const doc = new jsPDF({
+                    orientation: 'landscape',
+                    unit: 'cm',
+                    format: [10, 5],
+                });
+
+                for (let i = 0; i < transfersToPrint.length; i++) {
+                    const transfer = transfersToPrint[i];
+                    const input = document.getElementById(`transfer-label-to-print-${transfer.id}`);
+                    if (!input) {
+                        console.error(`Element for transfer ${transfer.id} not found!`);
+                        continue;
+                    }
+                    if (i > 0) doc.addPage();
+                    const canvas = await html2canvas(input, {
+                        scale: 3,
+                        useCORS: true,
+                        backgroundColor: '#ffffff',
+                    });
+                    const imgData = canvas.toDataURL('image/png');
+                    doc.addImage(imgData, 'PNG', 0, 0, 10, 5);
+                }
+
+                doc.autoPrint();
+                window.open(doc.output('bloburl'), '_blank');
+            } catch (error) {
+                console.error('Error generating bulk PDF:', error);
+                toast({
+                    variant: 'destructive',
+                    title: 'Error de Impresión',
+                    description: 'No se pudo generar el PDF de los rótulos.',
+                });
+            } finally {
+                setIsPrinting(false);
+                setTransfersToPrint([]);
+            }
+        };
+
+        void generateBulkPdf();
+    }, [transfersToPrint, isPrinting, toast]);
     
     const handlePrintLabelClick = (transfer: TransferEntry) => {
         setTransferForLabel(transfer);
@@ -1918,13 +2019,27 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                     <span className="ml-2 text-xs">({filteredTransfers.length})</span>
                                 )}
                             </Button>
-                            {isBulkStatusAdmin && selectedForBulkStatus.size > 0 && (
-                            <div className="flex items-center gap-2">
+                            {selectedForBulkStatus.size > 0 && (
+                            <div className="flex items-center gap-2 flex-wrap">
                                 <span className="text-xs text-muted-foreground">
                                     {bulkStatusSelectionCount.tfCount} TF(s) / {bulkStatusSelectionCount.lineCount} línea(s)
                                 </span>
                                 <Button
                                     size="sm"
+                                    onClick={() => void handleBulkPrintAndReceiveGeneral()}
+                                    disabled={isBulkPrintReceiving || isPrinting}
+                                >
+                                    {(isBulkPrintReceiving || isPrinting) ? (
+                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    ) : (
+                                        <Printer className="mr-2 h-4 w-4" />
+                                    )}
+                                    Imprimir y Recibir ({bulkStatusSelectionCount.tfCount})
+                                </Button>
+                                {isBulkStatusAdmin && (
+                                <Button
+                                    size="sm"
+                                    variant="secondary"
                                     onClick={() => {
                                         setBulkStatusDialogTab('selection');
                                         setIsBulkStatusDialogOpen(true);
@@ -1932,6 +2047,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                 >
                                     Cambiar estado seleccionadas
                                 </Button>
+                                )}
                                 <Button size="sm" variant="ghost" onClick={() => setSelectedForBulkStatus(new Set())}>
                                     Limpiar
                                 </Button>
@@ -1943,26 +2059,24 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                         <Table className="min-w-[1500px]">
                             <TableHeader>
                                  <TableRow>
-                                    {isBulkStatusAdmin && (
-                                        <TableHead className="w-[40px]">
-                                            <Checkbox
-                                                checked={
-                                                    groupedFilteredTransfers.length > 0 &&
-                                                    groupedFilteredTransfers.every((t) => t.allIds.every((id) => selectedForBulkStatus.has(id)))
+                                    <TableHead className="w-[40px]">
+                                        <Checkbox
+                                            checked={
+                                                groupedFilteredTransfers.length > 0 &&
+                                                groupedFilteredTransfers.every((t) => t.allIds.every((id) => selectedForBulkStatus.has(id)))
+                                            }
+                                            onCheckedChange={(checked) => {
+                                                const allIds = groupedFilteredTransfers.flatMap((t) => t.allIds);
+                                                if (checked) {
+                                                    setSelectedForBulkStatus(new Set([...selectedForBulkStatus, ...allIds]));
+                                                } else {
+                                                    const next = new Set(selectedForBulkStatus);
+                                                    allIds.forEach((id) => next.delete(id));
+                                                    setSelectedForBulkStatus(next);
                                                 }
-                                                onCheckedChange={(checked) => {
-                                                    const allIds = groupedFilteredTransfers.flatMap((t) => t.allIds);
-                                                    if (checked) {
-                                                        setSelectedForBulkStatus(new Set([...selectedForBulkStatus, ...allIds]));
-                                                    } else {
-                                                        const next = new Set(selectedForBulkStatus);
-                                                        allIds.forEach((id) => next.delete(id));
-                                                        setSelectedForBulkStatus(next);
-                                                    }
-                                                }}
-                                            />
-                                        </TableHead>
-                                    )}
+                                            }}
+                                        />
+                                    </TableHead>
                                     <TableHead className="w-[80px]">Ord.</TableHead>
                                     <TableHead>Fecha</TableHead>
                                     <TableHead>Número TF</TableHead>
@@ -1980,29 +2094,27 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                             </TableHeader>
                             <TableBody>
                                 {isLoading ? (
-                                    <TableRow><TableCell colSpan={isBulkStatusAdmin ? 14 : 13} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
+                                    <TableRow><TableCell colSpan={14} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
                                 ) : filteredTransfers.length > 0 ? (
                                     groupedFilteredTransfers.map((t) => {
                                         const placa = transferIdToPlacaMap.get(t.id) || 'N/A';
                                         const allSelected = t.allIds.every((id) => selectedForBulkStatus.has(id));
                                         return (
                                          <TableRow key={t.id}>
-                                            {isBulkStatusAdmin && (
-                                                <TableCell>
-                                                    <Checkbox
-                                                        checked={allSelected}
-                                                        onCheckedChange={(checked) => {
-                                                            const next = new Set(selectedForBulkStatus);
-                                                            if (checked) {
-                                                                t.allIds.forEach((id) => next.add(id));
-                                                            } else {
-                                                                t.allIds.forEach((id) => next.delete(id));
-                                                            }
-                                                            setSelectedForBulkStatus(next);
-                                                        }}
-                                                    />
-                                                </TableCell>
-                                            )}
+                                            <TableCell>
+                                                <Checkbox
+                                                    checked={allSelected}
+                                                    onCheckedChange={(checked) => {
+                                                        const next = new Set(selectedForBulkStatus);
+                                                        if (checked) {
+                                                            t.allIds.forEach((id) => next.add(id));
+                                                        } else {
+                                                            t.allIds.forEach((id) => next.delete(id));
+                                                        }
+                                                        setSelectedForBulkStatus(next);
+                                                    }}
+                                                />
+                                            </TableCell>
                                             <TableCell className="font-bold text-blue-600">{t.storageOrder || '---'}</TableCell>
                                             <TableCell>{t.fecha.toLocaleDateString('es-CO')}</TableCell>
                                             <TableCell className="font-medium">{t.numeroTF}</TableCell>
@@ -2117,7 +2229,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                         </TableRow>
                                     )})
                                 ) : (
-                                    <TableRow><TableCell colSpan={isBulkStatusAdmin ? 14 : 13} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
+                                    <TableRow><TableCell colSpan={14} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
                                 )}
                             </TableBody>
                         </Table>
@@ -2399,6 +2511,11 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                 </Card>
             </TabsContent>
         </Tabs>
+        <div style={{ position: 'absolute', left: '-9999px', top: 0 }} aria-hidden>
+          {transfersToPrint.map((transfer) => (
+            <TransferLabel key={`bulk-print-${transfer.id}`} transfer={transfer} />
+          ))}
+        </div>
         </>
     )
 };
