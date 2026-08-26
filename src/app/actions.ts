@@ -5149,6 +5149,17 @@ export async function createCollectionLog(
     userId: string,
     userDisplayName?: string
 ): Promise<{ success: boolean; error?: string; }> {
+    const normalizedPlaca = String(placa || '').trim().toUpperCase();
+    if (!normalizedPlaca) {
+        return { success: false, error: 'La placa es obligatoria para registrar una recolección en ruta.' };
+    }
+    if (normalizedPlaca.length < 3) {
+        return { success: false, error: 'Ingrese una placa válida (mínimo 3 caracteres).' };
+    }
+    if (!transferIds?.length) {
+        return { success: false, error: 'Debe seleccionar al menos una transferencia.' };
+    }
+
     const collectionLogRef = collection(firestore, 'collectionLogs');
     const transfersCollection = collection(firestore, 'transfers');
 
@@ -5169,7 +5180,7 @@ export async function createCollectionLog(
 
         const newLogData = {
             createdAt: Timestamp.now(),
-            placa,
+            placa: normalizedPlaca,
             transferIds,
             recolectadoPor: userId,
             summary: {

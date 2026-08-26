@@ -2790,13 +2790,30 @@ const CollectionTabView: React.FC<{
             toast({ variant: 'destructive', title: 'Error', description: 'No se pudo identificar al usuario.' });
             return;
         }
+        const placa = selectedPlate.trim().toUpperCase();
+        if (!placa) {
+            toast({
+                variant: 'destructive',
+                title: 'Placa obligatoria',
+                description: 'Debe ingresar la placa del vehículo antes de confirmar la recolección.',
+            });
+            return;
+        }
+        if (placa.length < 3) {
+            toast({
+                variant: 'destructive',
+                title: 'Placa inválida',
+                description: 'Ingrese una placa válida (mínimo 3 caracteres).',
+            });
+            return;
+        }
         if (selectedTransfers.size === 0) {
             toast({ variant: 'destructive', title: 'Error', description: 'Debe seleccionar al menos una transferencia.' });
             return;
         }
         setIsLoading(true);
         const result = await createCollectionLog(
-            selectedPlate,
+            placa,
             Array.from(selectedTransfers),
             user.uid,
             userName || user.displayName || user.email || undefined
@@ -2806,6 +2823,7 @@ const CollectionTabView: React.FC<{
             fetchTransfers(); // Refresh local list
             onRefresh(); // Refresh parent if needed
             setSelectedTransfers(new Set());
+            setSelectedPlate('');
         } else {
             toast({ variant: 'destructive', title: 'Error', description: result.error });
         }
@@ -2836,9 +2854,29 @@ const CollectionTabView: React.FC<{
                 </div>
             </CardHeader>
             <CardContent className="space-y-4">
-                <div className="flex flex-col sm:flex-row items-center gap-4">
-                    <Input placeholder="Ingrese su placa..." value={selectedPlate} onChange={e => setSelectedPlate(e.target.value.toUpperCase())} className="max-w-xs" />
-                    <Button onClick={handleConfirmCollection} disabled={isLoading || selectedTransfers.size === 0 || !selectedPlate.trim()}>
+                <div className="flex flex-col sm:flex-row items-end gap-4">
+                    <div className="space-y-1.5 w-full max-w-xs">
+                        <Label htmlFor="collection-placa" className="text-sm font-medium">
+                            Placa <span className="text-destructive">*</span>
+                        </Label>
+                        <Input
+                            id="collection-placa"
+                            placeholder="Ingrese su placa..."
+                            value={selectedPlate}
+                            onChange={e => setSelectedPlate(e.target.value.toUpperCase())}
+                            className="max-w-xs"
+                            required
+                            aria-required="true"
+                            autoComplete="off"
+                        />
+                        {!selectedPlate.trim() && (
+                            <p className="text-xs text-muted-foreground">Obligatoria para asociar la recolección al vehículo.</p>
+                        )}
+                    </div>
+                    <Button
+                        onClick={handleConfirmCollection}
+                        disabled={isLoading || selectedTransfers.size === 0 || selectedPlate.trim().length < 3}
+                    >
                         {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}
                         Confirmar Recolección de ({uniqueSelectedTfCount}) TFs
                     </Button>
