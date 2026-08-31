@@ -1249,7 +1249,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     const handleAlignGroupLineStatuses = async (group: GroupedTransfer) => {
         if (!group.allIds?.length || !group.hasMixedStatus) return;
         const statusesLabel = (group.lineStatuses || []).join(', ');
-        const confirmMsg = `Esta TF tiene líneas con estados distintos (${statusesLabel}).\n\nSe alinearán ${group.allIds.length} línea(s) al estado "${group.status}" (el que se muestra en la tabla).\n\n¿Continuar?`;
+        const confirmMsg = `Esta ruta (TF ${group.numeroTF}: ${group.bodegaOrigen} → ${group.bodegaDestino}) tiene líneas con estados distintos (${statusesLabel}).\n\nSe alinearán ${group.allIds.length} línea(s) al estado "${group.status}" (el que se muestra en la tabla).\n\n¿Continuar?`;
         if (!confirm(confirmMsg)) return;
 
         setIsUpdatingStatus(true);
@@ -1309,7 +1309,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                 description:
                     result.updatedCount === 0
                         ? 'No había líneas residuales por corregir.'
-                        : `Se sincronizaron ${result.updatedCount} línea(s) al estado más avanzado de su TF.`,
+                        : `Se sincronizaron ${result.updatedCount} línea(s) al estado más avanzado de su ruta (misma TF, origen y destino).`,
             });
             onRefresh();
             onSearch();
@@ -1901,9 +1901,9 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                             </AlertDialogTrigger>
                             <AlertDialogContent>
                                 <AlertDialogHeader>
-                                    <AlertDialogTitle>¿Alinear todas las TF con estados mixtos?</AlertDialogTitle>
+                                    <AlertDialogTitle>¿Alinear rutas con estados mixtos?</AlertDialogTitle>
                                     <AlertDialogDescription>
-                                        Busca transferencias (desde marzo 2026) cuyas líneas tienen estados distintos y las deja en el estado más avanzado de cada TF. Use el filtro &quot;Estados mixtos&quot; antes/después para verificar.
+                                        Busca transferencias (desde marzo 2026) cuyas líneas comparten la misma TF, origen y destino pero tienen estados distintos, y las deja en el estado más avanzado de cada ruta. Una misma TF con orígenes o destinos diferentes no se mezcla. Use el filtro &quot;Estados mixtos&quot; antes/después para verificar.
                                     </AlertDialogDescription>
                                 </AlertDialogHeader>
                                 <AlertDialogFooter>

@@ -14,6 +14,7 @@ import { startOfDay, endOfDay, isWithinInterval } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { CURRENT_APP_VERSION } from './version';
 import { normalizeHeader, parseFlexibleDate, excelSerialDateToJSDate, findCaseInsensitiveKey, extractLocalDateString } from '@/lib/parsingUtils';
+import { buildTransferRouteKey } from '@/lib/transferRouteKey';
 import { processReport } from '@/services/reportProcessor';
 
 // Helper function to convert Dates back to Timestamps FOR WRITING to Firestore
@@ -4220,7 +4221,7 @@ export async function findMixedStatusTransfers(options?: {
 
         const groups = new Map<string, TransferEntry[]>();
         allTransfers.forEach((t) => {
-            const key = `${t.numeroTF}|${t.bodegaOrigen}|${t.bodegaDestino}`;
+            const key = buildTransferRouteKey(t.numeroTF, t.bodegaOrigen, t.bodegaDestino);
             const list = groups.get(key) || [];
             list.push(t);
             groups.set(key, list);
@@ -4533,21 +4534,20 @@ export async function healInconsistentTransfers(): Promise<{ success: boolean; u
 
         const getStatusWeight = (status: TransferStatus) => STATUS_ORDER.indexOf(status);
 
-        // Group by numeroTF
-        const tfGroups = new Map<string, TransferEntry[]>();
+        // Group by TF + origen + destino (la misma TF puede repetirse con rutas distintas)
+        const routeGroups = new Map<string, TransferEntry[]>();
         allTransfers.forEach(t => {
-            const group = tfGroups.get(t.numeroTF) || [];
+            const key = buildTransferRouteKey(t.numeroTF, t.bodegaOrigen, t.bodegaDestino);
+            const group = routeGroups.get(key) || [];
             group.push(t);
-            tfGroups.set(t.numeroTF, group);
+            routeGroups.set(key, group);
         });
 
         const updatesToPerform: { id: string, status: TransferStatus, updates: any }[] = [];
-        let inconsistentTfCount = 0;
 
-        tfGroups.forEach((lines, numeroTF) => {
+        routeGroups.forEach((lines) => {
             const statuses = new Set(lines.map(l => l.status));
             if (statuses.size > 1) {
-                inconsistentTfCount++;
                 // Find the "highest" status in the group
                 let highestStatus = lines[0].status;
                 let maxWeight = getStatusWeight(highestStatus);
