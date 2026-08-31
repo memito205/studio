@@ -68,6 +68,13 @@ export const TechnicalSummaryModal: React.FC<DistributionExplanationModalProps> 
         
         <DetailRow label="C. Faltante Inmediato (para cubrir B)" value={forecast.nextPeriodShortfall} calculation="Max(0, B - A)" className="font-medium" />
 
+        <DetailRow
+          label="Agotamiento estimado (sin compras)"
+          value={forecast.estimatedStockOutLabel ?? '> 12 meses'}
+          calculation="Inventario actual ÷ demanda diaria pronosticada (mes a mes, con AJS)"
+          className="font-medium text-rose-300"
+        />
+
         <div className="pt-2">
             <DetailRow isSubHeader label="D. Demanda Pronosticada Períodos Futuros" value={`(${forecast.coverageTargetPeriods} meses)`} />
             {forecast.aggregatedFutureForecasts.map((periodFc, index) => {

@@ -27,6 +27,62 @@ function formatDate(date: Date): string {
   return `${day}/${month}`;
 }
 
+/** Estima cuándo se agota el inventario sin compras, usando la misma demanda diaria del motor. */
+function estimateStockOutInfo(
+  generationDate: Date,
+  currentInventory: number,
+  calculatedDemandForShortfallPeriod: number,
+  daysRemainingInCurrentMonth: number,
+  futurePeriods: PeriodForecastValue[]
+): {
+  date: Date | null;
+  label: string | null;
+  dayInMonth: number | null;
+} {
+  const today = startOfDay(generationDate);
+  let inv = currentInventory;
+
+  const finish = (d: Date) => ({
+    date: d,
+    label: `~${d.getDate()} ${MONTH_NAMES_ES[d.getMonth()]}`,
+    dayInMonth: d.getDate(),
+  });
+
+  if (inv <= 0) {
+    return finish(today);
+  }
+
+  if (daysRemainingInCurrentMonth > 0 && calculatedDemandForShortfallPeriod > 0) {
+    const daily = calculatedDemandForShortfallPeriod / daysRemainingInCurrentMonth;
+    const daysUntilEmpty = inv / daily;
+    if (daysUntilEmpty <= daysRemainingInCurrentMonth) {
+      const daysToAdd = Math.max(1, Math.ceil(daysUntilEmpty));
+      return finish(addDays(today, daysToAdd));
+    }
+    inv -= calculatedDemandForShortfallPeriod;
+  }
+
+  for (const p of futurePeriods) {
+    if (!p.startDate) continue;
+    const demand = p.adjustedValue ?? p.value ?? 0;
+    if (demand <= 0) continue;
+
+    const year = p.startDate.getFullYear();
+    const month = p.startDate.getMonth();
+    const daysInMonth = getDaysInMonth(year, month);
+    const daily = demand / daysInMonth;
+    const daysUntilEmpty = inv / daily;
+
+    if (daysUntilEmpty <= daysInMonth) {
+      const dayInMonth = Math.min(daysInMonth, Math.max(1, Math.ceil(daysUntilEmpty)));
+      return finish(new Date(year, month, dayInMonth));
+    }
+    inv -= demand;
+  }
+
+  return { date: null, label: null, dayInMonth: null };
+}
+
 function getMonthOffset(targetDate: Date, baseDate: Date): number {
   const targetYear = targetDate.getFullYear();
   const targetMonth = targetDate.getMonth();
@@ -689,6 +745,22 @@ export function generateAllForecasts(
             aggFc.projectedInventoryAfterDemand = Math.round(projectedInventoryLevel);
         });
 
+        const stockOutInfo = estimateStockOutInfo(
+            generationDate,
+            currentInventory,
+            calculatedDemandForShortfallPeriod,
+            daysRemainingCurrentMonth,
+            aggregatedFutureForecasts
+        );
+        if (stockOutInfo.date) {
+            aggregatedFutureForecasts.forEach((aggFc) => {
+                if (!aggFc.startDate || !aggFc.endDate) return;
+                if (stockOutInfo.date! >= aggFc.startDate && stockOutInfo.date! <= aggFc.endDate) {
+                    aggFc.estimatedStockOutDayInMonth = stockOutInfo.dayInMonth;
+                }
+            });
+        }
+
         const totalBaseDemandToCover = Math.round(baseDemandForShortfallPeriod) + calculatedTotalDemandForNFullFutureMonths;
         const recommendedPurchase = Math.round(Math.max(0, totalBaseDemandToCover - currentInventory));
        
@@ -740,7 +812,9 @@ export function generateAllForecasts(
           maePerMethod: maePerMethod.length > 0 ? maePerMethod : null,
           forecastingMethodNote,
           winningMethod,
-          calculationTrace: trace as CalculationTrace
+          calculationTrace: trace as CalculationTrace,
+          estimatedStockOutDate: stockOutInfo.date,
+          estimatedStockOutLabel: stockOutInfo.label,
         });
 
     } catch (error) {

@@ -91,6 +91,8 @@ export interface PeriodForecastValue {
   endDate?: Date;   // Fecha de fin del período
   neededToBuyForPeriod?: number | null; // Cantidad a comprar para este período específico, considerando el inventario proyectado
   projectedInventoryAfterDemand?: number | null; // Inventario proyectado después de cubrir la demanda de este período
+  /** Día aproximado del mes en que se agota el inventario (si cae en este período). */
+  estimatedStockOutDayInMonth?: number | null;
 }
 
 // Representa los pronósticos de un método específico a través de múltiples períodos futuros
@@ -190,6 +192,10 @@ export interface ItemForecast {
   forecastingMethodNote?: string; // Nota sobre el método de pronóstico utilizado (e.g. si se usó media simple por datos limitados)
   winningMethod?: string | null;
   calculationTrace?: Partial<CalculationTrace>; // Añadido
+  /** Fecha estimada de agotamiento (sin compras adicionales). */
+  estimatedStockOutDate?: Date | null;
+  /** Etiqueta legible, ej. ~15 mar 2026 */
+  estimatedStockOutLabel?: string | null;
 }
 
 // Para el nuevo Dashboard Analítico

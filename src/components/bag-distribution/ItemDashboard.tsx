@@ -175,6 +175,7 @@ const ItemDashboard: React.FC<ItemDashboardProps> = ({
         "Código Item", "Inv. Actual", 
         `Demanda Próx.Per. ${forecasts[0]?.nextPeriodShortfallDateRangeLabel || ''}`,
         `Faltante Próx.Per. ${forecasts[0]?.nextPeriodShortfallDateRangeLabel || ''}`,
+        "Agotamiento est. (día aprox.)",
         ...futurePeriodHeaders.map(p => `Pron. ${formatDateRangeForHeader(p)} (Base)`),
         ...futurePeriodHeaders.map(p => `Pron. ${formatDateRangeForHeader(p)} (Ajustado AJS)`),
         ...futurePeriodHeaders.map(p => `Compra Necesaria ${formatDateRangeForHeader(p)}`),
@@ -187,6 +188,7 @@ const ItemDashboard: React.FC<ItemDashboardProps> = ({
         fc.currentInventory.toLocaleString(),
         fc.calculatedDemandForShortfallPeriod !== null ? fc.calculatedDemandForShortfallPeriod.toLocaleString() : 'N/D',
         fc.nextPeriodShortfall !== null ? fc.nextPeriodShortfall.toLocaleString() : 'N/D',
+        fc.estimatedStockOutLabel ?? '> 12 meses',
         ...fc.aggregatedFutureForecasts.map(agg => agg.value !== null ? agg.value.toLocaleString() : 'N/D'),
         ...fc.aggregatedFutureForecasts.map(agg => agg.adjustedValue !== null ? agg.adjustedValue.toLocaleString() : 'N/D'),
         ...fc.aggregatedFutureForecasts.map(agg => agg.neededToBuyForPeriod !== null ? agg.neededToBuyForPeriod.toLocaleString() : 'N/D'),
@@ -344,6 +346,7 @@ const ItemDashboard: React.FC<ItemDashboardProps> = ({
                 <p>* N/D: No Disponible. El pronóstico se basa en el método con el menor error histórico (MAE) de un conjunto de modelos (SMA, SES, WMA, Regresión Lineal).</p>
                 <p>* Compra Sugerida Final (+AJS) considera el porcentaje histórico de consumo 'AJS' para ajustar la recomendación base.</p>
                 <p>* Faltante Próx.Per. considera la demanda estimada desde la fecha actual hasta el fin del mes en curso.</p>
+                <p>* Agotamiento est. proyecta el día aproximado en que se acaba el inventario (sin compras), usando la misma demanda diaria del pronóstico.</p>
            </div>
           <table className="w-full min-w-[2400px] text-left text-sm">
             <thead className="bg-slate-700 text-slate-300">
@@ -353,6 +356,7 @@ const ItemDashboard: React.FC<ItemDashboardProps> = ({
                 <th className="p-2 text-center text-cyan-300">Stock Seg.</th>
                 <th className="p-2 text-center text-cyan-300">Pto. Pedido</th>
                 <th className="p-2 text-center text-orange-300 whitespace-nowrap">{shortfallPeriodLabelForHeader}</th>
+                <th className="p-2 text-center text-rose-300 whitespace-nowrap">Agotamiento est.</th>
                 {futurePeriodHeaders.map((periodInfo, idx) => (<th key={`h-${idx}`} className="p-2 text-center whitespace-nowrap">{`Pron. ${formatDateRangeForHeader(periodInfo)}`}</th>))}
                 <th className="p-2 text-center text-amber-300">Ajuste AJS (%)</th>
                 <th className="p-2 text-center text-sky-300 whitespace-nowrap">Compra Sug. (cubre {NUMBER_OF_FUTURE_PERIODS_FOR_RECOMMENDATION} per.)</th>
@@ -361,6 +365,9 @@ const ItemDashboard: React.FC<ItemDashboardProps> = ({
             </thead>
             <tbody>
               {forecasts.sort((a,b) => a.itemCode.localeCompare(b.itemCode)).map(forecast => {
+                const stockOutInFutureMonth = forecast.aggregatedFutureForecasts.some(
+                  (p) => p.estimatedStockOutDayInMonth != null
+                );
                 return (
                   <tr key={forecast.itemCode} className="border-b border-slate-700 hover:bg-slate-800">
                     <td className="p-2 font-medium">
@@ -381,6 +388,14 @@ const ItemDashboard: React.FC<ItemDashboardProps> = ({
                             Faltante: {forecast.nextPeriodShortfall !== null ? forecast.nextPeriodShortfall.toLocaleString() : 'N/D'}
                             </span>
                         </div>
+                        {!stockOutInFutureMonth && forecast.estimatedStockOutLabel && (
+                          <div className="text-xs text-rose-300 font-medium mt-1">
+                            Agota {forecast.estimatedStockOutLabel}
+                          </div>
+                        )}
+                    </td>
+                    <td className="p-2 text-center text-rose-200 whitespace-nowrap">
+                      {forecast.estimatedStockOutLabel ?? '> 12 meses'}
                     </td>
                     {forecast.aggregatedFutureForecasts.map((aggForecast, idx) => (
                         <td key={`val-${idx}`} className="p-2 text-center">
@@ -393,6 +408,11 @@ const ItemDashboard: React.FC<ItemDashboardProps> = ({
                                 <div className={`font-semibold ${aggForecast.neededToBuyForPeriod > 0 ? 'text-orange-400' : 'text-green-400'}`}>
                                 Comprar: {aggForecast.neededToBuyForPeriod.toLocaleString()}
                                 </div>
+                            )}
+                            {aggForecast.estimatedStockOutDayInMonth != null && (
+                              <div className="text-xs text-rose-300 font-medium">
+                                Agota ~día {aggForecast.estimatedStockOutDayInMonth}
+                              </div>
                             )}
                         </td>
                     ))}
