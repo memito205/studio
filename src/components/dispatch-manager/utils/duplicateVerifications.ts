@@ -57,6 +57,27 @@ export function buildTfVerificationIndex(
   return index;
 }
 
+export type DuplicateSessionGroup = {
+  sessionId: string;
+  sessionName: string;
+  sessionCreatedAt?: Date;
+  sessionStatus?: string;
+  tfs: Array<{ tfKey: string; destinos: string[]; sessionCount: number }>;
+};
+
+export function uniqueSessionCount(hits: TfSessionHit[]): number {
+  return new Set(hits.map((h) => h.sessionId)).size;
+}
+
+export function lastHitDate(hits: TfSessionHit[]): Date | undefined {
+  let latest: Date | undefined;
+  hits.forEach((h) => {
+    if (!h.sessionCreatedAt) return;
+    if (!latest || h.sessionCreatedAt.getTime() > latest.getTime()) latest = h.sessionCreatedAt;
+  });
+  return latest;
+}
+
 /** Solo TFs que aparecen en 2+ sesiones distintas. */
 export function getDuplicateTfAlerts(sessions: SavedVerification[]): DuplicateTfAlert[] {
   const index = buildTfVerificationIndex(sessions);
@@ -68,6 +89,40 @@ export function getDuplicateTfAlerts(sessions: SavedVerification[]): DuplicateTf
     }
   });
   return alerts.sort((a, b) => b.hits.length - a.hits.length || a.tfKey.localeCompare(b.tfKey));
+}
+
+/** Agrupa TFs repetidas por sesión de validación (para revisar una validación a la vez). */
+export function groupDuplicateAlertsBySession(alerts: DuplicateTfAlert[]): DuplicateSessionGroup[] {
+  const map = new Map<string, DuplicateSessionGroup>();
+
+  alerts.forEach((alert) => {
+    const destinos = Array.from(new Set(alert.hits.map((h) => h.destino).filter(Boolean)));
+    const sessionCount = uniqueSessionCount(alert.hits);
+    alert.hits.forEach((hit) => {
+      const existing = map.get(hit.sessionId);
+      const tfEntry = { tfKey: alert.tfKey, destinos, sessionCount };
+      if (!existing) {
+        map.set(hit.sessionId, {
+          sessionId: hit.sessionId,
+          sessionName: hit.sessionName,
+          sessionCreatedAt: hit.sessionCreatedAt,
+          sessionStatus: hit.sessionStatus,
+          tfs: [tfEntry],
+        });
+        return;
+      }
+      if (!existing.tfs.some((t) => t.tfKey === alert.tfKey)) {
+        existing.tfs.push(tfEntry);
+      }
+    });
+  });
+
+  return Array.from(map.values()).sort((a, b) => {
+    const ta = a.sessionCreatedAt?.getTime() || 0;
+    const tb = b.sessionCreatedAt?.getTime() || 0;
+    if (tb !== ta) return tb - ta;
+    return b.tfs.length - a.tfs.length;
+  });
 }
 
 export function getOtherSessionsForTf(
