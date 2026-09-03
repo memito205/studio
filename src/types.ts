@@ -1652,6 +1652,8 @@ export interface VerificationItem {
   empacador: string;
   contenidoOriginal: string;
   tfOriginal: string;
+  /** Marca del cruce (opcional; sesiones antiguas pueden no tenerla). */
+  marca?: string;
   scanned: boolean;
   scanTime?: Date;
 }

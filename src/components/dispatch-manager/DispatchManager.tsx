@@ -21,6 +21,10 @@ import {
 import type { MerchandiseItem, TFTItem, VerificationItem, SavedVerification } from '@/types';
 import { parseMerchandiseExcel, exportToExcel, normalizeDestination } from './utils/excel';
 import { generatePDF } from './utils/pdf';
+import {
+  downloadStoreSummaryPdfs,
+  merchandiseItemsToSummaryRows,
+} from './utils/storeSummaryPdf';
 import { format } from 'date-fns';
 import { cn } from './utils/cn';
 import VerificationModule from './components/VerificationModule';
@@ -35,6 +39,7 @@ import { loadAllTransfers, saveVerificationSession } from '@/app/actions';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Loader2 } from 'lucide-react';
 
 interface DispatchManagerProps {
@@ -44,14 +49,22 @@ interface DispatchManagerProps {
 const SaveVerificationDialog: React.FC<{
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
-    onSave: (name: string) => Promise<void>;
+    onSave: (name: string, options: { generateStorePdfs: boolean }) => Promise<void>;
     isLoading: boolean;
 }> = ({ isOpen, onOpenChange, onSave, isLoading }) => {
     const [name, setName] = useState('');
+    const [generateStorePdfs, setGenerateStorePdfs] = useState(true);
+
+    useEffect(() => {
+        if (isOpen) {
+            setName('');
+            setGenerateStorePdfs(true);
+        }
+    }, [isOpen]);
     
     const handleSaveClick = async () => {
         if (name.trim()) {
-            await onSave(name.trim());
+            await onSave(name.trim(), { generateStorePdfs });
         }
     };
 
@@ -64,20 +77,36 @@ const SaveVerificationDialog: React.FC<{
                         Asigne un nombre descriptivo a esta verificación para guardarla en el historial.
                     </DialogDescription>
                 </DialogHeader>
-                <div className="py-4">
-                    <Label htmlFor="session-name">Nombre de la Sesión</Label>
-                    <Input
-                        id="session-name"
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
-                        placeholder="Ej: Verificación Despacho 28/07"
-                    />
+                <div className="py-4 space-y-4">
+                    <div>
+                        <Label htmlFor="session-name">Nombre de la Sesión</Label>
+                        <Input
+                            id="session-name"
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            placeholder="Ej: Verificación Despacho 28/07"
+                        />
+                    </div>
+                    <label className="flex items-start gap-2 text-sm cursor-pointer">
+                        <Checkbox
+                            checked={generateStorePdfs}
+                            onCheckedChange={(checked) => setGenerateStorePdfs(!!checked)}
+                            className="mt-0.5"
+                        />
+                        <span>
+                            <span className="font-medium">Generar PDF por tienda</span>
+                            <span className="block text-xs text-muted-foreground">
+                                Un PDF por destino con TFs únicas, total Cant. TFT y resumen por marca.
+                                Si hay varias tiendas, se descarga un ZIP.
+                            </span>
+                        </span>
+                    </label>
                 </div>
                 <DialogFooter>
                     <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancelar</Button>
                     <Button onClick={handleSaveClick} disabled={isLoading || !name.trim()}>
                         {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                        Guardar
+                        {generateStorePdfs ? 'Guardar y PDF' : 'Guardar'}
                     </Button>
                 </DialogFooter>
             </DialogContent>
@@ -428,7 +457,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
     }
   };
   
-  const handleSaveVerification = async (name: string) => {
+  const handleSaveVerification = async (name: string, options: { generateStorePdfs: boolean }) => {
     if (!user) {
         toast({ variant: 'destructive', title: 'Error de autenticación' });
         return;
@@ -448,6 +477,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
         empacador: item.empacador,
         contenidoOriginal: item.contenido,
         tfOriginal: item.tf,
+        marca: item.marca,
         scanned: false,
     }));
     
@@ -460,6 +490,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
         empacador: item.empacador,
         contenidoOriginal: item.contenido,
         tfOriginal: item.tf,
+        marca: item.marca,
         scanned: false,
     }));
 
@@ -480,6 +511,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
             empacador: item.empacador,
             contenidoOriginal: item.contenido,
             tfOriginal: item.tf,
+            marca: item.marca,
             scanned: false,
         })),
         originalStats: {
@@ -503,6 +535,29 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
     if (result.success) {
         toast({ title: 'Éxito', description: `Sesión de verificación "${name}" creada y guardada.` });
         setIsSaveDialogOpen(false);
+
+        if (options.generateStorePdfs) {
+            const pdfResult = await downloadStoreSummaryPdfs(
+                merchandiseItemsToSummaryRows(filteredMatchedData),
+                { sessionName: name }
+            );
+            if (pdfResult.success) {
+                toast({
+                    title: 'PDF por tienda',
+                    description:
+                        pdfResult.storeCount === 1
+                            ? `Se descargó ${pdfResult.fileName}.`
+                            : `Se descargó ZIP con ${pdfResult.storeCount} PDF(s): ${pdfResult.fileName}.`,
+                });
+            } else {
+                toast({
+                    variant: 'destructive',
+                    title: 'Sesión guardada, PDF falló',
+                    description: pdfResult.error,
+                });
+            }
+        }
+
         setActiveModule('verificacion'); // Switch to verification tab
     } else {
         toast({ variant: 'destructive', title: 'Error al guardar', description: result.error });

@@ -21,9 +21,13 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
-import { Loader2, Search, Eye, FileDown, Trash2 } from 'lucide-react';
+import { Loader2, Search, Eye, FileDown, Trash2, FileText } from 'lucide-react';
 import { cn } from '@/components/dispatch-manager/utils/cn';
 import { exportVerificationToExcel } from '../utils/excel';
+import {
+  downloadStoreSummaryPdfs,
+  verificationItemsToSummaryRows,
+} from '../utils/storeSummaryPdf';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -34,7 +38,9 @@ const VerificationDetailDialog: React.FC<{
     session: SavedVerification | null;
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
-}> = ({ session, isOpen, onOpenChange }) => {
+    onExportStorePdfs: (session: SavedVerification) => Promise<void>;
+    isExportingPdfs: boolean;
+}> = ({ session, isOpen, onOpenChange, onExportStorePdfs, isExportingPdfs }) => {
     if (!session) return null;
 
     const handleExport = () => {
@@ -54,6 +60,7 @@ const VerificationDetailDialog: React.FC<{
                         <TableHead>Destino</TableHead>
                         <TableHead>TFT Cruce</TableHead>
                         <TableHead>Cant.</TableHead>
+                        <TableHead>Marca</TableHead>
                     </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -63,6 +70,7 @@ const VerificationDetailDialog: React.FC<{
                             <TableCell>{item.destino}</TableCell>
                             <TableCell>{item.tftCruce || '-'}</TableCell>
                             <TableCell>{item.cantTft}</TableCell>
+                            <TableCell>{item.marca || '-'}</TableCell>
                         </TableRow>
                     ))}
                 </TableBody>
@@ -74,16 +82,29 @@ const VerificationDetailDialog: React.FC<{
         <Dialog open={isOpen} onOpenChange={onOpenChange}>
             <DialogContent className="max-w-4xl h-[80vh] flex flex-col">
                 <DialogHeader>
-                    <div className="flex justify-between items-center">
+                    <div className="flex justify-between items-center gap-2 flex-wrap">
                         <div>
                             <DialogTitle>{session.name}</DialogTitle>
                             <DialogDescription>
                                 Guardado por {session.savedBy} el {format(new Date(session.createdAt), 'PPP p', { locale: es })}
                             </DialogDescription>
                         </div>
-                        <Button variant="outline" size="sm" onClick={handleExport}>
-                            <FileDown className="mr-2 h-4 w-4" /> Exportar a Excel
-                        </Button>
+                        <div className="flex gap-2">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={isExportingPdfs || (session.results?.length || 0) === 0}
+                                onClick={() => onExportStorePdfs(session)}
+                            >
+                                {isExportingPdfs
+                                    ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    : <FileText className="mr-2 h-4 w-4" />}
+                                PDF por tienda
+                            </Button>
+                            <Button variant="outline" size="sm" onClick={handleExport}>
+                                <FileDown className="mr-2 h-4 w-4" /> Exportar a Excel
+                            </Button>
+                        </div>
                     </div>
                 </DialogHeader>
                 <Tabs defaultValue="cruzados" className="flex-grow flex flex-col">
@@ -116,6 +137,7 @@ const VerificationHistory: React.FC = () => {
     const [deletingId, setDeletingId] = useState<string | null>(null);
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedSession, setSelectedSession] = useState<SavedVerification | null>(null);
+    const [exportingPdfId, setExportingPdfId] = useState<string | null>(null);
 
     const fetchSessions = async () => {
         setIsLoading(true);
@@ -132,6 +154,38 @@ const VerificationHistory: React.FC = () => {
         fetchSessions();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    const handleExportStorePdfs = async (session: SavedVerification) => {
+        if (!session.results?.length) {
+            toast({
+                variant: 'destructive',
+                title: 'Sin datos',
+                description: 'Esta sesión no tiene resultados cruzados para el resumen.',
+            });
+            return;
+        }
+        setExportingPdfId(session.id || session.name);
+        const result = await downloadStoreSummaryPdfs(
+            verificationItemsToSummaryRows(session.results),
+            { sessionName: session.name }
+        );
+        setExportingPdfId(null);
+        if (result.success) {
+            toast({
+                title: 'PDF por tienda',
+                description:
+                    result.storeCount === 1
+                        ? `Se descargó ${result.fileName}.`
+                        : `Se descargó ZIP con ${result.storeCount} PDF(s): ${result.fileName}.`,
+            });
+        } else {
+            toast({
+                variant: 'destructive',
+                title: 'Error al generar PDF',
+                description: result.error,
+            });
+        }
+    };
 
     const handleDelete = async (session: SavedVerification) => {
         if (!session.id) return;
@@ -166,6 +220,8 @@ const VerificationHistory: React.FC = () => {
                 isOpen={!!selectedSession}
                 onOpenChange={() => setSelectedSession(null)}
                 session={selectedSession}
+                onExportStorePdfs={handleExportStorePdfs}
+                isExportingPdfs={!!selectedSession && exportingPdfId === (selectedSession.id || selectedSession.name)}
             />
             <CardHeader>
                 <CardTitle>Historial de Verificaciones</CardTitle>
@@ -199,7 +255,7 @@ const VerificationHistory: React.FC = () => {
                             {isLoading ? (
                                 <TableRow><TableCell colSpan={7} className="text-center p-8"><Loader2 className="h-8 w-8 animate-spin mx-auto" /></TableCell></TableRow>
                             ) : filteredSessions.length === 0 ? (
-                                <TableRow><TableCell colSpan={7} className="text-center p-8 opacity-50">No se encontraron sesiones.</TableCell></TableRow>
+                                <TableRow><TableCell colSpan={7} className="h-24 text-center opacity-50">No se encontraron sesiones.</TableCell></TableRow>
                             ) : (
                                 filteredSessions.map(session => (
                                     <TableRow key={session.id} className="hover:bg-muted/50">
@@ -210,10 +266,21 @@ const VerificationHistory: React.FC = () => {
                                         <TableCell className="text-green-600">{session.stats.scanned}</TableCell>
                                         <TableCell className="text-orange-600">{session.stats.pending}</TableCell>
                                         <TableCell className="text-right">
-                                            <div className="flex justify-end gap-2">
+                                            <div className="flex justify-end gap-2 flex-wrap">
                                                 <Button variant="outline" size="sm" onClick={() => setSelectedSession(session)}>
                                                     <Eye className="mr-2 h-4 w-4"/>
                                                     Ver
+                                                </Button>
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    disabled={exportingPdfId === (session.id || session.name) || !session.results?.length}
+                                                    onClick={() => handleExportStorePdfs(session)}
+                                                >
+                                                    {exportingPdfId === (session.id || session.name)
+                                                        ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                        : <FileText className="mr-2 h-4 w-4" />}
+                                                    PDF tiendas
                                                 </Button>
                                                 {isAdmin && (
                                                     <AlertDialog>
