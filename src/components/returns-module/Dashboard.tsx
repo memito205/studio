@@ -237,7 +237,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, onStateChange, initi
                     </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 sm:gap-6">
                     <KpiCard title="Valor Total Ventas" value={kpiData.totalSales} year={selectedYear} type="currency" Icon={DollarSignIcon} valueClassName="text-sales" />
                     <KpiCard title="Valor Total Devoluciones" value={kpiData.totalReturns} year={selectedYear} type="currency" Icon={DollarSignIcon} valueClassName="text-returns" />
                     <KpiCard title="% Devolución sobre Ventas" value={kpiData.returnRate} year={selectedYear} type="percentage" Icon={PercentIcon} valueClassName="text-returns" />
