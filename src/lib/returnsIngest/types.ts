@@ -29,6 +29,11 @@ export interface ReturnsBucketDoc {
   /** Cadena vacía = sin motivo (equivale a null en Transaction). */
   returnReason: string;
   reference: string;
+  /**
+   * `SI` | `NO` | `` (vacío = sin clasificar / histórico sin columna).
+   * Legado: campo ausente se trata como vacío.
+   */
+  contraentrega: string;
   lineCount: number;
   sumValue: number;
   sumQuantity: number;

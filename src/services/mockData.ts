@@ -44,6 +44,7 @@ export const generateMockData = (): RawTransaction[] => {
           'Motivo devolucion': null,
           'PDV': getRandomElement(PDVS),
           'Referencia': reference,
+          'CONTRAENTREGA': null,
         });
 
         // Add a return ~10-15% of the time with a negative value
@@ -58,6 +59,7 @@ export const generateMockData = (): RawTransaction[] => {
             'Motivo devolucion': getRandomElement(RETURN_REASONS),
             'PDV': getRandomElement(PDVS),
             'Referencia': reference,
+            'CONTRAENTREGA': Math.random() < 0.25 ? 'SI' : 'NO',
           });
         }
       }

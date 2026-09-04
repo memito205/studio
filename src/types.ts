@@ -21,6 +21,9 @@ export interface RawTransaction {
   [key: string]: any; // Allows for flexible column names from XLSX files
 }
 
+/** Flag de contraentrega desde Excel de devoluciones (`CONTRAENTREGA`: SI / NO). */
+export type ContraentregaFlag = 'SI' | 'NO';
+
 export interface Transaction {
   date: Date;
   type: TransactionType;
@@ -32,6 +35,11 @@ export interface Transaction {
   returnReason: 'CLIENTE NO ENCONTRADO' | 'TALLA GRANDE' | 'CAMBIO POR REFERENCIA' | 'TALLA PEQUEÑA' | 'NO ERA LO QUE ESPERABA' | 'OTRO' | null;
   pdv: string;
   reference: string;
+  /**
+   * Contraentrega (columna Excel `CONTRAENTREGA`).
+   * null = vacío / histórico sin re-subir el campo.
+   */
+  contraentrega?: ContraentregaFlag | null;
   /** Nro documento (FVE-xxxx / NCE-xxxx). Opcional — datos históricos sin re-ingesta. */
   docNumber?: string;
   /** Factura base en NCE (FVE-xxxx). */

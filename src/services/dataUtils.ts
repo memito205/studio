@@ -1,4 +1,4 @@
-import { RawTransaction, Transaction, TransactionType, TFTItem } from '../types';
+import { ContraentregaFlag, RawTransaction, Transaction, TransactionType, TFTItem } from '../types';
 
 // Helper to find a value in a row by checking multiple possible keys (case-insensitive and trimmed)
 const getValueFromRow = (row: { [key: string]: any }, possibleKeys: string[]): any => {
@@ -15,6 +15,15 @@ const getValueFromRow = (row: { [key: string]: any }, possibleKeys: string[]): a
   }
   return undefined;
 };
+
+/** Normaliza columna Excel `CONTRAENTREGA` a SI / NO / null. */
+export function parseContraentregaFlag(raw: unknown): ContraentregaFlag | null {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const s = String(raw).trim().toUpperCase();
+  if (s === 'SI' || s === 'SÍ' || s === 'YES' || s === '1' || s === 'TRUE' || s === 'S') return 'SI';
+  if (s === 'NO' || s === '0' || s === 'FALSE' || s === 'N') return 'NO';
+  return null;
+}
 
 
 // Helper to convert Excel serial date to JS Date
@@ -85,6 +94,9 @@ export const processRawData = (rawData: RawTransaction[]): Transaction[] => {
         returnReason: getValueFromRow(row, ['Motivo devolucion', 'Motivo Devolucion', 'Desc. motivo']) || null,
         pdv: processedPdv,
         reference: getValueFromRow(row, ['Referencia']) || 'N/A',
+        contraentrega: parseContraentregaFlag(
+          getValueFromRow(row, ['CONTRAENTREGA', 'Contraentrega', 'Contra Entrega']),
+        ),
       };
     });
 };

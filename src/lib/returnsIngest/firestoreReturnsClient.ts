@@ -116,6 +116,7 @@ function bucketFromSnapshot(bd: QueryDocumentSnapshot): ReturnsBucketDoc {
     group: String(raw.group ?? ''),
     returnReason: raw.returnReason != null ? String(raw.returnReason) : '',
     reference: String(raw.reference ?? ''),
+    contraentrega: raw.contraentrega != null ? String(raw.contraentrega) : '',
     lineCount: Number(raw.lineCount ?? 0),
     sumValue: Number(raw.sumValue ?? 0),
     sumQuantity: Number(raw.sumQuantity ?? 0),

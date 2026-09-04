@@ -155,11 +155,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, onStateChange, initi
     const totalSales = sales.reduce((sum, item) => sum + item.value, 0);
     const totalReturns = returns.reduce((sum, item) => sum + item.value, 0);
     const returnRate = totalSales > 0 ? totalReturns / totalSales : 0;
+    const contraentregaReturns = returns
+      .filter((d) => d.contraentrega === 'SI')
+      .reduce((sum, item) => sum + item.value, 0);
+    const contraentregaShare = totalReturns > 0 ? contraentregaReturns / totalReturns : 0;
     
     return {
       totalSales,
       totalReturns,
       returnRate,
+      contraentregaShare,
       invoiceCount: sales.length,
       creditNoteCount: returns.length,
     };
@@ -232,10 +237,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, onStateChange, initi
                     </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
                     <KpiCard title="Valor Total Ventas" value={kpiData.totalSales} year={selectedYear} type="currency" Icon={DollarSignIcon} valueClassName="text-sales" />
                     <KpiCard title="Valor Total Devoluciones" value={kpiData.totalReturns} year={selectedYear} type="currency" Icon={DollarSignIcon} valueClassName="text-returns" />
                     <KpiCard title="% Devolución sobre Ventas" value={kpiData.returnRate} year={selectedYear} type="percentage" Icon={PercentIcon} valueClassName="text-returns" />
+                    <KpiCard title="% Contraentrega" value={kpiData.contraentregaShare} year={selectedYear} type="percentage" Icon={PercentIcon} valueClassName="text-returns" />
                     <KpiCard title="Cantidad Facturas (FVE)" value={kpiData.invoiceCount} year={selectedYear} type="number" Icon={FileTextIcon} />
                     <KpiCard title="Cantidad Notas Crédito (NCE)" value={kpiData.creditNoteCount} year={selectedYear} type="number" Icon={FileTextIcon} />
                 </div>
@@ -265,6 +271,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, onStateChange, initi
                     <KpiCard title="Valor Total Ventas" value={kpiData.totalSales} year={selectedYear} type="currency" Icon={DollarSignIcon} valueClassName="text-sales" />
                     <KpiCard title="Valor Total Devoluciones" value={kpiData.totalReturns} year={selectedYear} type="currency" Icon={DollarSignIcon} valueClassName="text-returns" />
                     <KpiCard title="% Devolución sobre Ventas" value={kpiData.returnRate} year={selectedYear} type="percentage" Icon={PercentIcon} valueClassName="text-returns" />
+                    <KpiCard title="% Contraentrega" value={kpiData.contraentregaShare} year={selectedYear} type="percentage" Icon={PercentIcon} valueClassName="text-returns" />
                     <KpiCard title="Cantidad Facturas (FVE)" value={kpiData.invoiceCount} year={selectedYear} type="number" Icon={FileTextIcon} />
                     <KpiCard title="Cantidad Notas Crédito (NCE)" value={kpiData.creditNoteCount} year={selectedYear} type="number" Icon={FileTextIcon} />
                 </div>

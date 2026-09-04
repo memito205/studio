@@ -1,4 +1,4 @@
-import type { Transaction } from '@/types';
+import type { ContraentregaFlag, Transaction } from '@/types';
 import { TransactionType } from '@/types';
 import type { ReturnsBucketDoc } from './types';
 
@@ -28,6 +28,10 @@ export function nextCalendarMonthKey(ym: string): string {
   return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`;
 }
 
+function contraentregaBucketValue(row: Transaction): string {
+  return row.contraentrega === 'SI' || row.contraentrega === 'NO' ? row.contraentrega : '';
+}
+
 function bucketAggregateKey(row: Transaction): string {
   return JSON.stringify({
     month: transactionLocalMonthKey(row.date),
@@ -38,6 +42,7 @@ function bucketAggregateKey(row: Transaction): string {
     group: row.group,
     rr: row.returnReason ?? '',
     reference: row.reference,
+    ce: contraentregaBucketValue(row),
   });
 }
 
@@ -53,6 +58,7 @@ export function transactionsToBucketDocs(rows: Transaction[]): ReturnsBucketDoc[
       group: string;
       returnReason: string;
       reference: string;
+      contraentrega: string;
       lineCount: number;
       sumValue: number;
       sumQuantity: number;
@@ -73,6 +79,7 @@ export function transactionsToBucketDocs(rows: Transaction[]): ReturnsBucketDoc[
         group: row.group,
         returnReason: row.returnReason ?? '',
         reference: row.reference,
+        contraentrega: contraentregaBucketValue(row),
         lineCount: 0,
         sumValue: 0,
         sumQuantity: 0,
@@ -92,6 +99,7 @@ export function transactionsToBucketDocs(rows: Transaction[]): ReturnsBucketDoc[
     group: b.group,
     returnReason: b.returnReason,
     reference: b.reference,
+    contraentrega: b.contraentrega,
     lineCount: b.lineCount,
     sumValue: b.sumValue,
     sumQuantity: b.sumQuantity,
@@ -110,6 +118,11 @@ function parseBucketKeyToDate(dayKey: string): Date {
   return new Date(y, m - 1, d, 12, 0, 0, 0);
 }
 
+function parseContraentregaFromBucket(raw: string | undefined): ContraentregaFlag | null {
+  if (raw === 'SI' || raw === 'NO') return raw;
+  return null;
+}
+
 export function bucketDocsToTransactions(buckets: ReturnsBucketDoc[]): Transaction[] {
   const out: Transaction[] = [];
   for (const b of buckets) {
@@ -117,6 +130,7 @@ export function bucketDocsToTransactions(buckets: ReturnsBucketDoc[]): Transacti
     const lineCount = Math.max(0, Math.floor(b.lineCount));
     const v = lineCount > 0 ? b.sumValue / lineCount : 0;
     const q = lineCount > 0 ? b.sumQuantity / lineCount : 0;
+    const contraentrega = parseContraentregaFromBucket(b.contraentrega);
     for (let i = 0; i < lineCount; i++) {
       const docType =
         b.type === TransactionType.Return || b.type === 'NCE'
@@ -136,6 +150,7 @@ export function bucketDocsToTransactions(buckets: ReturnsBucketDoc[]): Transacti
             : (b.returnReason as Transaction['returnReason']),
         pdv: b.pdv,
         reference: b.reference,
+        contraentrega,
       });
     }
   }
