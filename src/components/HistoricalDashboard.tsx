@@ -4,7 +4,7 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import type { ProcessedReportData, ReportSummary } from '@/types';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Calendar as CalendarIcon, Download, Loader2, Info, Eye, BarChart2, Clock, Search, Filter, Package, Trash2 } from 'lucide-react';
+import { ArrowLeft, Calendar as CalendarIcon, Download, Loader2, Info, Eye, BarChart2, Clock, Search, Filter, Package, Trash2, X } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
@@ -39,7 +39,38 @@ type DailyGroup = {
 };
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#a855f7', '#ec4899', '#f43f5e', '#14b8a6'];
-const PIE_COLORS = ['#3b82f6', '#f43f5e', '#f59e0b', '#10b981'];
+const PIE_COLORS = ['#3b82f6', '#f43f5e', '#f59e0b', '#10b981', '#8b5cf6', '#14b8a6', '#f97316', '#64748b'];
+const TOP_BRANDS = 7;
+const TOP_CATEGORIES = 6;
+const TOP_JUSTIFICATIONS = 10;
+
+type NamedShare = { name: string; value: number; percent: number; percentLabel: string };
+
+function toShareRows(
+  entries: Array<[string, number]>,
+  topN: number
+): NamedShare[] {
+  const sorted = [...entries].sort((a, b) => b[1] - a[1]);
+  const total = sorted.reduce((sum, [, v]) => sum + v, 0);
+  if (total <= 0) return [];
+
+  const head = sorted.slice(0, topN);
+  const rest = sorted.slice(topN);
+  const rows: Array<[string, number]> = [...head];
+  if (rest.length > 0) {
+    rows.push(['Otros', rest.reduce((sum, [, v]) => sum + v, 0)]);
+  }
+
+  return rows.map(([name, value]) => {
+    const percent = (value / total) * 100;
+    return {
+      name,
+      value,
+      percent,
+      percentLabel: `${percent.toFixed(1)}%`,
+    };
+  });
+}
 
 export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onReturnToMain, onConsolidate, theme }) => {
   const { toast } = useToast();
@@ -65,8 +96,20 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
   const [selectedOperator, setSelectedOperator] = useState<string>('all');
   const [selectedBrand, setSelectedBrand] = useState<string>('all');
   const [selectedProductType, setSelectedProductType] = useState<string>('all');
+  const [selectedJustification, setSelectedJustification] = useState<string>('all');
   const [selectedSpecificDay, setSelectedSpecificDay] = useState<string>('all');
   const [activeTab, setActiveTab] = useState<'list' | 'trends'>('list');
+
+  const clearTrendFilters = useCallback(() => {
+    setSelectedOperator('all');
+    setSelectedBrand('all');
+    setSelectedProductType('all');
+    setSelectedJustification('all');
+  }, []);
+
+  const toggleFilterValue = useCallback((current: string, next: string, setter: (v: string) => void) => {
+    setter(current === next ? 'all' : next);
+  }, []);
 
   const handleQuery = useCallback(async () => {
     if (!dateRange?.from) {
@@ -376,12 +419,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
             brands[label] += b.totalQuantity;
          });
      });
-     const total = Object.values(brands).reduce((sum, v) => sum + v, 0);
-     return Object.entries(brands).map(([name, value]) => ({ 
-         name, 
-         value,
-         percent: total > 0 ? ((value / total) * 100).toFixed(1) + '%' : '0%'
-     })).sort((a,b) => b.value - a.value);
+     return toShareRows(Object.entries(brands), TOP_BRANDS);
    }, [trendsData, selectedOperator, selectedBrand, selectedProductType]);
 
   const productPieData = useMemo(() => {
@@ -404,13 +442,62 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
             products[label] += b.totalQuantity;
          });
      });
-     const total = Object.values(products).reduce((sum, v) => sum + v, 0);
-     return Object.entries(products).map(([name, value]) => ({ 
-         name, 
-         value,
-         percent: total > 0 ? ((value / total) * 100).toFixed(1) + '%' : '0%'
-     })).sort((a,b) => b.value - a.value);
+     return toShareRows(Object.entries(products), TOP_CATEGORIES);
    }, [trendsData, selectedOperator, selectedBrand, selectedProductType]);
+
+  const monthlySummaryData = useMemo(() => {
+    const months: Record<string, { monthKey: string; label: string; unidades: number; complianceSum: number; days: number }> = {};
+
+    const filterDetail = (detail: any) => {
+      const opMatch = selectedOperator === 'all' || detail.packerName === selectedOperator;
+      const brandMatch = selectedBrand === 'all' || (detail.brandName || detail.marca) === selectedBrand;
+      const typeMatch = selectedProductType === 'all' || (detail.productType || detail.category) === selectedProductType;
+      return opMatch && brandMatch && typeMatch;
+    };
+
+    trendsData.forEach((d) => {
+      const dateStr = extractLocalDateString(d.reportDate);
+      if (!dateStr || dateStr === 'Invalid') return;
+      const monthKey = dateStr.slice(0, 7);
+      const label = format(new Date(dateStr + 'T12:00:00'), 'MMM yyyy', { locale: es });
+
+      if (!months[monthKey]) {
+        months[monthKey] = { monthKey, label, unidades: 0, complianceSum: 0, days: 0 };
+      }
+
+      let totalUnits = 0;
+      let complianceVal = 0;
+      if (selectedOperator === 'all' && selectedBrand === 'all' && selectedProductType === 'all') {
+        totalUnits = d.packerProductivity?.reduce((sum, p) => sum + p.totalQuantity, 0) || 0;
+        complianceVal = d.overallCompliance || 0;
+      } else {
+        const matches = d.packerBrandProductivityDetail?.filter(filterDetail) || [];
+        if (matches.length === 0) return;
+        totalUnits = matches.reduce((sum, m) => sum + m.totalQuantity, 0);
+        complianceVal = matches.reduce((s, m) => s + (m.compliance || 0), 0) / matches.length;
+      }
+
+      months[monthKey].unidades += totalUnits;
+      months[monthKey].complianceSum += complianceVal;
+      months[monthKey].days += 1;
+    });
+
+    return Object.values(months)
+      .sort((a, b) => a.monthKey.localeCompare(b.monthKey))
+      .map((m) => ({
+        month: m.label,
+        monthKey: m.monthKey,
+        unidades: m.unidades,
+        cumplimiento: m.days > 0 ? Number((m.complianceSum / m.days).toFixed(1)) : 0,
+        dias: m.days,
+      }));
+  }, [trendsData, selectedOperator, selectedBrand, selectedProductType]);
+
+  const hasActiveTrendFilters =
+    selectedOperator !== 'all' ||
+    selectedBrand !== 'all' ||
+    selectedProductType !== 'all' ||
+    selectedJustification !== 'all';
 
   const hourlyTrendData = useMemo(() => {
       const hoursMap: Record<number, { units: number, productiveMinutes: number, validCount: number }> = {};
@@ -469,66 +556,101 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
   const deadTimeTrendData = useMemo(() => {
       const reasons: Record<string, number> = {};
       trendsData.forEach(d => {
-          // PRIORITY 1: New architecture with pre-aggregated global reasons
-          if (d.reasonsSummary) {
-              d.reasonsSummary.forEach(s => {
-                  const label = s.reason || (s.type === 'MICRO_PAUSE' ? 'Micro-pausas' : 'Sin justificar');
-                  if (!reasons[label]) reasons[label] = 0;
-                  reasons[label] += (s.durationMinutes / 60) || 0;
-              });
-          } 
-          // PRIORITY 2: New architecture: use summary fallback (operator based)
-          else if (d.deadTimeSummary || d.microPausesSummary) {
-              const allSummaries = [...(d.deadTimeSummary || []), ...(d.microPausesSummary || [])];
-              allSummaries.forEach(s => {
-                  const reasonLabel = s.reason || (s.type === 'MICRO_PAUSE' ? 'Micro-pausas' : 'Sin justificar');
-                  if (!reasons[reasonLabel]) reasons[reasonLabel] = 0;
-                  reasons[reasonLabel] += (s.totalMinutes / 60) || 0;
-              });
-          } else {
-              // Legacy/Detailed fallback
-              const allPauses = [...(d.deadTimeReport || []), ...(d.microPausesReport || [])]
-              const reportToUse = selectedOperator === 'all' 
-                   ? allPauses 
+          // Prefer detailed reports when filtering by operator so clicks stay consistent
+          const allPauses = [...(d.deadTimeReport || []), ...(d.microPausesReport || [])];
+          const hasDetailed = allPauses.length > 0;
+
+          if (hasDetailed || selectedOperator !== 'all') {
+              const reportToUse = selectedOperator === 'all'
+                   ? allPauses
                    : allPauses.filter(dt => dt.packerName === selectedOperator);
-                   
+
               reportToUse.forEach(dt => {
                   let reasonLabel = dt.justification?.trim() || dt.status?.trim() || 'Desconocido/Sin justificar';
                   if (reasonLabel.toLowerCase().includes('excedente')) {
                      reasonLabel = 'No Justificado';
                   }
+                  if (selectedJustification !== 'all' && reasonLabel !== selectedJustification) return;
                   if (!reasons[reasonLabel]) reasons[reasonLabel] = 0;
                   reasons[reasonLabel] += (dt.duration / 60) || 0;
+              });
+              return;
+          }
+
+          if (d.reasonsSummary) {
+              d.reasonsSummary.forEach(s => {
+                  const label = s.reason || (s.type === 'MICRO_PAUSE' ? 'Micro-pausas' : 'Sin justificar');
+                  if (selectedJustification !== 'all' && label !== selectedJustification) return;
+                  if (!reasons[label]) reasons[label] = 0;
+                  reasons[label] += (s.durationMinutes / 60) || 0;
+              });
+          } else if (d.deadTimeSummary || d.microPausesSummary) {
+              const allSummaries = [...(d.deadTimeSummary || []), ...(d.microPausesSummary || [])];
+              allSummaries.forEach(s => {
+                  const reasonLabel = s.reason || (s.type === 'MICRO_PAUSE' ? 'Micro-pausas' : 'Sin justificar');
+                  if (selectedJustification !== 'all' && reasonLabel !== selectedJustification) return;
+                  if (!reasons[reasonLabel]) reasons[reasonLabel] = 0;
+                  reasons[reasonLabel] += (s.totalMinutes / 60) || 0;
               });
           }
       });
       return Object.entries(reasons)
           .map(([reason, horas]) => ({ reason, horas: Number(horas.toFixed(2)) }))
           .sort((a,b) => b.horas - a.horas)
-          .slice(0, 10);
-  }, [trendsData, selectedOperator]);
+          .slice(0, TOP_JUSTIFICATIONS);
+  }, [trendsData, selectedOperator, selectedJustification]);
 
   const topPackersData = useMemo(() => {
       const packerStats: Record<string, { totalUnits: number, days: number, totalHours: number, totalCompliance: number }> = {};
+
       trendsData.forEach(d => {
-          d.packerProductivity?.forEach(p => {
-              if (!packerStats[p.packerName]) packerStats[p.packerName] = { totalUnits: 0, days: 0, totalHours: 0, totalCompliance: 0 };
-              packerStats[p.packerName].totalUnits += p.totalQuantity;
-              packerStats[p.packerName].days += 1;
-              packerStats[p.packerName].totalHours += p.hoursWorked;
-              packerStats[p.packerName].totalCompliance += (p.compliance || 0);
+          if (selectedBrand === 'all' && selectedProductType === 'all') {
+              d.packerProductivity?.forEach(p => {
+                  if (selectedOperator !== 'all' && p.packerName !== selectedOperator) return;
+                  if (!packerStats[p.packerName]) packerStats[p.packerName] = { totalUnits: 0, days: 0, totalHours: 0, totalCompliance: 0 };
+                  packerStats[p.packerName].totalUnits += p.totalQuantity;
+                  packerStats[p.packerName].days += 1;
+                  packerStats[p.packerName].totalHours += p.hoursWorked;
+                  packerStats[p.packerName].totalCompliance += (p.compliance || 0);
+              });
+              return;
+          }
+
+          const matches = (d.packerBrandProductivityDetail || []).filter((detail: any) => {
+              const opMatch = selectedOperator === 'all' || detail.packerName === selectedOperator;
+              const brandMatch = selectedBrand === 'all' || (detail.brandName || detail.marca) === selectedBrand;
+              const typeMatch = selectedProductType === 'all' || (detail.productType || detail.category) === selectedProductType;
+              return opMatch && brandMatch && typeMatch;
+          });
+
+          const byPacker: Record<string, { units: number; complianceSum: number; n: number }> = {};
+          matches.forEach((m: any) => {
+              if (!byPacker[m.packerName]) byPacker[m.packerName] = { units: 0, complianceSum: 0, n: 0 };
+              byPacker[m.packerName].units += m.totalQuantity;
+              byPacker[m.packerName].complianceSum += m.compliance || 0;
+              byPacker[m.packerName].n += 1;
+          });
+
+          Object.entries(byPacker).forEach(([name, stats]) => {
+              if (!packerStats[name]) packerStats[name] = { totalUnits: 0, days: 0, totalHours: 0, totalCompliance: 0 };
+              packerStats[name].totalUnits += stats.units;
+              packerStats[name].days += 1;
+              packerStats[name].totalCompliance += stats.n > 0 ? stats.complianceSum / stats.n : 0;
+              const hours = d.packerProductivity?.find(p => p.packerName === name)?.hoursWorked || 0;
+              packerStats[name].totalHours += hours;
           });
       });
+
       return Object.entries(packerStats)
           .map(([name, stats]) => ({ 
               name, 
               unidadesTotales: stats.totalUnits,
               horasTotales: Number(stats.totalHours.toFixed(2)),
-              promedioCumplimiento: Number((stats.totalCompliance / stats.days).toFixed(1)),
+              promedioCumplimiento: Number((stats.totalCompliance / Math.max(stats.days, 1)).toFixed(1)),
               uphPromedio: stats.totalHours > 0 ? Number((stats.totalUnits / stats.totalHours).toFixed(1)) : 0
           }))
           .sort((a, b) => b.promedioCumplimiento - a.promedioCumplimiento);
-  }, [trendsData]);
+  }, [trendsData, selectedOperator, selectedBrand, selectedProductType]);
 
   const snapshotsForSelectedDay = useMemo(() => {
     if (!selectedDate) return [];
@@ -651,9 +773,44 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                  {availableProductTypes.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
                              </SelectContent>
                          </Select>
+                         {hasActiveTrendFilters && (
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 text-xs text-muted-foreground"
+                                onClick={clearTrendFilters}
+                            >
+                                <X className="mr-1 h-3.5 w-3.5" /> Limpiar filtros
+                            </Button>
+                         )}
                     </div>
                </div>
                
+               {hasActiveTrendFilters && activeTab === 'trends' && (
+                 <div className="flex flex-wrap items-center gap-2 mb-4">
+                   <span className="text-xs text-muted-foreground">Filtros activos:</span>
+                   {selectedOperator !== 'all' && (
+                     <Badge variant="secondary" className="cursor-pointer gap-1" onClick={() => setSelectedOperator('all')}>
+                       Empacador: {selectedOperator} <X className="h-3 w-3" />
+                     </Badge>
+                   )}
+                   {selectedBrand !== 'all' && (
+                     <Badge variant="secondary" className="cursor-pointer gap-1" onClick={() => setSelectedBrand('all')}>
+                       Marca: {selectedBrand} <X className="h-3 w-3" />
+                     </Badge>
+                   )}
+                   {selectedProductType !== 'all' && (
+                     <Badge variant="secondary" className="cursor-pointer gap-1" onClick={() => setSelectedProductType('all')}>
+                       Categoría: {selectedProductType} <X className="h-3 w-3" />
+                     </Badge>
+                   )}
+                   {selectedJustification !== 'all' && (
+                     <Badge variant="secondary" className="cursor-pointer gap-1" onClick={() => setSelectedJustification('all')}>
+                       Justificación: {selectedJustification} <X className="h-3 w-3" />
+                     </Badge>
+                   )}
+                 </div>
+               )} 
                <TabsContent value="list" className="animate-in slide-in-from-bottom-2 duration-300">
                 <Card className="rounded-xl overflow-hidden shadow-sm border-muted/60">
                 <Table>
@@ -722,10 +879,73 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                        </div>
                    ) : trendsData.length > 0 ? (
                        <div className="flex flex-col gap-6 animate-in slide-in-from-bottom-4 duration-500">
+                            {/* MONTHLY SUMMARY */}
+                            <Card className="overflow-hidden shadow-sm border-muted/60">
+                                <CardHeader className="bg-gradient-to-r from-emerald-500/10 to-transparent">
+                                  <CardTitle className="text-xl">Resumen por mes: Volumen y Cumplimiento</CardTitle>
+                                  <CardDescription>
+                                    Totales mensuales del rango cargado (respeta filtros de empacador, marca y categoría).
+                                  </CardDescription>
+                                </CardHeader>
+                                <CardContent className="pt-4 space-y-4">
+                                  {monthlySummaryData.length === 0 ? (
+                                    <p className="text-sm text-muted-foreground py-6 text-center">Sin datos mensuales para el filtro actual.</p>
+                                  ) : (
+                                    <>
+                                      <div className="h-[260px]">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                          <ComposedChart data={monthlySummaryData}>
+                                            <CartesianGrid strokeDasharray="3 3" opacity={0.15} vertical={false} />
+                                            <XAxis dataKey="month" tick={{ fontSize: 12, fill: '#888' }} axisLine={false} tickLine={false} />
+                                            <YAxis yAxisId="left" tickFormatter={(v: any) => v.toLocaleString('es-CO')} tick={{ fill: '#888' }} axisLine={false} tickLine={false} />
+                                            <YAxis yAxisId="right" orientation="right" domain={[0, 'dataMax + 20']} tickFormatter={(v: any) => `${v}%`} tick={{ fill: '#888' }} axisLine={false} tickLine={false} />
+                                            <RechartsTooltip
+                                              contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))' }}
+                                              formatter={(value: any, name: any) =>
+                                                name === 'cumplimiento'
+                                                  ? [`${value}%`, 'Cumplimiento']
+                                                  : [Number(value).toLocaleString('es-CO'), 'Unidades']
+                                              }
+                                            />
+                                            <Legend />
+                                            <Bar yAxisId="left" dataKey="unidades" name="Unidades" fill="#10b981" radius={[4, 4, 0, 0]}>
+                                              <LabelList dataKey="unidades" position="top" fontSize={10} formatter={(v: any) => (v > 0 ? Number(v).toLocaleString('es-CO') : '')} />
+                                            </Bar>
+                                            <Line yAxisId="right" type="monotone" dataKey="cumplimiento" name="Cumplimiento %" stroke="#f59e0b" strokeWidth={3} dot={{ r: 4 }} />
+                                          </ComposedChart>
+                                        </ResponsiveContainer>
+                                      </div>
+                                      <div className="overflow-x-auto border rounded-lg">
+                                        <Table>
+                                          <TableHeader>
+                                            <TableRow>
+                                              <TableHead>Mes</TableHead>
+                                              <TableHead className="text-right">Días</TableHead>
+                                              <TableHead className="text-right">Volumen</TableHead>
+                                              <TableHead className="text-right">Cumplimiento prom.</TableHead>
+                                            </TableRow>
+                                          </TableHeader>
+                                          <TableBody>
+                                            {monthlySummaryData.map((m) => (
+                                              <TableRow key={m.monthKey}>
+                                                <TableCell className="font-medium capitalize">{m.month}</TableCell>
+                                                <TableCell className="text-right">{m.dias}</TableCell>
+                                                <TableCell className="text-right font-semibold">{m.unidades.toLocaleString('es-CO')}</TableCell>
+                                                <TableCell className="text-right font-bold text-amber-600">{m.cumplimiento}%</TableCell>
+                                              </TableRow>
+                                            ))}
+                                          </TableBody>
+                                        </Table>
+                                      </div>
+                                    </>
+                                  )}
+                                </CardContent>
+                            </Card>
+
                             {/* DUAL COMPLIANCE CHART */}
                             <Card className="overflow-hidden shadow-sm border-muted/60">
                                 <CardHeader className="bg-gradient-to-r from-blue-500/10 to-transparent">
-                                  <CardTitle className="flex items-center justify-between text-xl">
+                                  <CardTitle className="flex items-center justify-between text-xl gap-2 flex-wrap">
                                       Evolución Diaria: Volumen vs Cumplimiento
                                       {selectedOperator !== 'all' && <Badge variant="outline" className="text-primary border-primary">Filtro: {selectedOperator}</Badge>}
                                   </CardTitle>
@@ -762,21 +982,75 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                 <Card className="shadow-sm border-muted/60 flex flex-col">
                                     <CardHeader>
                                         <CardTitle className="text-lg">Distribución por Marca</CardTitle>
-                                        <CardDescription>Mercancía procesada total.</CardDescription>
+                                        <CardDescription>Top {TOP_BRANDS} más representativas (+ Otros). Clic para filtrar.</CardDescription>
                                     </CardHeader>
-                                    <CardContent className="h-64 flex-grow relative pb-0">
+                                    <CardContent className="h-72 flex-grow relative pb-2">
                                         {brandPieData.length > 0 ? (
-                                            <ResponsiveContainer width="100%" height="100%">
+                                            <div className="h-full flex flex-col">
+                                            <ResponsiveContainer width="100%" height="70%">
                                                  <PieChart>
-                                                     <Pie data={brandPieData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={4} dataKey="value" >
+                                                     <Pie
+                                                       data={brandPieData}
+                                                       cx="50%"
+                                                       cy="50%"
+                                                       innerRadius={45}
+                                                       outerRadius={75}
+                                                       paddingAngle={3}
+                                                       dataKey="value"
+                                                       nameKey="name"
+                                                       cursor="pointer"
+                                                       onClick={(data: any) => {
+                                                         const name = data?.name as string | undefined;
+                                                         if (!name || name === 'Otros') return;
+                                                         toggleFilterValue(selectedBrand, name, setSelectedBrand);
+                                                       }}
+                                                     >
                                                          {brandPieData.map((entry, index) => (
-                                                             <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                                             <Cell
+                                                               key={`cell-brand-${index}`}
+                                                               fill={COLORS[index % COLORS.length]}
+                                                               stroke={selectedBrand === entry.name ? '#111' : 'transparent'}
+                                                               strokeWidth={selectedBrand === entry.name ? 2 : 0}
+                                                             />
                                                          ))}
-                                                         <LabelList dataKey="name" position="outside" fontSize={11} fill="#888" stroke="none" />
+                                                         <LabelList
+                                                           dataKey="percentLabel"
+                                                           position="outside"
+                                                           fontSize={11}
+                                                           fill="#666"
+                                                           stroke="none"
+                                                         />
                                                      </Pie>
-                                                     <RechartsTooltip contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))' }} formatter={(value: any) => value.toLocaleString('es-CO')} />
+                                                     <RechartsTooltip
+                                                       contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))' }}
+                                                       formatter={(value: any, _n: any, item: any) => [
+                                                         `${Number(value).toLocaleString('es-CO')} (${item?.payload?.percentLabel || ''})`,
+                                                         item?.payload?.name || 'Marca',
+                                                       ]}
+                                                     />
                                                  </PieChart>
                                              </ResponsiveContainer>
+                                             <div className="flex flex-wrap gap-x-3 gap-y-1 justify-center px-2 text-[11px]">
+                                               {brandPieData.map((entry, index) => (
+                                                 <button
+                                                   key={entry.name}
+                                                   type="button"
+                                                   className={cn(
+                                                     "inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted",
+                                                     selectedBrand === entry.name && "bg-muted font-semibold",
+                                                     entry.name === 'Otros' && "cursor-default opacity-70"
+                                                   )}
+                                                   onClick={() => {
+                                                     if (entry.name === 'Otros') return;
+                                                     toggleFilterValue(selectedBrand, entry.name, setSelectedBrand);
+                                                   }}
+                                                 >
+                                                   <span className="h-2 w-2 rounded-full" style={{ background: COLORS[index % COLORS.length] }} />
+                                                   {entry.name} {entry.percentLabel}
+                                                 </button>
+                                               ))}
+                                             </div>
+                                            </div>
                                         ) : (
                                              <div className="flex h-full items-center justify-center bg-muted/20 rounded-lg text-muted-foreground text-sm">Sin datos</div>
                                         )}
@@ -787,21 +1061,75 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                 <Card className="shadow-sm border-muted/60 flex flex-col">
                                     <CardHeader>
                                         <CardTitle className="text-lg">Mix de Categorías</CardTitle>
-                                        <CardDescription>Ropa vs Calzado.</CardDescription>
+                                        <CardDescription>Top {TOP_CATEGORIES} con %. Clic para filtrar el reporte.</CardDescription>
                                     </CardHeader>
-                                    <CardContent className="h-64 flex-grow relative pb-0">
+                                    <CardContent className="h-72 flex-grow relative pb-2">
                                         {productPieData.length > 0 ? (
-                                            <ResponsiveContainer width="100%" height="100%">
+                                            <div className="h-full flex flex-col">
+                                            <ResponsiveContainer width="100%" height="70%">
                                                  <PieChart>
-                                                     <Pie data={productPieData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={4} dataKey="value" >
+                                                     <Pie
+                                                       data={productPieData}
+                                                       cx="50%"
+                                                       cy="50%"
+                                                       innerRadius={45}
+                                                       outerRadius={75}
+                                                       paddingAngle={3}
+                                                       dataKey="value"
+                                                       nameKey="name"
+                                                       cursor="pointer"
+                                                       onClick={(data: any) => {
+                                                         const name = data?.name as string | undefined;
+                                                         if (!name || name === 'Otros') return;
+                                                         toggleFilterValue(selectedProductType, name, setSelectedProductType);
+                                                       }}
+                                                     >
                                                          {productPieData.map((entry, index) => (
-                                                             <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                                                             <Cell
+                                                               key={`cell-cat-${index}`}
+                                                               fill={PIE_COLORS[index % PIE_COLORS.length]}
+                                                               stroke={selectedProductType === entry.name ? '#111' : 'transparent'}
+                                                               strokeWidth={selectedProductType === entry.name ? 2 : 0}
+                                                             />
                                                          ))}
-                                                         <LabelList dataKey="name" position="outside" fontSize={11} fill="#888" stroke="none" />
+                                                         <LabelList
+                                                           dataKey="percentLabel"
+                                                           position="outside"
+                                                           fontSize={11}
+                                                           fill="#666"
+                                                           stroke="none"
+                                                         />
                                                      </Pie>
-                                                     <RechartsTooltip contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))' }} formatter={(value: any) => value.toLocaleString('es-CO')} />
+                                                     <RechartsTooltip
+                                                       contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))' }}
+                                                       formatter={(value: any, _n: any, item: any) => [
+                                                         `${Number(value).toLocaleString('es-CO')} (${item?.payload?.percentLabel || ''})`,
+                                                         item?.payload?.name || 'Categoría',
+                                                       ]}
+                                                     />
                                                  </PieChart>
                                              </ResponsiveContainer>
+                                             <div className="flex flex-wrap gap-x-3 gap-y-1 justify-center px-2 text-[11px]">
+                                               {productPieData.map((entry, index) => (
+                                                 <button
+                                                   key={entry.name}
+                                                   type="button"
+                                                   className={cn(
+                                                     "inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted",
+                                                     selectedProductType === entry.name && "bg-muted font-semibold",
+                                                     entry.name === 'Otros' && "cursor-default opacity-70"
+                                                   )}
+                                                   onClick={() => {
+                                                     if (entry.name === 'Otros') return;
+                                                     toggleFilterValue(selectedProductType, entry.name, setSelectedProductType);
+                                                   }}
+                                                 >
+                                                   <span className="h-2 w-2 rounded-full" style={{ background: PIE_COLORS[index % PIE_COLORS.length] }} />
+                                                   {entry.name} {entry.percentLabel}
+                                                 </button>
+                                               ))}
+                                             </div>
+                                            </div>
                                         ) : (
                                              <div className="flex h-full items-center justify-center bg-muted/20 rounded-lg text-muted-foreground text-sm">Sin datos</div>
                                         )}
@@ -833,7 +1161,7 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                 <Card className="md:col-span-2 shadow-sm border-muted/60 flex flex-col">
                                     <CardHeader>
                                         <CardTitle className="text-lg flex items-center text-rose-500">Radar de Fugas Acum.</CardTitle>
-                                        <CardDescription>Suma de paralizaciones.</CardDescription>
+                                        <CardDescription>Clic en una justificación para filtrar. Vuelva a clic para quitar.</CardDescription>
                                     </CardHeader>
                                     <CardContent className="h-64 pb-0">
                                         <ResponsiveContainer width="100%" height="100%">
@@ -842,7 +1170,25 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                                  <XAxis type="number" tickFormatter={(v) => `${v}h`} tick={{fill: '#888'}} axisLine={false} tickLine={false} />
                                                  <YAxis dataKey="reason" type="category" width={85} tick={{ fontSize: 11, fill: '#555', fontWeight: 500 }} axisLine={false} tickLine={false} />
                                                  <RechartsTooltip cursor={{fill: 'hsl(var(--muted))', opacity: 0.3}} contentStyle={{ borderRadius: '12px', background: 'hsl(var(--card))' }} formatter={(v) => [`${v} Horas`, 'Tiempo']} />
-                                                 <Bar dataKey="horas" fill="#f43f5e" radius={[0, 4, 4, 0]} barSize={20} name="Horas Muertas">
+                                                 <Bar
+                                                   dataKey="horas"
+                                                   fill="#f43f5e"
+                                                   radius={[0, 4, 4, 0]}
+                                                   barSize={20}
+                                                   name="Horas Muertas"
+                                                   cursor="pointer"
+                                                   onClick={(data: any) => {
+                                                     const reason = (data?.reason || data?.payload?.reason) as string | undefined;
+                                                     if (!reason) return;
+                                                     toggleFilterValue(selectedJustification, reason, setSelectedJustification);
+                                                   }}
+                                                 >
+                                                     {deadTimeTrendData.map((entry) => (
+                                                       <Cell
+                                                         key={entry.reason}
+                                                         fill={selectedJustification === entry.reason ? '#be123c' : '#f43f5e'}
+                                                       />
+                                                     ))}
                                                      <LabelList dataKey="horas" position="right" fill="#f43f5e" fontSize={10} formatter={(v) => v + 'h'} />
                                                  </Bar>
                                              </BarChart>
@@ -853,11 +1199,10 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                             
                             {/* THE TRUE MATRIX: OPERATOR BREAKDOWN */}
 
-                           {selectedOperator === 'all' && (
                            <Card className="xl:col-span-2 shadow-sm border-muted/60 overflow-hidden">
                                <CardHeader className="bg-muted/10">
                                    <CardTitle className="text-xl">Matriz de Rendimiento Humano</CardTitle>
-                                   <CardDescription>Auditoría profunda cruzando horas y efectividad.</CardDescription>
+                                   <CardDescription>Clic en un empacador para filtrar todo el reporte de tendencias.</CardDescription>
                                </CardHeader>
                                <CardContent className="p-0">
                                   <div className="overflow-x-auto">
@@ -873,7 +1218,14 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                         </TableHeader>
                                         <TableBody>
                                             {topPackersData.map((op, idx) => (
-                                                <TableRow key={op.name} className="group">
+                                                <TableRow
+                                                  key={op.name}
+                                                  className={cn(
+                                                    "group cursor-pointer hover:bg-muted/40",
+                                                    selectedOperator === op.name && "bg-primary/5"
+                                                  )}
+                                                  onClick={() => toggleFilterValue(selectedOperator, op.name, setSelectedOperator)}
+                                                >
                                                     <TableCell className="font-semibold pl-6 flex items-center gap-3">
                                                         <span className={cn("flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold text-white", idx === 0 ? "bg-amber-400" : idx === 1 ? "bg-slate-300 text-slate-700" : idx === 2 ? "bg-orange-800/80" : "bg-muted text-muted-foreground")}>{idx + 1}</span>
                                                         {op.name}
@@ -893,7 +1245,6 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({ onRetu
                                   </div>
                                </CardContent>
                            </Card>
-                           )}
                        </div>
                    ) : (
                        <div className="flex flex-col items-center justify-center p-16 border border-dashed rounded-xl bg-muted/10 gap-4 mt-8">
