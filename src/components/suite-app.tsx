@@ -17,6 +17,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { parseFlexibleDate, extractLocalDateString } from '@/lib/parsingUtils';
 import DispatchManager from './dispatch-manager/DispatchManager';
 import { BodegaDashboardsMenu } from './BodegaDashboardsMenu';
+import { PlantView } from '@/components/PlantView';
 
 // --- Dynamic Imports for Code Splitting ---
 
@@ -32,7 +33,6 @@ const Dashboard = dynamic(() => import('@/components/Dashboard').then(mod => mod
 const HistoricalDashboard = dynamic(() => import('@/components/HistoricalDashboard').then(mod => mod.HistoricalDashboard), { loading: () => <LoadingSpinner /> });
 const AIInsightModal = dynamic(() => import('@/components/AIInsightModal').then(mod => mod.AIInsightModal), { loading: () => <LoadingSpinner /> });
 const Chatbot = dynamic(() => import('@/components/Chatbot').then(mod => mod.Chatbot), { loading: () => <LoadingSpinner /> });
-const PlantView = dynamic(() => import('@/components/PlantView').then(mod => mod.PlantView), { loading: () => <LoadingSpinner /> });
 const SupervisorView = dynamic(() => import('@/components/SupervisorView').then(mod => mod.SupervisorView), { loading: () => <LoadingSpinner /> });
 const WholesaleDashboard = dynamic(() => import('@/components/WholesaleDashboard').then(mod => mod.WholesaleDashboard), { loading: () => <LoadingSpinner /> });
 const PackingScreen = dynamic(() => import('@/components/PackingScreen').then(mod => mod.PackingScreen), { loading: () => <LoadingSpinner /> });
@@ -419,37 +419,37 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
 
       setIsLoading(true);
       setError(null);
-      setReportData(null);
+      // No limpiar reportData al inicio: si el usuario ya tiene un reporte y regenera,
+      // evita pantallas en blanco / salir del Modo TV por un null temporal.
+      // setReportData(null) se hace solo si el cálculo falla o al reemplazar al final.
 
       try {
-        // Persistir cruce Remisión → huecos Excel para que todos vean lo mismo al regenerar.
+        // Cruce Remisión en memoria (rápido). La persistencia a Firestore va en background
+        // para no bloquear Generar Reporte ni el Modo TV.
         let effectiveJustifications = manualJustifications;
+        let pendingPersist: ManualJustifications | null = null;
         try {
-          const autoFromPulses = buildPersistedPulseJustifications(
-            rawData,
-            reportDate,
-            reportStartTime,
-            reportEndTime,
-            manualJustifications,
-            pulsesForDay,
-            manualOperatorMappings
+          const hasRemisionPulses = (pulsesForDay || []).some(
+            (p) => p.isGlobal || p.metadata?.fromModule === 'Remisión' || p.status === 'En Remisión'
           );
-          const autoKeys = Object.keys(autoFromPulses);
-          if (autoKeys.length > 0) {
-            effectiveJustifications = { ...manualJustifications, ...autoFromPulses };
-            setManualJustifications(effectiveJustifications);
-            const saveRes = await saveJustificationsForDay(reportDate, effectiveJustifications);
-            if (saveRes.error) {
-              console.warn('No se pudieron persistir justificaciones Remisión:', saveRes.error);
-            } else {
-              toast({
-                title: 'Cruce Remisión guardado',
-                description: `Se persistieron ${autoKeys.length} justificación(es) desde pulsos para el día ${reportDate}.`,
-              });
+          if (hasRemisionPulses) {
+            const autoFromPulses = buildPersistedPulseJustifications(
+              rawData,
+              reportDate,
+              reportStartTime,
+              reportEndTime,
+              manualJustifications,
+              pulsesForDay,
+              manualOperatorMappings
+            );
+            const autoKeys = Object.keys(autoFromPulses);
+            if (autoKeys.length > 0) {
+              effectiveJustifications = { ...manualJustifications, ...autoFromPulses };
+              pendingPersist = effectiveJustifications;
             }
           }
         } catch (persistErr) {
-          console.warn('Error persistiendo cruce Remisión:', persistErr);
+          console.warn('Error calculando cruce Remisión (se continúa el reporte):', persistErr);
         }
 
         const productMap = buildProductLookupMap(productDB);
@@ -498,7 +498,29 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
         } else {
           finalProcessedData.annotations = annotations;
           finalProcessedData.processedData = processedDataForReport;
+          // Incluir justificaciones efectivas (con cruce Remisión) en el snapshot
+          finalProcessedData.manualJustifications = effectiveJustifications;
 
+          // Mostrar reporte YA (no esperar Firestore): evita demora y que el Modo TV se corte.
+          if (pendingPersist) {
+            setManualJustifications(pendingPersist);
+          }
+          setReportData(finalProcessedData);
+          setAppStep((prev) =>
+            prev === 'plant_view' || prev === 'supervisor_view' ? prev : 'dashboard'
+          );
+
+          const newLearned = { ...learnedCorrections, ...referenceCorrections };
+          setLearnedCorrections(newLearned);
+          localStorage.setItem('learnedCorrections', JSON.stringify(newLearned));
+
+          toast({
+            title: "Reporte listo",
+            description: "Puede abrir Modo planta; el guardado en historial continúa en segundo plano.",
+            duration: 2500,
+          });
+
+          // Historial + cruce Remisión en background (no bloquea UI / carrusel TV).
           const estimatePayloadBytes = (value: unknown): number => {
             try {
               return new Blob([JSON.stringify(value)]).size;
@@ -507,57 +529,52 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
             }
           };
           const MAX_SAFE_SERVER_ACTION_PAYLOAD_BYTES = 850_000;
-          const fullPayloadBytes = estimatePayloadBytes(finalProcessedData);
-
-          // Prevent 413 (Payload Too Large) on Server Actions by trimming heavy detail when needed.
           const historyPayload: ProcessedReportData = { ...finalProcessedData };
-          if (fullPayloadBytes > MAX_SAFE_SERVER_ACTION_PAYLOAD_BYTES) {
+          if (estimatePayloadBytes(finalProcessedData) > MAX_SAFE_SERVER_ACTION_PAYLOAD_BYTES) {
             delete (historyPayload as any).processedData;
           }
 
-          let saveResult: Awaited<ReturnType<typeof saveReportToHistory>>;
-          try {
-            saveResult = await saveReportToHistory(historyPayload);
-          } catch (saveError: any) {
-            const errorMessage = String(saveError?.message || '');
-            const looksLikePayloadError = /413|payload too large|request entity too large|body.*exceed/i.test(errorMessage.toLowerCase());
-            if (!looksLikePayloadError || !('processedData' in historyPayload)) {
-              throw saveError;
-            }
+          void (async () => {
+            try {
+              let saveResult: Awaited<ReturnType<typeof saveReportToHistory>>;
+              try {
+                saveResult = await saveReportToHistory(historyPayload);
+              } catch (saveError: any) {
+                const errorMessage = String(saveError?.message || '');
+                const looksLikePayloadError = /413|payload too large|request entity too large|body.*exceed/i.test(errorMessage.toLowerCase());
+                if (!looksLikePayloadError || !('processedData' in historyPayload)) {
+                  throw saveError;
+                }
+                const retryPayload: ProcessedReportData = { ...historyPayload };
+                delete (retryPayload as any).processedData;
+                saveResult = await saveReportToHistory(retryPayload);
+              }
 
-            const retryPayload: ProcessedReportData = { ...historyPayload };
-            delete (retryPayload as any).processedData;
-            saveResult = await saveReportToHistory(retryPayload);
-          }
-
-          if (saveResult.error) {
-              toast({
+              if (saveResult.error) {
+                toast({
                   variant: "destructive",
-                  title: "Aviso de Persistencia",
+                  title: "No se pudo guardar el historial",
                   description: saveResult.error,
                   duration: 8000,
-              });
-          } else {
-              if (!('processedData' in historyPayload)) {
-                toast({
-                    title: "Reporte Guardado (modo optimizado)",
-                    description: "Se omitió el detalle pesado para evitar errores de tamaño (413).",
-                    duration: 3500,
                 });
               }
+            } catch (bgErr: any) {
+              console.warn('Background save historial:', bgErr);
               toast({
-                  title: "Reporte Guardado",
-                  description: "El reporte se persistió correctamente en el historial.",
-                  duration: 3000,
+                variant: "destructive",
+                title: "No se pudo guardar el historial",
+                description: String(bgErr?.message || bgErr),
+                duration: 8000,
               });
-          }
-          setReportData(finalProcessedData);
+            }
 
-          const newLearned = { ...learnedCorrections, ...referenceCorrections };
-          setLearnedCorrections(newLearned);
-          localStorage.setItem('learnedCorrections', JSON.stringify(newLearned));
-
-          setAppStep('dashboard');
+            if (pendingPersist) {
+              const saveRes = await saveJustificationsForDay(reportDate, pendingPersist);
+              if (saveRes.error) {
+                console.warn('Background save justificaciones Remisión:', saveRes.error);
+              }
+            }
+          })();
         }
       } catch (e: any) {
         console.error(e);

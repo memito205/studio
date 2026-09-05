@@ -495,7 +495,7 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
           </CardTitle>
           <CardDescription>
             Pulsos del día leídos desde <code className="text-xs">operation_pulses</code> con origen Remisión.
-            Al generar el reporte se persiste el cruce con los huecos del Excel para todos.
+            Al generar, el cruce Remisión se aplica al reporte y se guarda en segundo plano (sin bloquear la pantalla).
             {isReportContextLoading
               ? ' Cargando pulsos/justificaciones…'
               : isReportContextReady

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { PackerProductivity, ProcessedReportData } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -19,13 +19,17 @@ const PAGE_SIZE = 2;
 /** Rotación más pausada (+2s vs. versión anterior). */
 const SLICE_SECONDS = 10;
 
-export const PlantView: React.FC<PlantViewProps> = ({ data, onReturnToDashboard }) => {
+export const PlantView: React.FC<PlantViewProps> = React.memo(({ data, onReturnToDashboard }) => {
   const { packerProductivity, overallCompliance, deadTimeReport = [], microPausesReport = [] } = data;
 
-  const rankedPackers = [...packerProductivity].sort((a, b) => {
-    if (b.compliance !== a.compliance) return b.compliance - a.compliance;
-    return b.productivity - a.productivity;
-  });
+  const rankedPackers = useMemo(
+    () =>
+      [...packerProductivity].sort((a, b) => {
+        if (b.compliance !== a.compliance) return b.compliance - a.compliance;
+        return b.productivity - a.productivity;
+      }),
+    [packerProductivity]
+  );
 
   const totalPairs = rankedPackers.reduce((sum, packer) => sum + packer.totalQuantity, 0);
   const totalHours = rankedPackers.reduce((sum, packer) => sum + packer.hoursWorked, 0);
@@ -33,10 +37,14 @@ export const PlantView: React.FC<PlantViewProps> = ({ data, onReturnToDashboard 
 
   const totalPages = Math.max(1, Math.ceil(rankedPackers.length / PAGE_SIZE));
   const [page, setPage] = useState(0);
+  const packerSignature = useMemo(
+    () => rankedPackers.map((p) => p.packerName).join('|'),
+    [rankedPackers]
+  );
 
   useEffect(() => {
     setPage(0);
-  }, [rankedPackers.length]);
+  }, [packerSignature]);
 
   useEffect(() => {
     if (totalPages <= 1) return;
@@ -233,4 +241,6 @@ export const PlantView: React.FC<PlantViewProps> = ({ data, onReturnToDashboard 
       </Card>
     </div>
   );
-};
+});
+
+PlantView.displayName = 'PlantView';
