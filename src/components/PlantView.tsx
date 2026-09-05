@@ -14,13 +14,13 @@ interface PlantViewProps {
   theme: 'light' | 'dark';
 }
 
-/** Empacadores visibles a la vez en modo TV (letra grande). */
-const PAGE_SIZE = 3;
-/** Segundos entre cada slice del carrusel. */
-const SLICE_SECONDS = 8;
+/** Dos operarios por pantalla: más espacio y lectura en TV. */
+const PAGE_SIZE = 2;
+/** Rotación más pausada (+2s vs. versión anterior). */
+const SLICE_SECONDS = 10;
 
 export const PlantView: React.FC<PlantViewProps> = ({ data, onReturnToDashboard }) => {
-  const { packerProductivity, overallCompliance } = data;
+  const { packerProductivity, overallCompliance, deadTimeReport = [], microPausesReport = [] } = data;
 
   const rankedPackers = [...packerProductivity].sort((a, b) => {
     if (b.compliance !== a.compliance) return b.compliance - a.compliance;
@@ -63,49 +63,59 @@ export const PlantView: React.FC<PlantViewProps> = ({ data, onReturnToDashboard 
   const rankOf = (packer: PackerProductivity) =>
     rankedPackers.findIndex((p) => p.packerName === packer.packerName) + 1;
 
+  const pauseStatsFor = (packerName: string) => {
+    const dead = deadTimeReport.filter((p) => p.packerName === packerName);
+    const micro = microPausesReport.filter((p) => p.packerName === packerName);
+    const pauseCount = dead.length + micro.length;
+    const pauseMinutes =
+      dead.reduce((s, p) => s + (p.duration || 0), 0) +
+      micro.reduce((s, p) => s + (p.duration || 0), 0);
+    return { pauseCount, pauseMinutes };
+  };
+
   return (
-    <div className="min-h-[80vh] space-y-5 bg-slate-100 dark:bg-gray-900 p-4 sm:p-6 lg:p-8 rounded-lg">
+    <div className="min-h-[85vh] space-y-4 bg-slate-100 dark:bg-gray-900 p-3 sm:p-5 lg:p-6 rounded-lg">
       <Card className="border-none shadow-none bg-transparent">
-        <CardHeader className="flex flex-col md:flex-row justify-between items-center text-center md:text-left gap-3 pb-2">
+        <CardHeader className="flex flex-col md:flex-row justify-between items-center text-center md:text-left gap-3 py-2">
           <div>
-            <CardTitle className="text-3xl md:text-5xl font-extrabold text-foreground">
+            <CardTitle className="text-3xl md:text-4xl font-extrabold text-foreground">
               Productividad del Día
             </CardTitle>
-            <CardDescription className="text-lg md:text-xl text-muted-foreground mt-2">
-              Modo TV: se muestran {Math.min(PAGE_SIZE, rankedPackers.length || PAGE_SIZE)} operarios a la vez
-              {totalPages > 1 ? ` · rotación cada ${SLICE_SECONDS}s` : ''}.
+            <CardDescription className="text-base md:text-lg text-muted-foreground mt-1">
+              Modo TV · {PAGE_SIZE} operarios por pantalla
+              {totalPages > 1 ? ` · cambio cada ${SLICE_SECONDS}s` : ''}
             </CardDescription>
           </div>
-          <Button onClick={onReturnToDashboard} variant="outline" size="lg" className="mt-2 md:mt-0">
+          <Button onClick={onReturnToDashboard} variant="outline" size="lg">
             <ArrowLeft className="mr-2 h-5 w-5" />
             Volver al Dashboard
           </Button>
         </CardHeader>
       </Card>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard title="Unidades Totales" value={totalPairs.toLocaleString()} icon={<Package />} color="text-amber-500" />
         <StatCard title="Operarios Activos" value={String(rankedPackers.length)} icon={<Clock />} color="text-blue-500" />
-        <StatCard title="Productividad Media" value={`${avgProductivity.toFixed(2)} u/hr`} icon={<CheckCircle />} color="text-green-500" />
-        <StatCard title="Cumplimiento General" value={`${overallCompliance.toFixed(1)}%`} icon={<Trophy />} color={getComplianceColor(overallCompliance)} />
+        <StatCard title="Productividad Media" value={`${avgProductivity.toFixed(1)} u/hr`} icon={<CheckCircle />} color="text-green-500" />
+        <StatCard title="Cumplimiento General" value={`${overallCompliance.toFixed(0)}%`} icon={<Trophy />} color={getComplianceColor(overallCompliance)} />
       </div>
 
       <Card className="overflow-hidden">
-        <CardHeader className="flex flex-row items-center justify-between gap-3 py-4">
+        <CardHeader className="flex flex-row items-center justify-between gap-3 py-3">
           <CardTitle className="text-2xl md:text-3xl">Ranking de Productividad</CardTitle>
           {totalPages > 1 && (
-            <div className="flex items-center gap-3 text-sm md:text-base text-muted-foreground">
-              <span className="font-semibold tabular-nums">
-                Grupo {page + 1} / {totalPages}
+            <div className="flex items-center gap-3 text-base md:text-lg text-muted-foreground">
+              <span className="font-bold tabular-nums">
+                {page + 1} / {totalPages}
               </span>
-              <div className="flex gap-1.5">
+              <div className="flex gap-2">
                 {Array.from({ length: totalPages }).map((_, i) => (
                   <button
                     key={`dot-${i}`}
                     type="button"
                     aria-label={`Ir al grupo ${i + 1}`}
                     onClick={() => setPage(i)}
-                    className={`h-2.5 w-2.5 rounded-full transition-colors ${
+                    className={`h-3 w-3 rounded-full transition-colors ${
                       i === page ? 'bg-primary' : 'bg-muted-foreground/40 hover:bg-muted-foreground/70'
                     }`}
                   />
@@ -114,55 +124,102 @@ export const PlantView: React.FC<PlantViewProps> = ({ data, onReturnToDashboard 
             </div>
           )}
         </CardHeader>
-        <CardContent className="pb-8">
+        <CardContent className="pb-6">
           {pagePackers.length === 0 ? (
-            <p className="text-center text-muted-foreground text-xl py-16">Sin operarios para mostrar.</p>
+            <p className="text-center text-muted-foreground text-2xl py-16">Sin operarios para mostrar.</p>
           ) : (
             <div
               key={page}
-              className="grid grid-cols-1 md:grid-cols-3 gap-5 animate-in fade-in duration-500"
+              className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in duration-700"
             >
               {pagePackers.map((packer) => {
                 const rank = rankOf(packer);
+                const { pauseCount, pauseMinutes } = pauseStatsFor(packer.packerName);
+                const deducted = Math.round(packer.totalDeductedMinutes || 0);
+                const microMin = Math.round(packer.totalMicroPausesMinutes || 0);
+
                 return (
                   <div
                     key={packer.packerName}
-                    className="rounded-2xl border bg-card p-5 md:p-6 shadow-sm flex flex-col justify-between min-h-[280px] md:min-h-[320px]"
+                    className="rounded-2xl border-2 bg-card p-6 md:p-8 shadow-md flex flex-col min-h-[360px] md:min-h-[420px]"
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <span className="text-4xl md:text-5xl font-black text-muted-foreground/80 tabular-nums">
+                    <div className="flex items-start justify-between gap-4">
+                      <span className="text-5xl md:text-6xl font-black text-muted-foreground/70 tabular-nums leading-none">
                         #{rank}
                       </span>
-                      <span className={`text-3xl md:text-4xl font-black tabular-nums ${getComplianceColor(packer.compliance)}`}>
-                        {packer.compliance.toFixed(0)}%
-                      </span>
+                      <div className="text-right">
+                        <p className="text-sm md:text-base uppercase tracking-wide text-muted-foreground font-semibold">
+                          Cumplimiento
+                        </p>
+                        <p className={`text-5xl md:text-6xl font-black tabular-nums leading-none ${getComplianceColor(packer.compliance)}`}>
+                          {packer.compliance.toFixed(0)}%
+                        </p>
+                      </div>
                     </div>
 
-                    <p className="mt-4 text-2xl md:text-3xl lg:text-4xl font-extrabold leading-tight break-words">
+                    <p className="mt-5 text-3xl md:text-4xl lg:text-5xl font-black leading-tight break-words">
                       {packer.packerName}
                     </p>
 
-                    <div className="mt-6 space-y-4">
-                      <div className="flex items-center gap-3">
-                        <Progress
-                          value={Math.min(packer.compliance, 100)}
-                          className="h-4 w-full"
-                          indicatorClassName={getProgressColor(packer.compliance)}
-                        />
+                    <div className="mt-5">
+                      <Progress
+                        value={Math.min(packer.compliance, 100)}
+                        className="h-5 w-full"
+                        indicatorClassName={getProgressColor(packer.compliance)}
+                      />
+                    </div>
+
+                    <div className="mt-6 grid grid-cols-2 gap-4 flex-1 content-start">
+                      <div className="rounded-xl bg-muted/40 border px-4 py-3">
+                        <p className="text-sm md:text-base font-semibold uppercase tracking-wide text-muted-foreground">
+                          Horas trabajadas
+                        </p>
+                        <p className="text-4xl md:text-5xl font-black tabular-nums mt-1">
+                          {packer.hoursWorked.toFixed(1)}
+                          <span className="text-xl md:text-2xl font-bold text-muted-foreground ml-1">h</span>
+                        </p>
                       </div>
-                      <div className="grid grid-cols-3 gap-2 text-center">
-                        <div>
-                          <p className="text-xs md:text-sm text-muted-foreground uppercase tracking-wide">Horas</p>
-                          <p className="text-2xl md:text-3xl font-bold tabular-nums">{packer.hoursWorked.toFixed(1)}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs md:text-sm text-muted-foreground uppercase tracking-wide">u/hr</p>
-                          <p className="text-2xl md:text-3xl font-bold tabular-nums">{packer.productivity.toFixed(0)}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs md:text-sm text-muted-foreground uppercase tracking-wide">Unid.</p>
-                          <p className="text-2xl md:text-3xl font-bold tabular-nums">
-                            {packer.totalQuantity.toLocaleString()}
+                      <div className="rounded-xl bg-muted/40 border px-4 py-3">
+                        <p className="text-sm md:text-base font-semibold uppercase tracking-wide text-muted-foreground">
+                          Unidades
+                        </p>
+                        <p className="text-4xl md:text-5xl font-black tabular-nums mt-1">
+                          {packer.totalQuantity.toLocaleString()}
+                        </p>
+                      </div>
+                      <div className="rounded-xl bg-muted/40 border px-4 py-3">
+                        <p className="text-sm md:text-base font-semibold uppercase tracking-wide text-muted-foreground">
+                          Productividad
+                        </p>
+                        <p className="text-4xl md:text-5xl font-black tabular-nums mt-1">
+                          {packer.productivity.toFixed(0)}
+                          <span className="text-xl md:text-2xl font-bold text-muted-foreground ml-1">u/hr</span>
+                        </p>
+                      </div>
+                      <div className="rounded-xl bg-muted/40 border px-4 py-3">
+                        <p className="text-sm md:text-base font-semibold uppercase tracking-wide text-muted-foreground">
+                          Meta base
+                        </p>
+                        <p className="text-4xl md:text-5xl font-black tabular-nums mt-1">
+                          {Math.round(packer.baseGoal || 0)}
+                          <span className="text-xl md:text-2xl font-bold text-muted-foreground ml-1">u/hr</span>
+                        </p>
+                      </div>
+                      <div className="rounded-xl bg-muted/40 border px-4 py-3 col-span-2">
+                        <p className="text-sm md:text-base font-semibold uppercase tracking-wide text-muted-foreground">
+                          Pausas
+                        </p>
+                        <div className="mt-2 flex flex-wrap items-end gap-x-8 gap-y-2">
+                          <p className="text-4xl md:text-5xl font-black tabular-nums">
+                            {pauseCount}
+                            <span className="text-xl md:text-2xl font-bold text-muted-foreground ml-2">cant.</span>
+                          </p>
+                          <p className="text-3xl md:text-4xl font-black tabular-nums text-foreground/90">
+                            {pauseMinutes}
+                            <span className="text-lg md:text-xl font-bold text-muted-foreground ml-2">min total</span>
+                          </p>
+                          <p className="text-2xl md:text-3xl font-bold tabular-nums text-muted-foreground">
+                            {microMin} min micro · {deducted} min descontados
                           </p>
                         </div>
                       </div>
