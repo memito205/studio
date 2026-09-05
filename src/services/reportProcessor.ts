@@ -450,16 +450,35 @@ function extractNamePartFromJustificationKey(key: string): string {
   return normalizeMatchText(key.replace(/-?\d{10,14}(?:-[\w-]+)?$/, ''));
 }
 
-function namesLikelyMatch(candidateFromKey: string, incidentName: string): boolean {
+function resolveOperatorMaps(extraMaps: ManualOperatorMappings = {}): Record<string, string> {
+  const combined: Record<string, string> = { ...OPERATOR_MAP };
+  Object.entries(extraMaps || {}).forEach(([k, v]) => {
+    const nk = normalizeMatchText(k);
+    const nv = normalizeMatchText(String(v || ''));
+    if (nk && nv) combined[nk] = nv;
+  });
+  return combined;
+}
+
+function namesLikelyMatch(
+  candidateFromKey: string,
+  incidentName: string,
+  extraMaps: ManualOperatorMappings = {}
+): boolean {
   const keyName = normalizeMatchText(candidateFromKey);
   const currentName = normalizeMatchText(incidentName);
   if (!keyName || !currentName) return false;
   if (keyName === currentName) return true;
 
-  const mappedNameFromKey = normalizeMatchText(OPERATOR_MAP[keyName] || '');
+  const maps = resolveOperatorMaps(extraMaps);
+  const canonKey = maps[keyName] || keyName;
+  const canonCurrent = maps[currentName] || currentName;
+  if (canonKey && canonCurrent && canonKey === canonCurrent) return true;
+
+  const mappedNameFromKey = normalizeMatchText(maps[keyName] || '');
   if (mappedNameFromKey && mappedNameFromKey === currentName) return true;
 
-  const mappedCurrentName = normalizeMatchText(OPERATOR_MAP[currentName] || '');
+  const mappedCurrentName = normalizeMatchText(maps[currentName] || '');
   if (mappedCurrentName && mappedCurrentName === keyName) return true;
 
   const keyWords = keyName.split(/\s+/).filter((p) => p.length > 2);
@@ -471,7 +490,8 @@ function namesLikelyMatch(candidateFromKey: string, incidentName: string): boole
 
 function findMatchingJustificationKey(
   incident: DeadTimeEntry,
-  justifications: ManualJustifications
+  justifications: ManualJustifications,
+  operatorMappings: ManualOperatorMappings = {}
 ): string | undefined {
   const timestamp = incident.startTime.getTime();
   const incidentName = incident.packerName;
@@ -480,14 +500,134 @@ function findMatchingJustificationKey(
     if (keyTs == null) return false;
     if (Math.abs(keyTs - timestamp) > 120000) return false;
     const keyNamePart = extractNamePartFromJustificationKey(key);
-    return namesLikelyMatch(keyNamePart, incidentName);
+    return namesLikelyMatch(keyNamePart, incidentName, operatorMappings);
+  });
+}
+
+type PulseMatchHit = {
+  pulse: OperationPulse;
+  overlapStart: number;
+  overlapEnd: number;
+  overlapMs: number;
+};
+
+function findBestPulseMatchForIncident(
+  incident: DeadTimeEntry,
+  packingPulses: OperationPulse[],
+  operatorMappings: ManualOperatorMappings = {}
+): PulseMatchHit | null {
+  const incidentStart = incident.startTime.getTime();
+  const incidentEnd = incident.endTime.getTime();
+  const pulseMatch = packingPulses
+    .map((p) => {
+      if (!p.isGlobal && !namesLikelyMatch(String(p.userName || ''), incident.packerName, operatorMappings)) {
+        return null;
+      }
+      if (p.type === 'status_change' && p.status === 'En Remisión') return null;
+
+      const pulseStart = p.startTime.getTime();
+      const pulseEnd = p.endTime?.getTime() || Date.now();
+      const overlapStart = Math.max(pulseStart, incidentStart);
+      const overlapEnd = Math.min(pulseEnd, incidentEnd);
+      const overlapMs = overlapEnd - overlapStart;
+      if (overlapMs < 60000) return null;
+
+      return { pulse: p, overlapStart, overlapEnd, overlapMs };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      if (b!.overlapMs !== a!.overlapMs) return b!.overlapMs - a!.overlapMs;
+      return a!.overlapStart - b!.overlapStart;
+    })[0];
+
+  return pulseMatch || null;
+}
+
+function justificationFromPulseMatch(pulseMatch: PulseMatchHit): ManualJustifications[string] {
+  const pulse = pulseMatch.pulse;
+  let type: JustificationType = 'REASON';
+  const rawReason = [pulse.justification, pulse.reason, pulse.details].find(
+    (v) => v != null && String(v).trim() !== ''
+  );
+  const baseReason = rawReason != null ? String(rawReason).trim() : '';
+  const rl = baseReason.toLowerCase();
+
+  if (rl.startsWith('desayuno')) type = 'BREAKFAST';
+  else if (rl.startsWith('almuerzo')) type = 'LUNCH';
+  else if (rl.startsWith('refrigerio')) type = 'SNACK';
+  else if (rl.includes('fin de turno')) type = 'SHIFT_END';
+
+  let displayReason = baseReason || 'Registro sincronizado';
+  if (pulse.isGlobal) displayReason = `[Global] ${displayReason}`;
+  else if (pulse.metadata?.fromModule === 'Remisión') displayReason = `[Remisión] ${displayReason}`;
+  else displayReason = `[Pulso] ${displayReason}`;
+
+  const justification: ManualJustifications[string] = {
+    type,
+    reasonText: displayReason,
+  };
+
+  if (type === 'REASON') {
+    justification.startTime = toHHmm(new Date(pulseMatch.overlapStart));
+    justification.endTime = toHHmm(new Date(pulseMatch.overlapEnd));
+  }
+
+  return justification;
+}
+
+/**
+ * Cruza huecos del Excel con pulsos Remisión/globales y devuelve justificaciones listas
+ * para persistir en `reports_justifications` (no pisa claves manuales ya existentes).
+ */
+export function collectAutoPulseJustifications(
+  incidents: DeadTimeEntry[],
+  existingJustifications: ManualJustifications,
+  operationPulses: OperationPulse[] = [],
+  operatorMappings: ManualOperatorMappings = {}
+): ManualJustifications {
+  const packingPulses = filterPulsesForPackingRemision(operationPulses);
+  const out: ManualJustifications = {};
+
+  for (const incident of incidents) {
+    if (existingJustifications[incident.id]) continue;
+    if (findMatchingJustificationKey(incident, existingJustifications, operatorMappings)) continue;
+
+    const pulseMatch = findBestPulseMatchForIncident(incident, packingPulses, operatorMappings);
+    if (!pulseMatch) continue;
+    out[incident.id] = justificationFromPulseMatch(pulseMatch);
+  }
+
+  return out;
+}
+
+/** Resumen ligero: usuarios de Remisión vs empacadores del Excel (para UI de configuración). */
+export function summarizeRemisionPackerMatches(
+  packerNames: string[],
+  operationPulses: OperationPulse[],
+  operatorMappings: ManualOperatorMappings = {}
+): { pulseUser: string; matchedPacker: string | null }[] {
+  const packingPulses = filterPulsesForPackingRemision(operationPulses);
+  const uniquePulseUsers = Array.from(
+    new Set(
+      packingPulses
+        .filter((p) => p.metadata?.fromModule === 'Remisión')
+        .map((p) => String(p.userName || '').trim())
+        .filter(Boolean)
+    )
+  );
+
+  return uniquePulseUsers.map((pulseUser) => {
+    const matchedPacker =
+      packerNames.find((packer) => namesLikelyMatch(pulseUser, packer, operatorMappings)) || null;
+    return { pulseUser, matchedPacker };
   });
 }
 
 export function applyJustifications(
   incidents: DeadTimeEntry[],
   justifications: ManualJustifications,
-  operationPulses: OperationPulse[] = []
+  operationPulses: OperationPulse[] = [],
+  operatorMappings: ManualOperatorMappings = {}
 ): DeadTimeEntry[] {
     const finalIncidents: DeadTimeEntry[] = [];
     const processQueue = [...incidents];
@@ -537,7 +677,7 @@ export function applyJustifications(
 
             // 2. If still not found, try Fuzzy Search by Timestamp (allow 2-min jitter)
             if (!justification) {
-                const matchingKey = findMatchingJustificationKey(incident, justifications);
+                const matchingKey = findMatchingJustificationKey(incident, justifications, operatorMappings);
                 
                 if (matchingKey) {
                     justification = justifications[matchingKey];
@@ -553,63 +693,9 @@ export function applyJustifications(
         // --- Pulse Sync Logic ---
         // Si no hay justificación manual, alinear con pulsos de Remisión / pausa global (no otros módulos).
         if (!justification) {
-            const incidentStart = incident.startTime.getTime();
-            const incidentEnd = incident.endTime.getTime();
-            const pulseMatch = packingPulses
-                .map(p => {
-                    if (!p.isGlobal && !namesLikelyMatch(String(p.userName || ''), incident.packerName)) return null;
-                    if (p.type === 'status_change' && p.status === 'En Remisión') return null;
-
-                    const pulseStart = p.startTime.getTime();
-                    const pulseEnd = p.endTime?.getTime() || Date.now();
-                    const overlapStart = Math.max(pulseStart, incidentStart);
-                    const overlapEnd = Math.min(pulseEnd, incidentEnd);
-                    const overlapMs = overlapEnd - overlapStart;
-                    if (overlapMs < 60000) return null;
-
-                    return {
-                        pulse: p,
-                        overlapStart,
-                        overlapEnd,
-                        overlapMs,
-                    };
-                })
-                .filter(Boolean)
-                .sort((a, b) => {
-                    // Prefer the pulse that best explains the incident (largest overlap).
-                    if (b!.overlapMs !== a!.overlapMs) return b!.overlapMs - a!.overlapMs;
-                    return a!.overlapStart - b!.overlapStart;
-                })[0];
-
+            const pulseMatch = findBestPulseMatchForIncident(incident, packingPulses, operatorMappings);
             if (pulseMatch) {
-                const pulse = pulseMatch.pulse;
-                let type: JustificationType = 'REASON';
-                const rawReason = [pulse.justification, pulse.reason, pulse.details]
-                    .find(v => v != null && String(v).trim() !== '');
-                const baseReason = rawReason != null ? String(rawReason).trim() : '';
-                const rl = baseReason.toLowerCase();
-
-                if (rl.startsWith('desayuno')) type = 'BREAKFAST';
-                else if (rl.startsWith('almuerzo')) type = 'LUNCH';
-                else if (rl.startsWith('refrigerio')) type = 'SNACK';
-                else if (rl.includes('fin de turno')) type = 'SHIFT_END';
-
-                let displayReason = baseReason || 'Registro sincronizado';
-                if (pulse.isGlobal) displayReason = `[Global] ${displayReason}`;
-                else if (pulse.metadata?.fromModule === 'Remisión') displayReason = `[Remisión] ${displayReason}`;
-                else displayReason = `[Pulso] ${displayReason}`;
-                
-                justification = {
-                    type,
-                    reasonText: displayReason,
-                };
-
-                // For non-break reasons, align justification strictly to the real pulse overlap.
-                // This avoids auto-justifying the entire dead-time block when only a segment matches.
-                if (type === 'REASON') {
-                    justification.startTime = toHHmm(new Date(pulseMatch.overlapStart));
-                    justification.endTime = toHHmm(new Date(pulseMatch.overlapEnd));
-                }
+                justification = justificationFromPulseMatch(pulseMatch);
             }
         }
         // --- End Pulse Sync Logic ---
@@ -783,7 +869,8 @@ export function applyJustifications(
  */
 export function findManualJustificationKeysForDeadTime(
   incident: DeadTimeEntry,
-  justifications: ManualJustifications
+  justifications: ManualJustifications,
+  operatorMappings: ManualOperatorMappings = {}
 ): string[] {
   const keys = new Set<string>();
   const addIfPresent = (k: string) => {
@@ -799,14 +886,12 @@ export function findManualJustificationKeysForDeadTime(
   const baseId = incident.id.replace(/-(justified|excess|remains|pre|post)$/i, '');
   if (baseId !== incident.id) addIfPresent(baseId);
 
-  const currentName = incident.packerName.toUpperCase();
-
   for (const key of Object.keys(justifications)) {
     if (keys.has(key)) continue;
     const keyTs = extractTimestampFromJustificationKey(key);
     if (keyTs == null || Math.abs(keyTs - timestamp) > 120000) continue;
     const namePartFromKey = extractNamePartFromJustificationKey(key);
-    if (namesLikelyMatch(namePartFromKey, currentName)) keys.add(key);
+    if (namesLikelyMatch(namePartFromKey, incident.packerName, operatorMappings)) keys.add(key);
   }
 
   return [...keys];
@@ -818,7 +903,8 @@ export function preProcessDeadTimes(
     reportStartTime: string,
     reportEndTime: string,
     manualJustifications: ManualJustifications,
-    operationPulses: OperationPulse[] = []
+    operationPulses: OperationPulse[] = [],
+    operatorMappings: ManualOperatorMappings = {}
 ): DeadTimeEntry[] {
     if (!reportDate || !reportStartTime || !reportEndTime || !data) return [];
     
@@ -849,9 +935,48 @@ export function preProcessDeadTimes(
     const allPauses = detectAllPauses(dataInTimeRange, reportStartDate, reportEndDate);
     
     // Apply justifications and handle splits
-    const processedPauses = applyJustifications(allPauses, manualJustifications, operationPulses);
+    const processedPauses = applyJustifications(allPauses, manualJustifications, operationPulses, operatorMappings);
     
     return processedPauses.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+}
+
+/**
+ * Calcula el cruce Remisión→huecos del Excel y devuelve solo las claves nuevas a persistir.
+ */
+export function buildPersistedPulseJustifications(
+  data: RemisionEntry[],
+  reportDate: string,
+  reportStartTime: string,
+  reportEndTime: string,
+  existingManual: ManualJustifications,
+  operationPulses: OperationPulse[] = [],
+  operatorMappings: ManualOperatorMappings = {}
+): ManualJustifications {
+  if (!reportDate || !reportStartTime || !reportEndTime || !data?.length) return {};
+
+  const reportDateObj = parseFlexibleDate(reportDate);
+  if (!reportDateObj) return {};
+
+  const reportStartDate = parseTime(reportStartTime, reportDateObj);
+  const reportEndDate = parseTime(reportEndTime, reportDateObj);
+
+  const validData = data
+    .filter((entry) => {
+      const d = parseFlexibleDate(entry.fechaDeLectura);
+      return d && !isNaN(d.getTime());
+    })
+    .map((entry) => {
+      const originalDate = parseFlexibleDate(entry.fechaDeLectura)!;
+      const normalizedDate = new Date(originalDate);
+      normalizedDate.setFullYear(reportDateObj.getFullYear(), reportDateObj.getMonth(), reportDateObj.getDate());
+      return { ...entry, fechaDeLectura: normalizedDate };
+    });
+
+  const dataInTimeRange = validData.filter(
+    (entry) => entry.fechaDeLectura >= reportStartDate && entry.fechaDeLectura <= reportEndDate
+  );
+  const allPauses = detectAllPauses(dataInTimeRange, reportStartDate, reportEndDate);
+  return collectAutoPulseJustifications(allPauses, existingManual, operationPulses, operatorMappings);
 }
 
 // 3. CÁLCULOS PRINCIPALES DEL REPORTE
@@ -1676,8 +1801,9 @@ export function processReport(
     incidentLog: IncidentLogEntry[],
     operationPulses: OperationPulse[] = [],
     referenceGoals: ReferenceGoals = {},
-    goals: ProductivityGoals = { 'CALZADO': 65, 'ROPA': 100, 'ACCESORIOS': 90, 'NO CLASIFICADO': 60 }
-): ProcessedReportData {
+    goals: ProductivityGoals = { 'CALZADO': 65, 'ROPA': 100, 'ACCESORIOS': 90, 'NO CLASIFICADO': 60 },
+    operatorMappings: ManualOperatorMappings = {}
+  ): ProcessedReportData {
     // Create UTC-based dates for start and end to avoid timezone issues during filtering
     const reportDateObj = parseFlexibleDate(reportDate);
     if (!reportDateObj) {
@@ -1702,7 +1828,12 @@ export function processReport(
     );
     
     const allDeadTimesAndPauses = detectAllPauses(fullDataInTimeRange, reportStartTime, reportEndTime);
-    const processedDeadTimes = applyJustifications(allDeadTimesAndPauses, manualJustifications, operationPulses);
+    const processedDeadTimes = applyJustifications(
+      allDeadTimesAndPauses,
+      manualJustifications,
+      operationPulses,
+      operatorMappings
+    );
     
     const deadTimeReport = processedDeadTimes.filter(p => p.duration >= 5);
     const microPausesReport = processedDeadTimes.filter(p => p.duration < 5 && p.duration >= 1);

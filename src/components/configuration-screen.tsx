@@ -19,7 +19,7 @@ import { ReferenceCorrectionEditor } from './reference-correction-editor';
 import { NewOperatorMapper } from './new-operator-mapper';
 import { IncidentLogEditor } from './incident-log-editor';
 import { DiscardedRecordsViewer } from './discarded-records-viewer';
-import { classifyProduct, extractBrandsFromReport, preScanForUnclassifiedProducts, extractUnmappedPackers, extractAllReferencesFromReport, extractImportedBrandCatalogItems, buildProductLookupMap } from '@/services/reportProcessor';
+import { classifyProduct, extractBrandsFromReport, preScanForUnclassifiedProducts, extractUnmappedPackers, extractAllReferencesFromReport, extractImportedBrandCatalogItems, buildProductLookupMap, summarizeRemisionPackerMatches } from '@/services/reportProcessor';
 import { ReferenceGoalConfiguration } from './reference-goal-configuration';
 import { ImportedBrandCatalogViewer } from './imported-brand-catalog-viewer';
 import {
@@ -77,6 +77,9 @@ interface ConfigurationScreenProps {
   operationPulses?: OperationPulse[];
   /** Sustituye el mapa en memoria con lo último de Firestore (evita claves fantasma). */
   onReloadJustificationsFromServer?: () => Promise<void>;
+  /** Carga ligera de pulsos + justificaciones del día. */
+  isReportContextLoading?: boolean;
+  isReportContextReady?: boolean;
 }
 
 export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
@@ -124,6 +127,8 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
   onReferenceGoalsChange,
   operationPulses = [],
   onReloadJustificationsFromServer,
+  isReportContextLoading = false,
+  isReportContextReady = true,
 }) => {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [shareStatus, setShareStatus] = React.useState<'idle' | 'copied'>('idle');
@@ -200,6 +205,13 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
       })
       .sort((a, b) => a.start.getTime() - b.start.getTime());
   }, [operationPulses, reportDate, remisionPulseUserFilter]);
+
+  const remisionPackerMatchRows = React.useMemo(() => {
+    const packers = initialPackers.filter((p) => p !== 'all');
+    return summarizeRemisionPackerMatches(packers, operationPulses || [], manualOperatorMappings);
+  }, [initialPackers, operationPulses, manualOperatorMappings]);
+
+  const unmatchedRemisionUsers = remisionPackerMatchRows.filter((r) => !r.matchedPacker);
   
   const handleCalculateClick = () => {
     onCalculate(fullyProcessedData);
@@ -483,9 +495,42 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
           </CardTitle>
           <CardDescription>
             Pulsos del día leídos desde <code className="text-xs">operation_pulses</code> con origen Remisión.
+            Al generar el reporte se persiste el cruce con los huecos del Excel para todos.
+            {isReportContextLoading
+              ? ' Cargando pulsos/justificaciones…'
+              : isReportContextReady
+                ? ' Contexto listo.'
+                : ''}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          {remisionPackerMatchRows.length > 0 && (
+            <div className="rounded-md border border-sky-700/20 bg-background/60 p-3 space-y-2">
+              <p className="text-sm font-medium">Cruce Remisión ↔ empacadores del Excel</p>
+              <div className="flex flex-wrap gap-2">
+                {remisionPackerMatchRows.map((row) => (
+                  <span
+                    key={row.pulseUser}
+                    className={`text-xs px-2 py-1 rounded-full border ${
+                      row.matchedPacker
+                        ? 'bg-emerald-500/10 border-emerald-600/30 text-emerald-800 dark:text-emerald-300'
+                        : 'bg-amber-500/10 border-amber-600/30 text-amber-900 dark:text-amber-200'
+                    }`}
+                    title={row.matchedPacker ? `Excel: ${row.matchedPacker}` : 'Sin match — revise mapeo de operarios'}
+                  >
+                    {row.pulseUser}
+                    {row.matchedPacker ? ` → ${row.matchedPacker}` : ' → sin cruce'}
+                  </span>
+                ))}
+              </div>
+              {unmatchedRemisionUsers.length > 0 && (
+                <p className="text-xs text-amber-800 dark:text-amber-200">
+                  {unmatchedRemisionUsers.length} usuario(s) de Remisión no coinciden con empacadores del Excel.
+                  Use el mapeo de operarios arriba para alinear nombres antes de generar.
+                </p>
+              )}
+            </div>
+          )}
           <div className="flex items-center gap-3">
             <Input
               value={remisionPulseUserFilter}
@@ -497,7 +542,9 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
           </div>
           {remisionSyncedRows.length === 0 ? (
             <p className="text-sm text-muted-foreground py-2">
-              No hay pausas de Remisión para este día/filtro.
+              {isReportContextLoading
+                ? 'Cargando pausas de Remisión…'
+                : 'No hay pausas de Remisión para este día/filtro.'}
             </p>
           ) : (
             <Table>
@@ -544,15 +591,24 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
           isSaving={isSavingJustifications}
       />
 
-      <div className="flex justify-end pt-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 pt-4">
+        {(isReportContextLoading || !isReportContextReady) && (
+          <p className="text-sm text-muted-foreground sm:mr-auto">
+            Esperando pulsos y justificaciones del día…
+          </p>
+        )}
         <Button
           onClick={handleCalculateClick}
-          disabled={isLoading || !reportDate}
+          disabled={isLoading || !reportDate || isReportContextLoading || !isReportContextReady}
           size="lg"
           className="w-full sm:w-auto"
         >
-          {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          {isLoading ? 'Calculando...' : 'Generar Reporte'}
+          {(isLoading || isReportContextLoading) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          {isLoading
+            ? 'Calculando...'
+            : isReportContextLoading
+              ? 'Cargando contexto…'
+              : 'Generar Reporte'}
         </Button>
       </div>
     </div>

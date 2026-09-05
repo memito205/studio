@@ -8,9 +8,9 @@ import dynamic from 'next/dynamic';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import type { ProcessedReportData, ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ManualJustificationsUpdate, ReferenceCorrections, UniqueReference, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, ChatMessage, SmartAlert, ActionPlan, Annotations, TaggedReport, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, PackingUnit, PackingSession, AppStep, ReceptionOperation, JustificationType, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReportSummary, CreditCalculationResult, DispatchSessionInfo, RouteEntry, TransferEntry, EcommerceOrder, DelayedOrderLog, OperationPulse, ReferenceGoals } from '@/types';
-import { processReport, getSanitizedData, extractUniqueReferences, extractPackersFromReport, preProcessDeadTimes, classifyProduct, buildProductLookupMap, enrichEntryFromCatalog } from '@/services/reportProcessor';
+import { processReport, getSanitizedData, extractUniqueReferences, extractPackersFromReport, preProcessDeadTimes, classifyProduct, buildProductLookupMap, enrichEntryFromCatalog, buildPersistedPulseJustifications } from '@/services/reportProcessor';
 import { normalizeBarcode } from '@/lib/parsingUtils';
-import { handleExecutiveSummary, handleRootCauseAnalysis, handleGenerateSmartAlerts, handleGetJustificationSuggestions, saveReportToHistory, loadHistoricalReports, updateOrderStatus, savePackingSession, loadWholesaleOrders, getPackingSession, loadAllPackingSessions, consolidateDailyReports, previewConsolidatedReport, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, loadFullReportSnapshots, loadOperatorMappings, saveJustificationsForDay, loadJustificationsByDate } from '@/app/actions';
+import { handleExecutiveSummary, handleRootCauseAnalysis, handleGenerateSmartAlerts, handleGetJustificationSuggestions, saveReportToHistory, loadHistoricalReports, updateOrderStatus, savePackingSession, loadWholesaleOrders, getPackingSession, loadAllPackingSessions, consolidateDailyReports, previewConsolidatedReport, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, loadFullReportSnapshots, loadOperatorMappings, saveJustificationsForDay, loadJustificationsByDate, getPulsesByDate } from '@/app/actions';
 import { getProductsByBarcodes } from '@/app/reception/actions';
 import { Loader2, AlertTriangle } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -196,6 +196,9 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   // Reception State
   const [receptionOperationId, setReceptionOperationId] = useState<string | null>(null);
   const [pulsesForDay, setPulsesForDay] = useState<OperationPulse[]>([]);
+  /** Pulses + justificaciones del día listos (carga ligera: 2 lecturas Firestore). */
+  const [isReportContextLoading, setIsReportContextLoading] = useState(false);
+  const [isReportContextReady, setIsReportContextReady] = useState(false);
   
   const fetchOrders = useCallback(async () => {
     setIsLoadingOrders(true);
@@ -238,26 +241,48 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   }, []);
 
   useEffect(() => {
-    if (reportDate) {
-      import('@/app/actions').then(actions => {
-        // 1. Get pulses for floor monitor
-        actions.getPulsesByDate(reportDate).then(res => {
-          if (res.data) setPulsesForDay(res.data);
-        });
-        
-        // 2. Clear current justifications before loading (to avoid mixing days)
-        // Only load if current state is empty or if it's a fresh date selection
-        actions.loadJustificationsByDate(reportDate).then(res => {
-          setManualJustifications(res.data ?? {});
-        });
-      });
+    if (!reportDate) {
+      setIsReportContextReady(false);
+      setIsReportContextLoading(false);
+      return;
     }
+
+    let cancelled = false;
+    setIsReportContextLoading(true);
+    setIsReportContextReady(false);
+
+    (async () => {
+      try {
+        const [pulsesRes, justRes] = await Promise.all([
+          getPulsesByDate(reportDate),
+          loadJustificationsByDate(reportDate),
+        ]);
+        if (cancelled) return;
+        setPulsesForDay(pulsesRes.data || []);
+        setManualJustifications(justRes.data ?? {});
+        setIsReportContextReady(true);
+      } catch (e) {
+        console.error('Error cargando contexto del reporte (pulsos/justificaciones):', e);
+        if (!cancelled) {
+          setPulsesForDay([]);
+          setIsReportContextReady(true); // no bloquear indefinidamente
+        }
+      } finally {
+        if (!cancelled) setIsReportContextLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [reportDate]);
 
   const handleFileProcess = useCallback(async (data: any[], name: string) => {
     setIsLoading(true);
     setRawData(data); // Set raw data immediately
     setFileName(name);
+    setIsReportContextReady(false);
+    setIsReportContextLoading(true);
 
     try {
         // Now that rawData is set, the configuration screen can use it.
@@ -273,14 +298,16 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
             throw new Error("No se encontraron fechas válidas en la columna de fecha.");
         }
         const reportDateStr = extractLocalDateString(fileReportDate);
-        if (!reportDate) {
-            setReportDate(reportDateStr);
-        }
+        // Siempre alinear la fecha al Excel (evita pulsos/justificaciones de otro día).
+        setReportDate(reportDateStr);
         
-        // --- SILENT CACHE REHYDRATION ---
+        // --- SILENT CACHE REHYDRATION (ligero: pulsos + justificaciones en paralelo) ---
         try {
-            // Load robust justifications (merged from dedicated docs and snapshots)
-            const justificationResult = await loadJustificationsByDate(reportDateStr);
+            const [pulsesRes, justificationResult] = await Promise.all([
+              getPulsesByDate(reportDateStr),
+              loadJustificationsByDate(reportDateStr),
+            ]);
+            setPulsesForDay(pulsesRes.data || []);
             if (justificationResult.data && Object.keys(justificationResult.data).length > 0) {
                 console.log(`[Hydration] Loaded ${Object.keys(justificationResult.data).length} justifications for ${reportDateStr}`);
                 setManualJustifications(justificationResult.data);
@@ -296,8 +323,12 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
             } else {
                 setIncidentLog([]);
             }
+            setIsReportContextReady(true);
         } catch (e) {
             console.warn("No se pudo cargar la memoria previa para hoy.", e);
+            setIsReportContextReady(true);
+        } finally {
+            setIsReportContextLoading(false);
         }
         // ---------------------------------
         
@@ -343,6 +374,8 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
         console.error("Error durante el procesamiento:", e);
         setError("Error al procesar el archivo: " + e.message);
         setRawData(null); // Clear raw data on error
+        setIsReportContextLoading(false);
+        setIsReportContextReady(false);
     } finally {
         setIsLoading(false);
     }
@@ -350,10 +383,18 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   
     useEffect(() => {
         if (rawData && reportDate && reportStartTime && reportEndTime) {
-            const initialDeadTimes = preProcessDeadTimes(rawData, reportDate, reportStartTime, reportEndTime, manualJustifications, pulsesForDay);
+            const initialDeadTimes = preProcessDeadTimes(
+              rawData,
+              reportDate,
+              reportStartTime,
+              reportEndTime,
+              manualJustifications,
+              pulsesForDay,
+              manualOperatorMappings
+            );
             setDeadTimes(initialDeadTimes);
         }
-    }, [rawData, reportDate, reportStartTime, reportEndTime, manualJustifications, pulsesForDay]);
+    }, [rawData, reportDate, reportStartTime, reportEndTime, manualJustifications, pulsesForDay, manualOperatorMappings]);
 
 
   const handleCalculate = useCallback(async () => {
@@ -367,11 +408,50 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
         return;
       }
 
+      if (!isReportContextReady) {
+        toast({
+          variant: "destructive",
+          title: "Contexto incompleto",
+          description: "Espere a que terminen de cargar los pulsos de Remisión y las justificaciones del día.",
+        });
+        return;
+      }
+
       setIsLoading(true);
       setError(null);
       setReportData(null);
 
       try {
+        // Persistir cruce Remisión → huecos Excel para que todos vean lo mismo al regenerar.
+        let effectiveJustifications = manualJustifications;
+        try {
+          const autoFromPulses = buildPersistedPulseJustifications(
+            rawData,
+            reportDate,
+            reportStartTime,
+            reportEndTime,
+            manualJustifications,
+            pulsesForDay,
+            manualOperatorMappings
+          );
+          const autoKeys = Object.keys(autoFromPulses);
+          if (autoKeys.length > 0) {
+            effectiveJustifications = { ...manualJustifications, ...autoFromPulses };
+            setManualJustifications(effectiveJustifications);
+            const saveRes = await saveJustificationsForDay(reportDate, effectiveJustifications);
+            if (saveRes.error) {
+              console.warn('No se pudieron persistir justificaciones Remisión:', saveRes.error);
+            } else {
+              toast({
+                title: 'Cruce Remisión guardado',
+                description: `Se persistieron ${autoKeys.length} justificación(es) desde pulsos para el día ${reportDate}.`,
+              });
+            }
+          }
+        } catch (persistErr) {
+          console.warn('Error persistiendo cruce Remisión:', persistErr);
+        }
+
         const productMap = buildProductLookupMap(productDB);
         const combinedCorrections = { ...learnedCorrections, ...referenceCorrections };
 
@@ -397,12 +477,13 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           reportDate,
           reportStartTime,
           reportEndTime,
-          manualJustifications,
+          effectiveJustifications,
           configSelectedPacker,
           incidentLog,
           pulsesForDay,
           referenceGoals,
-          productivityGoals
+          productivityGoals,
+          manualOperatorMappings
         );
 
         if (finalProcessedData.packerProductivity.length === 0) {
@@ -507,7 +588,12 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
       configSelectedPacker, 
       incidentLog, 
       annotations, 
-      toast
+      toast,
+      isReportContextReady,
+      pulsesForDay,
+      manualOperatorMappings,
+      productivityGoals,
+      referenceGoals,
   ]);
 
   const handleSessionChange = useCallback(async (newSession: PackingSession) => {
@@ -791,7 +877,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToCyclicInventory={handleNavigateToCyclicInventory}
             />;
           case 'upload': return <FileUpload onProcessFile={handleFileProcess} isLoading={isLoading} onGoToHistorical={handleGoToHistorical} onReturnToSuite={handleReturnToSuite} reportDate={reportDate} onDateChange={setReportDate} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} />;
-          case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} isSavingJustifications={isSavingJustifications} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} onReloadJustificationsFromServer={handleReloadJustificationsFromServer} referenceGoals={referenceGoals} onReferenceGoalsChange={setReferenceGoals} operationPulses={pulsesForDay} />;
+          case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} isSavingJustifications={isSavingJustifications} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} onReloadJustificationsFromServer={handleReloadJustificationsFromServer} referenceGoals={referenceGoals} onReferenceGoalsChange={setReferenceGoals} operationPulses={pulsesForDay} isReportContextLoading={isReportContextLoading} isReportContextReady={isReportContextReady} />;
           case 'dashboard': return reportData && <Dashboard data={reportData} fileName={fileName} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} onGoToConfiguration={handleGoToConfiguration} onGoToPlantView={handleGoToPlantView} onGoToSupervisorView={handleGoToSupervisorView} onRequestAIInsight={handleRequestAIInsight} theme={theme} annotations={annotations} onAnnotationChange={handleAnnotationChange} />;
           case 'dashboards_bodega': return <BodegaDashboardsMenu onNavigateRemision={handleNavigateToDashboardsRemision} onNavigateLabeling={handleNavigateToDashboardsLabeling} onNavigateLogisticsPlatform={handleNavigateToLogisticsPlatform} onNavigateGastosTransporte={handleNavigateToDashboardsGastosTransporte} onReturnToMain={handleNavigateToDashboardsMainMenu} />;
           case 'dashboards_remision': return <HistoricalDashboard onReturnToMain={() => setAppStep('dashboards_bodega')} onConsolidate={consolidateDailyReports} theme={theme} />;
