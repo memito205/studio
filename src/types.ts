@@ -433,6 +433,13 @@ export interface TfPlatformStatusRecord {
   bodegaOrigen?: string;
   estadoPlataforma: TfPlatformEstado;
   evidenceLinks: string[];
+  /**
+   * true = ENTREGADO por cierre automático de EN RUTA HOY
+   * (día siguiente / fuera de En Tránsito / fuera del lote), no por evidencia del analizador.
+   */
+  entregaInferida?: boolean;
+  /** Motivo del cierre automático cuando entregaInferida. */
+  entregaInferidaMotivo?: 'dia_siguiente' | 'fuera_de_transito' | 'fuera_del_lote_publicado';
   /** Placa/recurso de entrega (Excel Paso 2 rutas) */
   placaEntrega?: string;
   /** Placa de recolección (misma fila del Excel Paso 2) */

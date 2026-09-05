@@ -3975,6 +3975,143 @@ export async function loadAnalysisRecords(): Promise<{ data?: any[]; error?: str
 
 const TF_PLATFORM_STATUS_COLLECTION = 'tf_platform_status';
 
+function startOfLocalCalendarDay(d = new Date()): Date {
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function toJsDate(value: unknown): Date | null {
+    if (!value) return null;
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+    if (typeof value === 'object' && value !== null && 'toDate' in value && typeof (value as { toDate: () => Date }).toDate === 'function') {
+        const d = (value as { toDate: () => Date }).toDate();
+        return Number.isNaN(d.getTime()) ? null : d;
+    }
+    const d = new Date(String(value));
+    return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function transferRouteKeyFromParts(numeroTF: unknown, bodegaDestino: unknown): string {
+    const digits = String(numeroTF || '').replace(/\D/g, '');
+    const tf = digits ? String(Number(digits)) : '';
+    const whs = String(bodegaDestino || '').trim().toUpperCase();
+    return tf && whs ? `${tf}|${whs}` : '';
+}
+
+/** Claves TF|DESTINO aún en estado operativo En Tránsito. */
+export async function getTfKeysEnTransito(): Promise<{ keys?: string[]; error?: string }> {
+    try {
+        const q = query(
+            collection(firestore, 'transfers'),
+            where('status', '==', 'En Tránsito'),
+            limit(3000)
+        );
+        const snap = await getDocs(q);
+        const keys = new Set<string>();
+        snap.docs.forEach((d) => {
+            const raw = d.data() as { numeroTF?: string; bodegaDestino?: string };
+            const key = transferRouteKeyFromParts(raw.numeroTF, raw.bodegaDestino);
+            if (key) keys.add(key);
+        });
+        return { keys: Array.from(keys) };
+    } catch (error: any) {
+        console.error('Error getTfKeysEnTransito:', error);
+        return { error: error.message };
+    }
+}
+
+/**
+ * EN RUTA HOY no es definitivo:
+ * - al día siguiente → ENTREGADO
+ * - si ya no está en transferencias En Tránsito → ENTREGADO
+ * - si se publica un lote nuevo y esa TF no viene → ENTREGADO
+ * Sin nota de validación (solo cambia estado).
+ */
+export async function reconcileStaleEnRutaHoyStatuses(options?: {
+    /** IDs incluidos en la publicación actual (cualquier estado). Si se pasa, las EN RUTA HOY ausentes del lote se cierran. */
+    publishedIds?: string[];
+}): Promise<{ success: boolean; closed?: number; error?: string }> {
+    try {
+        const publishedIds = new Set((options?.publishedIds || []).filter(Boolean));
+        const fromPublish = publishedIds.size > 0;
+        const transitRes = await getTfKeysEnTransito();
+        if (transitRes.error) {
+            return { success: false, error: transitRes.error };
+        }
+        const inTransit = new Set(transitRes.keys || []);
+        const startToday = startOfLocalCalendarDay();
+
+        const q = query(
+            collection(firestore, TF_PLATFORM_STATUS_COLLECTION),
+            where('estadoPlataforma', '==', 'EN RUTA HOY'),
+            limit(3000)
+        );
+        const snap = await getDocs(q);
+        if (snap.empty) return { success: true, closed: 0 };
+
+        const toClose: Array<{ id: string; reason: string }> = [];
+        snap.docs.forEach((d) => {
+            const raw = d.data() as {
+                numeroTF?: string;
+                bodegaDestino?: string;
+                updatedAt?: unknown;
+            };
+            const key = transferRouteKeyFromParts(raw.numeroTF, raw.bodegaDestino);
+            const updatedAt = toJsDate(raw.updatedAt);
+            let reason = '';
+
+            if (fromPublish) {
+                if (!publishedIds.has(d.id)) {
+                    reason = 'fuera_del_lote_publicado';
+                } else if (key && !inTransit.has(key)) {
+                    reason = 'fuera_de_transito';
+                }
+            } else {
+                if (updatedAt && updatedAt < startToday) {
+                    reason = 'dia_siguiente';
+                } else if (key && !inTransit.has(key)) {
+                    reason = 'fuera_de_transito';
+                }
+            }
+
+            if (reason) toClose.push({ id: d.id, reason });
+        });
+
+        if (!toClose.length) return { success: true, closed: 0 };
+
+        const CHUNK = 400;
+        for (let i = 0; i < toClose.length; i += CHUNK) {
+            const chunk = toClose.slice(i, i + CHUNK);
+            const batch = writeBatch(firestore);
+            chunk.forEach(({ id, reason }) => {
+                const ref = doc(firestore, TF_PLATFORM_STATUS_COLLECTION, id);
+                const motivo =
+                    reason === 'dia_siguiente' ||
+                    reason === 'fuera_de_transito' ||
+                    reason === 'fuera_del_lote_publicado'
+                        ? reason
+                        : 'fuera_de_transito';
+                batch.set(
+                    ref,
+                    convertDatesToTimestamps({
+                        estadoPlataforma: 'ENTREGADO',
+                        entregaInferida: true,
+                        entregaInferidaMotivo: motivo,
+                        updatedAt: new Date(),
+                        source: `auto_cierre_en_ruta_hoy:${reason}`,
+                    }),
+                    { merge: true }
+                );
+            });
+            await batch.commit();
+        }
+
+        return { success: true, closed: toClose.length };
+    } catch (error: any) {
+        console.error('Error reconcileStaleEnRutaHoyStatuses:', error);
+        return { success: false, error: error.message };
+    }
+}
+
 /** Publica estados plataforma (post cruces analizador) para consulta de tiendas. */
 export async function persistTfPlatformStatuses(
     records: Array<{
@@ -3994,16 +4131,53 @@ export async function persistTfPlatformStatuses(
         updatedBy?: string;
         source?: string;
     }>
-): Promise<{ success: boolean; count?: number; error?: string }> {
+): Promise<{ success: boolean; count?: number; closedEnRutaHoy?: number; error?: string }> {
     try {
         if (!records.length) {
             return { success: false, error: 'No hay registros de estado plataforma para guardar.' };
         }
 
+        const transitRes = await getTfKeysEnTransito();
+        const inTransit = new Set(transitRes.keys || []);
+        const normalizedRecords = records.map((r) => {
+            if (r.estadoPlataforma === 'EN RUTA HOY') {
+                const key = transferRouteKeyFromParts(r.numeroTF, r.bodegaDestino);
+                if (key && !inTransit.has(key)) {
+                    return {
+                        ...r,
+                        estadoPlataforma: 'ENTREGADO',
+                        entregaInferida: true,
+                        entregaInferidaMotivo: 'fuera_de_transito' as const,
+                        source: r.source
+                            ? `${r.source}|auto_cierre_en_ruta_hoy:fuera_de_transito`
+                            : 'auto_cierre_en_ruta_hoy:fuera_de_transito',
+                    };
+                }
+                return {
+                    ...r,
+                    entregaInferida: false,
+                    entregaInferidaMotivo: null,
+                };
+            }
+            // ENTREGADO del analizador (evidencia/fecha/estado) no es inferido
+            if (r.estadoPlataforma === 'ENTREGADO') {
+                return {
+                    ...r,
+                    entregaInferida: false,
+                    entregaInferidaMotivo: null,
+                };
+            }
+            return {
+                ...r,
+                entregaInferida: false,
+                entregaInferidaMotivo: null,
+            };
+        });
+
         const CHUNK = 400;
         let written = 0;
-        for (let i = 0; i < records.length; i += CHUNK) {
-            const chunk = records.slice(i, i + CHUNK);
+        for (let i = 0; i < normalizedRecords.length; i += CHUNK) {
+            const chunk = normalizedRecords.slice(i, i + CHUNK);
             const batch = writeBatch(firestore);
             chunk.forEach((r) => {
                 const ref = doc(firestore, TF_PLATFORM_STATUS_COLLECTION, r.id);
@@ -4019,7 +4193,17 @@ export async function persistTfPlatformStatuses(
             await batch.commit();
             written += chunk.length;
         }
-        return { success: true, count: written };
+
+        const reconcile = await reconcileStaleEnRutaHoyStatuses({
+            publishedIds: normalizedRecords.map((r) => r.id),
+        });
+
+        return {
+            success: true,
+            count: written,
+            closedEnRutaHoy: reconcile.closed || 0,
+            ...(reconcile.error ? { error: reconcile.error } : {}),
+        };
     } catch (error: any) {
         console.error('Error persisting tf platform statuses:', error);
         return { success: false, error: error.message };
@@ -4033,6 +4217,8 @@ export async function getTfPlatformStatusByTf(
         const digits = String(numeroTF || '').replace(/\D/g, '');
         const normalized = digits ? String(Number(digits)) : '';
         if (!normalized) return { error: 'Número TF inválido.' };
+
+        await reconcileStaleEnRutaHoyStatuses();
 
         const q = query(
             collection(firestore, TF_PLATFORM_STATUS_COLLECTION),
@@ -4054,6 +4240,8 @@ export async function getTfPlatformStatusByWarehouse(
     try {
         const whs = String(bodegaDestino || '').trim().toUpperCase();
         if (!whs) return { error: 'Bodega destino inválida.' };
+
+        await reconcileStaleEnRutaHoyStatuses();
 
         const q = query(
             collection(firestore, TF_PLATFORM_STATUS_COLLECTION),

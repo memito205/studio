@@ -186,9 +186,14 @@ const WarehouseAnalyzer: React.FC = () => {
         const result = await persistTfPlatformStatuses(records);
         if (!result.success) throw new Error(result.error || 'Error al publicar');
 
+        const closed = result.closedEnRutaHoy || 0;
         toast({
           title: 'Estados publicados para tiendas',
-          description: `Se publicaron ${result.count} TF (estado plataforma) en Firestore (colección tf_platform_status).`,
+          description:
+            `Se publicaron ${result.count} TF (estado plataforma) en Firestore (colección tf_platform_status).` +
+            (closed > 0
+              ? ` Se cerraron ${closed} EN RUTA HOY previas (día siguiente o fuera de En Tránsito) → ENTREGADO.`
+              : ''),
         });
       } catch (err: any) {
         console.error(err);

@@ -12,9 +12,16 @@ import { getTfPlatformStatusByTf, getTfPlatformStatusByWarehouse } from '@/app/a
 import type { TfPlatformEstado } from '@/types';
 import { format } from 'date-fns';
 
-const statusBadge = (status: string) => {
+const statusBadge = (status: string, entregaInferida?: boolean) => {
   switch (status as TfPlatformEstado) {
     case 'ENTREGADO':
+      if (entregaInferida) {
+        return (
+          <Badge className="bg-teal-700 hover:bg-teal-700 border border-dashed border-teal-200">
+            ENTREGADO · inferido
+          </Badge>
+        );
+      }
       return <Badge className="bg-green-600 hover:bg-green-600">ENTREGADO</Badge>;
     case 'EN RUTA HOY':
       return <Badge className="bg-blue-600 hover:bg-blue-600">EN RUTA HOY</Badge>;
@@ -26,6 +33,19 @@ const statusBadge = (status: string) => {
       return <Badge variant="destructive">VALIDAR CON AMBAS TIENDAS</Badge>;
     default:
       return <Badge variant="secondary">{status || 'N/D'}</Badge>;
+  }
+};
+
+const inferidoMotivoLabel = (motivo?: string): string => {
+  switch (motivo) {
+    case 'dia_siguiente':
+      return 'Pasó a ENTREGADO porque EN RUTA HOY era de un día anterior (no por evidencia de entrega).';
+    case 'fuera_de_transito':
+      return 'Pasó a ENTREGADO porque ya no está en transferencias En Tránsito (no por evidencia de entrega).';
+    case 'fuera_del_lote_publicado':
+      return 'Pasó a ENTREGADO porque no vino en la última publicación del analizador (no por evidencia de entrega).';
+    default:
+      return 'Pasó a ENTREGADO por cierre automático de EN RUTA HOY (no por evidencia de entrega).';
   }
 };
 
@@ -172,8 +192,13 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
                     <p className="text-sm text-muted-foreground">Número TF</p>
                     <p className="text-xl font-bold">{row.numeroTF}</p>
                   </div>
-                  {statusBadge(row.estadoPlataforma)}
+                  {statusBadge(row.estadoPlataforma, Boolean(row.entregaInferida))}
                 </div>
+                {row.estadoPlataforma === 'ENTREGADO' && row.entregaInferida && (
+                  <p className="text-xs text-teal-900 bg-teal-50 border border-teal-200 border-dashed rounded-md px-2 py-1.5">
+                    {inferidoMotivoLabel(row.entregaInferidaMotivo)}
+                  </p>
+                )}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                   <div>
                     <p className="text-muted-foreground">Bodega origen</p>
