@@ -3,12 +3,13 @@
 import React from 'react';
 import { Card, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, PackageSearch, FileBarChart } from 'lucide-react';
+import { ArrowLeft, PackageSearch, FileBarChart, Truck } from 'lucide-react';
 
 interface Props {
     onNavigateRemision: () => void;
     onNavigateLabeling: () => void;
     onNavigateLogisticsPlatform: () => void;
+    onNavigateGastosTransporte: () => void;
     onReturnToMain: () => void;
 }
 
@@ -16,6 +17,7 @@ export const BodegaDashboardsMenu: React.FC<Props> = ({
     onNavigateRemision, 
     onNavigateLabeling, 
     onNavigateLogisticsPlatform,
+    onNavigateGastosTransporte,
     onReturnToMain 
 }) => {
     return (
@@ -63,6 +65,17 @@ export const BodegaDashboardsMenu: React.FC<Props> = ({
                         <div>
                             <CardTitle className="text-xl">Plataforma Logística</CardTitle>
                             <CardDescription className="mt-2 text-base">Indicadores de bodega, procesos, descansos y rutas.</CardDescription>
+                        </div>
+                    </CardHeader>
+                </Card>
+                <Card className="hover:border-primary hover:shadow-md cursor-pointer transition-all duration-300 transform hover:-translate-y-1" onClick={onNavigateGastosTransporte}>
+                    <CardHeader className="flex flex-col items-center gap-4 space-y-2 text-center pt-8 pb-8">
+                        <div className="p-4 bg-amber-500/10 rounded-full">
+                            <Truck className="h-12 w-12 text-amber-600" />
+                        </div>
+                        <div>
+                            <CardTitle className="text-xl">Gastos de transporte</CardTitle>
+                            <CardDescription className="mt-2 text-base">Carga y análisis de gastos por transportadora, rentabilidad y cruces.</CardDescription>
                         </div>
                     </CardHeader>
                 </Card>
