@@ -5,6 +5,7 @@ import { firestore } from '@/services/firebase';
 import type {
   StoreCapacityProfile,
   StoreCapacitySettings,
+  StoreCediEnProcesoSnapshot,
   StoreDrawerCapacity,
   StoreInboundQuantities,
   StoreInventorySnapshot,
@@ -53,6 +54,15 @@ function sanitizeProfile(input: Partial<StoreCapacityProfile> & { pdvCode: strin
       }
     : undefined;
 
+  const cediEnProceso: StoreCediEnProcesoSnapshot | undefined = input.cediEnProceso
+    ? {
+        calzado: Math.max(0, Number(input.cediEnProceso.calzado) || 0),
+        ropa: Math.max(0, Number(input.cediEnProceso.ropa) || 0),
+        updatedAt: input.cediEnProceso.updatedAt || now,
+        source: input.cediEnProceso.source || 'manual',
+      }
+    : undefined;
+
   return {
     id: pdvCode,
     pdvCode,
@@ -62,6 +72,7 @@ function sanitizeProfile(input: Partial<StoreCapacityProfile> & { pdvCode: strin
     exhibitionAffectsCapacity: !!input.exhibitionAffectsCapacity,
     exhibitionCalzado: Math.max(0, Number(input.exhibitionCalzado) || 0),
     exhibitionRopa: Math.max(0, Number(input.exhibitionRopa) || 0),
+    cediEnProceso,
     notes: input.notes?.trim() || undefined,
     active: input.active ?? true,
     createdAt: input.createdAt || now,
@@ -379,6 +390,86 @@ export async function applyGlobalStoreInventory(
       updated: 0,
       created: 0,
       error: error?.message || 'No se pudo aplicar el inventario global.',
+    };
+  }
+}
+
+/**
+ * Aplica mercancía en proceso CEDI (próxima a llegar) por bodega.
+ * Reemplaza el snapshot cediEnProceso de cada bodega del archivo.
+ */
+export async function applyCediEnProceso(
+  byBodega: Record<string, { calzado: number; ropa: number }>,
+  updatedBy?: string
+): Promise<{ success: boolean; updated: number; created: number; error?: string }> {
+  try {
+    const entries = Object.entries(byBodega)
+      .map(([raw, snap]) => [normalizePdvCode(raw), snap] as const)
+      .filter(([code]) => !!code);
+    if (entries.length === 0) {
+      return { success: false, updated: 0, created: 0, error: 'No hay filas de CEDI en proceso.' };
+    }
+
+    const existingSnap = await getDocs(collection(firestore, COLLECTION));
+    const existingIds = new Set(existingSnap.docs.map((d) => d.id));
+
+    let updated = 0;
+    let created = 0;
+    const now = new Date().toISOString();
+
+    const chunkSize = 400;
+    for (let i = 0; i < entries.length; i += chunkSize) {
+      const chunk = entries.slice(i, i + chunkSize);
+      const batch = writeBatch(firestore);
+
+      for (const [pdvCode, snap] of chunk) {
+        const ref = doc(firestore, COLLECTION, pdvCode);
+        const cediEnProceso: StoreCediEnProcesoSnapshot = {
+          calzado: Math.max(0, Number(snap.calzado) || 0),
+          ropa: Math.max(0, Number(snap.ropa) || 0),
+          updatedAt: now,
+          source: 'import',
+        };
+
+        if (existingIds.has(pdvCode)) {
+          batch.set(
+            ref,
+            {
+              cediEnProceso,
+              updatedAt: now,
+              updatedBy: updatedBy || null,
+            },
+            { merge: true }
+          );
+          updated += 1;
+        } else {
+          const stub: StoreCapacityProfile = {
+            id: pdvCode,
+            pdvCode,
+            drawers: [],
+            cediEnProceso,
+            active: true,
+            createdAt: now,
+            updatedAt: now,
+            updatedBy,
+          };
+          batch.set(ref, stub);
+          existingIds.add(pdvCode);
+          created += 1;
+        }
+      }
+
+      await batch.commit();
+    }
+
+    return { success: true, updated, created };
+  } catch (error: any) {
+    console.error('applyCediEnProceso:', error);
+    return {
+      success: false,
+      updated: 0,
+      created: 0,
+      error: error?.message || 'No se pudo aplicar CEDI en proceso.',
     };
   }
 }

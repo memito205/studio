@@ -166,6 +166,8 @@ export function computeFootwearCapacityBreakdown(args: {
   calzadoOnHand: number;
   calzadoInTransit?: number;
   ropaInTransit?: number;
+  calzadoEnProceso?: number;
+  ropaEnProceso?: number;
   garmentsPerDrawer: number;
   exhibitionAffectsCapacity?: boolean;
   exhibitionCalzado?: number;
@@ -192,15 +194,17 @@ export function computeFootwearCapacityBreakdown(args: {
   const ropaOnHand = Math.max(0, (Number(args.ropaOnHand) || 0) - exhRopa - committedRopa);
   const calzadoInTransit = Math.max(0, Number(args.calzadoInTransit) || 0);
   const ropaInTransit = Math.max(0, Number(args.ropaInTransit) || 0);
-
-  const ropaForDrawers = ropaOnHand + ropaInTransit;
-  const drawersUsedByClothing = ropaForDrawers / rate;
-  const drawersAvailableForFootwear = Math.max(0, totals.totalDrawers - drawersUsedByClothing);
+  const calzadoEnProceso = Math.max(0, Number(args.calzadoEnProceso) || 0);
+  const ropaEnProceso = Math.max(0, Number(args.ropaEnProceso) || 0);
 
   const avgCapWithBox =
     totals.totalDrawers > 0 ? totals.totalWithBox / totals.totalDrawers : 0;
   const avgCapWithoutBox =
     totals.totalDrawers > 0 ? totals.totalWithoutBox / totals.totalDrawers : 0;
+
+  const ropaForDrawers = ropaOnHand + ropaInTransit;
+  const drawersUsedByClothing = ropaForDrawers / rate;
+  const drawersAvailableForFootwear = Math.max(0, totals.totalDrawers - drawersUsedByClothing);
   const capacityLostToClothing = drawersUsedByClothing * avgCapWithBox;
   const effectiveCapacityWithBox = Math.max(0, totals.totalWithBox - capacityLostToClothing);
 
@@ -213,11 +217,34 @@ export function computeFootwearCapacityBreakdown(args: {
         ? 100
         : 0;
 
+  // Futuro: + CEDI en proceso (próxima a llegar)
+  const ropaForDrawersFuture = ropaForDrawers + ropaEnProceso;
+  const drawersUsedByClothingFuture = ropaForDrawersFuture / rate;
+  const drawersAvailableFuture = Math.max(0, totals.totalDrawers - drawersUsedByClothingFuture);
+  const futureEffectiveCapacityWithBox = Math.max(
+    0,
+    totals.totalWithBox - drawersUsedByClothingFuture * avgCapWithBox
+  );
+  const futureOccupied = occupied + calzadoEnProceso;
+  const futureAvailable = futureEffectiveCapacityWithBox - futureOccupied;
+  const futureOccupancyPct =
+    futureEffectiveCapacityWithBox > 0
+      ? (futureOccupied / futureEffectiveCapacityWithBox) * 100
+      : futureOccupied > 0
+        ? 100
+        : 0;
+
   const boxMix = computeFootwearBoxMixSuggestion({
     drawersAvailableForFootwear,
     avgCapWithBox,
     avgCapWithoutBox,
     calzadoPairs: occupied,
+  });
+  const futureBoxMix = computeFootwearBoxMixSuggestion({
+    drawersAvailableForFootwear: drawersAvailableFuture,
+    avgCapWithBox,
+    avgCapWithoutBox,
+    calzadoPairs: futureOccupied,
   });
 
   return {
@@ -235,12 +262,20 @@ export function computeFootwearCapacityBreakdown(args: {
     exhibitionRopaApplied: exhRopa,
     committedCalzadoApplied: committedCalz,
     committedRopaApplied: committedRopa,
+    calzadoEnProceso,
+    ropaEnProceso,
     occupied,
     available,
     occupancyPct,
     canReceive: available > 0,
     exceeds: available < 0,
+    futureOccupied,
+    futureAvailable,
+    futureOccupancyPct,
+    futureExceeds: futureAvailable < 0,
+    futureEffectiveCapacityWithBox,
     boxMix,
+    futureBoxMix,
   };
 }
 
@@ -279,6 +314,84 @@ export function normalizeInventoryGrupo(raw: string): StoreInventoryGrupo | null
   if (n.includes('ropa') || n.includes('prenda') || n.includes('textil')) return 'ropa';
   if (n.includes('accesorio') || n.includes('accesor')) return 'accesorios';
   return null;
+}
+
+/**
+ * Excel CEDI en proceso: BODEGA | CANT EN PROCESO (| GRUPO opcional).
+ * Sin GRUPO se asume calzado. Es mercancía próxima a llegar (aún no en TF).
+ */
+export function parseCediEnProcesoSheet(
+  rows: Record<string, unknown>[]
+): {
+  byBodega: Map<string, { calzado: number; ropa: number }>;
+  rowCount: number;
+  skipped: number;
+} {
+  const byBodega = new Map<string, { calzado: number; ropa: number }>();
+  let rowCount = 0;
+  let skipped = 0;
+
+  const findQtyKey = (row: Record<string, unknown>): string | undefined => {
+    const preferred = findCaseInsensitiveKey(
+      row,
+      'cant en proceso',
+      'cantidad en proceso',
+      'en proceso',
+      'proceso',
+      'cant proceso',
+      'proxima',
+      'próxima',
+      'cantidad',
+      'cant'
+    );
+    if (preferred) return preferred;
+    return Object.keys(row).find((k) => /proceso|proxima|próxima|cantidad|cant/i.test(k));
+  };
+
+  for (const row of rows) {
+    const bodegaKey = findCaseInsensitiveKey(
+      row,
+      'bodega',
+      'pdv',
+      'tienda',
+      'codigo',
+      'código',
+      'almacen',
+      'almacén'
+    );
+    const cantKey = bodegaKey ? findQtyKey(row) : undefined;
+    if (!bodegaKey || !cantKey) {
+      skipped += 1;
+      continue;
+    }
+
+    const bodega = normalizePdvCode(String(row[bodegaKey] ?? ''));
+    const rawCant = row[cantKey];
+    const cantidad =
+      typeof rawCant === 'number' ? rawCant : Number(String(rawCant ?? '').replace(/,/g, ''));
+    if (!bodega || !Number.isFinite(cantidad) || cantidad < 0) {
+      skipped += 1;
+      continue;
+    }
+
+    const grupoKey = findCaseInsensitiveKey(row, 'grupo', 'categoria', 'categoría', 'tipo');
+    const grupo = grupoKey
+      ? normalizeInventoryGrupo(String(row[grupoKey] ?? '')) || 'calzado'
+      : 'calzado';
+    if (grupo === 'accesorios') {
+      // no afecta capacidad; se ignora en proyección de cajones
+      rowCount += 1;
+      continue;
+    }
+
+    rowCount += 1;
+    const prev = byBodega.get(bodega) || { calzado: 0, ropa: 0 };
+    if (grupo === 'ropa') prev.ropa += cantidad;
+    else prev.calzado += cantidad;
+    byBodega.set(bodega, prev);
+  }
+
+  return { byBodega, rowCount, skipped };
 }
 
 /**

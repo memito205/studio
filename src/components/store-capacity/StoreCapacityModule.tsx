@@ -37,9 +37,11 @@ import {
   inventoryTotal,
   normalizePdvCode,
   parseGlobalInventorySheet,
+  parseCediEnProcesoSheet,
   parseStoreCapacitySheet,
 } from '@/lib/storeCapacity';
 import {
+  applyCediEnProceso,
   applyGlobalStoreInventory,
   deleteStoreCapacityProfile,
   getInboundQuantitiesByWarehouse,
@@ -73,6 +75,7 @@ function blankProfile(): StoreCapacityProfile {
     exhibitionAffectsCapacity: false,
     exhibitionCalzado: 0,
     exhibitionRopa: 0,
+    cediEnProceso: { calzado: 0, ropa: 0, source: 'manual' },
     notes: '',
     active: true,
     createdAt: now,
@@ -89,12 +92,14 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
   const { user } = useAuth();
   const capacityFileRef = useRef<HTMLInputElement>(null);
   const inventoryFileRef = useRef<HTMLInputElement>(null);
+  const cediFileRef = useRef<HTMLInputElement>(null);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [importingCapacity, setImportingCapacity] = useState(false);
   const [importingInventory, setImportingInventory] = useState(false);
+  const [importingCedi, setImportingCedi] = useState(false);
   const [profiles, setProfiles] = useState<StoreCapacityProfile[]>([]);
   const [inboundByWhs, setInboundByWhs] = useState<Record<string, StoreInboundQuantities>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -160,6 +165,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
         calzadoOnHand: Number(draft.inventorySnapshot?.calzado) || 0,
         calzadoInTransit: draftInbound.calzado,
         ropaInTransit: draftInbound.ropa,
+        calzadoEnProceso: draft.cediEnProceso?.calzado,
+        ropaEnProceso: draft.cediEnProceso?.ropa,
         garmentsPerDrawer,
         exhibitionAffectsCapacity: !!draft.exhibitionAffectsCapacity,
         exhibitionCalzado: draft.exhibitionCalzado,
@@ -173,6 +180,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
       draft.inventorySnapshot?.calzado,
       draft.inventorySnapshot?.comprometidoCalzado,
       draft.inventorySnapshot?.comprometidoRopa,
+      draft.cediEnProceso?.calzado,
+      draft.cediEnProceso?.ropa,
       draft.exhibitionAffectsCapacity,
       draft.exhibitionCalzado,
       draft.exhibitionRopa,
@@ -191,6 +200,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
         calzadoOnHand: Number(p.inventorySnapshot?.calzado) || 0,
         calzadoInTransit: inbound.calzado,
         ropaInTransit: inbound.ropa,
+        calzadoEnProceso: p.cediEnProceso?.calzado,
+        ropaEnProceso: p.cediEnProceso?.ropa,
         garmentsPerDrawer,
         exhibitionAffectsCapacity: !!p.exhibitionAffectsCapacity,
         exhibitionCalzado: p.exhibitionCalzado,
@@ -200,18 +211,23 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
       });
       return { profile: p, inbound, breakdown: b };
     });
-    rows.sort((a, b) => b.breakdown.occupancyPct - a.breakdown.occupancyPct);
+    rows.sort((a, b) => b.breakdown.futureOccupancyPct - a.breakdown.futureOccupancyPct);
     return rows;
   }, [profiles, inboundByWhs, garmentsPerDrawer]);
 
   const boardStats = useMemo(() => {
     const exceeds = dashboardRows.filter((r) => r.breakdown.exceeds).length;
+    const futureExceeds = dashboardRows.filter((r) => r.breakdown.futureExceeds).length;
     const ok = dashboardRows.length - exceeds;
     const avg =
       dashboardRows.length > 0
         ? dashboardRows.reduce((s, r) => s + r.breakdown.occupancyPct, 0) / dashboardRows.length
         : 0;
-    return { exceeds, ok, avg };
+    const avgFuture =
+      dashboardRows.length > 0
+        ? dashboardRows.reduce((s, r) => s + r.breakdown.futureOccupancyPct, 0) / dashboardRows.length
+        : 0;
+    return { exceeds, futureExceeds, ok, avg, avgFuture };
   }, [dashboardRows]);
 
   const startNew = () => {
@@ -244,6 +260,9 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
       exhibitionAffectsCapacity: !!p.exhibitionAffectsCapacity,
       exhibitionCalzado: Number(p.exhibitionCalzado) || 0,
       exhibitionRopa: Number(p.exhibitionRopa) || 0,
+      cediEnProceso: p.cediEnProceso
+        ? { ...p.cediEnProceso }
+        : { calzado: 0, ropa: 0, source: 'manual' },
     });
     setMainTab('maestro');
   };
@@ -423,6 +442,62 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
     }
   };
 
+  const handleImportCediExcel = async (file: File) => {
+    setImportingCedi(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      if (!sheet) {
+        toast({ variant: 'destructive', title: 'Excel vacío' });
+        return;
+      }
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
+      const { byBodega, rowCount, skipped } = parseCediEnProcesoSheet(rows);
+      if (byBodega.size === 0) {
+        toast({
+          variant: 'destructive',
+          title: 'Sin filas válidas',
+          description: 'Columnas: BODEGA y CANT EN PROCESO (GRUPO opcional).',
+        });
+        return;
+      }
+      const payload: Record<string, { calzado: number; ropa: number }> = {};
+      byBodega.forEach((snap, code) => {
+        payload[code] = snap;
+      });
+      const res = await applyCediEnProceso(payload, user?.uid);
+      if (!res.success) {
+        toast({ variant: 'destructive', title: 'No se aplicó CEDI', description: res.error });
+        return;
+      }
+      toast({
+        title: 'CEDI en proceso aplicado',
+        description: `${rowCount} filas · ${res.updated} actualizadas · ${res.created} nuevas${
+          skipped ? ` · ${skipped} omitidas` : ''
+        }.`,
+      });
+      await load();
+      const code = normalizePdvCode(draft.pdvCode || selectedId || '');
+      if (code && payload[code]) {
+        setDraft((prev) => ({
+          ...prev,
+          cediEnProceso: {
+            calzado: payload[code].calzado,
+            ropa: payload[code].ropa,
+            updatedAt: new Date().toISOString(),
+            source: 'import',
+          },
+        }));
+      }
+    } catch (e: any) {
+      toast({ variant: 'destructive', title: 'Error al leer CEDI', description: e?.message || String(e) });
+    } finally {
+      setImportingCedi(false);
+      if (cediFileRef.current) cediFileRef.current.value = '';
+    }
+  };
+
   return (
     <div className="space-y-4 p-3 sm:p-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -436,8 +511,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
               Capacidad de tiendas
             </h1>
             <p className="text-sm text-muted-foreground max-w-2xl">
-              Cupo de cajones = calzado. Ropa descuenta cajones. Accesorios no afectan. Inventario + TF en tránsito /
-              recibido bodega / enviado destino / EN RUTA HOY. Outlet puede restar exhibición de sala.
+              Cupo de cajones = calzado. Ropa descuenta cajones. Accesorios no afectan. Inventario + TF inbound + CEDI en
+            proceso (próxima a llegar → capacidad futura). Outlet puede restar exhibición.
             </p>
           </div>
         </div>
@@ -462,6 +537,16 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
               if (f) void handleImportInventoryExcel(f);
             }}
           />
+          <input
+            ref={cediFileRef}
+            type="file"
+            accept=".xlsx,.xls"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void handleImportCediExcel(f);
+            }}
+          />
           <Button variant="outline" disabled={loading} onClick={() => void load()}>
             {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
             Actualizar
@@ -473,6 +558,10 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
           <Button variant="outline" disabled={importingInventory} onClick={() => inventoryFileRef.current?.click()}>
             {importingInventory ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
             Inventario global
+          </Button>
+          <Button variant="outline" disabled={importingCedi} onClick={() => cediFileRef.current?.click()}>
+            {importingCedi ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+            CEDI en proceso
           </Button>
           <Button variant="secondary" onClick={startNew}>
             <Plus className="mr-2 h-4 w-4" />
@@ -519,32 +608,40 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
           <TabsTrigger value="tablero">
             <LayoutDashboard className="mr-1.5 h-4 w-4" />
             Tablero ocupación
-            {boardStats.exceeds > 0 ? (
+            {boardStats.exceeds > 0 || boardStats.futureExceeds > 0 ? (
               <Badge variant="destructive" className="ml-2">
-                {boardStats.exceeds} exceden
+                {boardStats.exceeds} hoy · {boardStats.futureExceeds} futuro
               </Badge>
             ) : null}
           </TabsTrigger>
         </TabsList>
 
         <TabsContent value="tablero" className="space-y-4 mt-4">
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Card>
               <CardHeader className="py-3">
-                <CardDescription>Tiendas OK</CardDescription>
+                <CardDescription>Tiendas OK (hoy)</CardDescription>
                 <CardTitle className="text-2xl tabular-nums text-emerald-700">{boardStats.ok}</CardTitle>
               </CardHeader>
             </Card>
             <Card>
               <CardHeader className="py-3">
-                <CardDescription>Exceden capacidad</CardDescription>
+                <CardDescription>Exceden hoy</CardDescription>
                 <CardTitle className="text-2xl tabular-nums text-red-600">{boardStats.exceeds}</CardTitle>
               </CardHeader>
             </Card>
             <Card>
               <CardHeader className="py-3">
-                <CardDescription>Ocupación promedio</CardDescription>
-                <CardTitle className="text-2xl tabular-nums">{boardStats.avg.toFixed(0)}%</CardTitle>
+                <CardDescription>Excederán (c/ CEDI)</CardDescription>
+                <CardTitle className="text-2xl tabular-nums text-amber-700">{boardStats.futureExceeds}</CardTitle>
+              </CardHeader>
+            </Card>
+            <Card>
+              <CardHeader className="py-3">
+                <CardDescription>Ocup. hoy / futura</CardDescription>
+                <CardTitle className="text-2xl tabular-nums">
+                  {boardStats.avg.toFixed(0)}% · {boardStats.avgFuture.toFixed(0)}%
+                </CardTitle>
               </CardHeader>
             </Card>
           </div>
@@ -553,8 +650,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Capacidad efectiva vs inventario + inbound TF</CardTitle>
               <CardDescription>
-                Incluye En Tránsito, Recibido en Bodega, Enviado a Destino y EN RUTA HOY (sin duplicar TF). Ordenado por %
-                ocupación.
+                Incluye En Tránsito, Recibido en Bodega, Enviado a Destino, EN RUTA HOY y CEDI en proceso (capacidad
+                futura). Ordenado por ocupación futura.
               </CardDescription>
             </CardHeader>
             <CardContent className="overflow-x-auto">
@@ -569,17 +666,26 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       <TableHead>PDV</TableHead>
                       <TableHead className="text-right">Cap. efectiva</TableHead>
                       <TableHead className="text-right">Calz. alm.</TableHead>
-                      <TableHead className="text-right">Calz. inbound</TableHead>
-                      <TableHead className="text-right">Ropa (caj.)</TableHead>
-                      <TableHead className="text-right">Sin caja / Con caja</TableHead>
-                      <TableHead className="min-w-[140px]">Ocupación</TableHead>
+                      <TableHead className="text-right">Inbound TF</TableHead>
+                      <TableHead className="text-right">CEDI proceso</TableHead>
+                      <TableHead className="min-w-[120px]">Hoy</TableHead>
+                      <TableHead className="min-w-[120px]">Futura</TableHead>
                       <TableHead>Estado</TableHead>
                       <TableHead />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {dashboardRows.map(({ profile: p, inbound, breakdown: b }) => (
-                      <TableRow key={p.id} className={b.exceeds ? 'bg-red-50/60 dark:bg-red-950/20' : undefined}>
+                      <TableRow
+                        key={p.id}
+                        className={
+                          b.futureExceeds
+                            ? 'bg-amber-50/70 dark:bg-amber-950/20'
+                            : b.exceeds
+                              ? 'bg-red-50/60 dark:bg-red-950/20'
+                              : undefined
+                        }
+                      >
                         <TableCell>
                           <div className="font-semibold">{p.pdvCode}</div>
                           <div className="text-xs text-muted-foreground">
@@ -603,37 +709,40 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                             {inbound.transferLines + inbound.enRutaHoyLines} líneas
                           </div>
                         </TableCell>
-                        <TableCell className="text-right tabular-nums text-muted-foreground">
-                          {b.drawersUsedByClothing.toFixed(1)}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums text-xs">
-                          <span className={b.boxMix.drawersWithoutBox > 0.05 ? 'text-amber-800 dark:text-amber-300 font-semibold' : ''}>
-                            {b.boxMix.drawersWithoutBox.toFixed(1)}
-                          </span>
-                          {' / '}
-                          {b.boxMix.drawersWithBox.toFixed(1)}
-                          {b.boxMix.fitsAllWithBox ? (
-                            <div className="text-[10px] text-emerald-700">todo c/caja</div>
-                          ) : b.boxMix.exceedsEvenWithoutBox ? (
-                            <div className="text-[10px] text-red-600">no alcanza</div>
-                          ) : (
-                            <div className="text-[10px] text-muted-foreground">mixto</div>
-                          )}
+                        <TableCell className="text-right tabular-nums text-sky-800 dark:text-sky-300">
+                          {b.calzadoEnProceso.toLocaleString()}
+                          {b.ropaEnProceso > 0 ? (
+                            <div className="text-[10px] text-muted-foreground">ropa {b.ropaEnProceso}</div>
+                          ) : null}
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
-                            <Progress
-                              value={Math.min(100, Math.max(0, b.occupancyPct))}
-                              className="h-2 flex-1"
-                            />
+                            <Progress value={Math.min(100, Math.max(0, b.occupancyPct))} className="h-2 flex-1" />
                             <span className="text-xs font-semibold tabular-nums w-12 text-right">
                               {b.occupancyPct.toFixed(0)}%
                             </span>
                           </div>
                         </TableCell>
                         <TableCell>
+                          <div className="flex items-center gap-2">
+                            <Progress
+                              value={Math.min(100, Math.max(0, b.futureOccupancyPct))}
+                              className="h-2 flex-1"
+                            />
+                            <span className="text-xs font-semibold tabular-nums w-12 text-right">
+                              {b.futureOccupancyPct.toFixed(0)}%
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-muted-foreground tabular-nums">
+                            sin caja {b.futureBoxMix.drawersWithoutBox.toFixed(1)} / con{' '}
+                            {b.futureBoxMix.drawersWithBox.toFixed(1)}
+                          </div>
+                        </TableCell>
+                        <TableCell>
                           {b.exceeds ? (
-                            <Badge variant="destructive">EXCEDE</Badge>
+                            <Badge variant="destructive">EXCEDE HOY</Badge>
+                          ) : b.futureExceeds ? (
+                            <Badge className="bg-amber-500/20 text-amber-900 hover:bg-amber-500/20">RIESGO FUTURO</Badge>
                           ) : (
                             <Badge variant="secondary" className="bg-emerald-500/15 text-emerald-800">
                               OK
@@ -690,6 +799,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       calzadoOnHand: Number(p.inventorySnapshot?.calzado) || 0,
                       calzadoInTransit: inbound.calzado,
                       ropaInTransit: inbound.ropa,
+                      calzadoEnProceso: p.cediEnProceso?.calzado,
+                      ropaEnProceso: p.cediEnProceso?.ropa,
                       garmentsPerDrawer,
                       exhibitionAffectsCapacity: !!p.exhibitionAffectsCapacity,
                       exhibitionCalzado: p.exhibitionCalzado,
@@ -714,14 +825,15 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                             {p.pdvCode}
                           </span>
                           <Badge
-                            variant={b.exceeds ? 'destructive' : 'secondary'}
+                            variant={b.exceeds || b.futureExceeds ? 'destructive' : 'secondary'}
                             className="tabular-nums text-[10px]"
                           >
-                            {b.occupancyPct.toFixed(0)}%
+                            {b.occupancyPct.toFixed(0)}%→{b.futureOccupancyPct.toFixed(0)}%
                           </Badge>
                         </div>
                         <p className="text-[11px] text-muted-foreground tabular-nums">
                           disp. {Math.round(b.available).toLocaleString()}
+                          {b.calzadoEnProceso > 0 ? ` · CEDI +${b.calzadoEnProceso}` : ''}
                           {p.exhibitionAffectsCapacity ? ' · exhib.' : ''}
                         </p>
                       </button>
@@ -817,6 +929,57 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       </div>
                     </div>
                   ) : null}
+                </CardContent>
+              </Card>
+
+              <Card className="border-sky-600/25">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">CEDI en proceso — próxima a llegar</CardTitle>
+                  <CardDescription>
+                    Mercancía trabajando en CEDI (aún no en tránsito). Excel: <code>BODEGA</code>,{' '}
+                    <code>CANT EN PROCESO</code> (y <code>GRUPO</code> opcional; sin grupo = calzado). Alimenta la
+                    capacidad futura.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label>Calzado en proceso</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      className="tabular-nums"
+                      value={draft.cediEnProceso?.calzado ?? 0}
+                      onChange={(e) =>
+                        setDraft((p) => ({
+                          ...p,
+                          cediEnProceso: {
+                            calzado: Number(e.target.value) || 0,
+                            ropa: p.cediEnProceso?.ropa ?? 0,
+                            source: 'manual',
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Ropa en proceso</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      className="tabular-nums"
+                      value={draft.cediEnProceso?.ropa ?? 0}
+                      onChange={(e) =>
+                        setDraft((p) => ({
+                          ...p,
+                          cediEnProceso: {
+                            calzado: p.cediEnProceso?.calzado ?? 0,
+                            ropa: Number(e.target.value) || 0,
+                            source: 'manual',
+                          },
+                        }))
+                      }
+                    />
+                  </div>
                 </CardContent>
               </Card>
 
@@ -1138,14 +1301,32 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                         </span>
                       </span>
                     </div>
+                    <div className="flex justify-between text-sky-800 dark:text-sky-300">
+                      <span>CEDI en proceso (próxima)</span>
+                      <span className="tabular-nums">
+                        +{breakdown.calzadoEnProceso.toLocaleString()}
+                        {breakdown.ropaEnProceso > 0 ? ` · ropa +${breakdown.ropaEnProceso}` : ''}
+                      </span>
+                    </div>
                     <div className="border-t pt-2 flex justify-between items-center">
-                      <span>Disponible / ocupación</span>
+                      <span>Disponible hoy</span>
                       <Badge
                         variant={breakdown.exceeds ? 'destructive' : 'default'}
                         className="tabular-nums text-sm"
                       >
                         {Math.round(breakdown.available).toLocaleString()} · {breakdown.occupancyPct.toFixed(0)}%
                         {breakdown.exceeds ? ' EXCEDE' : ''}
+                      </Badge>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span>Capacidad futura (c/ CEDI)</span>
+                      <Badge
+                        variant={breakdown.futureExceeds ? 'destructive' : 'secondary'}
+                        className="tabular-nums text-sm"
+                      >
+                        {Math.round(breakdown.futureAvailable).toLocaleString()} ·{' '}
+                        {breakdown.futureOccupancyPct.toFixed(0)}%
+                        {breakdown.futureExceeds ? ' RIESGO' : ''}
                       </Badge>
                     </div>
 
@@ -1159,7 +1340,7 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       }`}
                     >
                       <p className="font-semibold text-sm text-foreground">
-                        Distribución informativa: con caja vs sin caja
+                        Distribución hoy: con caja vs sin caja
                       </p>
                       <p className="text-muted-foreground leading-relaxed">{breakdown.boxMix.summary}</p>
                       <div className="grid grid-cols-2 gap-2 pt-1">
@@ -1168,25 +1349,28 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                           <div className="font-semibold tabular-nums text-base">
                             ~{breakdown.boxMix.drawersWithBox.toFixed(1)}
                           </div>
-                          <div className="text-muted-foreground tabular-nums">
-                            {Math.round(breakdown.boxMix.pairsInWithBox).toLocaleString()} pares
-                          </div>
                         </div>
                         <div>
                           <div className="text-muted-foreground">Cajones SIN caja</div>
                           <div className="font-semibold tabular-nums text-base">
                             ~{breakdown.boxMix.drawersWithoutBox.toFixed(1)}
                           </div>
-                          <div className="text-muted-foreground tabular-nums">
-                            {Math.round(breakdown.boxMix.pairsInWithoutBox).toLocaleString()} pares
-                          </div>
                         </div>
                       </div>
-                      <p className="text-[11px] text-muted-foreground">
-                        Calculado después de restar cajones de ropa. Ideal = 100% con caja; si no alcanza, el sistema
-                        indica el mínimo de cajones sin caja.
-                      </p>
                     </div>
+
+                    {(breakdown.calzadoEnProceso > 0 || breakdown.ropaEnProceso > 0) && (
+                      <div className="rounded-md border border-sky-600/30 bg-sky-50/40 dark:bg-sky-950/20 p-3 text-xs space-y-2">
+                        <p className="font-semibold text-sm text-foreground">
+                          Capacidad futura (incluye CEDI en proceso)
+                        </p>
+                        <p className="text-muted-foreground leading-relaxed">{breakdown.futureBoxMix.summary}</p>
+                        <div className="flex justify-between tabular-nums">
+                          <span>Ocupación futura</span>
+                          <span className="font-semibold">{breakdown.futureOccupancyPct.toFixed(0)}%</span>
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               </div>

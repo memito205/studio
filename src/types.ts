@@ -1191,6 +1191,14 @@ export interface StoreCapacitySettings {
   updatedBy?: string;
 }
 
+/** Snapshot de mercancía en proceso en CEDI (próxima a llegar, aún no TF). */
+export interface StoreCediEnProcesoSnapshot {
+  calzado: number;
+  ropa: number;
+  updatedAt?: string;
+  source?: 'manual' | 'import';
+}
+
 /**
  * Maestro de capacidad de almacenamiento por PDV/tienda.
  * Los cajones definen capacidad base de calzado; la ropa descuenta cajones.
@@ -1210,6 +1218,11 @@ export interface StoreCapacityProfile {
   exhibitionAffectsCapacity?: boolean;
   exhibitionCalzado?: number;
   exhibitionRopa?: number;
+  /**
+   * Mercancía en proceso en CEDI (aún no en tránsito) que llegará a la tienda.
+   * Se usa para proyectar capacidad futura / próxima a llegar.
+   */
+  cediEnProceso?: StoreCediEnProcesoSnapshot;
   notes?: string;
   active: boolean;
   createdAt: string;
@@ -1242,16 +1255,22 @@ export interface StoreFootwearCapacityBreakdown {
   /** Comprometido a sacar (pedidos de salida) restado del inventario */
   committedCalzadoApplied: number;
   committedRopaApplied: number;
+  /** Calzado/ropa en proceso CEDI (próxima a llegar) */
+  calzadoEnProceso: number;
+  ropaEnProceso: number;
   occupied: number;
   available: number;
   occupancyPct: number;
   canReceive: boolean;
   exceeds: boolean;
-  /**
-   * Sugerencia informativa: tras restar cajones de ropa, cuántos cajones
-   * conviene usar con caja vs sin caja para el calzado actual.
-   */
+  /** Proyección incluyendo CEDI en proceso */
+  futureOccupied: number;
+  futureAvailable: number;
+  futureOccupancyPct: number;
+  futureExceeds: boolean;
+  futureEffectiveCapacityWithBox: number;
   boxMix: StoreFootwearBoxMixSuggestion;
+  futureBoxMix: StoreFootwearBoxMixSuggestion;
 }
 
 /** Cómo repartir cajones de calzado (preferir caja original). */
