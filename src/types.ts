@@ -1179,6 +1179,30 @@ export interface StoreInventorySnapshot {
   source?: 'manual' | 'import' | 'global_import' | 'system';
 }
 
+/** Snapshot diario de inventario (para pronóstico de salidas). */
+export interface StoreCapacityDailyHistory {
+  id: string;
+  pdvCode: string;
+  /** YYYY-MM-DD */
+  date: string;
+  calzado: number;
+  ropa: number;
+  source?: 'manual' | 'global_import' | 'system';
+  createdAt: string;
+}
+
+/** Pronóstico de salida por bodega (libera cupo futuro). */
+export interface StoreCapacityForecast {
+  pdvCode: string;
+  avgDailyCalzadoOutflow: number;
+  avgDailyRopaOutflow: number;
+  lookbackDays: number;
+  horizonDays: number;
+  forecastCalzadoOutflow: number;
+  forecastRopaOutflow: number;
+  samples: number;
+}
+
 /** Parámetros globales del módulo (editables rápido). */
 export interface StoreCapacitySettings {
   id: 'global';
@@ -1187,6 +1211,10 @@ export interface StoreCapacitySettings {
    * Default operativo: 100. Accesorios no afectan capacidad.
    */
   garmentsPerDrawerForClothing: number;
+  /** Días hacia adelante para proyectar salidas (default 7). */
+  forecastHorizonDays?: number;
+  /** Días de histórico para estimar salida diaria (default 14). */
+  forecastLookbackDays?: number;
   updatedAt: string;
   updatedBy?: string;
 }
@@ -1236,7 +1264,7 @@ export interface StoreCapacityTotals {
   totalDrawers: number;
 }
 
-/** Resultado de cupo de calzado tras descontar cajones ocupados por ropa. */
+/** Resultado de cupo de calzado en 3 horizontes claros. */
 export interface StoreFootwearCapacityBreakdown {
   totalDrawers: number;
   drawersUsedByClothing: number;
@@ -1244,26 +1272,53 @@ export interface StoreFootwearCapacityBreakdown {
   grossCapacityWithBox: number;
   capacityLostToClothing: number;
   effectiveCapacityWithBox: number;
-  /** Calzado que ocupa cajones (inventario − exhibición si aplica) */
+  /** Calzado en almacén (inventario − exhibición − comprometido) */
   calzadoOnHand: number;
   calzadoInTransit: number;
-  /** Ropa que ocupa cajones (inventario − exhibición − comprometido) */
   ropaOnHand: number;
   ropaInTransit: number;
   exhibitionCalzadoApplied: number;
   exhibitionRopaApplied: number;
-  /** Comprometido a sacar (pedidos de salida) restado del inventario */
   committedCalzadoApplied: number;
   committedRopaApplied: number;
-  /** Calzado/ropa en proceso CEDI (próxima a llegar) */
   calzadoEnProceso: number;
   ropaEnProceso: number;
+  /** Pronóstico de ventas/salidas que libera cupo en futura */
+  forecastCalzadoOutflow: number;
+  forecastRopaOutflow: number;
+  forecastAvgDailyCalzadoOutflow: number;
+  forecastSamples: number;
+
+  /** HOY = solo lo almacenado */
+  hoyOccupied: number;
+  hoyAvailable: number;
+  hoyOccupancyPct: number;
+  hoyExceeds: boolean;
+  hoyEffectiveCapacityWithBox: number;
+  hoyBoxMix: StoreFootwearBoxMixSuggestion;
+
+  /** PRÓXIMA = almacenado + TF en tránsito */
+  proximaOccupied: number;
+  proximaAvailable: number;
+  proximaOccupancyPct: number;
+  proximaExceeds: boolean;
+  proximaEffectiveCapacityWithBox: number;
+  proximaBoxMix: StoreFootwearBoxMixSuggestion;
+
+  /** FUTURA = próxima + CEDI − pronóstico de salidas */
+  futuraOccupied: number;
+  futuraAvailable: number;
+  futuraOccupancyPct: number;
+  futuraExceeds: boolean;
+  futuraEffectiveCapacityWithBox: number;
+  futuraBoxMix: StoreFootwearBoxMixSuggestion;
+
+  /** Aliases (compat UI): hoy≈occupied legacy era proxima; future≈futura */
   occupied: number;
   available: number;
   occupancyPct: number;
   canReceive: boolean;
   exceeds: boolean;
-  /** Proyección incluyendo CEDI en proceso */
   futureOccupied: number;
   futureAvailable: number;
   futureOccupancyPct: number;

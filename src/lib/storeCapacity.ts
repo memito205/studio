@@ -168,6 +168,10 @@ export function computeFootwearCapacityBreakdown(args: {
   ropaInTransit?: number;
   calzadoEnProceso?: number;
   ropaEnProceso?: number;
+  forecastCalzadoOutflow?: number;
+  forecastRopaOutflow?: number;
+  forecastAvgDailyCalzadoOutflow?: number;
+  forecastSamples?: number;
   garmentsPerDrawer: number;
   exhibitionAffectsCapacity?: boolean;
   exhibitionCalzado?: number;
@@ -196,64 +200,63 @@ export function computeFootwearCapacityBreakdown(args: {
   const ropaInTransit = Math.max(0, Number(args.ropaInTransit) || 0);
   const calzadoEnProceso = Math.max(0, Number(args.calzadoEnProceso) || 0);
   const ropaEnProceso = Math.max(0, Number(args.ropaEnProceso) || 0);
+  const forecastCalzadoOutflow = Math.max(0, Number(args.forecastCalzadoOutflow) || 0);
+  const forecastRopaOutflow = Math.max(0, Number(args.forecastRopaOutflow) || 0);
+  const forecastAvgDailyCalzadoOutflow = Math.max(0, Number(args.forecastAvgDailyCalzadoOutflow) || 0);
+  const forecastSamples = Math.max(0, Number(args.forecastSamples) || 0);
 
   const avgCapWithBox =
     totals.totalDrawers > 0 ? totals.totalWithBox / totals.totalDrawers : 0;
   const avgCapWithoutBox =
     totals.totalDrawers > 0 ? totals.totalWithoutBox / totals.totalDrawers : 0;
 
-  const ropaForDrawers = ropaOnHand + ropaInTransit;
-  const drawersUsedByClothing = ropaForDrawers / rate;
-  const drawersAvailableForFootwear = Math.max(0, totals.totalDrawers - drawersUsedByClothing);
-  const capacityLostToClothing = drawersUsedByClothing * avgCapWithBox;
-  const effectiveCapacityWithBox = Math.max(0, totals.totalWithBox - capacityLostToClothing);
+  const tierMetrics = (ropaStored: number, calzadoStored: number) => {
+    const drawersUsed = ropaStored / rate;
+    const drawersAvail = Math.max(0, totals.totalDrawers - drawersUsed);
+    const effective = Math.max(0, totals.totalWithBox - drawersUsed * avgCapWithBox);
+    const occupied = calzadoStored;
+    const available = effective - occupied;
+    const occupancyPct =
+      effective > 0 ? (occupied / effective) * 100 : occupied > 0 ? 100 : 0;
+    const boxMix = computeFootwearBoxMixSuggestion({
+      drawersAvailableForFootwear: drawersAvail,
+      avgCapWithBox,
+      avgCapWithoutBox,
+      calzadoPairs: occupied,
+    });
+    return {
+      drawersUsed,
+      drawersAvail,
+      effective,
+      occupied,
+      available,
+      occupancyPct,
+      exceeds: available < 0,
+      boxMix,
+    };
+  };
 
-  const occupied = calzadoOnHand + calzadoInTransit;
-  const available = effectiveCapacityWithBox - occupied;
-  const occupancyPct =
-    effectiveCapacityWithBox > 0
-      ? (occupied / effectiveCapacityWithBox) * 100
-      : occupied > 0
-        ? 100
-        : 0;
+  // HOY: solo almacén
+  const hoy = tierMetrics(ropaOnHand, calzadoOnHand);
 
-  // Futuro: + CEDI en proceso (próxima a llegar)
-  const ropaForDrawersFuture = ropaForDrawers + ropaEnProceso;
-  const drawersUsedByClothingFuture = ropaForDrawersFuture / rate;
-  const drawersAvailableFuture = Math.max(0, totals.totalDrawers - drawersUsedByClothingFuture);
-  const futureEffectiveCapacityWithBox = Math.max(
-    0,
-    totals.totalWithBox - drawersUsedByClothingFuture * avgCapWithBox
+  // PRÓXIMA: almacén + TF
+  const proxima = tierMetrics(ropaOnHand + ropaInTransit, calzadoOnHand + calzadoInTransit);
+
+  // FUTURA: próxima + CEDI − pronóstico de salidas (libera cupo del almacén)
+  const calzadoAfterForecast = Math.max(0, calzadoOnHand - forecastCalzadoOutflow);
+  const ropaAfterForecast = Math.max(0, ropaOnHand - forecastRopaOutflow);
+  const futura = tierMetrics(
+    ropaAfterForecast + ropaInTransit + ropaEnProceso,
+    calzadoAfterForecast + calzadoInTransit + calzadoEnProceso
   );
-  const futureOccupied = occupied + calzadoEnProceso;
-  const futureAvailable = futureEffectiveCapacityWithBox - futureOccupied;
-  const futureOccupancyPct =
-    futureEffectiveCapacityWithBox > 0
-      ? (futureOccupied / futureEffectiveCapacityWithBox) * 100
-      : futureOccupied > 0
-        ? 100
-        : 0;
-
-  const boxMix = computeFootwearBoxMixSuggestion({
-    drawersAvailableForFootwear,
-    avgCapWithBox,
-    avgCapWithoutBox,
-    calzadoPairs: occupied,
-  });
-  const futureBoxMix = computeFootwearBoxMixSuggestion({
-    drawersAvailableForFootwear: drawersAvailableFuture,
-    avgCapWithBox,
-    avgCapWithoutBox,
-    calzadoPairs: futureOccupied,
-  });
 
   return {
     totalDrawers: totals.totalDrawers,
-    drawersUsedByClothing,
-    drawersAvailableForFootwear,
+    drawersUsedByClothing: hoy.drawersUsed,
+    drawersAvailableForFootwear: hoy.drawersAvail,
     grossCapacityWithBox: totals.totalWithBox,
-    capacityLostToClothing,
-    effectiveCapacityWithBox,
+    capacityLostToClothing: hoy.drawersUsed * avgCapWithBox,
+    effectiveCapacityWithBox: hoy.effective,
     calzadoOnHand,
     calzadoInTransit,
     ropaOnHand,
@@ -264,18 +267,45 @@ export function computeFootwearCapacityBreakdown(args: {
     committedRopaApplied: committedRopa,
     calzadoEnProceso,
     ropaEnProceso,
-    occupied,
-    available,
-    occupancyPct,
-    canReceive: available > 0,
-    exceeds: available < 0,
-    futureOccupied,
-    futureAvailable,
-    futureOccupancyPct,
-    futureExceeds: futureAvailable < 0,
-    futureEffectiveCapacityWithBox,
-    boxMix,
-    futureBoxMix,
+    forecastCalzadoOutflow,
+    forecastRopaOutflow,
+    forecastAvgDailyCalzadoOutflow,
+    forecastSamples,
+
+    hoyOccupied: hoy.occupied,
+    hoyAvailable: hoy.available,
+    hoyOccupancyPct: hoy.occupancyPct,
+    hoyExceeds: hoy.exceeds,
+    hoyEffectiveCapacityWithBox: hoy.effective,
+    hoyBoxMix: hoy.boxMix,
+
+    proximaOccupied: proxima.occupied,
+    proximaAvailable: proxima.available,
+    proximaOccupancyPct: proxima.occupancyPct,
+    proximaExceeds: proxima.exceeds,
+    proximaEffectiveCapacityWithBox: proxima.effective,
+    proximaBoxMix: proxima.boxMix,
+
+    futuraOccupied: futura.occupied,
+    futuraAvailable: futura.available,
+    futuraOccupancyPct: futura.occupancyPct,
+    futuraExceeds: futura.exceeds,
+    futuraEffectiveCapacityWithBox: futura.effective,
+    futuraBoxMix: futura.boxMix,
+
+    // aliases: "occupied" legacy showed TF; map to proxima for board continuity where needed
+    occupied: proxima.occupied,
+    available: proxima.available,
+    occupancyPct: proxima.occupancyPct,
+    canReceive: hoy.available > 0,
+    exceeds: hoy.exceeds,
+    futureOccupied: futura.occupied,
+    futureAvailable: futura.available,
+    futureOccupancyPct: futura.occupancyPct,
+    futureExceeds: futura.exceeds,
+    futureEffectiveCapacityWithBox: futura.effective,
+    boxMix: hoy.boxMix,
+    futureBoxMix: futura.boxMix,
   };
 }
 

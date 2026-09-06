@@ -3,6 +3,8 @@
 import { collection, deleteDoc, doc, getDoc, getDocs, limit, query, setDoc, where, writeBatch } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
 import type {
+  StoreCapacityDailyHistory,
+  StoreCapacityForecast,
   StoreCapacityProfile,
   StoreCapacitySettings,
   StoreCediEnProcesoSnapshot,
@@ -18,8 +20,12 @@ import { DEFAULT_GARMENTS_PER_DRAWER, normalizeInventoryGrupo, normalizePdvCode 
 const COLLECTION = 'storeCapacityProfiles';
 const SETTINGS_COLLECTION = 'storeCapacitySettings';
 const SETTINGS_DOC_ID = 'global';
+const HISTORY_COLLECTION = 'storeCapacityDailyHistory';
 const TRANSFERS_COLLECTION = 'transfers';
 const TF_PLATFORM_STATUS_COLLECTION = 'tf_platform_status';
+
+const DEFAULT_FORECAST_HORIZON_DAYS = 7;
+const DEFAULT_FORECAST_LOOKBACK_DAYS = 14;
 
 /** Estados operativos que ocupan cupo futuro en destino. */
 const INBOUND_TRANSFER_STATUSES: TransferStatus[] = [
@@ -27,6 +33,51 @@ const INBOUND_TRANSFER_STATUSES: TransferStatus[] = [
   'Recibido en Bodega',
   'Enviado a Destino',
 ];
+
+function stripUndefinedDeep(value: unknown): unknown {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => stripUndefinedDeep(item))
+      .filter((item) => item !== undefined);
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (v === undefined) continue;
+    const cleaned = stripUndefinedDeep(v);
+    if (cleaned !== undefined) out[k] = cleaned;
+  }
+  return out;
+}
+
+function localDateKey(d = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+async function upsertDailyHistoryPoint(
+  pdvCode: string,
+  snap: { calzado: number; ropa: number },
+  source: StoreCapacityDailyHistory['source']
+) {
+  const date = localDateKey();
+  const id = `${pdvCode}_${date}`;
+  const row: StoreCapacityDailyHistory = {
+    id,
+    pdvCode,
+    date,
+    calzado: Math.max(0, Number(snap.calzado) || 0),
+    ropa: Math.max(0, Number(snap.ropa) || 0),
+    source,
+    createdAt: new Date().toISOString(),
+  };
+  await setDoc(doc(firestore, HISTORY_COLLECTION, id), stripUndefinedDeep(row) as StoreCapacityDailyHistory, {
+    merge: true,
+  });
+}
 
 function sanitizeProfile(input: Partial<StoreCapacityProfile> & { pdvCode: string }): StoreCapacityProfile {
   const pdvCode = normalizePdvCode(input.pdvCode);
@@ -63,21 +114,24 @@ function sanitizeProfile(input: Partial<StoreCapacityProfile> & { pdvCode: strin
       }
     : undefined;
 
+  const pdvName = input.pdvName?.trim() || '';
+  const notes = input.notes?.trim() || '';
+
   return {
     id: pdvCode,
     pdvCode,
-    pdvName: input.pdvName?.trim() || undefined,
+    ...(pdvName ? { pdvName } : {}),
     drawers,
-    inventorySnapshot,
+    ...(inventorySnapshot ? { inventorySnapshot } : {}),
     exhibitionAffectsCapacity: !!input.exhibitionAffectsCapacity,
     exhibitionCalzado: Math.max(0, Number(input.exhibitionCalzado) || 0),
     exhibitionRopa: Math.max(0, Number(input.exhibitionRopa) || 0),
-    cediEnProceso,
-    notes: input.notes?.trim() || undefined,
+    ...(cediEnProceso ? { cediEnProceso } : {}),
+    ...(notes ? { notes } : {}),
     active: input.active ?? true,
     createdAt: input.createdAt || now,
     updatedAt: now,
-    updatedBy: input.updatedBy,
+    ...(input.updatedBy ? { updatedBy: input.updatedBy } : {}),
   };
 }
 
@@ -179,6 +233,8 @@ export async function getStoreCapacitySettings(): Promise<{
       const defaults: StoreCapacitySettings = {
         id: 'global',
         garmentsPerDrawerForClothing: DEFAULT_GARMENTS_PER_DRAWER,
+        forecastHorizonDays: DEFAULT_FORECAST_HORIZON_DAYS,
+        forecastLookbackDays: DEFAULT_FORECAST_LOOKBACK_DAYS,
         updatedAt: new Date().toISOString(),
       };
       return { success: true, data: defaults };
@@ -192,6 +248,14 @@ export async function getStoreCapacitySettings(): Promise<{
           1,
           Number(data.garmentsPerDrawerForClothing) || DEFAULT_GARMENTS_PER_DRAWER
         ),
+        forecastHorizonDays: Math.max(
+          1,
+          Number(data.forecastHorizonDays) || DEFAULT_FORECAST_HORIZON_DAYS
+        ),
+        forecastLookbackDays: Math.max(
+          2,
+          Number(data.forecastLookbackDays) || DEFAULT_FORECAST_LOOKBACK_DAYS
+        ),
         updatedAt: data.updatedAt || new Date().toISOString(),
         updatedBy: data.updatedBy,
       },
@@ -203,17 +267,30 @@ export async function getStoreCapacitySettings(): Promise<{
 
 export async function saveStoreCapacitySettings(
   garmentsPerDrawerForClothing: number,
-  updatedBy?: string
+  updatedBy?: string,
+  forecastOpts?: { horizonDays?: number; lookbackDays?: number }
 ): Promise<{ success: boolean; data?: StoreCapacitySettings; error?: string }> {
   try {
     const rate = Math.max(1, Math.round(Number(garmentsPerDrawerForClothing) || DEFAULT_GARMENTS_PER_DRAWER));
     const data: StoreCapacitySettings = {
       id: 'global',
       garmentsPerDrawerForClothing: rate,
+      forecastHorizonDays: Math.max(
+        1,
+        Math.round(Number(forecastOpts?.horizonDays) || DEFAULT_FORECAST_HORIZON_DAYS)
+      ),
+      forecastLookbackDays: Math.max(
+        2,
+        Math.round(Number(forecastOpts?.lookbackDays) || DEFAULT_FORECAST_LOOKBACK_DAYS)
+      ),
       updatedAt: new Date().toISOString(),
-      updatedBy,
+      ...(updatedBy ? { updatedBy } : {}),
     };
-    await setDoc(doc(firestore, SETTINGS_COLLECTION, SETTINGS_DOC_ID), data, { merge: true });
+    await setDoc(
+      doc(firestore, SETTINGS_COLLECTION, SETTINGS_DOC_ID),
+      stripUndefinedDeep(data) as StoreCapacitySettings,
+      { merge: true }
+    );
     return { success: true, data };
   } catch (error: any) {
     return { success: false, error: error?.message || 'No se pudo guardar el parámetro.' };
@@ -271,7 +348,28 @@ export async function saveStoreCapacityProfile(
       updatedBy,
     });
 
-    await setDoc(doc(firestore, COLLECTION, sanitized.id), sanitized, { merge: true });
+    const payload = stripUndefinedDeep({
+      ...sanitized,
+      ...(updatedBy ? { updatedBy } : {}),
+    }) as StoreCapacityProfile;
+
+    await setDoc(doc(firestore, COLLECTION, sanitized.id), payload, { merge: true });
+
+    if (sanitized.inventorySnapshot) {
+      try {
+        await upsertDailyHistoryPoint(
+          sanitized.pdvCode,
+          {
+            calzado: sanitized.inventorySnapshot.calzado,
+            ropa: sanitized.inventorySnapshot.ropa,
+          },
+          sanitized.inventorySnapshot.source === 'global_import' ? 'global_import' : 'manual'
+        );
+      } catch (histErr) {
+        console.warn('No se pudo guardar histórico diario:', histErr);
+      }
+    }
+
     return { success: true, data: sanitized };
   } catch (error: any) {
     console.error('saveStoreCapacityProfile:', error);
@@ -354,11 +452,11 @@ export async function applyGlobalStoreInventory(
         if (existingIds.has(pdvCode)) {
           batch.set(
             ref,
-            {
+            stripUndefinedDeep({
               inventorySnapshot,
               updatedAt: now,
               updatedBy: updatedBy || null,
-            },
+            }) as Record<string, unknown>,
             { merge: true }
           );
           updated += 1;
@@ -371,15 +469,27 @@ export async function applyGlobalStoreInventory(
             active: true,
             createdAt: now,
             updatedAt: now,
-            updatedBy,
+            ...(updatedBy ? { updatedBy } : {}),
           };
-          batch.set(ref, stub);
+          batch.set(ref, stripUndefinedDeep(stub) as StoreCapacityProfile);
           existingIds.add(pdvCode);
           created += 1;
         }
       }
 
       await batch.commit();
+    }
+
+    for (const [pdvCode, snap] of entries) {
+      try {
+        await upsertDailyHistoryPoint(
+          pdvCode,
+          { calzado: snap.calzado, ropa: snap.ropa },
+          'global_import'
+        );
+      } catch (e) {
+        console.warn('Histórico diario falló para', pdvCode, e);
+      }
     }
 
     return { success: true, updated, created };
@@ -434,11 +544,11 @@ export async function applyCediEnProceso(
         if (existingIds.has(pdvCode)) {
           batch.set(
             ref,
-            {
+            stripUndefinedDeep({
               cediEnProceso,
               updatedAt: now,
               updatedBy: updatedBy || null,
-            },
+            }) as Record<string, unknown>,
             { merge: true }
           );
           updated += 1;
@@ -451,9 +561,9 @@ export async function applyCediEnProceso(
             active: true,
             createdAt: now,
             updatedAt: now,
-            updatedBy,
+            ...(updatedBy ? { updatedBy } : {}),
           };
-          batch.set(ref, stub);
+          batch.set(ref, stripUndefinedDeep(stub) as StoreCapacityProfile);
           existingIds.add(pdvCode);
           created += 1;
         }
@@ -471,5 +581,97 @@ export async function applyCediEnProceso(
       created: 0,
       error: error?.message || 'No se pudo aplicar CEDI en proceso.',
     };
+  }
+}
+
+/**
+ * Pronóstico de salidas por bodega a partir del histórico diario de inventario.
+ * Usa caídas día-a-día de calzado/ropa (promedio de salidas positivas) × horizonte.
+ */
+export async function getCapacityForecastsByWarehouse(opts?: {
+  horizonDays?: number;
+  lookbackDays?: number;
+}): Promise<{ success: boolean; data?: Record<string, StoreCapacityForecast>; error?: string }> {
+  try {
+    const settings = await getStoreCapacitySettings();
+    const horizonDays = Math.max(
+      1,
+      Number(opts?.horizonDays) ||
+        settings.data?.forecastHorizonDays ||
+        DEFAULT_FORECAST_HORIZON_DAYS
+    );
+    const lookbackDays = Math.max(
+      2,
+      Number(opts?.lookbackDays) ||
+        settings.data?.forecastLookbackDays ||
+        DEFAULT_FORECAST_LOOKBACK_DAYS
+    );
+
+    const snap = await getDocs(collection(firestore, HISTORY_COLLECTION));
+    const byPdv = new Map<string, StoreCapacityDailyHistory[]>();
+    snap.docs.forEach((d) => {
+      const row = { id: d.id, ...d.data() } as StoreCapacityDailyHistory;
+      const code = normalizePdvCode(row.pdvCode || '');
+      if (!code || !row.date) return;
+      if (!byPdv.has(code)) byPdv.set(code, []);
+      byPdv.get(code)!.push(row);
+    });
+
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - lookbackDays);
+    const cutoffKey = localDateKey(cutoff);
+
+    const data: Record<string, StoreCapacityForecast> = {};
+    byPdv.forEach((rows, pdvCode) => {
+      const sorted = rows
+        .filter((r) => r.date >= cutoffKey)
+        .sort((a, b) => a.date.localeCompare(b.date));
+      if (sorted.length < 2) {
+        data[pdvCode] = {
+          pdvCode,
+          avgDailyCalzadoOutflow: 0,
+          avgDailyRopaOutflow: 0,
+          lookbackDays,
+          horizonDays,
+          forecastCalzadoOutflow: 0,
+          forecastRopaOutflow: 0,
+          samples: sorted.length,
+        };
+        return;
+      }
+
+      const calzOut: number[] = [];
+      const ropaOut: number[] = [];
+      for (let i = 1; i < sorted.length; i++) {
+        const prev = sorted[i - 1];
+        const curr = sorted[i];
+        // Salida = inventario anterior − actual (si baja)
+        const dCalz = (Number(prev.calzado) || 0) - (Number(curr.calzado) || 0);
+        const dRopa = (Number(prev.ropa) || 0) - (Number(curr.ropa) || 0);
+        if (dCalz > 0) calzOut.push(dCalz);
+        if (dRopa > 0) ropaOut.push(dRopa);
+      }
+
+      const avg = (arr: number[]) =>
+        arr.length ? arr.reduce((s, n) => s + n, 0) / arr.length : 0;
+      const avgDailyCalzadoOutflow = avg(calzOut);
+      const avgDailyRopaOutflow = avg(ropaOut);
+
+      data[pdvCode] = {
+        pdvCode,
+        avgDailyCalzadoOutflow,
+        avgDailyRopaOutflow,
+        lookbackDays,
+        horizonDays,
+        forecastCalzadoOutflow: avgDailyCalzadoOutflow * horizonDays,
+        forecastRopaOutflow: avgDailyRopaOutflow * horizonDays,
+        samples: Math.max(calzOut.length, ropaOut.length),
+      };
+    });
+
+    return { success: true, data };
+  } catch (error: any) {
+    console.error('getCapacityForecastsByWarehouse:', error);
+    return { success: false, error: error?.message || 'No se pudo calcular el pronóstico.' };
   }
 }

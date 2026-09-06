@@ -28,7 +28,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Progress } from '@/components/ui/progress';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
-import type { StoreCapacityProfile, StoreDrawerCapacity, StoreInboundQuantities } from '@/types';
+import type { StoreCapacityForecast, StoreCapacityProfile, StoreDrawerCapacity, StoreInboundQuantities } from '@/types';
 import {
   DEFAULT_GARMENTS_PER_DRAWER,
   computeFootwearCapacityBreakdown,
@@ -44,6 +44,7 @@ import {
   applyCediEnProceso,
   applyGlobalStoreInventory,
   deleteStoreCapacityProfile,
+  getCapacityForecastsByWarehouse,
   getInboundQuantitiesByWarehouse,
   getStoreCapacitySettings,
   listStoreCapacityProfiles,
@@ -87,6 +88,48 @@ function inboundFor(map: Record<string, StoreInboundQuantities>, code: string): 
   return map[normalizePdvCode(code)] || { calzado: 0, ropa: 0, accesorios: 0, transferLines: 0, enRutaHoyLines: 0 };
 }
 
+function forecastFor(
+  map: Record<string, StoreCapacityForecast>,
+  code: string
+): StoreCapacityForecast | undefined {
+  return map[normalizePdvCode(code)];
+}
+
+function buildBreakdownArgs(
+  p: Pick<
+    StoreCapacityProfile,
+    | 'drawers'
+    | 'inventorySnapshot'
+    | 'exhibitionAffectsCapacity'
+    | 'exhibitionCalzado'
+    | 'exhibitionRopa'
+    | 'cediEnProceso'
+  >,
+  inbound: StoreInboundQuantities,
+  garmentsPerDrawer: number,
+  forecast?: StoreCapacityForecast
+) {
+  return {
+    drawers: p.drawers || [],
+    ropaOnHand: Number(p.inventorySnapshot?.ropa) || 0,
+    calzadoOnHand: Number(p.inventorySnapshot?.calzado) || 0,
+    calzadoInTransit: inbound.calzado,
+    ropaInTransit: inbound.ropa,
+    calzadoEnProceso: p.cediEnProceso?.calzado,
+    ropaEnProceso: p.cediEnProceso?.ropa,
+    forecastCalzadoOutflow: forecast?.forecastCalzadoOutflow,
+    forecastRopaOutflow: forecast?.forecastRopaOutflow,
+    forecastAvgDailyCalzadoOutflow: forecast?.avgDailyCalzadoOutflow,
+    forecastSamples: forecast?.samples,
+    garmentsPerDrawer,
+    exhibitionAffectsCapacity: !!p.exhibitionAffectsCapacity,
+    exhibitionCalzado: p.exhibitionCalzado,
+    exhibitionRopa: p.exhibitionRopa,
+    committedCalzado: p.inventorySnapshot?.comprometidoCalzado,
+    committedRopa: p.inventorySnapshot?.comprometidoRopa,
+  };
+}
+
 export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProps) {
   const { toast } = useToast();
   const { user } = useAuth();
@@ -102,18 +145,21 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
   const [importingCedi, setImportingCedi] = useState(false);
   const [profiles, setProfiles] = useState<StoreCapacityProfile[]>([]);
   const [inboundByWhs, setInboundByWhs] = useState<Record<string, StoreInboundQuantities>>({});
+  const [forecastByWhs, setForecastByWhs] = useState<Record<string, StoreCapacityForecast>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<StoreCapacityProfile>(blankProfile());
   const [filter, setFilter] = useState('');
   const [garmentsPerDrawer, setGarmentsPerDrawer] = useState(DEFAULT_GARMENTS_PER_DRAWER);
+  const [forecastHorizonDays, setForecastHorizonDays] = useState(7);
   const [mainTab, setMainTab] = useState<'maestro' | 'tablero'>('maestro');
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [profilesRes, settingsRes, inboundRes] = await Promise.all([
+    const [profilesRes, settingsRes, inboundRes, forecastRes] = await Promise.all([
       listStoreCapacityProfiles(),
       getStoreCapacitySettings(),
       getInboundQuantitiesByWarehouse(),
+      getCapacityForecastsByWarehouse(),
     ]);
     if (!profilesRes.success) {
       toast({ variant: 'destructive', title: 'Error', description: profilesRes.error });
@@ -123,6 +169,7 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
     }
     if (settingsRes.success && settingsRes.data) {
       setGarmentsPerDrawer(settingsRes.data.garmentsPerDrawerForClothing);
+      setForecastHorizonDays(settingsRes.data.forecastHorizonDays || 7);
     }
     if (inboundRes.success && inboundRes.data) {
       setInboundByWhs(inboundRes.data);
@@ -133,6 +180,11 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
         description: inboundRes.error || 'No se pudo cruzar transferencias.',
       });
       setInboundByWhs({});
+    }
+    if (forecastRes.success && forecastRes.data) {
+      setForecastByWhs(forecastRes.data);
+    } else {
+      setForecastByWhs({});
     }
     setLoading(false);
   }, [toast]);
@@ -155,79 +207,51 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
     () => inboundFor(inboundByWhs, draft.pdvCode || selectedId || ''),
     [inboundByWhs, draft.pdvCode, selectedId]
   );
+  const draftForecast = useMemo(
+    () => forecastFor(forecastByWhs, draft.pdvCode || selectedId || ''),
+    [forecastByWhs, draft.pdvCode, selectedId]
+  );
 
   const totals = useMemo(() => computeStoreCapacityTotals(draft.drawers), [draft.drawers]);
   const breakdown = useMemo(
     () =>
-      computeFootwearCapacityBreakdown({
-        drawers: draft.drawers,
-        ropaOnHand: Number(draft.inventorySnapshot?.ropa) || 0,
-        calzadoOnHand: Number(draft.inventorySnapshot?.calzado) || 0,
-        calzadoInTransit: draftInbound.calzado,
-        ropaInTransit: draftInbound.ropa,
-        calzadoEnProceso: draft.cediEnProceso?.calzado,
-        ropaEnProceso: draft.cediEnProceso?.ropa,
-        garmentsPerDrawer,
-        exhibitionAffectsCapacity: !!draft.exhibitionAffectsCapacity,
-        exhibitionCalzado: draft.exhibitionCalzado,
-        exhibitionRopa: draft.exhibitionRopa,
-        committedCalzado: draft.inventorySnapshot?.comprometidoCalzado,
-        committedRopa: draft.inventorySnapshot?.comprometidoRopa,
-      }),
-    [
-      draft.drawers,
-      draft.inventorySnapshot?.ropa,
-      draft.inventorySnapshot?.calzado,
-      draft.inventorySnapshot?.comprometidoCalzado,
-      draft.inventorySnapshot?.comprometidoRopa,
-      draft.cediEnProceso?.calzado,
-      draft.cediEnProceso?.ropa,
-      draft.exhibitionAffectsCapacity,
-      draft.exhibitionCalzado,
-      draft.exhibitionRopa,
-      draftInbound.calzado,
-      draftInbound.ropa,
-      garmentsPerDrawer,
-    ]
+      computeFootwearCapacityBreakdown(
+        buildBreakdownArgs(draft, draftInbound, garmentsPerDrawer, draftForecast)
+      ),
+    [draft, draftInbound, garmentsPerDrawer, draftForecast]
   );
 
   const dashboardRows = useMemo(() => {
     const rows = profiles.map((p) => {
       const inbound = inboundFor(inboundByWhs, p.pdvCode);
-      const b = computeFootwearCapacityBreakdown({
-        drawers: p.drawers || [],
-        ropaOnHand: Number(p.inventorySnapshot?.ropa) || 0,
-        calzadoOnHand: Number(p.inventorySnapshot?.calzado) || 0,
-        calzadoInTransit: inbound.calzado,
-        ropaInTransit: inbound.ropa,
-        calzadoEnProceso: p.cediEnProceso?.calzado,
-        ropaEnProceso: p.cediEnProceso?.ropa,
-        garmentsPerDrawer,
-        exhibitionAffectsCapacity: !!p.exhibitionAffectsCapacity,
-        exhibitionCalzado: p.exhibitionCalzado,
-        exhibitionRopa: p.exhibitionRopa,
-        committedCalzado: p.inventorySnapshot?.comprometidoCalzado,
-        committedRopa: p.inventorySnapshot?.comprometidoRopa,
-      });
-      return { profile: p, inbound, breakdown: b };
+      const forecast = forecastFor(forecastByWhs, p.pdvCode);
+      const b = computeFootwearCapacityBreakdown(
+        buildBreakdownArgs(p, inbound, garmentsPerDrawer, forecast)
+      );
+      return { profile: p, inbound, forecast, breakdown: b };
     });
-    rows.sort((a, b) => b.breakdown.futureOccupancyPct - a.breakdown.futureOccupancyPct);
+    rows.sort((a, b) => b.breakdown.futuraOccupancyPct - a.breakdown.futuraOccupancyPct);
     return rows;
-  }, [profiles, inboundByWhs, garmentsPerDrawer]);
+  }, [profiles, inboundByWhs, forecastByWhs, garmentsPerDrawer]);
 
   const boardStats = useMemo(() => {
-    const exceeds = dashboardRows.filter((r) => r.breakdown.exceeds).length;
-    const futureExceeds = dashboardRows.filter((r) => r.breakdown.futureExceeds).length;
-    const ok = dashboardRows.length - exceeds;
-    const avg =
+    const exceedsHoy = dashboardRows.filter((r) => r.breakdown.hoyExceeds).length;
+    const exceedsProxima = dashboardRows.filter((r) => r.breakdown.proximaExceeds).length;
+    const exceedsFutura = dashboardRows.filter((r) => r.breakdown.futuraExceeds).length;
+    const ok = dashboardRows.length - exceedsHoy;
+    const avgHoy =
       dashboardRows.length > 0
-        ? dashboardRows.reduce((s, r) => s + r.breakdown.occupancyPct, 0) / dashboardRows.length
+        ? dashboardRows.reduce((s, r) => s + r.breakdown.hoyOccupancyPct, 0) / dashboardRows.length
         : 0;
-    const avgFuture =
+    const avgProxima =
       dashboardRows.length > 0
-        ? dashboardRows.reduce((s, r) => s + r.breakdown.futureOccupancyPct, 0) / dashboardRows.length
+        ? dashboardRows.reduce((s, r) => s + r.breakdown.proximaOccupancyPct, 0) / dashboardRows.length
         : 0;
-    return { exceeds, futureExceeds, ok, avg, avgFuture };
+    const avgFutura =
+      dashboardRows.length > 0
+        ? dashboardRows.reduce((s, r) => s + r.breakdown.futuraOccupancyPct, 0) / dashboardRows.length
+        : 0;
+    return { exceedsHoy, exceedsProxima, exceedsFutura, ok, avgHoy, avgProxima, avgFutura };
   }, [dashboardRows]);
 
   const startNew = () => {
@@ -287,17 +311,21 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
 
   const handleSaveSettings = async () => {
     setSavingSettings(true);
-    const res = await saveStoreCapacitySettings(garmentsPerDrawer, user?.uid);
+    const res = await saveStoreCapacitySettings(garmentsPerDrawer, user?.uid, {
+      horizonDays: forecastHorizonDays,
+    });
     setSavingSettings(false);
     if (!res.success || !res.data) {
       toast({ variant: 'destructive', title: 'No se guardó el parámetro', description: res.error });
       return;
     }
     setGarmentsPerDrawer(res.data.garmentsPerDrawerForClothing);
+    setForecastHorizonDays(res.data.forecastHorizonDays || 7);
     toast({
-      title: 'Parámetro actualizado',
-      description: `Ropa: ${res.data.garmentsPerDrawerForClothing} prendas por cajón.`,
+      title: 'Parámetros actualizados',
+      description: `Ropa: ${res.data.garmentsPerDrawerForClothing}/cajón · horizonte pronóstico: ${res.data.forecastHorizonDays}d.`,
     });
+    await load();
   };
 
   const handleSave = async () => {
@@ -313,35 +341,69 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
         toast({
           variant: 'destructive',
           title: 'Exhibición incompleta',
-          description: 'Active exhibición solo si indica cantidad de calzado y/o ropa en sala.',
+          description: 'Si activa exhibición, indique calzado y/o ropa en sala (> 0).',
         });
         return;
       }
     }
-    setSaving(true);
-    const res = await saveStoreCapacityProfile(
-      {
-        ...draft,
-        pdvCode: code,
-        inventorySnapshot: draft.inventorySnapshot
-          ? {
-              ...draft.inventorySnapshot,
-              updatedAt: new Date().toISOString(),
-              source: draft.inventorySnapshot.source || 'manual',
-            }
-          : undefined,
-      },
-      user?.uid
-    );
-    setSaving(false);
-    if (!res.success || !res.data) {
-      toast({ variant: 'destructive', title: 'No se guardó', description: res.error });
+    if (!draft.drawers?.some((d) => String(d.measure || '').trim())) {
+      toast({
+        variant: 'destructive',
+        title: 'Sin medidas de cajón',
+        description: 'Agregue al menos una medida de cajón antes de guardar.',
+      });
       return;
     }
-    toast({ title: 'Guardado', description: `Capacidad de ${res.data.pdvCode} actualizada.` });
-    setSelectedId(res.data.id);
-    setDraft(res.data);
-    await load();
+    setSaving(true);
+    try {
+      const res = await saveStoreCapacityProfile(
+        {
+          ...draft,
+          pdvCode: code,
+          inventorySnapshot: draft.inventorySnapshot
+            ? {
+                ...draft.inventorySnapshot,
+                updatedAt: new Date().toISOString(),
+                source: draft.inventorySnapshot.source || 'manual',
+              }
+            : undefined,
+          cediEnProceso: draft.cediEnProceso
+            ? {
+                calzado: Number(draft.cediEnProceso.calzado) || 0,
+                ropa: Number(draft.cediEnProceso.ropa) || 0,
+                updatedAt: new Date().toISOString(),
+                source: draft.cediEnProceso.source || 'manual',
+              }
+            : undefined,
+        },
+        user?.uid
+      );
+      if (!res.success || !res.data) {
+        toast({
+          variant: 'destructive',
+          title: 'No se guardó',
+          description: res.error || 'Error desconocido al persistir en Firestore.',
+        });
+        return;
+      }
+      toast({ title: 'Guardado', description: `Capacidad de ${res.data.pdvCode} actualizada.` });
+      setSelectedId(res.data.id);
+      setDraft({
+        ...res.data,
+        drawers: res.data.drawers?.length ? res.data.drawers : [emptyDrawerRow()],
+        inventorySnapshot: res.data.inventorySnapshot || blankProfile().inventorySnapshot,
+        cediEnProceso: res.data.cediEnProceso || { calzado: 0, ropa: 0, source: 'manual' },
+      });
+      await load();
+    } catch (e: any) {
+      toast({
+        variant: 'destructive',
+        title: 'Error al guardar',
+        description: e?.message || String(e),
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleDelete = async () => {
@@ -574,15 +636,16 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2">
             <Settings2 className="h-4 w-4" />
-            Parámetro rápido — ropa por cajón
+            Parámetros rápidos
           </CardTitle>
           <CardDescription>
-            Cada N prendas de ropa (en almacén + en tránsito) ocupan 1 cajón y reducen el cupo de calzado.
+            <strong>Hoy</strong> = solo almacén · <strong>Próxima</strong> = almacén + TF en tránsito ·{' '}
+            <strong>Futura</strong> = próxima + CEDI − pronóstico de salidas (histórico diario de inventario).
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap items-end gap-3">
           <div className="space-y-1.5">
-            <Label htmlFor="garmentsPerDrawer">Prendas de ropa por cajón</Label>
+            <Label htmlFor="garmentsPerDrawer">Prendas ropa / cajón</Label>
             <Input
               id="garmentsPerDrawer"
               type="number"
@@ -592,10 +655,25 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
               onChange={(e) => setGarmentsPerDrawer(Math.max(1, Number(e.target.value) || 1))}
             />
           </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="forecastHorizon">Horizonte pronóstico (días)</Label>
+            <Input
+              id="forecastHorizon"
+              type="number"
+              min={1}
+              className="w-36 tabular-nums font-semibold"
+              value={forecastHorizonDays}
+              onChange={(e) => setForecastHorizonDays(Math.max(1, Number(e.target.value) || 1))}
+            />
+          </div>
           <Button type="button" onClick={() => void handleSaveSettings()} disabled={savingSettings}>
             {savingSettings ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-            Guardar parámetro
+            Guardar parámetros
           </Button>
+          <p className="text-xs text-muted-foreground max-w-lg">
+            Cada carga de inventario global (o guardar maestro) deja un punto histórico del día. Con ≥2 días el sistema
+            estima salida diaria y la resta en capacidad futura.
+          </p>
         </CardContent>
       </Card>
 
@@ -608,39 +686,46 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
           <TabsTrigger value="tablero">
             <LayoutDashboard className="mr-1.5 h-4 w-4" />
             Tablero ocupación
-            {boardStats.exceeds > 0 || boardStats.futureExceeds > 0 ? (
+            {boardStats.exceedsHoy > 0 || boardStats.exceedsFutura > 0 ? (
               <Badge variant="destructive" className="ml-2">
-                {boardStats.exceeds} hoy · {boardStats.futureExceeds} futuro
+                {boardStats.exceedsHoy} hoy · {boardStats.exceedsFutura} futura
               </Badge>
             ) : null}
           </TabsTrigger>
         </TabsList>
 
         <TabsContent value="tablero" className="space-y-4 mt-4">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <Card>
               <CardHeader className="py-3">
-                <CardDescription>Tiendas OK (hoy)</CardDescription>
+                <CardDescription>OK hoy (almacén)</CardDescription>
                 <CardTitle className="text-2xl tabular-nums text-emerald-700">{boardStats.ok}</CardTitle>
               </CardHeader>
             </Card>
             <Card>
               <CardHeader className="py-3">
-                <CardDescription>Exceden hoy</CardDescription>
-                <CardTitle className="text-2xl tabular-nums text-red-600">{boardStats.exceeds}</CardTitle>
+                <CardDescription>Exceden HOY</CardDescription>
+                <CardTitle className="text-2xl tabular-nums text-red-600">{boardStats.exceedsHoy}</CardTitle>
               </CardHeader>
             </Card>
             <Card>
               <CardHeader className="py-3">
-                <CardDescription>Excederán (c/ CEDI)</CardDescription>
-                <CardTitle className="text-2xl tabular-nums text-amber-700">{boardStats.futureExceeds}</CardTitle>
+                <CardDescription>Exceden PRÓXIMA (TF)</CardDescription>
+                <CardTitle className="text-2xl tabular-nums text-orange-600">{boardStats.exceedsProxima}</CardTitle>
               </CardHeader>
             </Card>
             <Card>
               <CardHeader className="py-3">
-                <CardDescription>Ocup. hoy / futura</CardDescription>
-                <CardTitle className="text-2xl tabular-nums">
-                  {boardStats.avg.toFixed(0)}% · {boardStats.avgFuture.toFixed(0)}%
+                <CardDescription>Exceden FUTURA (CEDI)</CardDescription>
+                <CardTitle className="text-2xl tabular-nums text-amber-700">{boardStats.exceedsFutura}</CardTitle>
+              </CardHeader>
+            </Card>
+            <Card>
+              <CardHeader className="py-3">
+                <CardDescription>Ocup. hoy / próx. / fut.</CardDescription>
+                <CardTitle className="text-xl tabular-nums">
+                  {boardStats.avgHoy.toFixed(0)}% · {boardStats.avgProxima.toFixed(0)}% ·{' '}
+                  {boardStats.avgFutura.toFixed(0)}%
                 </CardTitle>
               </CardHeader>
             </Card>
@@ -648,10 +733,10 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
 
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-base">Capacidad efectiva vs inventario + inbound TF</CardTitle>
+              <CardTitle className="text-base">Tablero por horizonte</CardTitle>
               <CardDescription>
-                Incluye En Tránsito, Recibido en Bodega, Enviado a Destino, EN RUTA HOY y CEDI en proceso (capacidad
-                futura). Ordenado por ocupación futura.
+                <strong>Hoy</strong>: solo inventario almacenado · <strong>Próxima</strong>: + TF (tránsito / bodega /
+                enviado / EN RUTA HOY) · <strong>Futura</strong>: + CEDI en proceso − salidas pronosticadas.
               </CardDescription>
             </CardHeader>
             <CardContent className="overflow-x-auto">
@@ -664,12 +749,13 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                   <TableHeader>
                     <TableRow>
                       <TableHead>PDV</TableHead>
-                      <TableHead className="text-right">Cap. efectiva</TableHead>
-                      <TableHead className="text-right">Calz. alm.</TableHead>
-                      <TableHead className="text-right">Inbound TF</TableHead>
-                      <TableHead className="text-right">CEDI proceso</TableHead>
-                      <TableHead className="min-w-[120px]">Hoy</TableHead>
-                      <TableHead className="min-w-[120px]">Futura</TableHead>
+                      <TableHead className="text-right">Almacén</TableHead>
+                      <TableHead className="text-right">TF</TableHead>
+                      <TableHead className="text-right">CEDI</TableHead>
+                      <TableHead className="text-right">Pronóst. salidas</TableHead>
+                      <TableHead className="min-w-[100px]">Hoy</TableHead>
+                      <TableHead className="min-w-[100px]">Próxima</TableHead>
+                      <TableHead className="min-w-[100px]">Futura</TableHead>
                       <TableHead>Estado</TableHead>
                       <TableHead />
                     </TableRow>
@@ -679,11 +765,13 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       <TableRow
                         key={p.id}
                         className={
-                          b.futureExceeds
-                            ? 'bg-amber-50/70 dark:bg-amber-950/20'
-                            : b.exceeds
-                              ? 'bg-red-50/60 dark:bg-red-950/20'
-                              : undefined
+                          b.hoyExceeds
+                            ? 'bg-red-50/60 dark:bg-red-950/20'
+                            : b.futuraExceeds
+                              ? 'bg-amber-50/70 dark:bg-amber-950/20'
+                              : b.proximaExceeds
+                                ? 'bg-orange-50/50 dark:bg-orange-950/15'
+                                : undefined
                         }
                       >
                         <TableCell>
@@ -693,56 +781,41 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                           </div>
                         </TableCell>
                         <TableCell className="text-right tabular-nums">
-                          {Math.round(b.effectiveCapacityWithBox).toLocaleString()}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
                           {b.calzadoOnHand.toLocaleString()}
                           {b.committedCalzadoApplied > 0 ? (
-                            <div className="text-[10px] text-orange-700 dark:text-orange-300">
-                              −{b.committedCalzadoApplied} a sacar
-                            </div>
+                            <div className="text-[10px] text-orange-700">−{b.committedCalzadoApplied} a sacar</div>
                           ) : null}
                         </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {inbound.calzado.toLocaleString()}
-                          <div className="text-[10px] text-muted-foreground">
-                            {inbound.transferLines + inbound.enRutaHoyLines} líneas
-                          </div>
-                        </TableCell>
+                        <TableCell className="text-right tabular-nums">{inbound.calzado.toLocaleString()}</TableCell>
                         <TableCell className="text-right tabular-nums text-sky-800 dark:text-sky-300">
                           {b.calzadoEnProceso.toLocaleString()}
-                          {b.ropaEnProceso > 0 ? (
-                            <div className="text-[10px] text-muted-foreground">ropa {b.ropaEnProceso}</div>
-                          ) : null}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums text-emerald-800 dark:text-emerald-300">
+                          {b.forecastCalzadoOutflow > 0
+                            ? `−${Math.round(b.forecastCalzadoOutflow).toLocaleString()}`
+                            : '—'}
+                          {b.forecastSamples > 0 ? (
+                            <div className="text-[10px] text-muted-foreground">{b.forecastSamples} muestras</div>
+                          ) : (
+                            <div className="text-[10px] text-muted-foreground">sin histórico</div>
+                          )}
                         </TableCell>
                         <TableCell>
-                          <div className="flex items-center gap-2">
-                            <Progress value={Math.min(100, Math.max(0, b.occupancyPct))} className="h-2 flex-1" />
-                            <span className="text-xs font-semibold tabular-nums w-12 text-right">
-                              {b.occupancyPct.toFixed(0)}%
-                            </span>
-                          </div>
+                          <span className="text-xs font-semibold tabular-nums">{b.hoyOccupancyPct.toFixed(0)}%</span>
                         </TableCell>
                         <TableCell>
-                          <div className="flex items-center gap-2">
-                            <Progress
-                              value={Math.min(100, Math.max(0, b.futureOccupancyPct))}
-                              className="h-2 flex-1"
-                            />
-                            <span className="text-xs font-semibold tabular-nums w-12 text-right">
-                              {b.futureOccupancyPct.toFixed(0)}%
-                            </span>
-                          </div>
-                          <div className="text-[10px] text-muted-foreground tabular-nums">
-                            sin caja {b.futureBoxMix.drawersWithoutBox.toFixed(1)} / con{' '}
-                            {b.futureBoxMix.drawersWithBox.toFixed(1)}
-                          </div>
+                          <span className="text-xs font-semibold tabular-nums">{b.proximaOccupancyPct.toFixed(0)}%</span>
                         </TableCell>
                         <TableCell>
-                          {b.exceeds ? (
+                          <span className="text-xs font-semibold tabular-nums">{b.futuraOccupancyPct.toFixed(0)}%</span>
+                        </TableCell>
+                        <TableCell>
+                          {b.hoyExceeds ? (
                             <Badge variant="destructive">EXCEDE HOY</Badge>
-                          ) : b.futureExceeds ? (
-                            <Badge className="bg-amber-500/20 text-amber-900 hover:bg-amber-500/20">RIESGO FUTURO</Badge>
+                          ) : b.proximaExceeds ? (
+                            <Badge className="bg-orange-500/20 text-orange-900">RIESGO TF</Badge>
+                          ) : b.futuraExceeds ? (
+                            <Badge className="bg-amber-500/20 text-amber-900">RIESGO FUTURO</Badge>
                           ) : (
                             <Badge variant="secondary" className="bg-emerald-500/15 text-emerald-800">
                               OK
@@ -758,7 +831,7 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                     ))}
                     {dashboardRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                        <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
                           Sin tiendas. Importe cajones o cree un maestro.
                         </TableCell>
                       </TableRow>
@@ -793,21 +866,10 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                 ) : (
                   filtered.map((p) => {
                     const inbound = inboundFor(inboundByWhs, p.pdvCode);
-                    const b = computeFootwearCapacityBreakdown({
-                      drawers: p.drawers || [],
-                      ropaOnHand: Number(p.inventorySnapshot?.ropa) || 0,
-                      calzadoOnHand: Number(p.inventorySnapshot?.calzado) || 0,
-                      calzadoInTransit: inbound.calzado,
-                      ropaInTransit: inbound.ropa,
-                      calzadoEnProceso: p.cediEnProceso?.calzado,
-                      ropaEnProceso: p.cediEnProceso?.ropa,
-                      garmentsPerDrawer,
-                      exhibitionAffectsCapacity: !!p.exhibitionAffectsCapacity,
-                      exhibitionCalzado: p.exhibitionCalzado,
-                      exhibitionRopa: p.exhibitionRopa,
-                      committedCalzado: p.inventorySnapshot?.comprometidoCalzado,
-                      committedRopa: p.inventorySnapshot?.comprometidoRopa,
-                    });
+                    const forecast = forecastFor(forecastByWhs, p.pdvCode);
+                    const b = computeFootwearCapacityBreakdown(
+                      buildBreakdownArgs(p, inbound, garmentsPerDrawer, forecast)
+                    );
                     const active =
                       selectedId === p.id || (!selectedId && normalizePdvCode(draft.pdvCode) === p.pdvCode);
                     return (
@@ -825,14 +887,15 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                             {p.pdvCode}
                           </span>
                           <Badge
-                            variant={b.exceeds || b.futureExceeds ? 'destructive' : 'secondary'}
+                            variant={b.hoyExceeds || b.futuraExceeds ? 'destructive' : 'secondary'}
                             className="tabular-nums text-[10px]"
                           >
-                            {b.occupancyPct.toFixed(0)}%→{b.futureOccupancyPct.toFixed(0)}%
+                            {b.hoyOccupancyPct.toFixed(0)}→{b.proximaOccupancyPct.toFixed(0)}→
+                            {b.futuraOccupancyPct.toFixed(0)}%
                           </Badge>
                         </div>
                         <p className="text-[11px] text-muted-foreground tabular-nums">
-                          disp. {Math.round(b.available).toLocaleString()}
+                          hoy {Math.round(b.hoyAvailable).toLocaleString()}
                           {b.calzadoEnProceso > 0 ? ` · CEDI +${b.calzadoEnProceso}` : ''}
                           {p.exhibitionAffectsCapacity ? ' · exhib.' : ''}
                         </p>
@@ -1302,75 +1365,96 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       </span>
                     </div>
                     <div className="flex justify-between text-sky-800 dark:text-sky-300">
-                      <span>CEDI en proceso (próxima)</span>
+                      <span>CEDI en proceso (entra en Futura)</span>
                       <span className="tabular-nums">
                         +{breakdown.calzadoEnProceso.toLocaleString()}
                         {breakdown.ropaEnProceso > 0 ? ` · ropa +${breakdown.ropaEnProceso}` : ''}
                       </span>
                     </div>
-                    <div className="border-t pt-2 flex justify-between items-center">
-                      <span>Disponible hoy</span>
-                      <Badge
-                        variant={breakdown.exceeds ? 'destructive' : 'default'}
-                        className="tabular-nums text-sm"
-                      >
-                        {Math.round(breakdown.available).toLocaleString()} · {breakdown.occupancyPct.toFixed(0)}%
-                        {breakdown.exceeds ? ' EXCEDE' : ''}
-                      </Badge>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span>Capacidad futura (c/ CEDI)</span>
-                      <Badge
-                        variant={breakdown.futureExceeds ? 'destructive' : 'secondary'}
-                        className="tabular-nums text-sm"
-                      >
-                        {Math.round(breakdown.futureAvailable).toLocaleString()} ·{' '}
-                        {breakdown.futureOccupancyPct.toFixed(0)}%
-                        {breakdown.futureExceeds ? ' RIESGO' : ''}
-                      </Badge>
+                    <div className="border-t pt-2 space-y-2">
+                      <div className="flex justify-between items-center">
+                        <span>
+                          <strong>Hoy</strong> (solo almacén)
+                        </span>
+                        <Badge
+                          variant={breakdown.hoyExceeds ? 'destructive' : 'default'}
+                          className="tabular-nums text-sm"
+                        >
+                          {Math.round(breakdown.hoyAvailable).toLocaleString()} · {breakdown.hoyOccupancyPct.toFixed(0)}%
+                        </Badge>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span>
+                          <strong>Próxima</strong> (+ TF tránsito)
+                        </span>
+                        <Badge
+                          variant={breakdown.proximaExceeds ? 'destructive' : 'secondary'}
+                          className="tabular-nums text-sm"
+                        >
+                          {Math.round(breakdown.proximaAvailable).toLocaleString()} ·{' '}
+                          {breakdown.proximaOccupancyPct.toFixed(0)}%
+                        </Badge>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span>
+                          <strong>Futura</strong> (+ CEDI − salidas)
+                        </span>
+                        <Badge
+                          variant={breakdown.futuraExceeds ? 'destructive' : 'secondary'}
+                          className="tabular-nums text-sm"
+                        >
+                          {Math.round(breakdown.futuraAvailable).toLocaleString()} ·{' '}
+                          {breakdown.futuraOccupancyPct.toFixed(0)}%
+                        </Badge>
+                      </div>
+                      {breakdown.forecastCalzadoOutflow > 0 ? (
+                        <p className="text-xs text-emerald-800 dark:text-emerald-300">
+                          Pronóstico salidas {forecastHorizonDays}d: −
+                          {Math.round(breakdown.forecastCalzadoOutflow).toLocaleString()} calzado
+                          {breakdown.forecastSamples
+                            ? ` (prom. ${breakdown.forecastAvgDailyCalzadoOutflow.toFixed(1)}/día · ${breakdown.forecastSamples} muestras)`
+                            : ''}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          Sin pronóstico aún: suba inventario varios días (histórico automático).
+                        </p>
+                      )}
                     </div>
 
                     <div
                       className={`mt-3 rounded-md border p-3 text-xs space-y-2 ${
-                        breakdown.boxMix.exceedsEvenWithoutBox
+                        breakdown.hoyBoxMix.exceedsEvenWithoutBox
                           ? 'border-red-600/30 bg-red-50/60 dark:bg-red-950/20'
-                          : breakdown.boxMix.fitsAllWithBox
+                          : breakdown.hoyBoxMix.fitsAllWithBox
                             ? 'border-emerald-600/30 bg-emerald-50/50 dark:bg-emerald-950/20'
                             : 'border-sky-600/30 bg-sky-50/50 dark:bg-sky-950/20'
                       }`}
                     >
                       <p className="font-semibold text-sm text-foreground">
-                        Distribución hoy: con caja vs sin caja
+                        Distribución HOY: con caja vs sin caja
                       </p>
-                      <p className="text-muted-foreground leading-relaxed">{breakdown.boxMix.summary}</p>
+                      <p className="text-muted-foreground leading-relaxed">{breakdown.hoyBoxMix.summary}</p>
                       <div className="grid grid-cols-2 gap-2 pt-1">
                         <div>
                           <div className="text-muted-foreground">Cajones CON caja</div>
                           <div className="font-semibold tabular-nums text-base">
-                            ~{breakdown.boxMix.drawersWithBox.toFixed(1)}
+                            ~{breakdown.hoyBoxMix.drawersWithBox.toFixed(1)}
                           </div>
                         </div>
                         <div>
                           <div className="text-muted-foreground">Cajones SIN caja</div>
                           <div className="font-semibold tabular-nums text-base">
-                            ~{breakdown.boxMix.drawersWithoutBox.toFixed(1)}
+                            ~{breakdown.hoyBoxMix.drawersWithoutBox.toFixed(1)}
                           </div>
                         </div>
                       </div>
                     </div>
 
-                    {(breakdown.calzadoEnProceso > 0 || breakdown.ropaEnProceso > 0) && (
-                      <div className="rounded-md border border-sky-600/30 bg-sky-50/40 dark:bg-sky-950/20 p-3 text-xs space-y-2">
-                        <p className="font-semibold text-sm text-foreground">
-                          Capacidad futura (incluye CEDI en proceso)
-                        </p>
-                        <p className="text-muted-foreground leading-relaxed">{breakdown.futureBoxMix.summary}</p>
-                        <div className="flex justify-between tabular-nums">
-                          <span>Ocupación futura</span>
-                          <span className="font-semibold">{breakdown.futureOccupancyPct.toFixed(0)}%</span>
-                        </div>
-                      </div>
-                    )}
+                    <div className="rounded-md border border-sky-600/30 bg-sky-50/40 dark:bg-sky-950/20 p-3 text-xs space-y-2">
+                      <p className="font-semibold text-sm text-foreground">Distribución FUTURA</p>
+                      <p className="text-muted-foreground leading-relaxed">{breakdown.futuraBoxMix.summary}</p>
+                    </div>
                   </CardContent>
                 </Card>
               </div>
