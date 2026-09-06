@@ -11,6 +11,7 @@ import type {
   StoreDrawerCapacity,
   StoreInboundQuantities,
   StoreInventorySnapshot,
+  StoreTfPendingReceiveSnapshot,
   TransferEntry,
   TransferStatus,
   TfPlatformStatusRecord,
@@ -27,12 +28,10 @@ const TF_PLATFORM_STATUS_COLLECTION = 'tf_platform_status';
 const DEFAULT_FORECAST_HORIZON_DAYS = 7;
 const DEFAULT_FORECAST_LOOKBACK_DAYS = 14;
 
-/** Estados operativos que ocupan cupo futuro en destino. */
-const INBOUND_TRANSFER_STATUSES: TransferStatus[] = [
-  'En Tránsito',
-  'Recibido en Bodega',
-  'Enviado a Destino',
-];
+/** Siempre en Próxima: aún en CEDI / no salieron a tienda. */
+const INBOUND_CEDI_STATUSES: TransferStatus[] = ['En Tránsito', 'Recibido en Bodega'];
+/** Opcional (setting): ya salieron; pueden estar o no en inventario del PDV. */
+const INBOUND_EN_RUTA_STATUSES: TransferStatus[] = ['Enviado a Destino'];
 
 function stripUndefinedDeep(value: unknown): unknown {
   if (value === undefined) return undefined;
@@ -114,6 +113,15 @@ function sanitizeProfile(input: Partial<StoreCapacityProfile> & { pdvCode: strin
       }
     : undefined;
 
+  const tfPendingReceive: StoreTfPendingReceiveSnapshot | undefined = input.tfPendingReceive
+    ? {
+        calzado: Math.max(0, Number(input.tfPendingReceive.calzado) || 0),
+        ropa: Math.max(0, Number(input.tfPendingReceive.ropa) || 0),
+        updatedAt: input.tfPendingReceive.updatedAt || now,
+        source: input.tfPendingReceive.source || 'manual',
+      }
+    : undefined;
+
   const pdvName = input.pdvName?.trim() || '';
   const notes = input.notes?.trim() || '';
 
@@ -127,6 +135,7 @@ function sanitizeProfile(input: Partial<StoreCapacityProfile> & { pdvCode: strin
     exhibitionCalzado: Math.max(0, Number(input.exhibitionCalzado) || 0),
     exhibitionRopa: Math.max(0, Number(input.exhibitionRopa) || 0),
     ...(cediEnProceso ? { cediEnProceso } : {}),
+    ...(tfPendingReceive ? { tfPendingReceive } : {}),
     ...(notes ? { notes } : {}),
     active: input.active ?? true,
     createdAt: input.createdAt || now,
@@ -135,8 +144,21 @@ function sanitizeProfile(input: Partial<StoreCapacityProfile> & { pdvCode: strin
   };
 }
 
-function emptyInbound(): StoreInboundQuantities {
-  return { calzado: 0, ropa: 0, accesorios: 0, transferLines: 0, enRutaHoyLines: 0 };
+function emptyInbound(includeEnviadoDestino = false): StoreInboundQuantities {
+  return {
+    calzado: 0,
+    ropa: 0,
+    accesorios: 0,
+    calzadoCedi: 0,
+    ropaCedi: 0,
+    calzadoEnRuta: 0,
+    ropaEnRuta: 0,
+    transferLines: 0,
+    enRutaHoyLines: 0,
+    skippedLines: 0,
+    skippedQty: 0,
+    includeEnviadoDestino,
+  };
 }
 
 function transferRouteKey(numeroTF: unknown, bodegaDestino: unknown): string {
@@ -146,21 +168,47 @@ function transferRouteKey(numeroTF: unknown, bodegaDestino: unknown): string {
   return tf && whs ? `${tf}|${whs}` : '';
 }
 
-function addGrupoQty(
+/**
+ * Solo calzado y ropa entran al cupo.
+ * Accesorios y grupos desconocidos/vacíos NO se cuentan como calzado.
+ */
+function addCapacityInboundQty(
   bucket: StoreInboundQuantities,
   grupoRaw: string | undefined,
-  cantidad: number
-) {
-  const qty = Math.max(0, Number(cantidad) || 0);
-  if (!qty) return;
-  const grupo = normalizeInventoryGrupo(String(grupoRaw || '')) || 'calzado';
-  bucket[grupo] += qty;
+  cantidadRaw: unknown,
+  layer: 'cedi' | 'en_ruta'
+): void {
+  const qty = Number(cantidadRaw);
+  if (!Number.isFinite(qty) || qty <= 0) {
+    bucket.skippedLines = (bucket.skippedLines || 0) + 1;
+    return;
+  }
+  const grupo = normalizeInventoryGrupo(String(grupoRaw || ''));
+  if (grupo === 'calzado') {
+    bucket.calzado += qty;
+    if (layer === 'cedi') bucket.calzadoCedi += qty;
+    else bucket.calzadoEnRuta += qty;
+    return;
+  }
+  if (grupo === 'ropa') {
+    bucket.ropa += qty;
+    if (layer === 'cedi') bucket.ropaCedi += qty;
+    else bucket.ropaEnRuta += qty;
+    return;
+  }
+  if (grupo === 'accesorios') {
+    bucket.accesorios += qty;
+  }
+  bucket.skippedLines = (bucket.skippedLines || 0) + 1;
+  bucket.skippedQty = (bucket.skippedQty || 0) + qty;
 }
 
 /**
- * Cantidades por bodega destino aún no entregadas / en camino:
- * - Transferencias: En Tránsito, Recibido en Bodega, Enviado a Destino
- * - Consulta TF: EN RUTA HOY (sin duplicar TF|DESTINO ya contado en transfers)
+ * Inbound TF por bodega destino para capacidad Próxima:
+ * - Siempre: En Tránsito + Recibido en Bodega (aún en CEDI; no deberían estar en inventario tienda).
+ * - Opcional (setting inboundIncludeEnviadoDestino): Enviado a Destino + EN RUTA HOY.
+ *   Ojo: esos pueden ya haberse recibido en inventario → preferir Excel "TF pendiente recibir".
+ * Solo suma calzado + ropa.
  */
 export async function getInboundQuantitiesByWarehouse(): Promise<{
   success: boolean;
@@ -168,16 +216,19 @@ export async function getInboundQuantitiesByWarehouse(): Promise<{
   error?: string;
 }> {
   try {
+    const settings = await getStoreCapacitySettings();
+    const includeEnviadoDestino = !!settings.data?.inboundIncludeEnviadoDestino;
+
     const byWhs: Record<string, StoreInboundQuantities> = {};
     const countedKeys = new Set<string>();
 
     const ensure = (code: string) => {
-      if (!byWhs[code]) byWhs[code] = emptyInbound();
+      if (!byWhs[code]) byWhs[code] = emptyInbound(includeEnviadoDestino);
       return byWhs[code];
     };
 
     await Promise.all(
-      INBOUND_TRANSFER_STATUSES.map(async (status) => {
+      INBOUND_CEDI_STATUSES.map(async (status) => {
         const q = query(
           collection(firestore, TRANSFERS_COLLECTION),
           where('status', '==', status),
@@ -192,28 +243,51 @@ export async function getInboundQuantitiesByWarehouse(): Promise<{
           if (key) countedKeys.add(key);
           const bucket = ensure(dest);
           bucket.transferLines += 1;
-          addGrupoQty(bucket, t.grupo, t.cantidad ?? 1);
+          addCapacityInboundQty(bucket, t.grupo, t.cantidad, 'cedi');
         });
       })
     );
 
-    const enRutaQ = query(
-      collection(firestore, TF_PLATFORM_STATUS_COLLECTION),
-      where('estadoPlataforma', '==', 'EN RUTA HOY'),
-      limit(3000)
-    );
-    const enRutaSnap = await getDocs(enRutaQ);
-    enRutaSnap.docs.forEach((d) => {
-      const raw = d.data() as TfPlatformStatusRecord;
-      const dest = normalizePdvCode(raw.bodegaDestino);
-      if (!dest) return;
-      const key = transferRouteKey(raw.numeroTF, raw.bodegaDestino);
-      if (key && countedKeys.has(key)) return;
-      if (key) countedKeys.add(key);
-      const bucket = ensure(dest);
-      bucket.enRutaHoyLines += 1;
-      addGrupoQty(bucket, raw.grupo, raw.cantidad ?? 1);
-    });
+    if (includeEnviadoDestino) {
+      await Promise.all(
+        INBOUND_EN_RUTA_STATUSES.map(async (status) => {
+          const q = query(
+            collection(firestore, TRANSFERS_COLLECTION),
+            where('status', '==', status),
+            limit(3000)
+          );
+          const snap = await getDocs(q);
+          snap.docs.forEach((d) => {
+            const t = d.data() as TransferEntry;
+            const dest = normalizePdvCode(t.bodegaDestino);
+            if (!dest) return;
+            const key = transferRouteKey(t.numeroTF, t.bodegaDestino);
+            if (key) countedKeys.add(key);
+            const bucket = ensure(dest);
+            bucket.transferLines += 1;
+            addCapacityInboundQty(bucket, t.grupo, t.cantidad, 'en_ruta');
+          });
+        })
+      );
+
+      const enRutaQ = query(
+        collection(firestore, TF_PLATFORM_STATUS_COLLECTION),
+        where('estadoPlataforma', '==', 'EN RUTA HOY'),
+        limit(3000)
+      );
+      const enRutaSnap = await getDocs(enRutaQ);
+      enRutaSnap.docs.forEach((d) => {
+        const raw = d.data() as TfPlatformStatusRecord;
+        const dest = normalizePdvCode(raw.bodegaDestino);
+        if (!dest) return;
+        const key = transferRouteKey(raw.numeroTF, raw.bodegaDestino);
+        if (key && countedKeys.has(key)) return;
+        if (key) countedKeys.add(key);
+        const bucket = ensure(dest);
+        bucket.enRutaHoyLines += 1;
+        addCapacityInboundQty(bucket, raw.grupo, raw.cantidad, 'en_ruta');
+      });
+    }
 
     return { success: true, data: byWhs };
   } catch (error: any) {
@@ -235,6 +309,7 @@ export async function getStoreCapacitySettings(): Promise<{
         garmentsPerDrawerForClothing: DEFAULT_GARMENTS_PER_DRAWER,
         forecastHorizonDays: DEFAULT_FORECAST_HORIZON_DAYS,
         forecastLookbackDays: DEFAULT_FORECAST_LOOKBACK_DAYS,
+        inboundIncludeEnviadoDestino: false,
         updatedAt: new Date().toISOString(),
       };
       return { success: true, data: defaults };
@@ -256,6 +331,7 @@ export async function getStoreCapacitySettings(): Promise<{
           2,
           Number(data.forecastLookbackDays) || DEFAULT_FORECAST_LOOKBACK_DAYS
         ),
+        inboundIncludeEnviadoDestino: !!data.inboundIncludeEnviadoDestino,
         updatedAt: data.updatedAt || new Date().toISOString(),
         updatedBy: data.updatedBy,
       },
@@ -268,7 +344,11 @@ export async function getStoreCapacitySettings(): Promise<{
 export async function saveStoreCapacitySettings(
   garmentsPerDrawerForClothing: number,
   updatedBy?: string,
-  forecastOpts?: { horizonDays?: number; lookbackDays?: number }
+  forecastOpts?: {
+    horizonDays?: number;
+    lookbackDays?: number;
+    inboundIncludeEnviadoDestino?: boolean;
+  }
 ): Promise<{ success: boolean; data?: StoreCapacitySettings; error?: string }> {
   try {
     const rate = Math.max(1, Math.round(Number(garmentsPerDrawerForClothing) || DEFAULT_GARMENTS_PER_DRAWER));
@@ -283,6 +363,7 @@ export async function saveStoreCapacitySettings(
         2,
         Math.round(Number(forecastOpts?.lookbackDays) || DEFAULT_FORECAST_LOOKBACK_DAYS)
       ),
+      inboundIncludeEnviadoDestino: !!forecastOpts?.inboundIncludeEnviadoDestino,
       updatedAt: new Date().toISOString(),
       ...(updatedBy ? { updatedBy } : {}),
     };
@@ -580,6 +661,125 @@ export async function applyCediEnProceso(
       updated: 0,
       created: 0,
       error: error?.message || 'No se pudo aplicar CEDI en proceso.',
+    };
+  }
+}
+
+/**
+ * Aplica inbound TF por Excel (BODEGA | CANTIDAD | GRUPO).
+ * Reemplaza el snapshot: bodegas del archivo se actualizan; el resto se limpia a 0
+ * para que una carga completa sea la única fuente de verdad (sin residuales ni doble conteo).
+ */
+export async function applyTfPendingReceive(
+  byBodega: Record<string, { calzado: number; ropa: number }>,
+  updatedBy?: string
+): Promise<{ success: boolean; updated: number; created: number; cleared?: number; error?: string }> {
+  try {
+    const entries = Object.entries(byBodega)
+      .map(([raw, snap]) => [normalizePdvCode(raw), snap] as const)
+      .filter(([code]) => !!code);
+    if (entries.length === 0) {
+      return { success: false, updated: 0, created: 0, cleared: 0, error: 'No hay filas de inbound TF.' };
+    }
+
+    const incoming = new Map(entries);
+    const existingSnap = await getDocs(collection(firestore, COLLECTION));
+    const existingIds = new Set(existingSnap.docs.map((d) => d.id));
+
+    let updated = 0;
+    let created = 0;
+    let cleared = 0;
+    const now = new Date().toISOString();
+
+    const writeChunk = async (
+      items: Array<{ pdvCode: string; snap: { calzado: number; ropa: number }; isNew: boolean; isClear: boolean }>
+    ) => {
+      const batch = writeBatch(firestore);
+      for (const item of items) {
+        const ref = doc(firestore, COLLECTION, item.pdvCode);
+        const tfPendingReceive: StoreTfPendingReceiveSnapshot = {
+          calzado: Math.max(0, Number(item.snap.calzado) || 0),
+          ropa: Math.max(0, Number(item.snap.ropa) || 0),
+          updatedAt: now,
+          source: 'import',
+        };
+        if (item.isNew) {
+          const stub: StoreCapacityProfile = {
+            id: item.pdvCode,
+            pdvCode: item.pdvCode,
+            drawers: [],
+            tfPendingReceive,
+            active: true,
+            createdAt: now,
+            updatedAt: now,
+            ...(updatedBy ? { updatedBy } : {}),
+          };
+          batch.set(ref, stripUndefinedDeep(stub) as StoreCapacityProfile);
+          existingIds.add(item.pdvCode);
+          created += 1;
+        } else {
+          batch.set(
+            ref,
+            stripUndefinedDeep({
+              tfPendingReceive,
+              updatedAt: now,
+              updatedBy: updatedBy || null,
+            }) as Record<string, unknown>,
+            { merge: true }
+          );
+          if (item.isClear) cleared += 1;
+          else updated += 1;
+        }
+      }
+      await batch.commit();
+    };
+
+    const ops: Array<{
+      pdvCode: string;
+      snap: { calzado: number; ropa: number };
+      isNew: boolean;
+      isClear: boolean;
+    }> = [];
+
+    incoming.forEach((snap, pdvCode) => {
+      ops.push({
+        pdvCode,
+        snap,
+        isNew: !existingIds.has(pdvCode),
+        isClear: false,
+      });
+    });
+
+    // Limpia inbound de tiendas que ya no vienen en el Excel
+    existingSnap.docs.forEach((d) => {
+      const code = d.id;
+      if (incoming.has(code)) return;
+      const prev = (d.data() as StoreCapacityProfile).tfPendingReceive;
+      const had =
+        (Number(prev?.calzado) || 0) > 0 || (Number(prev?.ropa) || 0) > 0;
+      if (!had) return;
+      ops.push({
+        pdvCode: code,
+        snap: { calzado: 0, ropa: 0 },
+        isNew: false,
+        isClear: true,
+      });
+    });
+
+    const chunkSize = 400;
+    for (let i = 0; i < ops.length; i += chunkSize) {
+      await writeChunk(ops.slice(i, i + chunkSize));
+    }
+
+    return { success: true, updated, created, cleared };
+  } catch (error: any) {
+    console.error('applyTfPendingReceive:', error);
+    return {
+      success: false,
+      updated: 0,
+      created: 0,
+      cleared: 0,
+      error: error?.message || 'No se pudo aplicar inbound TF.',
     };
   }
 }

@@ -405,6 +405,7 @@ export function normalizeInventoryGrupo(raw: string): StoreInventoryGrupo | null
 /**
  * Excel CEDI en proceso: BODEGA | CANT EN PROCESO (| GRUPO opcional).
  * Sin GRUPO se asume calzado. Es mercancía próxima a llegar (aún no en TF).
+ * Mismo layout sirve para TF pendiente recibir (BODEGA | CANTIDAD | GRUPO).
  */
 export function parseCediEnProcesoSheet(
   rows: Record<string, unknown>[]
@@ -479,6 +480,9 @@ export function parseCediEnProcesoSheet(
 
   return { byBodega, rowCount, skipped };
 }
+
+/** Alias: TF pendiente recibir en tienda (mismo parser BODEGA | CANTIDAD | GRUPO). */
+export const parseTfPendingReceiveSheet = parseCediEnProcesoSheet;
 
 /**
  * Excel global: BODEGA | GRUPO | CANTIDAD | CANT COMPROMETIDA (opcional).

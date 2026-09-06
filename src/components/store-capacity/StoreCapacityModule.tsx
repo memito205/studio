@@ -28,7 +28,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Progress } from '@/components/ui/progress';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
-import type { StoreCapacityForecast, StoreCapacityProfile, StoreDrawerCapacity, StoreInboundQuantities } from '@/types';
+import type { StoreCapacityForecast, StoreCapacityProfile, StoreDrawerCapacity } from '@/types';
 import {
   DEFAULT_GARMENTS_PER_DRAWER,
   computeFootwearCapacityBreakdown,
@@ -39,14 +39,15 @@ import {
   normalizePdvCode,
   parseGlobalInventorySheet,
   parseCediEnProcesoSheet,
+  parseTfPendingReceiveSheet,
   parseStoreCapacitySheet,
 } from '@/lib/storeCapacity';
 import {
   applyCediEnProceso,
   applyGlobalStoreInventory,
+  applyTfPendingReceive,
   deleteStoreCapacityProfile,
   getCapacityForecastsByWarehouse,
-  getInboundQuantitiesByWarehouse,
   getStoreCapacitySettings,
   listStoreCapacityProfiles,
   saveStoreCapacityProfile,
@@ -78,15 +79,12 @@ function blankProfile(): StoreCapacityProfile {
     exhibitionCalzado: 0,
     exhibitionRopa: 0,
     cediEnProceso: { calzado: 0, ropa: 0, source: 'manual' },
+    tfPendingReceive: { calzado: 0, ropa: 0, source: 'manual' },
     notes: '',
     active: true,
     createdAt: now,
     updatedAt: now,
   };
-}
-
-function inboundFor(map: Record<string, StoreInboundQuantities>, code: string): StoreInboundQuantities {
-  return map[normalizePdvCode(code)] || { calzado: 0, ropa: 0, accesorios: 0, transferLines: 0, enRutaHoyLines: 0 };
 }
 
 function forecastFor(
@@ -105,17 +103,20 @@ function buildBreakdownArgs(
     | 'exhibitionCalzado'
     | 'exhibitionRopa'
     | 'cediEnProceso'
+    | 'tfPendingReceive'
   >,
-  inbound: StoreInboundQuantities,
   garmentsPerDrawer: number,
   forecast?: StoreCapacityForecast
 ) {
+  // Inbound Próxima = SOLO Excel/manual tfPendingReceive (sin cruce transfers → evita doble conteo)
+  const pendingCalz = Number(p.tfPendingReceive?.calzado) || 0;
+  const pendingRopa = Number(p.tfPendingReceive?.ropa) || 0;
   return {
     drawers: p.drawers || [],
     ropaOnHand: Number(p.inventorySnapshot?.ropa) || 0,
     calzadoOnHand: Number(p.inventorySnapshot?.calzado) || 0,
-    calzadoInTransit: inbound.calzado,
-    ropaInTransit: inbound.ropa,
+    calzadoInTransit: pendingCalz,
+    ropaInTransit: pendingRopa,
     calzadoEnProceso: p.cediEnProceso?.calzado,
     ropaEnProceso: p.cediEnProceso?.ropa,
     forecastCalzadoOutflow: forecast?.forecastCalzadoOutflow,
@@ -137,6 +138,7 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
   const capacityFileRef = useRef<HTMLInputElement>(null);
   const inventoryFileRef = useRef<HTMLInputElement>(null);
   const cediFileRef = useRef<HTMLInputElement>(null);
+  const pendingTfFileRef = useRef<HTMLInputElement>(null);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -144,8 +146,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
   const [importingCapacity, setImportingCapacity] = useState(false);
   const [importingInventory, setImportingInventory] = useState(false);
   const [importingCedi, setImportingCedi] = useState(false);
+  const [importingPendingTf, setImportingPendingTf] = useState(false);
   const [profiles, setProfiles] = useState<StoreCapacityProfile[]>([]);
-  const [inboundByWhs, setInboundByWhs] = useState<Record<string, StoreInboundQuantities>>({});
   const [forecastByWhs, setForecastByWhs] = useState<Record<string, StoreCapacityForecast>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<StoreCapacityProfile>(blankProfile());
@@ -156,10 +158,9 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [profilesRes, settingsRes, inboundRes, forecastRes] = await Promise.all([
+    const [profilesRes, settingsRes, forecastRes] = await Promise.all([
       listStoreCapacityProfiles(),
       getStoreCapacitySettings(),
-      getInboundQuantitiesByWarehouse(),
       getCapacityForecastsByWarehouse(),
     ]);
     if (!profilesRes.success) {
@@ -171,16 +172,6 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
     if (settingsRes.success && settingsRes.data) {
       setGarmentsPerDrawer(settingsRes.data.garmentsPerDrawerForClothing);
       setForecastHorizonDays(settingsRes.data.forecastHorizonDays || 7);
-    }
-    if (inboundRes.success && inboundRes.data) {
-      setInboundByWhs(inboundRes.data);
-    } else if (!inboundRes.success) {
-      toast({
-        variant: 'destructive',
-        title: 'Inbound TF',
-        description: inboundRes.error || 'No se pudo cruzar transferencias.',
-      });
-      setInboundByWhs({});
     }
     if (forecastRes.success && forecastRes.data) {
       setForecastByWhs(forecastRes.data);
@@ -204,10 +195,6 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
     );
   }, [profiles, filter]);
 
-  const draftInbound = useMemo(
-    () => inboundFor(inboundByWhs, draft.pdvCode || selectedId || ''),
-    [inboundByWhs, draft.pdvCode, selectedId]
-  );
   const draftForecast = useMemo(
     () => forecastFor(forecastByWhs, draft.pdvCode || selectedId || ''),
     [forecastByWhs, draft.pdvCode, selectedId]
@@ -215,25 +202,19 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
 
   const totals = useMemo(() => computeStoreCapacityTotals(draft.drawers), [draft.drawers]);
   const breakdown = useMemo(
-    () =>
-      computeFootwearCapacityBreakdown(
-        buildBreakdownArgs(draft, draftInbound, garmentsPerDrawer, draftForecast)
-      ),
-    [draft, draftInbound, garmentsPerDrawer, draftForecast]
+    () => computeFootwearCapacityBreakdown(buildBreakdownArgs(draft, garmentsPerDrawer, draftForecast)),
+    [draft, garmentsPerDrawer, draftForecast]
   );
 
   const dashboardRows = useMemo(() => {
     const rows = profiles.map((p) => {
-      const inbound = inboundFor(inboundByWhs, p.pdvCode);
       const forecast = forecastFor(forecastByWhs, p.pdvCode);
-      const b = computeFootwearCapacityBreakdown(
-        buildBreakdownArgs(p, inbound, garmentsPerDrawer, forecast)
-      );
-      return { profile: p, inbound, forecast, breakdown: b };
+      const b = computeFootwearCapacityBreakdown(buildBreakdownArgs(p, garmentsPerDrawer, forecast));
+      return { profile: p, forecast, breakdown: b };
     });
     rows.sort((a, b) => b.breakdown.futuraOccupancyPct - a.breakdown.futuraOccupancyPct);
     return rows;
-  }, [profiles, inboundByWhs, forecastByWhs, garmentsPerDrawer]);
+  }, [profiles, forecastByWhs, garmentsPerDrawer]);
 
   const boardStats = useMemo(() => {
     const exceedsHoyWithBox = dashboardRows.filter((r) => r.breakdown.hoyExceedsWithBox).length;
@@ -312,6 +293,9 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
       cediEnProceso: p.cediEnProceso
         ? { ...p.cediEnProceso }
         : { calzado: 0, ropa: 0, source: 'manual' },
+      tfPendingReceive: p.tfPendingReceive
+        ? { ...p.tfPendingReceive }
+        : { calzado: 0, ropa: 0, source: 'manual' },
     });
     setMainTab('maestro');
   };
@@ -348,7 +332,7 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
     setForecastHorizonDays(res.data.forecastHorizonDays || 7);
     toast({
       title: 'Parámetros actualizados',
-      description: `Ropa: ${res.data.garmentsPerDrawerForClothing}/cajón · horizonte pronóstico: ${res.data.forecastHorizonDays}d.`,
+      description: `Ropa: ${res.data.garmentsPerDrawerForClothing}/cajón · horizonte: ${res.data.forecastHorizonDays}d.`,
     });
     await load();
   };
@@ -400,6 +384,14 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                 source: draft.cediEnProceso.source || 'manual',
               }
             : undefined,
+          tfPendingReceive: draft.tfPendingReceive
+            ? {
+                calzado: Number(draft.tfPendingReceive.calzado) || 0,
+                ropa: Number(draft.tfPendingReceive.ropa) || 0,
+                updatedAt: new Date().toISOString(),
+                source: draft.tfPendingReceive.source || 'manual',
+              }
+            : undefined,
         },
         user?.uid
       );
@@ -418,6 +410,7 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
         drawers: res.data.drawers?.length ? res.data.drawers : [emptyDrawerRow()],
         inventorySnapshot: res.data.inventorySnapshot || blankProfile().inventorySnapshot,
         cediEnProceso: res.data.cediEnProceso || { calzado: 0, ropa: 0, source: 'manual' },
+        tfPendingReceive: res.data.tfPendingReceive || { calzado: 0, ropa: 0, source: 'manual' },
       });
       await load();
     } catch (e: any) {
@@ -585,6 +578,66 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
     }
   };
 
+  const handleImportPendingTfExcel = async (file: File) => {
+    setImportingPendingTf(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      if (!sheet) {
+        toast({ variant: 'destructive', title: 'Excel vacío' });
+        return;
+      }
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
+      const { byBodega, rowCount, skipped } = parseTfPendingReceiveSheet(rows);
+      if (byBodega.size === 0) {
+        toast({
+          variant: 'destructive',
+          title: 'Sin filas válidas',
+          description: 'Columnas: BODEGA y CANTIDAD (GRUPO opcional; sin grupo = calzado).',
+        });
+        return;
+      }
+      const payload: Record<string, { calzado: number; ropa: number }> = {};
+      byBodega.forEach((snap, code) => {
+        payload[code] = snap;
+      });
+      const res = await applyTfPendingReceive(payload, user?.uid);
+      if (!res.success) {
+        toast({ variant: 'destructive', title: 'No se aplicó TF pendiente', description: res.error });
+        return;
+      }
+      toast({
+        title: 'Inbound TF (Excel) aplicado',
+        description: `${rowCount} filas · ${res.updated} actualizadas · ${res.created} nuevas · ${
+          res.cleared || 0
+        } limpiadas${skipped ? ` · ${skipped} omitidas` : ''}. Reemplaza el inbound previo (no suma).`,
+      });
+      await load();
+      const code = normalizePdvCode(draft.pdvCode || selectedId || '');
+      if (code && payload[code]) {
+        setDraft((prev) => ({
+          ...prev,
+          tfPendingReceive: {
+            calzado: payload[code].calzado,
+            ropa: payload[code].ropa,
+            updatedAt: new Date().toISOString(),
+            source: 'import',
+          },
+        }));
+      }
+    } catch (e: any) {
+      toast({
+        variant: 'destructive',
+        title: 'Error al leer TF pendiente',
+        description: e?.message || String(e),
+      });
+    } finally {
+      setImportingPendingTf(false);
+      if (pendingTfFileRef.current) pendingTfFileRef.current.value = '';
+    }
+  };
+
   return (
     <div className="space-y-4 p-3 sm:p-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -598,8 +651,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
               Capacidad de tiendas
             </h1>
             <p className="text-sm text-muted-foreground max-w-2xl">
-              Cupo de cajones = calzado. Ropa descuenta cajones. Accesorios no afectan. Inventario + TF inbound + CEDI en
-            proceso (próxima a llegar → capacidad futura). Outlet puede restar exhibición.
+              Cupo de cajones = calzado. Ropa descuenta cajones. Accesorios no afectan. Inventario + inbound TF (Excel) +
+              CEDI en proceso (futura). Outlet puede restar exhibición.
             </p>
           </div>
         </div>
@@ -634,6 +687,16 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
               if (f) void handleImportCediExcel(f);
             }}
           />
+          <input
+            ref={pendingTfFileRef}
+            type="file"
+            accept=".xlsx,.xls"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void handleImportPendingTfExcel(f);
+            }}
+          />
           <Button variant="outline" disabled={loading} onClick={() => void load()}>
             {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
             Actualizar
@@ -650,6 +713,14 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
             {importingCedi ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
             CEDI en proceso
           </Button>
+          <Button
+            variant="outline"
+            disabled={importingPendingTf}
+            onClick={() => pendingTfFileRef.current?.click()}
+          >
+            {importingPendingTf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+            TF Inbound Excel
+          </Button>
           <Button variant="secondary" onClick={startNew}>
             <Plus className="mr-2 h-4 w-4" />
             Nueva tienda
@@ -664,8 +735,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
             Parámetros rápidos
           </CardTitle>
           <CardDescription>
-            <strong>Hoy</strong> = solo almacén · <strong>Próxima</strong> = almacén + TF en tránsito ·{' '}
-            <strong>Futura</strong> = próxima + CEDI − pronóstico de salidas (histórico diario de inventario).
+            <strong>Hoy</strong> = solo almacén · <strong>Próxima</strong> = almacén + inbound TF (solo Excel) ·{' '}
+            <strong>Futura</strong> = próxima + CEDI − salidas.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap items-end gap-3">
@@ -695,9 +766,10 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
             {savingSettings ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
             Guardar parámetros
           </Button>
-          <p className="text-xs text-muted-foreground max-w-lg">
-            Cada carga de inventario global (o guardar maestro) deja un punto histórico del día. Con ≥2 días el sistema
-            estima salida diaria y la resta en capacidad futura.
+          <p className="text-xs text-muted-foreground max-w-xl">
+            Inbound TF ya no cruza transferencias (evita doble conteo). Suba Excel «Inbound TF» con{' '}
+            <code>BODEGA | CANTIDAD | GRUPO</code> (calzado/ropa). Cada carga <strong>reemplaza</strong> el inbound
+            previo.
           </p>
         </CardContent>
       </Card>
@@ -770,8 +842,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
               <CardTitle className="text-base">Tablero por horizonte</CardTitle>
               <CardDescription>
                 <strong>c/caja</strong> = capacidad conservadora · <strong>s/caja</strong> = máximo físico ·{' '}
-                <strong>Hoy</strong> almacén · <strong>Próxima</strong> + TF · <strong>Futura</strong> + CEDI −
-                salidas.
+                <strong>Hoy</strong> almacén · <strong>Próxima</strong> + inbound TF (Excel) · <strong>Futura</strong> +
+                CEDI − salidas.
               </CardDescription>
             </CardHeader>
             <CardContent className="overflow-x-auto">
@@ -785,7 +857,7 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                     <TableRow>
                       <TableHead>PDV</TableHead>
                       <TableHead className="text-right">Almacén</TableHead>
-                      <TableHead className="text-right">TF</TableHead>
+                      <TableHead className="text-right">Inbound TF</TableHead>
                       <TableHead className="text-right">CEDI</TableHead>
                       <TableHead className="text-right">Pronóst.</TableHead>
                       <TableHead className="min-w-[120px]">Hoy c/caja · s/caja</TableHead>
@@ -796,7 +868,7 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {dashboardRows.map(({ profile: p, inbound, breakdown: b }) => (
+                    {dashboardRows.map(({ profile: p, breakdown: b }) => (
                       <TableRow
                         key={p.id}
                         className={
@@ -821,7 +893,14 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                             <div className="text-[10px] text-orange-700">−{b.committedCalzadoApplied} a sacar</div>
                           ) : null}
                         </TableCell>
-                        <TableCell className="text-right tabular-nums">{inbound.calzado.toLocaleString()}</TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {b.calzadoInTransit.toLocaleString()}
+                          {b.ropaInTransit > 0 ? (
+                            <div className="text-[10px] text-muted-foreground">
+                              ropa {b.ropaInTransit.toLocaleString()}
+                            </div>
+                          ) : null}
+                        </TableCell>
                         <TableCell className="text-right tabular-nums text-sky-800 dark:text-sky-300">
                           {b.calzadoEnProceso.toLocaleString()}
                         </TableCell>
@@ -910,10 +989,9 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                   <p className="text-sm text-muted-foreground p-3">Sin tiendas.</p>
                 ) : (
                   filtered.map((p) => {
-                    const inbound = inboundFor(inboundByWhs, p.pdvCode);
                     const forecast = forecastFor(forecastByWhs, p.pdvCode);
                     const b = computeFootwearCapacityBreakdown(
-                      buildBreakdownArgs(p, inbound, garmentsPerDrawer, forecast)
+                      buildBreakdownArgs(p, garmentsPerDrawer, forecast)
                     );
                     const active =
                       selectedId === p.id || (!selectedId && normalizePdvCode(draft.pdvCode) === p.pdvCode);
@@ -1099,6 +1177,57 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                           ...p,
                           cediEnProceso: {
                             calzado: p.cediEnProceso?.calzado ?? 0,
+                            ropa: Number(e.target.value) || 0,
+                            source: 'manual',
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="border-orange-600/25">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Inbound TF — Excel (capacidad Próxima)</CardTitle>
+                  <CardDescription>
+                    Única fuente de inbound: mercancía en camino / pendiente de recibir que <strong>aún no</strong>{' '}
+                    está en inventario. Formato <code>BODEGA | CANTIDAD | GRUPO</code> (calzado/ropa). Cada carga{' '}
+                    <strong>reemplaza</strong> el dato anterior (no se duplica con transferencias).
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label>Calzado pendiente</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      className="tabular-nums"
+                      value={draft.tfPendingReceive?.calzado ?? 0}
+                      onChange={(e) =>
+                        setDraft((p) => ({
+                          ...p,
+                          tfPendingReceive: {
+                            calzado: Number(e.target.value) || 0,
+                            ropa: p.tfPendingReceive?.ropa ?? 0,
+                            source: 'manual',
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Ropa pendiente</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      className="tabular-nums"
+                      value={draft.tfPendingReceive?.ropa ?? 0}
+                      onChange={(e) =>
+                        setDraft((p) => ({
+                          ...p,
+                          tfPendingReceive: {
+                            calzado: p.tfPendingReceive?.calzado ?? 0,
                             ropa: Number(e.target.value) || 0,
                             source: 'manual',
                           },
@@ -1430,13 +1559,21 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       <span>Calzado almacén (neto)</span>
                       <span className="tabular-nums">{breakdown.calzadoOnHand.toLocaleString()}</span>
                     </div>
-                    <div className="flex justify-between">
-                      <span>Inbound TF (calzado)</span>
-                      <span className="tabular-nums">
-                        {breakdown.calzadoInTransit.toLocaleString()}
-                        <span className="text-[10px] text-muted-foreground ml-1">
-                          ({draftInbound.transferLines} TF · {draftInbound.enRutaHoyLines} ruta hoy)
+                    <div className="flex justify-between items-start gap-2">
+                      <span>
+                        Inbound TF (Próxima)
+                        <span className="block text-[10px] text-muted-foreground font-normal">
+                          Solo Excel/manual · no cruza transferencias
                         </span>
+                      </span>
+                      <span className="tabular-nums text-right">
+                        <span className="font-semibold">{breakdown.calzadoInTransit.toLocaleString()}</span> calz
+                        {breakdown.ropaInTransit > 0 ? (
+                          <>
+                            {' · '}
+                            <span className="font-semibold">{breakdown.ropaInTransit.toLocaleString()}</span> ropa
+                          </>
+                        ) : null}
                       </span>
                     </div>
                     <div className="flex justify-between text-sky-800 dark:text-sky-300">

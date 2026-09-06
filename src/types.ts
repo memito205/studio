@@ -1215,12 +1215,28 @@ export interface StoreCapacitySettings {
   forecastHorizonDays?: number;
   /** Días de histórico para estimar salida diaria (default 14). */
   forecastLookbackDays?: number;
+  /**
+   * Si true, el inbound TF también suma "Enviado a Destino" + "EN RUTA HOY".
+   * Default false: solo En Tránsito + Recibido en Bodega (evita doble conteo con inventario).
+   */
+  inboundIncludeEnviadoDestino?: boolean;
   updatedAt: string;
   updatedBy?: string;
 }
 
 /** Snapshot de mercancía en proceso en CEDI (próxima a llegar, aún no TF). */
 export interface StoreCediEnProcesoSnapshot {
+  calzado: number;
+  ropa: number;
+  updatedAt?: string;
+  source?: 'manual' | 'import';
+}
+
+/**
+ * TF ya salidos hacia tienda (Enviado a Destino / en ruta) que aún no están en el inventario del PDV.
+ * Carga manual/Excel para no depender de estados que pueden quedar desfasados.
+ */
+export interface StoreTfPendingReceiveSnapshot {
   calzado: number;
   ropa: number;
   updatedAt?: string;
@@ -1251,6 +1267,11 @@ export interface StoreCapacityProfile {
    * Se usa para proyectar capacidad futura / próxima a llegar.
    */
   cediEnProceso?: StoreCediEnProcesoSnapshot;
+  /**
+   * Inbound TF para capacidad Próxima (única fuente: Excel/manual).
+   * No se cruza con el módulo de transferencias para evitar doble conteo con inventario.
+   */
+  tfPendingReceive?: StoreTfPendingReceiveSnapshot;
   notes?: string;
   active: boolean;
   createdAt: string;
@@ -1394,11 +1415,25 @@ export interface StoreFootwearBoxMixSuggestion {
 
 /** Cantidades inbound por bodega destino (TF + transferencias). */
 export interface StoreInboundQuantities {
+  /** Solo calzado — afecta cupo de cajones. */
   calzado: number;
+  /** Solo ropa — resta cajones al cupo. */
   ropa: number;
+  /** Accesorios (informativo; no afecta capacidad). */
   accesorios: number;
+  /** En Tránsito + Recibido en Bodega (siempre). */
+  calzadoCedi: number;
+  ropaCedi: number;
+  /** Enviado a Destino + EN RUTA HOY (solo si setting activo). */
+  calzadoEnRuta: number;
+  ropaEnRuta: number;
   transferLines: number;
   enRutaHoyLines: number;
+  /** Líneas omitidas (sin grupo válido / accesorios / sin cantidad). */
+  skippedLines?: number;
+  skippedQty?: number;
+  /** true si se incluyó Enviado a Destino / EN RUTA HOY en esta carga. */
+  includeEnviadoDestino?: boolean;
 }
 
 export type StoreInventoryGrupo = 'calzado' | 'ropa' | 'accesorios';
