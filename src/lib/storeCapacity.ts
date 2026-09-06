@@ -12,6 +12,23 @@ import { findCaseInsensitiveKey, normalizeHeader } from '@/lib/parsingUtils';
 
 export const DEFAULT_GARMENTS_PER_DRAWER = 100;
 
+/**
+ * Ocupación 200% = inventario = 2× capacidad.
+ * Exceso = ocupación − 100 (ej. 200% ocupación → +100% exceso).
+ */
+export function occupancyExcessPct(occupancyPct: number): number {
+  return Math.max(0, (Number(occupancyPct) || 0) - 100);
+}
+
+/** Si supera capacidad: solo el % de exceso; si no: % de ocupación. */
+export function formatCapacityPctLabel(occupancyPct: number, exceeds?: boolean): string {
+  const pct = Number(occupancyPct) || 0;
+  if (exceeds || pct > 100 + 1e-9) {
+    return `+${occupancyExcessPct(pct).toFixed(0)}% exceso`;
+  }
+  return `${pct.toFixed(0)}%`;
+}
+
 export function emptyDrawerRow(partial?: Partial<StoreDrawerCapacity>): StoreDrawerCapacity {
   return {
     id: partial?.id || `d_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,

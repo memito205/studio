@@ -34,6 +34,7 @@ import {
   computeFootwearCapacityBreakdown,
   computeStoreCapacityTotals,
   emptyDrawerRow,
+  formatCapacityPctLabel,
   inventoryTotal,
   normalizePdvCode,
   parseGlobalInventorySheet,
@@ -836,18 +837,20 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                         </TableCell>
                         <TableCell className="tabular-nums text-xs font-semibold">
                           <span className={b.hoyExceedsWithBox ? 'text-orange-700' : ''}>
-                            {b.hoyOccupancyPctWithBox.toFixed(0)}%
+                            {formatCapacityPctLabel(b.hoyOccupancyPctWithBox, b.hoyExceedsWithBox)}
                           </span>
                           {' · '}
                           <span className={b.hoyExceedsWithoutBox ? 'text-red-700' : 'text-emerald-800'}>
-                            {b.hoyOccupancyPctWithoutBox.toFixed(0)}%
+                            {formatCapacityPctLabel(b.hoyOccupancyPctWithoutBox, b.hoyExceedsWithoutBox)}
                           </span>
                         </TableCell>
                         <TableCell className="tabular-nums text-xs font-semibold">
-                          {b.proximaOccupancyPctWithBox.toFixed(0)}% · {b.proximaOccupancyPctWithoutBox.toFixed(0)}%
+                          {formatCapacityPctLabel(b.proximaOccupancyPctWithBox, b.proximaExceedsWithBox)} ·{' '}
+                          {formatCapacityPctLabel(b.proximaOccupancyPctWithoutBox, b.proximaExceedsWithoutBox)}
                         </TableCell>
                         <TableCell className="tabular-nums text-xs font-semibold">
-                          {b.futuraOccupancyPctWithBox.toFixed(0)}% · {b.futuraOccupancyPctWithoutBox.toFixed(0)}%
+                          {formatCapacityPctLabel(b.futuraOccupancyPctWithBox, b.futuraExceedsWithBox)} ·{' '}
+                          {formatCapacityPctLabel(b.futuraOccupancyPctWithoutBox, b.futuraExceedsWithoutBox)}
                         </TableCell>
                         <TableCell>
                           {b.hoyExceedsWithoutBox ? (
@@ -942,7 +945,15 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                                 : ''
                             }`}
                           >
-                            {b.hoyOccupancyPctWithBox.toFixed(0)}/{b.hoyOccupancyPctWithoutBox.toFixed(0)}%
+                            {formatCapacityPctLabel(b.hoyOccupancyPctWithBox, b.hoyExceedsWithBox).replace(
+                              ' exceso',
+                              ''
+                            )}
+                            /
+                            {formatCapacityPctLabel(b.hoyOccupancyPctWithoutBox, b.hoyExceedsWithoutBox).replace(
+                              ' exceso',
+                              ''
+                            )}
                           </Badge>
                         </div>
                         <p className="text-[11px] text-muted-foreground tabular-nums">
@@ -1437,8 +1448,9 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                     </div>
                     <div className="border-t pt-2 space-y-3">
                       <p className="text-[11px] text-muted-foreground leading-snug">
-                        Cada horizonte muestra <strong>c/caja</strong> (capacidad conservadora) y{' '}
-                        <strong>s/caja</strong> (máximo físico). La distribución abajo indica la mezcla para caber.
+                        Cada horizonte muestra <strong>c/caja</strong> y <strong>s/caja</strong>. Si supera capacidad,
+                        el % es solo el <strong>exceso</strong> (ej. ocupación 200% → +100% exceso). Si no supera, es
+                        ocupación.
                       </p>
                       {(
                         [
@@ -1508,8 +1520,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                               variant={h.withBox.exceeds ? 'destructive' : 'secondary'}
                               className="tabular-nums text-xs"
                             >
-                              {Math.round(h.withBox.avail).toLocaleString()} · {h.withBox.pct.toFixed(0)}%
-                              {h.withBox.exceeds ? ' EXCEDE' : ''}
+                              {Math.round(h.withBox.avail).toLocaleString()} ·{' '}
+                              {formatCapacityPctLabel(h.withBox.pct, h.withBox.exceeds)}
                             </Badge>
                           </div>
                           <div className="flex flex-wrap gap-1.5 items-center justify-between">
@@ -1524,8 +1536,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                                   : ''
                               }`}
                             >
-                              {Math.round(h.withoutBox.avail).toLocaleString()} · {h.withoutBox.pct.toFixed(0)}%
-                              {h.withoutBox.exceeds ? ' NO CABE' : ''}
+                              {Math.round(h.withoutBox.avail).toLocaleString()} ·{' '}
+                              {formatCapacityPctLabel(h.withoutBox.pct, h.withoutBox.exceeds)}
                             </Badge>
                           </div>
                         </div>
