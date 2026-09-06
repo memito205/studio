@@ -235,23 +235,47 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
   }, [profiles, inboundByWhs, forecastByWhs, garmentsPerDrawer]);
 
   const boardStats = useMemo(() => {
-    const exceedsHoy = dashboardRows.filter((r) => r.breakdown.hoyExceeds).length;
-    const exceedsProxima = dashboardRows.filter((r) => r.breakdown.proximaExceeds).length;
-    const exceedsFutura = dashboardRows.filter((r) => r.breakdown.futuraExceeds).length;
-    const ok = dashboardRows.length - exceedsHoy;
-    const avgHoy =
+    const exceedsHoyWithBox = dashboardRows.filter((r) => r.breakdown.hoyExceedsWithBox).length;
+    const exceedsHoyWithoutBox = dashboardRows.filter((r) => r.breakdown.hoyExceedsWithoutBox).length;
+    const exceedsProximaWithBox = dashboardRows.filter((r) => r.breakdown.proximaExceedsWithBox).length;
+    const exceedsFuturaWithBox = dashboardRows.filter((r) => r.breakdown.futuraExceedsWithBox).length;
+    const exceedsFuturaWithoutBox = dashboardRows.filter((r) => r.breakdown.futuraExceedsWithoutBox).length;
+    const okSinCaja = dashboardRows.length - exceedsHoyWithoutBox;
+    const avgHoyWith =
       dashboardRows.length > 0
-        ? dashboardRows.reduce((s, r) => s + r.breakdown.hoyOccupancyPct, 0) / dashboardRows.length
+        ? dashboardRows.reduce((s, r) => s + r.breakdown.hoyOccupancyPctWithBox, 0) / dashboardRows.length
         : 0;
-    const avgProxima =
+    const avgHoyWithout =
       dashboardRows.length > 0
-        ? dashboardRows.reduce((s, r) => s + r.breakdown.proximaOccupancyPct, 0) / dashboardRows.length
+        ? dashboardRows.reduce((s, r) => s + r.breakdown.hoyOccupancyPctWithoutBox, 0) / dashboardRows.length
         : 0;
-    const avgFutura =
+    const avgFuturaWith =
       dashboardRows.length > 0
-        ? dashboardRows.reduce((s, r) => s + r.breakdown.futuraOccupancyPct, 0) / dashboardRows.length
+        ? dashboardRows.reduce((s, r) => s + r.breakdown.futuraOccupancyPctWithBox, 0) / dashboardRows.length
         : 0;
-    return { exceedsHoy, exceedsProxima, exceedsFutura, ok, avgHoy, avgProxima, avgFutura };
+    const avgFuturaWithout =
+      dashboardRows.length > 0
+        ? dashboardRows.reduce((s, r) => s + r.breakdown.futuraOccupancyPctWithoutBox, 0) / dashboardRows.length
+        : 0;
+    return {
+      exceedsHoyWithBox,
+      exceedsHoyWithoutBox,
+      exceedsProximaWithBox,
+      exceedsFuturaWithBox,
+      exceedsFuturaWithoutBox,
+      okSinCaja,
+      avgHoyWith,
+      avgHoyWithout,
+      avgFuturaWith,
+      avgFuturaWithout,
+      // legacy aliases used in badge
+      exceedsHoy: exceedsHoyWithBox,
+      exceedsFutura: exceedsFuturaWithBox,
+      ok: okSinCaja,
+      avgHoy: avgHoyWith,
+      avgProxima: 0,
+      avgFutura: avgFuturaWith,
+    };
   }, [dashboardRows]);
 
   const startNew = () => {
@@ -686,9 +710,13 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
           <TabsTrigger value="tablero">
             <LayoutDashboard className="mr-1.5 h-4 w-4" />
             Tablero ocupación
-            {boardStats.exceedsHoy > 0 || boardStats.exceedsFutura > 0 ? (
+            {boardStats.exceedsHoyWithoutBox > 0 || boardStats.exceedsFuturaWithoutBox > 0 ? (
               <Badge variant="destructive" className="ml-2">
-                {boardStats.exceedsHoy} hoy · {boardStats.exceedsFutura} futura
+                {boardStats.exceedsHoyWithoutBox} hoy s/caja · {boardStats.exceedsFuturaWithoutBox} futura s/caja
+              </Badge>
+            ) : boardStats.exceedsHoyWithBox > 0 ? (
+              <Badge className="ml-2 bg-orange-500/20 text-orange-900">
+                {boardStats.exceedsHoyWithBox} hoy solo c/caja
               </Badge>
             ) : null}
           </TabsTrigger>
@@ -698,34 +726,39 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <Card>
               <CardHeader className="py-3">
-                <CardDescription>OK hoy (almacén)</CardDescription>
-                <CardTitle className="text-2xl tabular-nums text-emerald-700">{boardStats.ok}</CardTitle>
+                <CardDescription>OK hoy (caben s/caja)</CardDescription>
+                <CardTitle className="text-2xl tabular-nums text-emerald-700">{boardStats.okSinCaja}</CardTitle>
               </CardHeader>
             </Card>
             <Card>
               <CardHeader className="py-3">
-                <CardDescription>Exceden HOY</CardDescription>
-                <CardTitle className="text-2xl tabular-nums text-red-600">{boardStats.exceedsHoy}</CardTitle>
+                <CardDescription>Exceden HOY c/caja</CardDescription>
+                <CardTitle className="text-2xl tabular-nums text-orange-600">
+                  {boardStats.exceedsHoyWithBox}
+                </CardTitle>
               </CardHeader>
             </Card>
             <Card>
               <CardHeader className="py-3">
-                <CardDescription>Exceden PRÓXIMA (TF)</CardDescription>
-                <CardTitle className="text-2xl tabular-nums text-orange-600">{boardStats.exceedsProxima}</CardTitle>
+                <CardDescription>No caben HOY ni s/caja</CardDescription>
+                <CardTitle className="text-2xl tabular-nums text-red-600">
+                  {boardStats.exceedsHoyWithoutBox}
+                </CardTitle>
               </CardHeader>
             </Card>
             <Card>
               <CardHeader className="py-3">
-                <CardDescription>Exceden FUTURA (CEDI)</CardDescription>
-                <CardTitle className="text-2xl tabular-nums text-amber-700">{boardStats.exceedsFutura}</CardTitle>
+                <CardDescription>No caben FUTURA ni s/caja</CardDescription>
+                <CardTitle className="text-2xl tabular-nums text-amber-700">
+                  {boardStats.exceedsFuturaWithoutBox}
+                </CardTitle>
               </CardHeader>
             </Card>
             <Card>
               <CardHeader className="py-3">
-                <CardDescription>Ocup. hoy / próx. / fut.</CardDescription>
+                <CardDescription>Ocup. hoy c/caja · s/caja</CardDescription>
                 <CardTitle className="text-xl tabular-nums">
-                  {boardStats.avgHoy.toFixed(0)}% · {boardStats.avgProxima.toFixed(0)}% ·{' '}
-                  {boardStats.avgFutura.toFixed(0)}%
+                  {boardStats.avgHoyWith.toFixed(0)}% · {boardStats.avgHoyWithout.toFixed(0)}%
                 </CardTitle>
               </CardHeader>
             </Card>
@@ -735,8 +768,9 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Tablero por horizonte</CardTitle>
               <CardDescription>
-                <strong>Hoy</strong>: solo inventario almacenado · <strong>Próxima</strong>: + TF (tránsito / bodega /
-                enviado / EN RUTA HOY) · <strong>Futura</strong>: + CEDI en proceso − salidas pronosticadas.
+                <strong>c/caja</strong> = capacidad conservadora · <strong>s/caja</strong> = máximo físico ·{' '}
+                <strong>Hoy</strong> almacén · <strong>Próxima</strong> + TF · <strong>Futura</strong> + CEDI −
+                salidas.
               </CardDescription>
             </CardHeader>
             <CardContent className="overflow-x-auto">
@@ -752,10 +786,10 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       <TableHead className="text-right">Almacén</TableHead>
                       <TableHead className="text-right">TF</TableHead>
                       <TableHead className="text-right">CEDI</TableHead>
-                      <TableHead className="text-right">Pronóst. salidas</TableHead>
-                      <TableHead className="min-w-[100px]">Hoy</TableHead>
-                      <TableHead className="min-w-[100px]">Próxima</TableHead>
-                      <TableHead className="min-w-[100px]">Futura</TableHead>
+                      <TableHead className="text-right">Pronóst.</TableHead>
+                      <TableHead className="min-w-[120px]">Hoy c/caja · s/caja</TableHead>
+                      <TableHead className="min-w-[120px]">Próxima c/ · s/</TableHead>
+                      <TableHead className="min-w-[120px]">Futura c/ · s/</TableHead>
                       <TableHead>Estado</TableHead>
                       <TableHead />
                     </TableRow>
@@ -765,12 +799,12 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       <TableRow
                         key={p.id}
                         className={
-                          b.hoyExceeds
+                          b.hoyExceedsWithoutBox
                             ? 'bg-red-50/60 dark:bg-red-950/20'
-                            : b.futuraExceeds
-                              ? 'bg-amber-50/70 dark:bg-amber-950/20'
-                              : b.proximaExceeds
-                                ? 'bg-orange-50/50 dark:bg-orange-950/15'
+                            : b.hoyExceedsWithBox
+                              ? 'bg-orange-50/60 dark:bg-orange-950/15'
+                              : b.futuraExceedsWithoutBox
+                                ? 'bg-amber-50/70 dark:bg-amber-950/20'
                                 : undefined
                         }
                       >
@@ -800,22 +834,30 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                             <div className="text-[10px] text-muted-foreground">sin histórico</div>
                           )}
                         </TableCell>
-                        <TableCell>
-                          <span className="text-xs font-semibold tabular-nums">{b.hoyOccupancyPct.toFixed(0)}%</span>
+                        <TableCell className="tabular-nums text-xs font-semibold">
+                          <span className={b.hoyExceedsWithBox ? 'text-orange-700' : ''}>
+                            {b.hoyOccupancyPctWithBox.toFixed(0)}%
+                          </span>
+                          {' · '}
+                          <span className={b.hoyExceedsWithoutBox ? 'text-red-700' : 'text-emerald-800'}>
+                            {b.hoyOccupancyPctWithoutBox.toFixed(0)}%
+                          </span>
+                        </TableCell>
+                        <TableCell className="tabular-nums text-xs font-semibold">
+                          {b.proximaOccupancyPctWithBox.toFixed(0)}% · {b.proximaOccupancyPctWithoutBox.toFixed(0)}%
+                        </TableCell>
+                        <TableCell className="tabular-nums text-xs font-semibold">
+                          {b.futuraOccupancyPctWithBox.toFixed(0)}% · {b.futuraOccupancyPctWithoutBox.toFixed(0)}%
                         </TableCell>
                         <TableCell>
-                          <span className="text-xs font-semibold tabular-nums">{b.proximaOccupancyPct.toFixed(0)}%</span>
-                        </TableCell>
-                        <TableCell>
-                          <span className="text-xs font-semibold tabular-nums">{b.futuraOccupancyPct.toFixed(0)}%</span>
-                        </TableCell>
-                        <TableCell>
-                          {b.hoyExceeds ? (
-                            <Badge variant="destructive">EXCEDE HOY</Badge>
-                          ) : b.proximaExceeds ? (
-                            <Badge className="bg-orange-500/20 text-orange-900">RIESGO TF</Badge>
-                          ) : b.futuraExceeds ? (
+                          {b.hoyExceedsWithoutBox ? (
+                            <Badge variant="destructive">NO CABE HOY</Badge>
+                          ) : b.hoyExceedsWithBox ? (
+                            <Badge className="bg-orange-500/20 text-orange-900">REQUIERE S/CAJA</Badge>
+                          ) : b.futuraExceedsWithoutBox ? (
                             <Badge className="bg-amber-500/20 text-amber-900">RIESGO FUTURO</Badge>
+                          ) : b.proximaExceedsWithBox ? (
+                            <Badge className="bg-sky-500/15 text-sky-900">TF → mezcla</Badge>
                           ) : (
                             <Badge variant="secondary" className="bg-emerald-500/15 text-emerald-800">
                               OK
@@ -887,15 +929,25 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                             {p.pdvCode}
                           </span>
                           <Badge
-                            variant={b.hoyExceeds || b.futuraExceeds ? 'destructive' : 'secondary'}
-                            className="tabular-nums text-[10px]"
+                            variant={
+                              b.hoyExceedsWithoutBox || b.futuraExceedsWithoutBox
+                                ? 'destructive'
+                                : b.hoyExceedsWithBox
+                                  ? 'secondary'
+                                  : 'secondary'
+                            }
+                            className={`tabular-nums text-[10px] ${
+                              b.hoyExceedsWithBox && !b.hoyExceedsWithoutBox
+                                ? 'bg-orange-500/20 text-orange-900'
+                                : ''
+                            }`}
                           >
-                            {b.hoyOccupancyPct.toFixed(0)}→{b.proximaOccupancyPct.toFixed(0)}→
-                            {b.futuraOccupancyPct.toFixed(0)}%
+                            {b.hoyOccupancyPctWithBox.toFixed(0)}/{b.hoyOccupancyPctWithoutBox.toFixed(0)}%
                           </Badge>
                         </div>
                         <p className="text-[11px] text-muted-foreground tabular-nums">
-                          hoy {Math.round(b.hoyAvailable).toLocaleString()}
+                          hoy c/ {Math.round(b.hoyAvailableWithBox).toLocaleString()} · s/{' '}
+                          {Math.round(b.hoyAvailableWithoutBox).toLocaleString()}
                           {b.calzadoEnProceso > 0 ? ` · CEDI +${b.calzadoEnProceso}` : ''}
                           {p.exhibitionAffectsCapacity ? ' · exhib.' : ''}
                         </p>
@@ -1325,6 +1377,12 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       <span>Capacidad bruta c/caja</span>
                       <span className="tabular-nums">{Math.round(breakdown.grossCapacityWithBox).toLocaleString()}</span>
                     </div>
+                    <div className="flex justify-between">
+                      <span>Capacidad bruta s/caja</span>
+                      <span className="tabular-nums">
+                        {Math.round(breakdown.grossCapacityWithoutBox).toLocaleString()}
+                      </span>
+                    </div>
                     <div className="flex justify-between text-amber-800 dark:text-amber-300">
                       <span>Cajones por ropa</span>
                       <span className="tabular-nums">−{breakdown.drawersUsedByClothing.toFixed(2)}</span>
@@ -1346,9 +1404,15 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       </div>
                     ) : null}
                     <div className="flex justify-between">
-                      <span>Capacidad efectiva</span>
+                      <span>Capacidad efectiva c/caja</span>
                       <span className="font-semibold tabular-nums text-sky-800 dark:text-sky-300">
                         {Math.round(breakdown.effectiveCapacityWithBox).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Capacidad efectiva s/caja</span>
+                      <span className="font-semibold tabular-nums text-emerald-800 dark:text-emerald-300">
+                        {Math.round(breakdown.effectiveCapacityWithoutBox).toLocaleString()}
                       </span>
                     </div>
                     <div className="flex justify-between">
@@ -1371,42 +1435,101 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                         {breakdown.ropaEnProceso > 0 ? ` · ropa +${breakdown.ropaEnProceso}` : ''}
                       </span>
                     </div>
-                    <div className="border-t pt-2 space-y-2">
-                      <div className="flex justify-between items-center">
-                        <span>
-                          <strong>Hoy</strong> (solo almacén)
-                        </span>
-                        <Badge
-                          variant={breakdown.hoyExceeds ? 'destructive' : 'default'}
-                          className="tabular-nums text-sm"
-                        >
-                          {Math.round(breakdown.hoyAvailable).toLocaleString()} · {breakdown.hoyOccupancyPct.toFixed(0)}%
-                        </Badge>
-                      </div>
-                      <div className="flex justify-between items-center">
-                        <span>
-                          <strong>Próxima</strong> (+ TF tránsito)
-                        </span>
-                        <Badge
-                          variant={breakdown.proximaExceeds ? 'destructive' : 'secondary'}
-                          className="tabular-nums text-sm"
-                        >
-                          {Math.round(breakdown.proximaAvailable).toLocaleString()} ·{' '}
-                          {breakdown.proximaOccupancyPct.toFixed(0)}%
-                        </Badge>
-                      </div>
-                      <div className="flex justify-between items-center">
-                        <span>
-                          <strong>Futura</strong> (+ CEDI − salidas)
-                        </span>
-                        <Badge
-                          variant={breakdown.futuraExceeds ? 'destructive' : 'secondary'}
-                          className="tabular-nums text-sm"
-                        >
-                          {Math.round(breakdown.futuraAvailable).toLocaleString()} ·{' '}
-                          {breakdown.futuraOccupancyPct.toFixed(0)}%
-                        </Badge>
-                      </div>
+                    <div className="border-t pt-2 space-y-3">
+                      <p className="text-[11px] text-muted-foreground leading-snug">
+                        Cada horizonte muestra <strong>c/caja</strong> (capacidad conservadora) y{' '}
+                        <strong>s/caja</strong> (máximo físico). La distribución abajo indica la mezcla para caber.
+                      </p>
+                      {(
+                        [
+                          {
+                            key: 'hoy',
+                            title: 'Hoy',
+                            subtitle: 'solo almacén',
+                            withBox: {
+                              avail: breakdown.hoyAvailableWithBox,
+                              pct: breakdown.hoyOccupancyPctWithBox,
+                              exceeds: breakdown.hoyExceedsWithBox,
+                              cap: breakdown.hoyEffectiveCapacityWithBox,
+                            },
+                            withoutBox: {
+                              avail: breakdown.hoyAvailableWithoutBox,
+                              pct: breakdown.hoyOccupancyPctWithoutBox,
+                              exceeds: breakdown.hoyExceedsWithoutBox,
+                              cap: breakdown.hoyEffectiveCapacityWithoutBox,
+                            },
+                          },
+                          {
+                            key: 'proxima',
+                            title: 'Próxima',
+                            subtitle: '+ TF tránsito',
+                            withBox: {
+                              avail: breakdown.proximaAvailableWithBox,
+                              pct: breakdown.proximaOccupancyPctWithBox,
+                              exceeds: breakdown.proximaExceedsWithBox,
+                              cap: breakdown.proximaEffectiveCapacityWithBox,
+                            },
+                            withoutBox: {
+                              avail: breakdown.proximaAvailableWithoutBox,
+                              pct: breakdown.proximaOccupancyPctWithoutBox,
+                              exceeds: breakdown.proximaExceedsWithoutBox,
+                              cap: breakdown.proximaEffectiveCapacityWithoutBox,
+                            },
+                          },
+                          {
+                            key: 'futura',
+                            title: 'Futura',
+                            subtitle: '+ CEDI − salidas',
+                            withBox: {
+                              avail: breakdown.futuraAvailableWithBox,
+                              pct: breakdown.futuraOccupancyPctWithBox,
+                              exceeds: breakdown.futuraExceedsWithBox,
+                              cap: breakdown.futuraEffectiveCapacityWithBox,
+                            },
+                            withoutBox: {
+                              avail: breakdown.futuraAvailableWithoutBox,
+                              pct: breakdown.futuraOccupancyPctWithoutBox,
+                              exceeds: breakdown.futuraExceedsWithoutBox,
+                              cap: breakdown.futuraEffectiveCapacityWithoutBox,
+                            },
+                          },
+                        ] as const
+                      ).map((h) => (
+                        <div key={h.key} className="rounded-md border bg-muted/20 p-2.5 space-y-1.5">
+                          <div className="text-sm">
+                            <strong>{h.title}</strong>{' '}
+                            <span className="text-muted-foreground text-xs">({h.subtitle})</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5 items-center justify-between">
+                            <span className="text-xs text-muted-foreground">
+                              c/caja · cap {Math.round(h.withBox.cap).toLocaleString()}
+                            </span>
+                            <Badge
+                              variant={h.withBox.exceeds ? 'destructive' : 'secondary'}
+                              className="tabular-nums text-xs"
+                            >
+                              {Math.round(h.withBox.avail).toLocaleString()} · {h.withBox.pct.toFixed(0)}%
+                              {h.withBox.exceeds ? ' EXCEDE' : ''}
+                            </Badge>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5 items-center justify-between">
+                            <span className="text-xs text-muted-foreground">
+                              s/caja · cap {Math.round(h.withoutBox.cap).toLocaleString()}
+                            </span>
+                            <Badge
+                              variant={h.withoutBox.exceeds ? 'destructive' : 'default'}
+                              className={`tabular-nums text-xs ${
+                                !h.withoutBox.exceeds
+                                  ? 'bg-emerald-500/15 text-emerald-900 hover:bg-emerald-500/20'
+                                  : ''
+                              }`}
+                            >
+                              {Math.round(h.withoutBox.avail).toLocaleString()} · {h.withoutBox.pct.toFixed(0)}%
+                              {h.withoutBox.exceeds ? ' NO CABE' : ''}
+                            </Badge>
+                          </div>
+                        </div>
+                      ))}
                       {breakdown.forecastCalzadoOutflow > 0 ? (
                         <p className="text-xs text-emerald-800 dark:text-emerald-300">
                           Pronóstico salidas {forecastHorizonDays}d: −

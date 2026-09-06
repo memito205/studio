@@ -210,14 +210,22 @@ export function computeFootwearCapacityBreakdown(args: {
   const avgCapWithoutBox =
     totals.totalDrawers > 0 ? totals.totalWithoutBox / totals.totalDrawers : 0;
 
+  const pctOf = (occupied: number, capacity: number) =>
+    capacity > 0 ? (occupied / capacity) * 100 : occupied > 0 ? 100 : 0;
+
   const tierMetrics = (ropaStored: number, calzadoStored: number) => {
     const drawersUsed = ropaStored / rate;
     const drawersAvail = Math.max(0, totals.totalDrawers - drawersUsed);
-    const effective = Math.max(0, totals.totalWithBox - drawersUsed * avgCapWithBox);
+    const effectiveWithBox = Math.max(0, totals.totalWithBox - drawersUsed * avgCapWithBox);
+    const effectiveWithoutBox = Math.max(
+      0,
+      totals.totalWithoutBox - drawersUsed * avgCapWithoutBox
+    );
     const occupied = calzadoStored;
-    const available = effective - occupied;
-    const occupancyPct =
-      effective > 0 ? (occupied / effective) * 100 : occupied > 0 ? 100 : 0;
+    const availableWithBox = effectiveWithBox - occupied;
+    const availableWithoutBox = effectiveWithoutBox - occupied;
+    const occupancyPctWithBox = pctOf(occupied, effectiveWithBox);
+    const occupancyPctWithoutBox = pctOf(occupied, effectiveWithoutBox);
     const boxMix = computeFootwearBoxMixSuggestion({
       drawersAvailableForFootwear: drawersAvail,
       avgCapWithBox,
@@ -227,11 +235,19 @@ export function computeFootwearCapacityBreakdown(args: {
     return {
       drawersUsed,
       drawersAvail,
-      effective,
       occupied,
-      available,
-      occupancyPct,
-      exceeds: available < 0,
+      availableWithBox,
+      occupancyPctWithBox,
+      exceedsWithBox: availableWithBox < 0,
+      effectiveCapacityWithBox: effectiveWithBox,
+      availableWithoutBox,
+      occupancyPctWithoutBox,
+      exceedsWithoutBox: availableWithoutBox < 0,
+      effectiveCapacityWithoutBox: effectiveWithoutBox,
+      // Vista conservadora (con caja) — aliases legacy
+      available: availableWithBox,
+      occupancyPct: occupancyPctWithBox,
+      exceeds: availableWithBox < 0,
       boxMix,
     };
   };
@@ -255,8 +271,10 @@ export function computeFootwearCapacityBreakdown(args: {
     drawersUsedByClothing: hoy.drawersUsed,
     drawersAvailableForFootwear: hoy.drawersAvail,
     grossCapacityWithBox: totals.totalWithBox,
+    grossCapacityWithoutBox: totals.totalWithoutBox,
     capacityLostToClothing: hoy.drawersUsed * avgCapWithBox,
-    effectiveCapacityWithBox: hoy.effective,
+    effectiveCapacityWithBox: hoy.effectiveCapacityWithBox,
+    effectiveCapacityWithoutBox: hoy.effectiveCapacityWithoutBox,
     calzadoOnHand,
     calzadoInTransit,
     ropaOnHand,
@@ -273,37 +291,58 @@ export function computeFootwearCapacityBreakdown(args: {
     forecastSamples,
 
     hoyOccupied: hoy.occupied,
-    hoyAvailable: hoy.available,
-    hoyOccupancyPct: hoy.occupancyPct,
-    hoyExceeds: hoy.exceeds,
-    hoyEffectiveCapacityWithBox: hoy.effective,
+    hoyAvailable: hoy.availableWithBox,
+    hoyOccupancyPct: hoy.occupancyPctWithBox,
+    hoyExceeds: hoy.exceedsWithBox,
+    hoyAvailableWithBox: hoy.availableWithBox,
+    hoyOccupancyPctWithBox: hoy.occupancyPctWithBox,
+    hoyExceedsWithBox: hoy.exceedsWithBox,
+    hoyAvailableWithoutBox: hoy.availableWithoutBox,
+    hoyOccupancyPctWithoutBox: hoy.occupancyPctWithoutBox,
+    hoyExceedsWithoutBox: hoy.exceedsWithoutBox,
+    hoyEffectiveCapacityWithBox: hoy.effectiveCapacityWithBox,
+    hoyEffectiveCapacityWithoutBox: hoy.effectiveCapacityWithoutBox,
     hoyBoxMix: hoy.boxMix,
 
     proximaOccupied: proxima.occupied,
-    proximaAvailable: proxima.available,
-    proximaOccupancyPct: proxima.occupancyPct,
-    proximaExceeds: proxima.exceeds,
-    proximaEffectiveCapacityWithBox: proxima.effective,
+    proximaAvailable: proxima.availableWithBox,
+    proximaOccupancyPct: proxima.occupancyPctWithBox,
+    proximaExceeds: proxima.exceedsWithBox,
+    proximaAvailableWithBox: proxima.availableWithBox,
+    proximaOccupancyPctWithBox: proxima.occupancyPctWithBox,
+    proximaExceedsWithBox: proxima.exceedsWithBox,
+    proximaAvailableWithoutBox: proxima.availableWithoutBox,
+    proximaOccupancyPctWithoutBox: proxima.occupancyPctWithoutBox,
+    proximaExceedsWithoutBox: proxima.exceedsWithoutBox,
+    proximaEffectiveCapacityWithBox: proxima.effectiveCapacityWithBox,
+    proximaEffectiveCapacityWithoutBox: proxima.effectiveCapacityWithoutBox,
     proximaBoxMix: proxima.boxMix,
 
     futuraOccupied: futura.occupied,
-    futuraAvailable: futura.available,
-    futuraOccupancyPct: futura.occupancyPct,
-    futuraExceeds: futura.exceeds,
-    futuraEffectiveCapacityWithBox: futura.effective,
+    futuraAvailable: futura.availableWithBox,
+    futuraOccupancyPct: futura.occupancyPctWithBox,
+    futuraExceeds: futura.exceedsWithBox,
+    futuraAvailableWithBox: futura.availableWithBox,
+    futuraOccupancyPctWithBox: futura.occupancyPctWithBox,
+    futuraExceedsWithBox: futura.exceedsWithBox,
+    futuraAvailableWithoutBox: futura.availableWithoutBox,
+    futuraOccupancyPctWithoutBox: futura.occupancyPctWithoutBox,
+    futuraExceedsWithoutBox: futura.exceedsWithoutBox,
+    futuraEffectiveCapacityWithBox: futura.effectiveCapacityWithBox,
+    futuraEffectiveCapacityWithoutBox: futura.effectiveCapacityWithoutBox,
     futuraBoxMix: futura.boxMix,
 
     // aliases: "occupied" legacy showed TF; map to proxima for board continuity where needed
     occupied: proxima.occupied,
-    available: proxima.available,
-    occupancyPct: proxima.occupancyPct,
-    canReceive: hoy.available > 0,
-    exceeds: hoy.exceeds,
+    available: proxima.availableWithBox,
+    occupancyPct: proxima.occupancyPctWithBox,
+    canReceive: hoy.availableWithoutBox > 0,
+    exceeds: hoy.exceedsWithBox,
     futureOccupied: futura.occupied,
-    futureAvailable: futura.available,
-    futureOccupancyPct: futura.occupancyPct,
-    futureExceeds: futura.exceeds,
-    futureEffectiveCapacityWithBox: futura.effective,
+    futureAvailable: futura.availableWithBox,
+    futureOccupancyPct: futura.occupancyPctWithBox,
+    futureExceeds: futura.exceedsWithBox,
+    futureEffectiveCapacityWithBox: futura.effectiveCapacityWithBox,
     boxMix: hoy.boxMix,
     futureBoxMix: futura.boxMix,
   };

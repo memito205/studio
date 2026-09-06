@@ -1264,14 +1264,36 @@ export interface StoreCapacityTotals {
   totalDrawers: number;
 }
 
+/** Métricas de un horizonte (Hoy / Próxima / Futura) con ambas capacidades. */
+export interface StoreFootwearHorizonMetrics {
+  occupied: number;
+  /** Disponible vs capacidad CON caja (puede ser negativo). */
+  availableWithBox: number;
+  occupancyPctWithBox: number;
+  exceedsWithBox: boolean;
+  effectiveCapacityWithBox: number;
+  /** Disponible vs capacidad SIN caja (máximo físico). */
+  availableWithoutBox: number;
+  occupancyPctWithoutBox: number;
+  exceedsWithoutBox: boolean;
+  effectiveCapacityWithoutBox: number;
+  /** Aliases: available/occupancy/exceeds = con caja (vista conservadora). */
+  available: number;
+  occupancyPct: number;
+  exceeds: boolean;
+  boxMix: StoreFootwearBoxMixSuggestion;
+}
+
 /** Resultado de cupo de calzado en 3 horizontes claros. */
 export interface StoreFootwearCapacityBreakdown {
   totalDrawers: number;
   drawersUsedByClothing: number;
   drawersAvailableForFootwear: number;
   grossCapacityWithBox: number;
+  grossCapacityWithoutBox: number;
   capacityLostToClothing: number;
   effectiveCapacityWithBox: number;
+  effectiveCapacityWithoutBox: number;
   /** Calzado en almacén (inventario − exhibición − comprometido) */
   calzadoOnHand: number;
   calzadoInTransit: number;
@@ -1294,7 +1316,14 @@ export interface StoreFootwearCapacityBreakdown {
   hoyAvailable: number;
   hoyOccupancyPct: number;
   hoyExceeds: boolean;
+  hoyAvailableWithBox: number;
+  hoyOccupancyPctWithBox: number;
+  hoyExceedsWithBox: boolean;
+  hoyAvailableWithoutBox: number;
+  hoyOccupancyPctWithoutBox: number;
+  hoyExceedsWithoutBox: boolean;
   hoyEffectiveCapacityWithBox: number;
+  hoyEffectiveCapacityWithoutBox: number;
   hoyBoxMix: StoreFootwearBoxMixSuggestion;
 
   /** PRÓXIMA = almacenado + TF en tránsito */
@@ -1302,7 +1331,14 @@ export interface StoreFootwearCapacityBreakdown {
   proximaAvailable: number;
   proximaOccupancyPct: number;
   proximaExceeds: boolean;
+  proximaAvailableWithBox: number;
+  proximaOccupancyPctWithBox: number;
+  proximaExceedsWithBox: boolean;
+  proximaAvailableWithoutBox: number;
+  proximaOccupancyPctWithoutBox: number;
+  proximaExceedsWithoutBox: boolean;
   proximaEffectiveCapacityWithBox: number;
+  proximaEffectiveCapacityWithoutBox: number;
   proximaBoxMix: StoreFootwearBoxMixSuggestion;
 
   /** FUTURA = próxima + CEDI − pronóstico de salidas */
@@ -1310,7 +1346,14 @@ export interface StoreFootwearCapacityBreakdown {
   futuraAvailable: number;
   futuraOccupancyPct: number;
   futuraExceeds: boolean;
+  futuraAvailableWithBox: number;
+  futuraOccupancyPctWithBox: number;
+  futuraExceedsWithBox: boolean;
+  futuraAvailableWithoutBox: number;
+  futuraOccupancyPctWithoutBox: number;
+  futuraExceedsWithoutBox: boolean;
   futuraEffectiveCapacityWithBox: number;
+  futuraEffectiveCapacityWithoutBox: number;
   futuraBoxMix: StoreFootwearBoxMixSuggestion;
 
   /** Aliases (compat UI): hoy≈occupied legacy era proxima; future≈futura */
