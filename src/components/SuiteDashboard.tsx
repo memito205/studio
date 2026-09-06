@@ -2,7 +2,7 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle, Timer, ClipboardList, Store } from 'lucide-react';
+import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle, Timer, ClipboardList, Store, Warehouse } from 'lucide-react';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -67,6 +67,7 @@ interface SuiteDashboardProps {
     onNavigateToTransferNovelties: () => void;
     onNavigateToRemisionModule: () => void;
     onNavigateToCyclicInventory: () => void;
+    onNavigateToStoreCapacity: () => void;
 }
 
 export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({ 
@@ -92,7 +93,8 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToServiceConciliation,
     onNavigateToTransferNovelties,
     onNavigateToRemisionModule,
-    onNavigateToCyclicInventory
+    onNavigateToCyclicInventory,
+    onNavigateToStoreCapacity,
 }) => {
     const { role } = useAuth();
     const { toast } = useToast();
@@ -156,6 +158,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Acceder",
             onAction: onNavigateToCyclicInventory,
             roles: ['admin', 'supervisor', 'operator']
+        },
+        {
+            key: 'store_capacity',
+            icon: Warehouse,
+            title: "Capacidad de tiendas",
+            description: "Maestro de cajones por PDV (medida, capacidad con/sin caja) para cruzar cupo vs inventario y transferencias.",
+            actionText: "Acceder",
+            onAction: onNavigateToStoreCapacity,
+            roles: ['admin', 'supervisor', 'office']
         },
         {
             key: 'dispatch_manager',

@@ -1148,7 +1148,53 @@ export interface CyclicInventoryCountRecord {
   consolidatedLineIds?: string[];
 }
 
-export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'dashboards_gastos_transporte' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'tf_platform_lookup' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory';
+export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'dashboards_gastos_transporte' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'tf_platform_lookup' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory' | 'store_capacity';
+
+/** Capacidad de un tipo de cajón en una tienda (medida × carga × cantidad). */
+export interface StoreDrawerCapacity {
+  id: string;
+  /** Ej. "60*60", "80*60" */
+  measure: string;
+  /** Pares con caja original por cajón */
+  capacityWithBox: number;
+  /** Pares sin caja original por cajón */
+  capacityWithoutBox: number;
+  /** Cantidad de cajones de esa medida en la tienda */
+  drawerCount: number;
+}
+
+/** Snapshot opcional de inventario en tienda (para ocupación vs capacidad). */
+export interface StoreInventorySnapshot {
+  accesorios: number;
+  calzado: number;
+  ropa: number;
+  updatedAt?: string;
+  source?: 'manual' | 'import' | 'system';
+}
+
+/**
+ * Maestro de capacidad de almacenamiento por PDV/tienda.
+ * Pensado para cruzar luego con transferencias (calzado en tránsito) e inventario.
+ */
+export interface StoreCapacityProfile {
+  id: string;
+  /** Código de tienda / PDV (ej. B18). Debe alinearse con bodegaDestino de transferencias. */
+  pdvCode: string;
+  pdvName?: string;
+  drawers: StoreDrawerCapacity[];
+  inventorySnapshot?: StoreInventorySnapshot;
+  notes?: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy?: string;
+}
+
+export interface StoreCapacityTotals {
+  totalWithBox: number;
+  totalWithoutBox: number;
+  totalDrawers: number;
+}
 
 // Types for Merchandise Reception
 export interface ReceptionOperation {
