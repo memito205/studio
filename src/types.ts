@@ -1247,6 +1247,32 @@ export interface StoreFootwearCapacityBreakdown {
   occupancyPct: number;
   canReceive: boolean;
   exceeds: boolean;
+  /**
+   * Sugerencia informativa: tras restar cajones de ropa, cuántos cajones
+   * conviene usar con caja vs sin caja para el calzado actual.
+   */
+  boxMix: StoreFootwearBoxMixSuggestion;
+}
+
+/** Cómo repartir cajones de calzado (preferir caja original). */
+export interface StoreFootwearBoxMixSuggestion {
+  calzadoPairs: number;
+  drawersAvailableForFootwear: number;
+  avgCapWithBox: number;
+  avgCapWithoutBox: number;
+  maxPairsAllWithBox: number;
+  maxPairsAllWithoutBox: number;
+  /** Cajones sugeridos con caja original */
+  drawersWithBox: number;
+  /** Cajones que deben ir sin caja para caber */
+  drawersWithoutBox: number;
+  pairsInWithBox: number;
+  pairsInWithoutBox: number;
+  /** true si todo el calzado cabe manteniendo caja */
+  fitsAllWithBox: boolean;
+  /** true si ni con todo sin caja alcanza */
+  exceedsEvenWithoutBox: boolean;
+  summary: string;
 }
 
 /** Cantidades inbound por bodega destino (TF + transferencias). */

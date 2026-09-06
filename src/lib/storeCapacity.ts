@@ -2,6 +2,7 @@ import type {
   StoreCapacityProfile,
   StoreCapacityTotals,
   StoreDrawerCapacity,
+  StoreFootwearBoxMixSuggestion,
   StoreFootwearCapacityBreakdown,
   StoreInventoryGrupo,
   StoreInventoryImportRow,
@@ -47,6 +48,108 @@ export function normalizePdvCode(raw: string): string {
     .trim()
     .toUpperCase()
     .replace(/\s+/g, '');
+}
+
+/**
+ * Tras restar cajones ocupados por ropa, sugiere cuántos cajones de calzado
+ * pueden quedar con caja y cuántos deben ir sin caja para el inventario actual.
+ * Prioriza maximizar cajones con caja original.
+ */
+export function computeFootwearBoxMixSuggestion(args: {
+  drawersAvailableForFootwear: number;
+  avgCapWithBox: number;
+  avgCapWithoutBox: number;
+  calzadoPairs: number;
+}): StoreFootwearBoxMixSuggestion {
+  const available = Math.max(0, Number(args.drawersAvailableForFootwear) || 0);
+  const avgWith = Math.max(0, Number(args.avgCapWithBox) || 0);
+  const avgWithout = Math.max(0, Number(args.avgCapWithoutBox) || 0);
+  const pairs = Math.max(0, Number(args.calzadoPairs) || 0);
+
+  const maxPairsAllWithBox = available * avgWith;
+  const maxPairsAllWithoutBox = available * avgWithout;
+
+  const empty: StoreFootwearBoxMixSuggestion = {
+    calzadoPairs: pairs,
+    drawersAvailableForFootwear: available,
+    avgCapWithBox: avgWith,
+    avgCapWithoutBox: avgWithout,
+    maxPairsAllWithBox,
+    maxPairsAllWithoutBox,
+    drawersWithBox: 0,
+    drawersWithoutBox: 0,
+    pairsInWithBox: 0,
+    pairsInWithoutBox: 0,
+    fitsAllWithBox: true,
+    exceedsEvenWithoutBox: false,
+    summary: 'Sin calzado a almacenar en cajones.',
+  };
+
+  if (pairs <= 0 || available <= 0 || (avgWith <= 0 && avgWithout <= 0)) {
+    if (pairs > 0 && available <= 0) {
+      return {
+        ...empty,
+        fitsAllWithBox: false,
+        exceedsEvenWithoutBox: true,
+        summary: 'No hay cajones libres para calzado (la ropa ocupó el pool).',
+      };
+    }
+    return empty;
+  }
+
+  // Todo cabe en caja
+  if (avgWith > 0 && pairs <= maxPairsAllWithBox + 1e-9) {
+    const drawersWithBox = avgWith > 0 ? pairs / avgWith : 0;
+    return {
+      ...empty,
+      drawersWithBox,
+      drawersWithoutBox: 0,
+      pairsInWithBox: pairs,
+      pairsInWithoutBox: 0,
+      fitsAllWithBox: true,
+      exceedsEvenWithoutBox: false,
+      summary: `El calzado actual (${Math.round(pairs).toLocaleString()} pares) cabe todo en caja: ~${drawersWithBox.toFixed(1)} cajones con caja (de ${available.toFixed(1)} disponibles tras ropa).`,
+    };
+  }
+
+  // Ni sin caja alcanza
+  if (avgWithout <= 0 || pairs > maxPairsAllWithoutBox + 1e-9) {
+    return {
+      ...empty,
+      drawersWithBox: 0,
+      drawersWithoutBox: available,
+      pairsInWithBox: 0,
+      pairsInWithoutBox: maxPairsAllWithoutBox,
+      fitsAllWithBox: false,
+      exceedsEvenWithoutBox: true,
+      summary: `Aun usando los ${available.toFixed(1)} cajones sin caja (máx. ${Math.round(maxPairsAllWithoutBox).toLocaleString()} pares) no alcanza para ${Math.round(pairs).toLocaleString()} pares.`,
+    };
+  }
+
+  // Mezcla: minimizar cajones sin caja (sin caja suele caber más por cajón).
+  const delta = avgWithout - avgWith;
+  let drawersWithoutBox = 0;
+  if (delta > 1e-9) {
+    drawersWithoutBox = (pairs - maxPairsAllWithBox) / delta;
+  } else {
+    // Capacidad sin caja no aporta más: usar todos sin caja
+    drawersWithoutBox = available;
+  }
+  drawersWithoutBox = Math.min(available, Math.max(0, drawersWithoutBox));
+  const drawersWithBox = Math.max(0, available - drawersWithoutBox);
+  const pairsInWithBox = drawersWithBox * avgWith;
+  const pairsInWithoutBox = Math.max(0, pairs - pairsInWithBox);
+
+  return {
+    ...empty,
+    drawersWithBox,
+    drawersWithoutBox,
+    pairsInWithBox,
+    pairsInWithoutBox,
+    fitsAllWithBox: false,
+    exceedsEvenWithoutBox: false,
+    summary: `Para ${Math.round(pairs).toLocaleString()} pares (tras restar ropa): ~${drawersWithoutBox.toFixed(1)} cajones SIN caja (~${Math.round(pairsInWithoutBox).toLocaleString()} pares) y ~${drawersWithBox.toFixed(1)} cajones CON caja (~${Math.round(pairsInWithBox).toLocaleString()} pares).`,
+  };
 }
 
 /**
@@ -96,6 +199,8 @@ export function computeFootwearCapacityBreakdown(args: {
 
   const avgCapWithBox =
     totals.totalDrawers > 0 ? totals.totalWithBox / totals.totalDrawers : 0;
+  const avgCapWithoutBox =
+    totals.totalDrawers > 0 ? totals.totalWithoutBox / totals.totalDrawers : 0;
   const capacityLostToClothing = drawersUsedByClothing * avgCapWithBox;
   const effectiveCapacityWithBox = Math.max(0, totals.totalWithBox - capacityLostToClothing);
 
@@ -107,6 +212,13 @@ export function computeFootwearCapacityBreakdown(args: {
       : occupied > 0
         ? 100
         : 0;
+
+  const boxMix = computeFootwearBoxMixSuggestion({
+    drawersAvailableForFootwear,
+    avgCapWithBox,
+    avgCapWithoutBox,
+    calzadoPairs: occupied,
+  });
 
   return {
     totalDrawers: totals.totalDrawers,
@@ -128,6 +240,7 @@ export function computeFootwearCapacityBreakdown(args: {
     occupancyPct,
     canReceive: available > 0,
     exceeds: available < 0,
+    boxMix,
   };
 }
 

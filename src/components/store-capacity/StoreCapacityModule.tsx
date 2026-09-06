@@ -571,6 +571,7 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       <TableHead className="text-right">Calz. alm.</TableHead>
                       <TableHead className="text-right">Calz. inbound</TableHead>
                       <TableHead className="text-right">Ropa (caj.)</TableHead>
+                      <TableHead className="text-right">Sin caja / Con caja</TableHead>
                       <TableHead className="min-w-[140px]">Ocupación</TableHead>
                       <TableHead>Estado</TableHead>
                       <TableHead />
@@ -605,6 +606,20 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                         <TableCell className="text-right tabular-nums text-muted-foreground">
                           {b.drawersUsedByClothing.toFixed(1)}
                         </TableCell>
+                        <TableCell className="text-right tabular-nums text-xs">
+                          <span className={b.boxMix.drawersWithoutBox > 0.05 ? 'text-amber-800 dark:text-amber-300 font-semibold' : ''}>
+                            {b.boxMix.drawersWithoutBox.toFixed(1)}
+                          </span>
+                          {' / '}
+                          {b.boxMix.drawersWithBox.toFixed(1)}
+                          {b.boxMix.fitsAllWithBox ? (
+                            <div className="text-[10px] text-emerald-700">todo c/caja</div>
+                          ) : b.boxMix.exceedsEvenWithoutBox ? (
+                            <div className="text-[10px] text-red-600">no alcanza</div>
+                          ) : (
+                            <div className="text-[10px] text-muted-foreground">mixto</div>
+                          )}
+                        </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <Progress
@@ -634,7 +649,7 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                     ))}
                     {dashboardRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
+                        <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
                           Sin tiendas. Importe cajones o cree un maestro.
                         </TableCell>
                       </TableRow>
@@ -1132,6 +1147,45 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                         {Math.round(breakdown.available).toLocaleString()} · {breakdown.occupancyPct.toFixed(0)}%
                         {breakdown.exceeds ? ' EXCEDE' : ''}
                       </Badge>
+                    </div>
+
+                    <div
+                      className={`mt-3 rounded-md border p-3 text-xs space-y-2 ${
+                        breakdown.boxMix.exceedsEvenWithoutBox
+                          ? 'border-red-600/30 bg-red-50/60 dark:bg-red-950/20'
+                          : breakdown.boxMix.fitsAllWithBox
+                            ? 'border-emerald-600/30 bg-emerald-50/50 dark:bg-emerald-950/20'
+                            : 'border-sky-600/30 bg-sky-50/50 dark:bg-sky-950/20'
+                      }`}
+                    >
+                      <p className="font-semibold text-sm text-foreground">
+                        Distribución informativa: con caja vs sin caja
+                      </p>
+                      <p className="text-muted-foreground leading-relaxed">{breakdown.boxMix.summary}</p>
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <div>
+                          <div className="text-muted-foreground">Cajones CON caja</div>
+                          <div className="font-semibold tabular-nums text-base">
+                            ~{breakdown.boxMix.drawersWithBox.toFixed(1)}
+                          </div>
+                          <div className="text-muted-foreground tabular-nums">
+                            {Math.round(breakdown.boxMix.pairsInWithBox).toLocaleString()} pares
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">Cajones SIN caja</div>
+                          <div className="font-semibold tabular-nums text-base">
+                            ~{breakdown.boxMix.drawersWithoutBox.toFixed(1)}
+                          </div>
+                          <div className="text-muted-foreground tabular-nums">
+                            {Math.round(breakdown.boxMix.pairsInWithoutBox).toLocaleString()} pares
+                          </div>
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        Calculado después de restar cajones de ropa. Ideal = 100% con caja; si no alcanza, el sistema
+                        indica el mínimo de cajones sin caja.
+                      </p>
                     </div>
                   </CardContent>
                 </Card>
