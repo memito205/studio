@@ -61,7 +61,15 @@ function blankProfile(): StoreCapacityProfile {
     pdvCode: '',
     pdvName: '',
     drawers: [emptyDrawerRow({ measure: '60*60', capacityWithBox: 11, capacityWithoutBox: 22, drawerCount: 0 })],
-    inventorySnapshot: { accesorios: 0, calzado: 0, ropa: 0, source: 'manual' },
+    inventorySnapshot: {
+      accesorios: 0,
+      calzado: 0,
+      ropa: 0,
+      comprometidoAccesorios: 0,
+      comprometidoCalzado: 0,
+      comprometidoRopa: 0,
+      source: 'manual',
+    },
     exhibitionAffectsCapacity: false,
     exhibitionCalzado: 0,
     exhibitionRopa: 0,
@@ -156,11 +164,15 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
         exhibitionAffectsCapacity: !!draft.exhibitionAffectsCapacity,
         exhibitionCalzado: draft.exhibitionCalzado,
         exhibitionRopa: draft.exhibitionRopa,
+        committedCalzado: draft.inventorySnapshot?.comprometidoCalzado,
+        committedRopa: draft.inventorySnapshot?.comprometidoRopa,
       }),
     [
       draft.drawers,
       draft.inventorySnapshot?.ropa,
       draft.inventorySnapshot?.calzado,
+      draft.inventorySnapshot?.comprometidoCalzado,
+      draft.inventorySnapshot?.comprometidoRopa,
       draft.exhibitionAffectsCapacity,
       draft.exhibitionCalzado,
       draft.exhibitionRopa,
@@ -183,6 +195,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
         exhibitionAffectsCapacity: !!p.exhibitionAffectsCapacity,
         exhibitionCalzado: p.exhibitionCalzado,
         exhibitionRopa: p.exhibitionRopa,
+        committedCalzado: p.inventorySnapshot?.comprometidoCalzado,
+        committedRopa: p.inventorySnapshot?.comprometidoRopa,
       });
       return { profile: p, inbound, breakdown: b };
     });
@@ -212,8 +226,21 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
       ...p,
       drawers: p.drawers?.length ? p.drawers.map((d) => ({ ...d })) : [emptyDrawerRow()],
       inventorySnapshot: p.inventorySnapshot
-        ? { ...p.inventorySnapshot }
-        : { accesorios: 0, calzado: 0, ropa: 0, source: 'manual' },
+        ? {
+            ...p.inventorySnapshot,
+            comprometidoAccesorios: Number(p.inventorySnapshot.comprometidoAccesorios) || 0,
+            comprometidoCalzado: Number(p.inventorySnapshot.comprometidoCalzado) || 0,
+            comprometidoRopa: Number(p.inventorySnapshot.comprometidoRopa) || 0,
+          }
+        : {
+            accesorios: 0,
+            calzado: 0,
+            ropa: 0,
+            comprometidoAccesorios: 0,
+            comprometidoCalzado: 0,
+            comprometidoRopa: 0,
+            source: 'manual',
+          },
       exhibitionAffectsCapacity: !!p.exhibitionAffectsCapacity,
       exhibitionCalzado: Number(p.exhibitionCalzado) || 0,
       exhibitionRopa: Number(p.exhibitionRopa) || 0,
@@ -561,7 +588,14 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                         <TableCell className="text-right tabular-nums">
                           {Math.round(b.effectiveCapacityWithBox).toLocaleString()}
                         </TableCell>
-                        <TableCell className="text-right tabular-nums">{b.calzadoOnHand.toLocaleString()}</TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {b.calzadoOnHand.toLocaleString()}
+                          {b.committedCalzadoApplied > 0 ? (
+                            <div className="text-[10px] text-orange-700 dark:text-orange-300">
+                              −{b.committedCalzadoApplied} a sacar
+                            </div>
+                          ) : null}
+                        </TableCell>
                         <TableCell className="text-right tabular-nums">
                           {inbound.calzado.toLocaleString()}
                           <div className="text-[10px] text-muted-foreground">
@@ -645,6 +679,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       exhibitionAffectsCapacity: !!p.exhibitionAffectsCapacity,
                       exhibitionCalzado: p.exhibitionCalzado,
                       exhibitionRopa: p.exhibitionRopa,
+                      committedCalzado: p.inventorySnapshot?.comprometidoCalzado,
+                      committedRopa: p.inventorySnapshot?.comprometidoRopa,
                     });
                     const active =
                       selectedId === p.id || (!selectedId && normalizePdvCode(draft.pdvCode) === p.pdvCode);
@@ -879,74 +915,159 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                 <Card>
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base">Inventario actual</CardTitle>
-                    <CardDescription>Preferible vía Inventario global. Accesorios no restan cupo.</CardDescription>
+                    <CardDescription>
+                      Excel: <code>BODEGA</code>, <code>GRUPO</code>, <code>CANTIDAD</code>,{' '}
+                      <code>CANT COMPROMETIDA</code>. Lo comprometido es mercancía a sacar: resta del stock que ocupa
+                      cupo. Accesorios no restan cajones.
+                    </CardDescription>
                   </CardHeader>
-                  <CardContent className="grid grid-cols-3 gap-3">
-                    <div className="space-y-1">
-                      <Label>Accesorios</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        className="tabular-nums"
-                        value={draft.inventorySnapshot?.accesorios ?? 0}
-                        onChange={(e) =>
-                          setDraft((p) => ({
-                            ...p,
-                            inventorySnapshot: {
-                              accesorios: Number(e.target.value) || 0,
-                              calzado: p.inventorySnapshot?.calzado ?? 0,
-                              ropa: p.inventorySnapshot?.ropa ?? 0,
-                              source: 'manual',
-                            },
-                          }))
-                        }
-                      />
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="space-y-1">
+                        <Label>Accesorios</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          className="tabular-nums"
+                          value={draft.inventorySnapshot?.accesorios ?? 0}
+                          onChange={(e) =>
+                            setDraft((p) => ({
+                              ...p,
+                              inventorySnapshot: {
+                                ...(p.inventorySnapshot || blankProfile().inventorySnapshot!),
+                                accesorios: Number(e.target.value) || 0,
+                                source: 'manual',
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Calzado</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          className="tabular-nums"
+                          value={draft.inventorySnapshot?.calzado ?? 0}
+                          onChange={(e) =>
+                            setDraft((p) => ({
+                              ...p,
+                              inventorySnapshot: {
+                                ...(p.inventorySnapshot || blankProfile().inventorySnapshot!),
+                                calzado: Number(e.target.value) || 0,
+                                source: 'manual',
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Ropa</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          className="tabular-nums"
+                          value={draft.inventorySnapshot?.ropa ?? 0}
+                          onChange={(e) =>
+                            setDraft((p) => ({
+                              ...p,
+                              inventorySnapshot: {
+                                ...(p.inventorySnapshot || blankProfile().inventorySnapshot!),
+                                ropa: Number(e.target.value) || 0,
+                                source: 'manual',
+                              },
+                            }))
+                          }
+                        />
+                      </div>
                     </div>
-                    <div className="space-y-1">
-                      <Label>Calzado</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        className="tabular-nums"
-                        value={draft.inventorySnapshot?.calzado ?? 0}
-                        onChange={(e) =>
-                          setDraft((p) => ({
-                            ...p,
-                            inventorySnapshot: {
-                              accesorios: p.inventorySnapshot?.accesorios ?? 0,
-                              calzado: Number(e.target.value) || 0,
-                              ropa: p.inventorySnapshot?.ropa ?? 0,
-                              source: 'manual',
-                            },
-                          }))
-                        }
-                      />
+
+                    <div className="rounded-md border border-orange-600/30 bg-orange-50/50 dark:bg-orange-950/20 p-3 space-y-2">
+                      <p className="text-sm font-medium text-orange-900 dark:text-orange-200">
+                        Cant. comprometida (a sacar del inventario)
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Pedidos de salida pendientes. Se restan del inventario al calcular ocupación de cajones.
+                      </p>
+                      <div className="grid grid-cols-3 gap-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Accesorios</Label>
+                          <Input
+                            type="number"
+                            min={0}
+                            className="tabular-nums"
+                            value={draft.inventorySnapshot?.comprometidoAccesorios ?? 0}
+                            onChange={(e) =>
+                              setDraft((p) => ({
+                                ...p,
+                                inventorySnapshot: {
+                                  ...(p.inventorySnapshot || blankProfile().inventorySnapshot!),
+                                  comprometidoAccesorios: Number(e.target.value) || 0,
+                                  source: 'manual',
+                                },
+                              }))
+                            }
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Calzado</Label>
+                          <Input
+                            type="number"
+                            min={0}
+                            className="tabular-nums"
+                            value={draft.inventorySnapshot?.comprometidoCalzado ?? 0}
+                            onChange={(e) =>
+                              setDraft((p) => ({
+                                ...p,
+                                inventorySnapshot: {
+                                  ...(p.inventorySnapshot || blankProfile().inventorySnapshot!),
+                                  comprometidoCalzado: Number(e.target.value) || 0,
+                                  source: 'manual',
+                                },
+                              }))
+                            }
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Ropa</Label>
+                          <Input
+                            type="number"
+                            min={0}
+                            className="tabular-nums"
+                            value={draft.inventorySnapshot?.comprometidoRopa ?? 0}
+                            onChange={(e) =>
+                              setDraft((p) => ({
+                                ...p,
+                                inventorySnapshot: {
+                                  ...(p.inventorySnapshot || blankProfile().inventorySnapshot!),
+                                  comprometidoRopa: Number(e.target.value) || 0,
+                                  source: 'manual',
+                                },
+                              }))
+                            }
+                          />
+                        </div>
+                      </div>
                     </div>
-                    <div className="space-y-1">
-                      <Label>Ropa</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        className="tabular-nums"
-                        value={draft.inventorySnapshot?.ropa ?? 0}
-                        onChange={(e) =>
-                          setDraft((p) => ({
-                            ...p,
-                            inventorySnapshot: {
-                              accesorios: p.inventorySnapshot?.accesorios ?? 0,
-                              calzado: p.inventorySnapshot?.calzado ?? 0,
-                              ropa: Number(e.target.value) || 0,
-                              source: 'manual',
-                            },
-                          }))
-                        }
-                      />
-                    </div>
-                    <p className="col-span-3 text-sm text-muted-foreground">
-                      Total:{' '}
+
+                    <p className="text-sm text-muted-foreground">
+                      Total inventario:{' '}
                       <span className="font-semibold text-foreground">
                         {inventoryTotal(draft.inventorySnapshot).toLocaleString()}
                       </span>
+                      {(Number(draft.inventorySnapshot?.comprometidoCalzado) || 0) +
+                        (Number(draft.inventorySnapshot?.comprometidoRopa) || 0) +
+                        (Number(draft.inventorySnapshot?.comprometidoAccesorios) || 0) >
+                      0 ? (
+                        <span className="ml-2 text-orange-800 dark:text-orange-300">
+                          · a sacar{' '}
+                          {(
+                            (Number(draft.inventorySnapshot?.comprometidoCalzado) || 0) +
+                            (Number(draft.inventorySnapshot?.comprometidoRopa) || 0) +
+                            (Number(draft.inventorySnapshot?.comprometidoAccesorios) || 0)
+                          ).toLocaleString()}
+                        </span>
+                      ) : null}
                     </p>
                   </CardContent>
                 </Card>
@@ -955,7 +1076,7 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base">Cupo efectivo de calzado</CardTitle>
                     <CardDescription>
-                      Inventario (menos exhibición) + inbound TF. Ropa ÷ {garmentsPerDrawer} = cajones.
+                      Inventario − exhibición − comprometido + inbound TF. Ropa ÷ {garmentsPerDrawer} = cajones.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-2 text-sm">
@@ -975,6 +1096,14 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                         </span>
                       </div>
                     ) : null}
+                    {breakdown.committedCalzadoApplied > 0 || breakdown.committedRopaApplied > 0 ? (
+                      <div className="flex justify-between text-orange-800 dark:text-orange-300">
+                        <span>Comprometido a sacar</span>
+                        <span className="tabular-nums">
+                          calz −{breakdown.committedCalzadoApplied} · ropa −{breakdown.committedRopaApplied}
+                        </span>
+                      </div>
+                    ) : null}
                     <div className="flex justify-between">
                       <span>Capacidad efectiva</span>
                       <span className="font-semibold tabular-nums text-sky-800 dark:text-sky-300">
@@ -982,7 +1111,7 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       </span>
                     </div>
                     <div className="flex justify-between">
-                      <span>Calzado almacén</span>
+                      <span>Calzado almacén (neto)</span>
                       <span className="tabular-nums">{breakdown.calzadoOnHand.toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between">

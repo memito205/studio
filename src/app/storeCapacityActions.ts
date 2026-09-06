@@ -45,6 +45,9 @@ function sanitizeProfile(input: Partial<StoreCapacityProfile> & { pdvCode: strin
         accesorios: Math.max(0, Number(input.inventorySnapshot.accesorios) || 0),
         calzado: Math.max(0, Number(input.inventorySnapshot.calzado) || 0),
         ropa: Math.max(0, Number(input.inventorySnapshot.ropa) || 0),
+        comprometidoAccesorios: Math.max(0, Number(input.inventorySnapshot.comprometidoAccesorios) || 0),
+        comprometidoCalzado: Math.max(0, Number(input.inventorySnapshot.comprometidoCalzado) || 0),
+        comprometidoRopa: Math.max(0, Number(input.inventorySnapshot.comprometidoRopa) || 0),
         updatedAt: input.inventorySnapshot.updatedAt || now,
         source: input.inventorySnapshot.source || 'manual',
       }
@@ -330,6 +333,9 @@ export async function applyGlobalStoreInventory(
           accesorios: Math.max(0, Number(snap.accesorios) || 0),
           calzado: Math.max(0, Number(snap.calzado) || 0),
           ropa: Math.max(0, Number(snap.ropa) || 0),
+          comprometidoAccesorios: Math.max(0, Number(snap.comprometidoAccesorios) || 0),
+          comprometidoCalzado: Math.max(0, Number(snap.comprometidoCalzado) || 0),
+          comprometidoRopa: Math.max(0, Number(snap.comprometidoRopa) || 0),
           updatedAt: snap.updatedAt || now,
           source: 'global_import',
         };

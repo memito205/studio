@@ -54,8 +54,8 @@ export function normalizePdvCode(raw: string): string {
  * `garmentsPerDrawer` prendas/cajón y reduce el cupo efectivo de calzado.
  * Accesorios no afectan.
  *
- * Exhibición (Outlet): si se pasa exhibition*, se resta del inventario antes
- * de calcular ocupación (la sala no consume cajones de almacén).
+ * Exhibición (Outlet): se resta del inventario (sala no consume cajones).
+ * Comprometido (pedidos de salida): se resta del inventario (mercancía a sacar).
  */
 export function computeFootwearCapacityBreakdown(args: {
   drawers: StoreDrawerCapacity[];
@@ -67,6 +67,8 @@ export function computeFootwearCapacityBreakdown(args: {
   exhibitionAffectsCapacity?: boolean;
   exhibitionCalzado?: number;
   exhibitionRopa?: number;
+  committedCalzado?: number;
+  committedRopa?: number;
 }): StoreFootwearCapacityBreakdown {
   const totals = computeStoreCapacityTotals(args.drawers || []);
   const rate = Math.max(1, Number(args.garmentsPerDrawer) || DEFAULT_GARMENTS_PER_DRAWER);
@@ -77,9 +79,14 @@ export function computeFootwearCapacityBreakdown(args: {
   const exhRopa = args.exhibitionAffectsCapacity
     ? Math.max(0, Number(args.exhibitionRopa) || 0)
     : 0;
+  const committedCalz = Math.max(0, Number(args.committedCalzado) || 0);
+  const committedRopa = Math.max(0, Number(args.committedRopa) || 0);
 
-  const calzadoOnHand = Math.max(0, (Number(args.calzadoOnHand) || 0) - exhCalz);
-  const ropaOnHand = Math.max(0, (Number(args.ropaOnHand) || 0) - exhRopa);
+  const calzadoOnHand = Math.max(
+    0,
+    (Number(args.calzadoOnHand) || 0) - exhCalz - committedCalz
+  );
+  const ropaOnHand = Math.max(0, (Number(args.ropaOnHand) || 0) - exhRopa - committedRopa);
   const calzadoInTransit = Math.max(0, Number(args.calzadoInTransit) || 0);
   const ropaInTransit = Math.max(0, Number(args.ropaInTransit) || 0);
 
@@ -114,6 +121,8 @@ export function computeFootwearCapacityBreakdown(args: {
     ropaInTransit,
     exhibitionCalzadoApplied: exhCalz,
     exhibitionRopaApplied: exhRopa,
+    committedCalzadoApplied: committedCalz,
+    committedRopaApplied: committedRopa,
     occupied,
     available,
     occupancyPct,
@@ -160,8 +169,8 @@ export function normalizeInventoryGrupo(raw: string): StoreInventoryGrupo | null
 }
 
 /**
- * Excel global: columnas BODEGA | GRUPO | CANTIDAD (varias filas por bodega).
- * Agrupa sumando cantidades por bodega+grupo.
+ * Excel global: BODEGA | GRUPO | CANTIDAD | CANT COMPROMETIDA (opcional).
+ * Agrupa sumando por bodega+grupo. La comprometida es mercancía a sacar (resta del cupo).
  */
 export function parseGlobalInventorySheet(
   rows: Record<string, unknown>[]
@@ -171,10 +180,47 @@ export function parseGlobalInventorySheet(
   let skipped = 0;
   const now = new Date().toISOString();
 
+  const isCommittedHeader = (key: string) =>
+    /compromet|comprimid/i.test(String(key || ''));
+
+  const findQtyKey = (row: Record<string, unknown>): string | undefined => {
+    const preferred = findCaseInsensitiveKey(row, 'cantidad', 'cant', 'qty', 'unidades', 'stock');
+    if (preferred && !isCommittedHeader(preferred)) return preferred;
+    return Object.keys(row).find((k) => {
+      const n = normalizeHeader(k);
+      return (
+        (n === 'cantidad' || n === 'cant' || n.includes('cantidad') || n.includes('stock')) &&
+        !isCommittedHeader(k)
+      );
+    });
+  };
+
+  const findCommittedKey = (row: Record<string, unknown>): string | undefined => {
+    const preferred = findCaseInsensitiveKey(
+      row,
+      'cant comprometida',
+      'cantidad comprometida',
+      'comprometida',
+      'comprometido',
+      'cant comprimida',
+      'cantidad comprimida',
+      'comprometidas'
+    );
+    if (preferred) return preferred;
+    return Object.keys(row).find((k) => isCommittedHeader(k));
+  };
+
+  const committedField = (grupo: StoreInventoryGrupo): keyof StoreInventorySnapshot => {
+    if (grupo === 'calzado') return 'comprometidoCalzado';
+    if (grupo === 'ropa') return 'comprometidoRopa';
+    return 'comprometidoAccesorios';
+  };
+
   for (const row of rows) {
     const bodegaKey = findCaseInsensitiveKey(row, 'bodega', 'pdv', 'tienda', 'codigo', 'código', 'almacen', 'almacén');
     const grupoKey = findCaseInsensitiveKey(row, 'grupo', 'categoria', 'categoría', 'tipo', 'linea', 'línea');
-    const cantKey = findCaseInsensitiveKey(row, 'cantidad', 'cant', 'qty', 'unidades', 'stock');
+    const cantKey = bodegaKey && grupoKey ? findQtyKey(row) : undefined;
+    const committedKey = findCommittedKey(row);
 
     if (!bodegaKey || !grupoKey || !cantKey) {
       skipped += 1;
@@ -191,15 +237,29 @@ export function parseGlobalInventorySheet(
       continue;
     }
 
+    let comprometida = 0;
+    if (committedKey) {
+      const rawC = row[committedKey];
+      const n = typeof rawC === 'number' ? rawC : Number(String(rawC ?? '').replace(/,/g, ''));
+      if (Number.isFinite(n) && n > 0) comprometida = n;
+    }
+
     rowCount += 1;
     const prev = byBodega.get(bodega) || {
       accesorios: 0,
       calzado: 0,
       ropa: 0,
+      comprometidoAccesorios: 0,
+      comprometidoCalzado: 0,
+      comprometidoRopa: 0,
       updatedAt: now,
       source: 'global_import' as const,
     };
     prev[grupo] = (Number(prev[grupo]) || 0) + Math.max(0, cantidad);
+    if (comprometida > 0) {
+      const field = committedField(grupo);
+      prev[field] = (Number(prev[field]) || 0) + comprometida;
+    }
     prev.updatedAt = now;
     prev.source = 'global_import';
     byBodega.set(bodega, prev);

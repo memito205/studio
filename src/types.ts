@@ -1168,6 +1168,13 @@ export interface StoreInventorySnapshot {
   accesorios: number;
   calzado: number;
   ropa: number;
+  /**
+   * Pedidos de salida / mercancía comprometida a despachar.
+   * Se resta del inventario que ocupa cajones (producto que debe salir).
+   */
+  comprometidoAccesorios?: number;
+  comprometidoCalzado?: number;
+  comprometidoRopa?: number;
   updatedAt?: string;
   source?: 'manual' | 'import' | 'global_import' | 'system';
 }
@@ -1227,11 +1234,14 @@ export interface StoreFootwearCapacityBreakdown {
   /** Calzado que ocupa cajones (inventario − exhibición si aplica) */
   calzadoOnHand: number;
   calzadoInTransit: number;
-  /** Ropa que ocupa cajones (inventario − exhibición si aplica) */
+  /** Ropa que ocupa cajones (inventario − exhibición − comprometido) */
   ropaOnHand: number;
   ropaInTransit: number;
   exhibitionCalzadoApplied: number;
   exhibitionRopaApplied: number;
+  /** Comprometido a sacar (pedidos de salida) restado del inventario */
+  committedCalzadoApplied: number;
+  committedRopaApplied: number;
   occupied: number;
   available: number;
   occupancyPct: number;
@@ -1254,6 +1264,8 @@ export interface StoreInventoryImportRow {
   bodega: string;
   grupo: StoreInventoryGrupo;
   cantidad: number;
+  /** Cantidad comprometida a despachar (resta del inventario que ocupa cupo). */
+  cantComprometida?: number;
 }
 
 // Types for Merchandise Reception
