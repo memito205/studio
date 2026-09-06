@@ -47,6 +47,7 @@ import {
   applyGlobalStoreInventory,
   applyTfPendingReceive,
   deleteStoreCapacityProfile,
+  deleteStoreCapacityProfiles,
   getCapacityForecastsByWarehouse,
   getStoreCapacitySettings,
   listStoreCapacityProfiles,
@@ -155,6 +156,8 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
   const [garmentsPerDrawer, setGarmentsPerDrawer] = useState(DEFAULT_GARMENTS_PER_DRAWER);
   const [forecastHorizonDays, setForecastHorizonDays] = useState(7);
   const [mainTab, setMainTab] = useState<'maestro' | 'tablero'>('maestro');
+  const [selectedPdvCodes, setSelectedPdvCodes] = useState<string[]>([]);
+  const [deletingBulk, setDeletingBulk] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -434,7 +437,62 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
       return;
     }
     toast({ title: 'Eliminado', description: code });
+    setSelectedPdvCodes((prev) => prev.filter((c) => c !== code));
     startNew();
+    await load();
+  };
+
+  const togglePdvSelected = (pdvCode: string, checked: boolean) => {
+    const code = normalizePdvCode(pdvCode);
+    if (!code) return;
+    setSelectedPdvCodes((prev) => {
+      if (checked) return prev.includes(code) ? prev : [...prev, code];
+      return prev.filter((c) => c !== code);
+    });
+  };
+
+  const allFilteredSelected =
+    filtered.length > 0 && filtered.every((p) => selectedPdvCodes.includes(normalizePdvCode(p.pdvCode)));
+
+  const toggleSelectAllFiltered = (checked: boolean) => {
+    const codes = filtered.map((p) => normalizePdvCode(p.pdvCode)).filter(Boolean);
+    setSelectedPdvCodes((prev) => {
+      if (checked) {
+        const set = new Set([...prev, ...codes]);
+        return Array.from(set);
+      }
+      const drop = new Set(codes);
+      return prev.filter((c) => !drop.has(c));
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    const codes = selectedPdvCodes.map((c) => normalizePdvCode(c)).filter(Boolean);
+    if (codes.length === 0) {
+      toast({ variant: 'destructive', title: 'Sin selección', description: 'Marque una o más tiendas.' });
+      return;
+    }
+    if (
+      !confirm(
+        `¿Eliminar ${codes.length} tienda(s) del maestro de capacidad?\n\n${codes.slice(0, 12).join(', ')}${
+          codes.length > 12 ? '…' : ''
+        }\n\nEsta acción no se puede deshacer.`
+      )
+    ) {
+      return;
+    }
+    setDeletingBulk(true);
+    const res = await deleteStoreCapacityProfiles(codes);
+    setDeletingBulk(false);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Error al eliminar', description: res.error });
+      return;
+    }
+    toast({ title: 'Eliminación masiva', description: `${res.deleted} tienda(s) eliminadas.` });
+    const removed = new Set(codes);
+    const current = normalizePdvCode(draft.pdvCode || selectedId || '');
+    if (current && removed.has(current)) startNew();
+    setSelectedPdvCodes([]);
     await load();
   };
 
@@ -839,12 +897,57 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
 
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-base">Tablero por horizonte</CardTitle>
-              <CardDescription>
-                <strong>c/caja</strong> = capacidad conservadora · <strong>s/caja</strong> = máximo físico ·{' '}
-                <strong>Hoy</strong> almacén · <strong>Próxima</strong> + inbound TF (Excel) · <strong>Futura</strong> +
-                CEDI − salidas.
-              </CardDescription>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base">Tablero por horizonte</CardTitle>
+                  <CardDescription>
+                    <strong>c/caja</strong> = capacidad conservadora · <strong>s/caja</strong> = máximo físico ·{' '}
+                    <strong>Hoy</strong> almacén · <strong>Próxima</strong> + inbound TF (Excel) · <strong>Futura</strong>{' '}
+                    + CEDI − salidas.
+                  </CardDescription>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="selectAllBoard"
+                      checked={
+                        dashboardRows.length > 0 &&
+                        dashboardRows.every((r) =>
+                          selectedPdvCodes.includes(normalizePdvCode(r.profile.pdvCode))
+                        )
+                      }
+                      onCheckedChange={(v) => {
+                        const codes = dashboardRows
+                          .map((r) => normalizePdvCode(r.profile.pdvCode))
+                          .filter(Boolean);
+                        setSelectedPdvCodes((prev) => {
+                          if (v === true) return Array.from(new Set([...prev, ...codes]));
+                          const drop = new Set(codes);
+                          return prev.filter((c) => !drop.has(c));
+                        });
+                      }}
+                      disabled={dashboardRows.length === 0 || deletingBulk}
+                    />
+                    <Label htmlFor="selectAllBoard" className="text-xs font-normal cursor-pointer">
+                      Todas
+                    </Label>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    disabled={selectedPdvCodes.length === 0 || deletingBulk}
+                    onClick={() => void handleBulkDelete()}
+                  >
+                    {deletingBulk ? (
+                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="mr-1 h-3.5 w-3.5" />
+                    )}
+                    Eliminar ({selectedPdvCodes.length})
+                  </Button>
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="overflow-x-auto">
               {loading ? (
@@ -855,6 +958,7 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-10" />
                       <TableHead>PDV</TableHead>
                       <TableHead className="text-right">Almacén</TableHead>
                       <TableHead className="text-right">Inbound TF</TableHead>
@@ -868,7 +972,10 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {dashboardRows.map(({ profile: p, breakdown: b }) => (
+                    {dashboardRows.map(({ profile: p, breakdown: b }) => {
+                      const code = normalizePdvCode(p.pdvCode);
+                      const isChecked = selectedPdvCodes.includes(code);
+                      return (
                       <TableRow
                         key={p.id}
                         className={
@@ -881,6 +988,14 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                                 : undefined
                         }
                       >
+                        <TableCell>
+                          <Checkbox
+                            checked={isChecked}
+                            onCheckedChange={(v) => togglePdvSelected(code, v === true)}
+                            disabled={deletingBulk}
+                            aria-label={`Seleccionar ${code}`}
+                          />
+                        </TableCell>
                         <TableCell>
                           <div className="font-semibold">{p.pdvCode}</div>
                           <div className="text-xs text-muted-foreground">
@@ -952,10 +1067,11 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                           </Button>
                         </TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
                     {dashboardRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
+                        <TableCell colSpan={11} className="text-center text-muted-foreground py-8">
                           Sin tiendas. Importe cajones o cree un maestro.
                         </TableCell>
                       </TableRow>
@@ -972,13 +1088,43 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">Tiendas</CardTitle>
-                <CardDescription>{profiles.length} perfil(es)</CardDescription>
+                <CardDescription>
+                  {profiles.length} perfil(es)
+                  {selectedPdvCodes.length > 0 ? ` · ${selectedPdvCodes.length} seleccionada(s)` : ''}
+                </CardDescription>
                 <Input
                   placeholder="Filtrar PDV…"
                   value={filter}
                   onChange={(e) => setFilter(e.target.value)}
                   className="mt-2"
                 />
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="selectAllFiltered"
+                      checked={allFilteredSelected}
+                      onCheckedChange={(v) => toggleSelectAllFiltered(v === true)}
+                      disabled={filtered.length === 0 || deletingBulk}
+                    />
+                    <Label htmlFor="selectAllFiltered" className="text-xs font-normal cursor-pointer">
+                      Todas (filtro)
+                    </Label>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    disabled={selectedPdvCodes.length === 0 || deletingBulk}
+                    onClick={() => void handleBulkDelete()}
+                  >
+                    {deletingBulk ? (
+                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="mr-1 h-3.5 w-3.5" />
+                    )}
+                    Eliminar ({selectedPdvCodes.length})
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="max-h-[70vh] overflow-y-auto space-y-1 p-2">
                 {loading ? (
@@ -993,54 +1139,67 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                     const b = computeFootwearCapacityBreakdown(
                       buildBreakdownArgs(p, garmentsPerDrawer, forecast)
                     );
+                    const code = normalizePdvCode(p.pdvCode);
+                    const isChecked = selectedPdvCodes.includes(code);
                     const active =
                       selectedId === p.id || (!selectedId && normalizePdvCode(draft.pdvCode) === p.pdvCode);
                     return (
-                      <button
+                      <div
                         key={p.id}
-                        type="button"
-                        onClick={() => selectProfile(p)}
-                        className={`w-full text-left rounded-md border px-3 py-2 transition-colors ${
+                        className={`flex items-start gap-2 rounded-md border px-2 py-2 transition-colors ${
                           active ? 'border-sky-600 bg-sky-50 dark:bg-sky-950/40' : 'hover:bg-muted/60'
                         }`}
                       >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-semibold flex items-center gap-1.5">
-                            <Store className="h-3.5 w-3.5" />
-                            {p.pdvCode}
-                          </span>
-                          <Badge
-                            variant={
-                              b.hoyExceedsWithoutBox || b.futuraExceedsWithoutBox
-                                ? 'destructive'
-                                : b.hoyExceedsWithBox
-                                  ? 'secondary'
-                                  : 'secondary'
-                            }
-                            className={`tabular-nums text-[10px] ${
-                              b.hoyExceedsWithBox && !b.hoyExceedsWithoutBox
-                                ? 'bg-orange-500/20 text-orange-900'
-                                : ''
-                            }`}
-                          >
-                            {formatCapacityPctLabel(b.hoyOccupancyPctWithBox, b.hoyExceedsWithBox).replace(
-                              ' exceso',
-                              ''
-                            )}
-                            /
-                            {formatCapacityPctLabel(b.hoyOccupancyPctWithoutBox, b.hoyExceedsWithoutBox).replace(
-                              ' exceso',
-                              ''
-                            )}
-                          </Badge>
-                        </div>
-                        <p className="text-[11px] text-muted-foreground tabular-nums">
-                          hoy c/ {Math.round(b.hoyAvailableWithBox).toLocaleString()} · s/{' '}
-                          {Math.round(b.hoyAvailableWithoutBox).toLocaleString()}
-                          {b.calzadoEnProceso > 0 ? ` · CEDI +${b.calzadoEnProceso}` : ''}
-                          {p.exhibitionAffectsCapacity ? ' · exhib.' : ''}
-                        </p>
-                      </button>
+                        <Checkbox
+                          checked={isChecked}
+                          onCheckedChange={(v) => togglePdvSelected(code, v === true)}
+                          disabled={deletingBulk}
+                          className="mt-1"
+                          aria-label={`Seleccionar ${code}`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => selectProfile(p)}
+                          className="min-w-0 flex-1 text-left"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold flex items-center gap-1.5">
+                              <Store className="h-3.5 w-3.5" />
+                              {p.pdvCode}
+                            </span>
+                            <Badge
+                              variant={
+                                b.hoyExceedsWithoutBox || b.futuraExceedsWithoutBox
+                                  ? 'destructive'
+                                  : b.hoyExceedsWithBox
+                                    ? 'secondary'
+                                    : 'secondary'
+                              }
+                              className={`tabular-nums text-[10px] ${
+                                b.hoyExceedsWithBox && !b.hoyExceedsWithoutBox
+                                  ? 'bg-orange-500/20 text-orange-900'
+                                  : ''
+                              }`}
+                            >
+                              {formatCapacityPctLabel(b.hoyOccupancyPctWithBox, b.hoyExceedsWithBox).replace(
+                                ' exceso',
+                                ''
+                              )}
+                              /
+                              {formatCapacityPctLabel(b.hoyOccupancyPctWithoutBox, b.hoyExceedsWithoutBox).replace(
+                                ' exceso',
+                                ''
+                              )}
+                            </Badge>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground tabular-nums">
+                            hoy c/ {Math.round(b.hoyAvailableWithBox).toLocaleString()} · s/{' '}
+                            {Math.round(b.hoyAvailableWithoutBox).toLocaleString()}
+                            {b.calzadoEnProceso > 0 ? ` · CEDI +${b.calzadoEnProceso}` : ''}
+                            {p.exhibitionAffectsCapacity ? ' · exhib.' : ''}
+                          </p>
+                        </button>
+                      </div>
                     );
                   })
                 )}

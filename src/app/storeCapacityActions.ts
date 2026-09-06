@@ -471,6 +471,45 @@ export async function deleteStoreCapacityProfile(
   }
 }
 
+/** Eliminación masiva de maestros de capacidad (por PDV). */
+export async function deleteStoreCapacityProfiles(
+  pdvCodes: string[]
+): Promise<{ success: boolean; deleted: number; error?: string }> {
+  try {
+    const ids = Array.from(
+      new Set(
+        (pdvCodes || [])
+          .map((c) => normalizePdvCode(c))
+          .filter(Boolean)
+      )
+    );
+    if (ids.length === 0) {
+      return { success: false, deleted: 0, error: 'No hay tiendas seleccionadas.' };
+    }
+
+    let deleted = 0;
+    const chunkSize = 400;
+    for (let i = 0; i < ids.length; i += chunkSize) {
+      const chunk = ids.slice(i, i + chunkSize);
+      const batch = writeBatch(firestore);
+      for (const id of chunk) {
+        batch.delete(doc(firestore, COLLECTION, id));
+      }
+      await batch.commit();
+      deleted += chunk.length;
+    }
+
+    return { success: true, deleted };
+  } catch (error: any) {
+    console.error('deleteStoreCapacityProfiles:', error);
+    return {
+      success: false,
+      deleted: 0,
+      error: error?.message || 'No se pudo eliminar masivamente.',
+    };
+  }
+}
+
 /** Upsert masivo (importación Excel de capacidades). */
 export async function upsertStoreCapacityProfiles(
   profiles: Array<Partial<StoreCapacityProfile> & { pdvCode: string }>,
