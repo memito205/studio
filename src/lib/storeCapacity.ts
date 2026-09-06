@@ -53,18 +53,38 @@ export function normalizePdvCode(raw: string): string {
  * La capacidad de cajones es de calzado. La ropa ocupa cajones a razón de
  * `garmentsPerDrawer` prendas/cajón y reduce el cupo efectivo de calzado.
  * Accesorios no afectan.
+ *
+ * Exhibición (Outlet): si se pasa exhibition*, se resta del inventario antes
+ * de calcular ocupación (la sala no consume cajones de almacén).
  */
 export function computeFootwearCapacityBreakdown(args: {
   drawers: StoreDrawerCapacity[];
   ropaOnHand: number;
   calzadoOnHand: number;
   calzadoInTransit?: number;
+  ropaInTransit?: number;
   garmentsPerDrawer: number;
+  exhibitionAffectsCapacity?: boolean;
+  exhibitionCalzado?: number;
+  exhibitionRopa?: number;
 }): StoreFootwearCapacityBreakdown {
   const totals = computeStoreCapacityTotals(args.drawers || []);
   const rate = Math.max(1, Number(args.garmentsPerDrawer) || DEFAULT_GARMENTS_PER_DRAWER);
-  const ropa = Math.max(0, Number(args.ropaOnHand) || 0);
-  const drawersUsedByClothing = ropa / rate;
+
+  const exhCalz = args.exhibitionAffectsCapacity
+    ? Math.max(0, Number(args.exhibitionCalzado) || 0)
+    : 0;
+  const exhRopa = args.exhibitionAffectsCapacity
+    ? Math.max(0, Number(args.exhibitionRopa) || 0)
+    : 0;
+
+  const calzadoOnHand = Math.max(0, (Number(args.calzadoOnHand) || 0) - exhCalz);
+  const ropaOnHand = Math.max(0, (Number(args.ropaOnHand) || 0) - exhRopa);
+  const calzadoInTransit = Math.max(0, Number(args.calzadoInTransit) || 0);
+  const ropaInTransit = Math.max(0, Number(args.ropaInTransit) || 0);
+
+  const ropaForDrawers = ropaOnHand + ropaInTransit;
+  const drawersUsedByClothing = ropaForDrawers / rate;
   const drawersAvailableForFootwear = Math.max(0, totals.totalDrawers - drawersUsedByClothing);
 
   const avgCapWithBox =
@@ -72,12 +92,14 @@ export function computeFootwearCapacityBreakdown(args: {
   const capacityLostToClothing = drawersUsedByClothing * avgCapWithBox;
   const effectiveCapacityWithBox = Math.max(0, totals.totalWithBox - capacityLostToClothing);
 
-  const calzadoOnHand = Math.max(0, Number(args.calzadoOnHand) || 0);
-  const calzadoInTransit = Math.max(0, Number(args.calzadoInTransit) || 0);
   const occupied = calzadoOnHand + calzadoInTransit;
   const available = effectiveCapacityWithBox - occupied;
   const occupancyPct =
-    effectiveCapacityWithBox > 0 ? (occupied / effectiveCapacityWithBox) * 100 : occupied > 0 ? 100 : 0;
+    effectiveCapacityWithBox > 0
+      ? (occupied / effectiveCapacityWithBox) * 100
+      : occupied > 0
+        ? 100
+        : 0;
 
   return {
     totalDrawers: totals.totalDrawers,
@@ -88,10 +110,15 @@ export function computeFootwearCapacityBreakdown(args: {
     effectiveCapacityWithBox,
     calzadoOnHand,
     calzadoInTransit,
+    ropaOnHand,
+    ropaInTransit,
+    exhibitionCalzadoApplied: exhCalz,
+    exhibitionRopaApplied: exhRopa,
     occupied,
     available,
     occupancyPct,
     canReceive: available > 0,
+    exceeds: available < 0,
   };
 }
 

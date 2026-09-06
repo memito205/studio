@@ -1,13 +1,31 @@
 'use server';
 
-import { collection, deleteDoc, doc, getDoc, getDocs, setDoc, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, limit, query, setDoc, where, writeBatch } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
-import type { StoreCapacityProfile, StoreCapacitySettings, StoreDrawerCapacity, StoreInventorySnapshot } from '@/types';
-import { DEFAULT_GARMENTS_PER_DRAWER, normalizePdvCode } from '@/lib/storeCapacity';
+import type {
+  StoreCapacityProfile,
+  StoreCapacitySettings,
+  StoreDrawerCapacity,
+  StoreInboundQuantities,
+  StoreInventorySnapshot,
+  TransferEntry,
+  TransferStatus,
+  TfPlatformStatusRecord,
+} from '@/types';
+import { DEFAULT_GARMENTS_PER_DRAWER, normalizeInventoryGrupo, normalizePdvCode } from '@/lib/storeCapacity';
 
 const COLLECTION = 'storeCapacityProfiles';
 const SETTINGS_COLLECTION = 'storeCapacitySettings';
 const SETTINGS_DOC_ID = 'global';
+const TRANSFERS_COLLECTION = 'transfers';
+const TF_PLATFORM_STATUS_COLLECTION = 'tf_platform_status';
+
+/** Estados operativos que ocupan cupo futuro en destino. */
+const INBOUND_TRANSFER_STATUSES: TransferStatus[] = [
+  'En Tránsito',
+  'Recibido en Bodega',
+  'Enviado a Destino',
+];
 
 function sanitizeProfile(input: Partial<StoreCapacityProfile> & { pdvCode: string }): StoreCapacityProfile {
   const pdvCode = normalizePdvCode(input.pdvCode);
@@ -38,12 +56,102 @@ function sanitizeProfile(input: Partial<StoreCapacityProfile> & { pdvCode: strin
     pdvName: input.pdvName?.trim() || undefined,
     drawers,
     inventorySnapshot,
+    exhibitionAffectsCapacity: !!input.exhibitionAffectsCapacity,
+    exhibitionCalzado: Math.max(0, Number(input.exhibitionCalzado) || 0),
+    exhibitionRopa: Math.max(0, Number(input.exhibitionRopa) || 0),
     notes: input.notes?.trim() || undefined,
     active: input.active ?? true,
     createdAt: input.createdAt || now,
     updatedAt: now,
     updatedBy: input.updatedBy,
   };
+}
+
+function emptyInbound(): StoreInboundQuantities {
+  return { calzado: 0, ropa: 0, accesorios: 0, transferLines: 0, enRutaHoyLines: 0 };
+}
+
+function transferRouteKey(numeroTF: unknown, bodegaDestino: unknown): string {
+  const digits = String(numeroTF || '').replace(/\D/g, '');
+  const tf = digits ? String(Number(digits)) : '';
+  const whs = normalizePdvCode(String(bodegaDestino || ''));
+  return tf && whs ? `${tf}|${whs}` : '';
+}
+
+function addGrupoQty(
+  bucket: StoreInboundQuantities,
+  grupoRaw: string | undefined,
+  cantidad: number
+) {
+  const qty = Math.max(0, Number(cantidad) || 0);
+  if (!qty) return;
+  const grupo = normalizeInventoryGrupo(String(grupoRaw || '')) || 'calzado';
+  bucket[grupo] += qty;
+}
+
+/**
+ * Cantidades por bodega destino aún no entregadas / en camino:
+ * - Transferencias: En Tránsito, Recibido en Bodega, Enviado a Destino
+ * - Consulta TF: EN RUTA HOY (sin duplicar TF|DESTINO ya contado en transfers)
+ */
+export async function getInboundQuantitiesByWarehouse(): Promise<{
+  success: boolean;
+  data?: Record<string, StoreInboundQuantities>;
+  error?: string;
+}> {
+  try {
+    const byWhs: Record<string, StoreInboundQuantities> = {};
+    const countedKeys = new Set<string>();
+
+    const ensure = (code: string) => {
+      if (!byWhs[code]) byWhs[code] = emptyInbound();
+      return byWhs[code];
+    };
+
+    await Promise.all(
+      INBOUND_TRANSFER_STATUSES.map(async (status) => {
+        const q = query(
+          collection(firestore, TRANSFERS_COLLECTION),
+          where('status', '==', status),
+          limit(3000)
+        );
+        const snap = await getDocs(q);
+        snap.docs.forEach((d) => {
+          const t = d.data() as TransferEntry;
+          const dest = normalizePdvCode(t.bodegaDestino);
+          if (!dest) return;
+          const key = transferRouteKey(t.numeroTF, t.bodegaDestino);
+          if (key) countedKeys.add(key);
+          const bucket = ensure(dest);
+          bucket.transferLines += 1;
+          addGrupoQty(bucket, t.grupo, t.cantidad ?? 1);
+        });
+      })
+    );
+
+    const enRutaQ = query(
+      collection(firestore, TF_PLATFORM_STATUS_COLLECTION),
+      where('estadoPlataforma', '==', 'EN RUTA HOY'),
+      limit(3000)
+    );
+    const enRutaSnap = await getDocs(enRutaQ);
+    enRutaSnap.docs.forEach((d) => {
+      const raw = d.data() as TfPlatformStatusRecord;
+      const dest = normalizePdvCode(raw.bodegaDestino);
+      if (!dest) return;
+      const key = transferRouteKey(raw.numeroTF, raw.bodegaDestino);
+      if (key && countedKeys.has(key)) return;
+      if (key) countedKeys.add(key);
+      const bucket = ensure(dest);
+      bucket.enRutaHoyLines += 1;
+      addGrupoQty(bucket, raw.grupo, raw.cantidad ?? 1);
+    });
+
+    return { success: true, data: byWhs };
+  } catch (error: any) {
+    console.error('getInboundQuantitiesByWarehouse:', error);
+    return { success: false, error: error?.message || 'No se pudo cargar el inbound TF.' };
+  }
 }
 
 export async function getStoreCapacitySettings(): Promise<{

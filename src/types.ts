@@ -1196,6 +1196,13 @@ export interface StoreCapacityProfile {
   pdvName?: string;
   drawers: StoreDrawerCapacity[];
   inventorySnapshot?: StoreInventorySnapshot;
+  /**
+   * Outlet: el inventario total incluye exhibición en sala de ventas.
+   * Si está activo, calzado/ropa exhibidos se restan del inventario que ocupa cajones.
+   */
+  exhibitionAffectsCapacity?: boolean;
+  exhibitionCalzado?: number;
+  exhibitionRopa?: number;
   notes?: string;
   active: boolean;
   createdAt: string;
@@ -1217,12 +1224,28 @@ export interface StoreFootwearCapacityBreakdown {
   grossCapacityWithBox: number;
   capacityLostToClothing: number;
   effectiveCapacityWithBox: number;
+  /** Calzado que ocupa cajones (inventario − exhibición si aplica) */
   calzadoOnHand: number;
   calzadoInTransit: number;
+  /** Ropa que ocupa cajones (inventario − exhibición si aplica) */
+  ropaOnHand: number;
+  ropaInTransit: number;
+  exhibitionCalzadoApplied: number;
+  exhibitionRopaApplied: number;
   occupied: number;
   available: number;
   occupancyPct: number;
   canReceive: boolean;
+  exceeds: boolean;
+}
+
+/** Cantidades inbound por bodega destino (TF + transferencias). */
+export interface StoreInboundQuantities {
+  calzado: number;
+  ropa: number;
+  accesorios: number;
+  transferLines: number;
+  enRutaHoyLines: number;
 }
 
 export type StoreInventoryGrupo = 'calzado' | 'ropa' | 'accesorios';
