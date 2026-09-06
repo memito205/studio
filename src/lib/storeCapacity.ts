@@ -1,4 +1,15 @@
-import type { StoreCapacityProfile, StoreCapacityTotals, StoreDrawerCapacity, StoreInventorySnapshot } from '@/types';
+import type {
+  StoreCapacityProfile,
+  StoreCapacityTotals,
+  StoreDrawerCapacity,
+  StoreFootwearCapacityBreakdown,
+  StoreInventoryGrupo,
+  StoreInventoryImportRow,
+  StoreInventorySnapshot,
+} from '@/types';
+import { findCaseInsensitiveKey, normalizeHeader } from '@/lib/parsingUtils';
+
+export const DEFAULT_GARMENTS_PER_DRAWER = 100;
 
 export function emptyDrawerRow(partial?: Partial<StoreDrawerCapacity>): StoreDrawerCapacity {
   return {
@@ -38,7 +49,53 @@ export function normalizePdvCode(raw: string): string {
     .replace(/\s+/g, '');
 }
 
-/** Capacidad libre de calzado (modo con caja) vs inventario + en tránsito. */
+/**
+ * La capacidad de cajones es de calzado. La ropa ocupa cajones a razón de
+ * `garmentsPerDrawer` prendas/cajón y reduce el cupo efectivo de calzado.
+ * Accesorios no afectan.
+ */
+export function computeFootwearCapacityBreakdown(args: {
+  drawers: StoreDrawerCapacity[];
+  ropaOnHand: number;
+  calzadoOnHand: number;
+  calzadoInTransit?: number;
+  garmentsPerDrawer: number;
+}): StoreFootwearCapacityBreakdown {
+  const totals = computeStoreCapacityTotals(args.drawers || []);
+  const rate = Math.max(1, Number(args.garmentsPerDrawer) || DEFAULT_GARMENTS_PER_DRAWER);
+  const ropa = Math.max(0, Number(args.ropaOnHand) || 0);
+  const drawersUsedByClothing = ropa / rate;
+  const drawersAvailableForFootwear = Math.max(0, totals.totalDrawers - drawersUsedByClothing);
+
+  const avgCapWithBox =
+    totals.totalDrawers > 0 ? totals.totalWithBox / totals.totalDrawers : 0;
+  const capacityLostToClothing = drawersUsedByClothing * avgCapWithBox;
+  const effectiveCapacityWithBox = Math.max(0, totals.totalWithBox - capacityLostToClothing);
+
+  const calzadoOnHand = Math.max(0, Number(args.calzadoOnHand) || 0);
+  const calzadoInTransit = Math.max(0, Number(args.calzadoInTransit) || 0);
+  const occupied = calzadoOnHand + calzadoInTransit;
+  const available = effectiveCapacityWithBox - occupied;
+  const occupancyPct =
+    effectiveCapacityWithBox > 0 ? (occupied / effectiveCapacityWithBox) * 100 : occupied > 0 ? 100 : 0;
+
+  return {
+    totalDrawers: totals.totalDrawers,
+    drawersUsedByClothing,
+    drawersAvailableForFootwear,
+    grossCapacityWithBox: totals.totalWithBox,
+    capacityLostToClothing,
+    effectiveCapacityWithBox,
+    calzadoOnHand,
+    calzadoInTransit,
+    occupied,
+    available,
+    occupancyPct,
+    canReceive: available > 0,
+  };
+}
+
+/** @deprecated Prefer computeFootwearCapacityBreakdown */
 export function computeFootwearHeadroom(args: {
   totalWithBox: number;
   calzadoOnHand: number;
@@ -64,6 +121,64 @@ export function computeFootwearHeadroom(args: {
 export function inventoryTotal(snap?: StoreInventorySnapshot | null): number {
   if (!snap) return 0;
   return (Number(snap.accesorios) || 0) + (Number(snap.calzado) || 0) + (Number(snap.ropa) || 0);
+}
+
+export function normalizeInventoryGrupo(raw: string): StoreInventoryGrupo | null {
+  const n = normalizeHeader(String(raw || ''));
+  if (!n) return null;
+  if (n.includes('calzado') || n === 'calz' || n.includes('zapato')) return 'calzado';
+  if (n.includes('ropa') || n.includes('prenda') || n.includes('textil')) return 'ropa';
+  if (n.includes('accesorio') || n.includes('accesor')) return 'accesorios';
+  return null;
+}
+
+/**
+ * Excel global: columnas BODEGA | GRUPO | CANTIDAD (varias filas por bodega).
+ * Agrupa sumando cantidades por bodega+grupo.
+ */
+export function parseGlobalInventorySheet(
+  rows: Record<string, unknown>[]
+): { byBodega: Map<string, StoreInventorySnapshot>; rowCount: number; skipped: number } {
+  const byBodega = new Map<string, StoreInventorySnapshot>();
+  let rowCount = 0;
+  let skipped = 0;
+  const now = new Date().toISOString();
+
+  for (const row of rows) {
+    const bodegaKey = findCaseInsensitiveKey(row, 'bodega', 'pdv', 'tienda', 'codigo', 'código', 'almacen', 'almacén');
+    const grupoKey = findCaseInsensitiveKey(row, 'grupo', 'categoria', 'categoría', 'tipo', 'linea', 'línea');
+    const cantKey = findCaseInsensitiveKey(row, 'cantidad', 'cant', 'qty', 'unidades', 'stock');
+
+    if (!bodegaKey || !grupoKey || !cantKey) {
+      skipped += 1;
+      continue;
+    }
+
+    const bodega = normalizePdvCode(String(row[bodegaKey] ?? ''));
+    const grupo = normalizeInventoryGrupo(String(row[grupoKey] ?? ''));
+    const rawCant = row[cantKey];
+    const cantidad = typeof rawCant === 'number' ? rawCant : Number(String(rawCant ?? '').replace(/,/g, ''));
+
+    if (!bodega || !grupo || !Number.isFinite(cantidad)) {
+      skipped += 1;
+      continue;
+    }
+
+    rowCount += 1;
+    const prev = byBodega.get(bodega) || {
+      accesorios: 0,
+      calzado: 0,
+      ropa: 0,
+      updatedAt: now,
+      source: 'global_import' as const,
+    };
+    prev[grupo] = (Number(prev[grupo]) || 0) + Math.max(0, cantidad);
+    prev.updatedAt = now;
+    prev.source = 'global_import';
+    byBodega.set(bodega, prev);
+  }
+
+  return { byBodega, rowCount, skipped };
 }
 
 type SheetMatrix = unknown[][];
@@ -103,13 +218,11 @@ export function parseStoreCapacitySheet(
   if (!matrix?.length) return null;
 
   let pdvCode = '';
-  // Buscar celda PDV cerca del encabezado
   for (let r = 0; r < Math.min(8, matrix.length); r++) {
     const row = matrix[r] || [];
     for (let c = 0; c < Math.min(row.length, 8); c++) {
       const label = cellStr(row, c).toLowerCase();
       if (label === 'pdv' || label === 'tienda') {
-        // Valor suele estar a la derecha (a veces saltando columnas)
         for (let k = c + 1; k < Math.min(row.length, c + 6); k++) {
           const v = cellStr(row, k);
           if (v && !/^pdv$/i.test(v)) {
@@ -157,14 +270,12 @@ export function parseStoreCapacitySheet(
     }
   }
 
-  // Inventario: buscar filas ACCESORIOS / CALZADO / ROPA
   let accesorios = 0;
   let calzado = 0;
   let ropa = 0;
   let foundInv = false;
   for (let r = 0; r < matrix.length; r++) {
     const label = cellStr(matrix[r], 0).toLowerCase().replace(/\s+/g, '');
-    // Cantidad suele estar en col B (índice 1)
     if (label === 'accesorios' || label.includes('accesorio')) {
       accesorios = cellNum(matrix[r], 1);
       foundInv = true;
@@ -197,3 +308,5 @@ export function parseStoreCapacitySheet(
     notes: undefined,
   };
 }
+
+export type { StoreInventoryImportRow };

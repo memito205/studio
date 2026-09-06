@@ -1169,12 +1169,25 @@ export interface StoreInventorySnapshot {
   calzado: number;
   ropa: number;
   updatedAt?: string;
-  source?: 'manual' | 'import' | 'system';
+  source?: 'manual' | 'import' | 'global_import' | 'system';
+}
+
+/** Parámetros globales del módulo (editables rápido). */
+export interface StoreCapacitySettings {
+  id: 'global';
+  /**
+   * Prendas de ropa que ocupan 1 cajón (resta cajones al cupo de calzado).
+   * Default operativo: 100. Accesorios no afectan capacidad.
+   */
+  garmentsPerDrawerForClothing: number;
+  updatedAt: string;
+  updatedBy?: string;
 }
 
 /**
  * Maestro de capacidad de almacenamiento por PDV/tienda.
- * Pensado para cruzar luego con transferencias (calzado en tránsito) e inventario.
+ * Los cajones definen capacidad base de calzado; la ropa descuenta cajones.
+ * Pensado para cruzar luego con transferencias (calzado en tránsito).
  */
 export interface StoreCapacityProfile {
   id: string;
@@ -1194,6 +1207,30 @@ export interface StoreCapacityTotals {
   totalWithBox: number;
   totalWithoutBox: number;
   totalDrawers: number;
+}
+
+/** Resultado de cupo de calzado tras descontar cajones ocupados por ropa. */
+export interface StoreFootwearCapacityBreakdown {
+  totalDrawers: number;
+  drawersUsedByClothing: number;
+  drawersAvailableForFootwear: number;
+  grossCapacityWithBox: number;
+  capacityLostToClothing: number;
+  effectiveCapacityWithBox: number;
+  calzadoOnHand: number;
+  calzadoInTransit: number;
+  occupied: number;
+  available: number;
+  occupancyPct: number;
+  canReceive: boolean;
+}
+
+export type StoreInventoryGrupo = 'calzado' | 'ropa' | 'accesorios';
+
+export interface StoreInventoryImportRow {
+  bodega: string;
+  grupo: StoreInventoryGrupo;
+  cantidad: number;
 }
 
 // Types for Merchandise Reception
