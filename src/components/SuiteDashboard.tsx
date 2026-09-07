@@ -374,9 +374,11 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     if (normalizedRole === 'tiendas') {
       visibleModules = modules.filter((module) => module.key === 'tf_platform_lookup');
     }
-    // Perfil restringido (antes portal etiquetado externo): solo Tallado de mercancía
+    // Perfil restringido: Portal etiquetado externo + Tallado de mercancía
     if (normalizedRole === 'external_operator') {
-      visibleModules = modules.filter((module) => module.key === 'tallado_mercancia');
+      visibleModules = modules.filter(
+        (module) => module.key === 'tallado_mercancia' || module.key === 'external_portal'
+      );
     }
 
     // Red de seguridad: admin/supervisor siempre ven Consulta Estado TF
