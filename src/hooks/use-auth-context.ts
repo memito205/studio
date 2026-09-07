@@ -5,6 +5,8 @@ import type { User } from 'firebase/auth';
 
 import type { UserRole } from '@/types';
 
+export type { UserRole };
+
 interface AuthContextType {
     user: User | null;
     role: UserRole | null;

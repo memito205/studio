@@ -414,7 +414,7 @@ export interface TransferNovelty {
 }
 
 // Types for Transfers Module
-export type UserRole = 'admin' | 'supervisor' | 'operator' | 'office' | 'conductor' | 'tiendas';
+export type UserRole = 'admin' | 'supervisor' | 'operator' | 'office' | 'conductor' | 'tiendas' | 'external_operator';
 export type TransferStatus = 'En Tránsito' | 'Recolectado en Ruta' | 'Entregado en Ruta' | 'Recibido en Bodega' | 'Validado Supervisor' | 'Enviado a Destino';
 
 /** Estado plataforma (Analizador) consultable por tiendas — distinto del status operativo de transfers. */

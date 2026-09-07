@@ -177,7 +177,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             description: "Escanee TF o código alterno, registre inicio/fin por unidad, pausas del grupo y genere reporte PDF.",
             actionText: "Acceder",
             onAction: onNavigateToTalladoMercancia,
-            roles: ['admin', 'supervisor', 'operator']
+            roles: ['admin', 'supervisor', 'operator', 'external_operator']
         },
         {
             key: 'dispatch_manager',
@@ -373,6 +373,10 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     }
     if (normalizedRole === 'tiendas') {
       visibleModules = modules.filter((module) => module.key === 'tf_platform_lookup');
+    }
+    // Perfil restringido (antes portal etiquetado externo): solo Tallado de mercancía
+    if (normalizedRole === 'external_operator') {
+      visibleModules = modules.filter((module) => module.key === 'tallado_mercancia');
     }
 
     // Red de seguridad: admin/supervisor siempre ven Consulta Estado TF
