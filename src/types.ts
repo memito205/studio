@@ -477,6 +477,11 @@ export interface TransferEntry {
   cantidad?: number;
   marca?: string;
   grupo?: string;
+  /**
+   * Código de etiqueta alterno (cuando la TF no se etiqueta con el número TF).
+   * Usado por Tallado mercancía al escanear.
+   */
+  codigoAlterno?: string;
   status: TransferStatus;
   recibidoAt?: Date;
   enviadoAt?: Date;
@@ -1148,7 +1153,7 @@ export interface CyclicInventoryCountRecord {
   consolidatedLineIds?: string[];
 }
 
-export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'dashboards_gastos_transporte' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'tf_platform_lookup' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory' | 'store_capacity';
+export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'dashboards_gastos_transporte' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'tf_platform_lookup' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory' | 'store_capacity' | 'tallado_mercancia';
 
 /** Capacidad de un tipo de cajón en una tienda (medida × carga × cantidad). */
 export interface StoreDrawerCapacity {
@@ -1444,6 +1449,74 @@ export interface StoreInventoryImportRow {
   cantidad: number;
   /** Cantidad comprometida a despachar (resta del inventario que ocupa cupo). */
   cantComprometida?: number;
+}
+
+/** Tipos de pausa colectiva del grupo en Tallado (independientes de otros módulos). */
+export type TalladoPauseType = 'desayuno' | 'almuerzo' | 'fin_jornada' | 'otros';
+
+export interface TalladoShift {
+  id: string;
+  grupo: string;
+  peopleCount: number;
+  userId: string;
+  userName: string;
+  startedAt: string;
+  endedAt?: string;
+  status: 'active' | 'closed';
+}
+
+export interface TalladoUnit {
+  id: string;
+  shiftId: string;
+  grupo: string;
+  /** Código escaneado (numeroTF o codigoAlterno normalizado). */
+  scanCode: string;
+  transferIds: string[];
+  numeroTF: string;
+  codigoAlterno?: string;
+  bodegaDestino: string;
+  bodegaOrigen?: string;
+  marca: string;
+  grupoMercancia?: string;
+  cantidad: number;
+  startedAt: string;
+  endedAt?: string;
+  /** Duración bruta ms (fin − inicio). */
+  durationMs?: number;
+  /** Duración neta ms (bruta − solape con pausas del turno). */
+  durationNetMs?: number;
+  userId: string;
+  userName: string;
+  status: 'in_progress' | 'done';
+}
+
+export interface TalladoPause {
+  id: string;
+  shiftId: string;
+  grupo: string;
+  type: TalladoPauseType;
+  note?: string;
+  pausedAt: string;
+  resumedAt?: string;
+  durationMs?: number;
+  userId: string;
+  userName: string;
+  status: 'open' | 'closed';
+}
+
+/** Resultado de buscar un código en transferencias para Tallado. */
+export interface TalladoTransferLookup {
+  scanCode: string;
+  matchedBy: 'numeroTF' | 'codigoAlterno';
+  transferIds: string[];
+  numeroTF: string;
+  codigoAlterno?: string;
+  bodegaDestino: string;
+  bodegaOrigen?: string;
+  marca: string;
+  grupoMercancia?: string;
+  cantidad: number;
+  lineCount: number;
 }
 
 // Types for Merchandise Reception

@@ -3930,7 +3930,14 @@ export async function syncAnalysisRecords(rawJson: any[]): Promise<{ success: bo
                 fecha: row['Fecha'] ? convertDatesToTimestamps({ f: parseFlexibleDate(row['Fecha']) }).f : 
                        (row['fechaFinalizado'] ? convertDatesToTimestamps({ f: parseFlexibleDate(row['fechaFinalizado']) }).f : null),
                 cantidad: Number(row['Cantidad'] || row['CANTIDAD'] || 1),
-                
+                codigoAlterno: String(
+                    row['Codigo Alterno'] ||
+                      row['Código Alterno'] ||
+                      row['CODIGO ALTERNO'] ||
+                      row['codigoAlterno'] ||
+                      ''
+                ).trim() || undefined,
+
                 // Platform Specific persistence
                 estadoPlataforma: row['estadoPlataforma'] || row['ESTADO PLATAFORMA'] || '',
                 novedad: row['novedad'] || row['NOVEDAD'] || '',

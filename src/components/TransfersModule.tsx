@@ -2939,7 +2939,7 @@ const CollectionTabView: React.FC<{
 
 const DownloadTemplateButton: React.FC = () => {
     const handleDownload = () => {
-        const headers = ["Fecha", "Numero TF", "Bodega Origen", "Bodega Destino", "Cantidad", "Marca", "Grupo"];
+        const headers = ["Fecha", "Numero TF", "Bodega Origen", "Bodega Destino", "Cantidad", "Marca", "Grupo", "Codigo Alterno"];
         const exampleData = [
             {
                 "Fecha": "2024-07-29",
@@ -2948,7 +2948,8 @@ const DownloadTemplateButton: React.FC = () => {
                 "Bodega Destino": "TIENDA BELLO",
                 "Cantidad": 1,
                 "Marca": "MARCA EJEMPLO",
-                "Grupo": "CALZADO"
+                "Grupo": "CALZADO",
+                "Codigo Alterno": "ALT-101"
             }
         ];
         
@@ -3176,6 +3177,13 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
                   cantidad: Number(row['Cantidad'] || 1),
                   marca: String(row['Marca'] || ''),
                   grupo: String(row['Grupo'] || ''),
+                  codigoAlterno: String(
+                    row['Codigo Alterno'] ||
+                      row['Código Alterno'] ||
+                      row['CODIGO ALTERNO'] ||
+                      row['codigoAlterno'] ||
+                      ''
+                  ).trim() || undefined,
               } as Omit<TransferEntry, 'id' | 'status'>;
           }).filter((r): r is Omit<TransferEntry, 'id' | 'status'> => r !== null);
           

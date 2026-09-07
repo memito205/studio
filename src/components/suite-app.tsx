@@ -81,6 +81,7 @@ const TransferNovelties = dynamic(() => import('@/components/TransferNovelties')
 const RemisionModule = dynamic(() => import('./RemisionModule').then(mod => mod.RemisionModule), { loading: () => <LoadingSpinner /> });
 const CyclicInventoryModule = dynamic(() => import('@/components/CyclicInventoryModule').then(mod => mod.CyclicInventoryModule), { loading: () => <LoadingSpinner /> });
 const StoreCapacityModule = dynamic(() => import('@/components/store-capacity/StoreCapacityModule').then(mod => mod.StoreCapacityModule), { loading: () => <LoadingSpinner /> });
+const TalladoMercanciaModule = dynamic(() => import('@/components/tallado-mercancia/TalladoMercanciaModule').then(mod => mod.TalladoMercanciaModule), { loading: () => <LoadingSpinner /> });
 const GastosTransporte = dynamic(() => import('@/components/gastos-transporte/GastosTransporte'), { loading: () => <LoadingSpinner /> });
 
 
@@ -733,6 +734,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const handleNavigateToRemisionModule = () => setAppStep('remision');
   const handleNavigateToCyclicInventory = () => setAppStep('cyclic_inventory');
   const handleNavigateToStoreCapacity = () => setAppStep('store_capacity');
+  const handleNavigateToTalladoMercancia = () => setAppStep('tallado_mercancia');
 
   const handleStartPacking = async (order: WholesaleOrder) => {
       if (!user) {
@@ -895,6 +897,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToRemisionModule={handleNavigateToRemisionModule}
                 onNavigateToCyclicInventory={handleNavigateToCyclicInventory}
                 onNavigateToStoreCapacity={handleNavigateToStoreCapacity}
+                onNavigateToTalladoMercancia={handleNavigateToTalladoMercancia}
             />;
           case 'upload': return <FileUpload onProcessFile={handleFileProcess} isLoading={isLoading} onGoToHistorical={handleGoToHistorical} onReturnToSuite={handleReturnToSuite} reportDate={reportDate} onDateChange={setReportDate} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} />;
           case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} isSavingJustifications={isSavingJustifications} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} onReloadJustificationsFromServer={handleReloadJustificationsFromServer} referenceGoals={referenceGoals} onReferenceGoalsChange={setReferenceGoals} operationPulses={pulsesForDay} isReportContextLoading={isReportContextLoading} isReportContextReady={isReportContextReady} />;
@@ -942,6 +945,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           case 'remision': return <RemisionModule onReturn={handleReturnToSuite} />;
           case 'cyclic_inventory': return <CyclicInventoryModule onReturnToSuite={handleReturnToSuite} />;
           case 'store_capacity': return <StoreCapacityModule onReturnToSuite={handleReturnToSuite} />;
+          case 'tallado_mercancia': return <TalladoMercanciaModule onReturnToSuite={handleReturnToSuite} />;
           case 'routes': return <RoutesModule onReturnToSuite={handleReturnToSuite} />;
           case 'dashboards': return <DashboardsModule onReturnToSuite={handleNavigateToDashboardsEcommerceMenu} />;
           case 'dashboards_main_menu': return <DashboardsMainMenu onNavigateEcommerce={handleNavigateToDashboardsEcommerceMenu} onNavigateBodega={handleNavigateToDashboardsBodegaMenu} onReturnToSuite={handleReturnToSuite} />;
@@ -997,6 +1001,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToRemisionModule={handleNavigateToRemisionModule}
                 onNavigateToCyclicInventory={handleNavigateToCyclicInventory}
                 onNavigateToStoreCapacity={handleNavigateToStoreCapacity}
+                onNavigateToTalladoMercancia={handleNavigateToTalladoMercancia}
             />;
       }
     }

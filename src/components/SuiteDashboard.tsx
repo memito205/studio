@@ -2,7 +2,7 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle, Timer, ClipboardList, Store, Warehouse } from 'lucide-react';
+import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle, Timer, ClipboardList, Store, Warehouse, ScanLine } from 'lucide-react';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -68,6 +68,7 @@ interface SuiteDashboardProps {
     onNavigateToRemisionModule: () => void;
     onNavigateToCyclicInventory: () => void;
     onNavigateToStoreCapacity: () => void;
+    onNavigateToTalladoMercancia: () => void;
 }
 
 export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({ 
@@ -95,6 +96,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToRemisionModule,
     onNavigateToCyclicInventory,
     onNavigateToStoreCapacity,
+    onNavigateToTalladoMercancia,
 }) => {
     const { role } = useAuth();
     const { toast } = useToast();
@@ -167,6 +169,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Acceder",
             onAction: onNavigateToStoreCapacity,
             roles: ['admin', 'supervisor', 'office']
+        },
+        {
+            key: 'tallado_mercancia',
+            icon: ScanLine,
+            title: "Tallado de mercancía",
+            description: "Escanee TF o código alterno, registre inicio/fin por unidad, pausas del grupo y genere reporte PDF.",
+            actionText: "Acceder",
+            onAction: onNavigateToTalladoMercancia,
+            roles: ['admin', 'supervisor', 'operator']
         },
         {
             key: 'dispatch_manager',
