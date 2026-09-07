@@ -23,6 +23,13 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import type {
@@ -42,7 +49,13 @@ import {
   startTalladoUnit,
   updateTalladoShiftPeople,
 } from '@/app/talladoMercanciaActions';
-import { downloadTalladoReportPdf } from '@/lib/talladoMercanciaPdf';
+import {
+  downloadTalladoDayConsolidatedPdf,
+  downloadTalladoHourlyPdf,
+  downloadTalladoReportPdf,
+  localHourFromIso,
+} from '@/lib/talladoMercanciaPdf';
+import { TalladoCameraScanner } from '@/components/tallado-mercancia/TalladoCameraScanner';
 
 interface TalladoMercanciaModuleProps {
   onReturnToSuite: () => void;
@@ -98,10 +111,16 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const [dashShifts, setDashShifts] = useState<TalladoShift[]>([]);
   const [dashUnits, setDashUnits] = useState<TalladoUnit[]>([]);
   const [dashPauses, setDashPauses] = useState<TalladoPause[]>([]);
+  const [reportHour, setReportHour] = useState(() => String(new Date().getHours()));
+  const [dashReportHour, setDashReportHour] = useState(() => String(new Date().getHours()));
 
   const openPause = useMemo(() => pauses.find((p) => p.status === 'open') || null, [pauses]);
   const inProgress = useMemo(() => units.filter((u) => u.status === 'in_progress'), [units]);
   const doneUnits = useMemo(() => units.filter((u) => u.status === 'done'), [units]);
+  const hourOptions = useMemo(
+    () => Array.from({ length: 24 }, (_, h) => ({ value: String(h), label: `${String(h).padStart(2, '0')}:00` })),
+    []
+  );
 
   const refreshShift = useCallback(async (shiftId: string) => {
     const res = await listTalladoShiftBundle(shiftId);
@@ -149,45 +168,59 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     toast({ title: 'Turno iniciado', description: `${res.data.grupo} · ${res.data.peopleCount} persona(s)` });
   };
 
+  const processScanCode = useCallback(
+    async (raw: string) => {
+      if (!shift?.id || !user?.uid) return;
+      if (openPause) {
+        toast({ variant: 'destructive', title: 'En pausa', description: 'Reanude la pausa antes de escanear.' });
+        return;
+      }
+      const code = String(raw || '').trim();
+      if (!code) return;
+      setScanning(true);
+      const res = await scanTalladoCode({
+        shiftId: shift.id,
+        rawCode: code,
+        userId: user.uid,
+        userName: user.displayName || user.email || 'Operario',
+        grupo: shift.grupo,
+        autoStart: false,
+      });
+      setScanning(false);
+      setScanCode('');
+      if (!res.success) {
+        toast({ variant: 'destructive', title: 'Escaneo', description: res.error });
+        setPendingLookup(null);
+        return;
+      }
+      if (res.action === 'finished') {
+        setPendingLookup(null);
+        toast({
+          title: 'Fin registrado',
+          description: `${res.unit?.scanCode} · neto ${fmtDuration(res.unit?.durationNetMs)}`,
+        });
+        await refreshShift(shift.id);
+        return;
+      }
+      if (res.lookup) {
+        setPendingLookup(res.lookup);
+        toast({ title: 'TF encontrada', description: 'Confirme Inicio para registrar el comienzo.' });
+      }
+    },
+    [shift, user, openPause, toast, refreshShift]
+  );
+
   const handleScanSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!shift?.id || !user?.uid) return;
-    if (openPause) {
-      toast({ variant: 'destructive', title: 'En pausa', description: 'Reanude la pausa antes de escanear.' });
-      return;
-    }
-    const code = scanCode.trim();
-    if (!code) return;
-    setScanning(true);
-    const res = await scanTalladoCode({
-      shiftId: shift.id,
-      rawCode: code,
-      userId: user.uid,
-      userName: user.displayName || user.email || 'Operario',
-      grupo: shift.grupo,
-      autoStart: false,
-    });
-    setScanning(false);
-    setScanCode('');
-    if (!res.success) {
-      toast({ variant: 'destructive', title: 'Escaneo', description: res.error });
-      setPendingLookup(null);
-      return;
-    }
-    if (res.action === 'finished') {
-      setPendingLookup(null);
-      toast({
-        title: 'Fin registrado',
-        description: `${res.unit?.scanCode} · neto ${fmtDuration(res.unit?.durationNetMs)}`,
-      });
-      await refreshShift(shift.id);
-      return;
-    }
-    if (res.lookup) {
-      setPendingLookup(res.lookup);
-      toast({ title: 'TF encontrada', description: 'Confirme Inicio para registrar el comienzo.' });
-    }
+    await processScanCode(scanCode);
   };
+
+  const handleCameraDetected = useCallback(
+    (code: string) => {
+      void processScanCode(code);
+    },
+    [processScanCode]
+  );
 
   const handleConfirmStart = async () => {
     if (!shift?.id || !pendingLookup || !user?.uid) return;
@@ -261,9 +294,59 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     toast({ title: 'Personas actualizadas', description: String(peopleCount) });
   };
 
-  const handlePdf = () => {
+  const handlePdfTurno = () => {
     if (!shift) return;
     downloadTalladoReportPdf({ shift, units, pauses });
+  };
+
+  const handlePdfHoraTurno = () => {
+    if (!shift) return;
+    downloadTalladoHourlyPdf({
+      hour: Number(reportHour),
+      shift,
+      units,
+      pauses,
+      scopeLabel: `Turno ${shift.grupo}`,
+      dayLabel: new Date().toLocaleDateString('es-CO'),
+    });
+  };
+
+  const handlePdfDiaConsolidado = async () => {
+    let shifts = dashShifts;
+    let dayUnits = dashUnits;
+    let dayPauses = dashPauses;
+    if (!shifts.length) {
+      const res = await listTalladoDashboard();
+      if (res.success) {
+        shifts = res.shifts || [];
+        dayUnits = res.units || [];
+        dayPauses = res.pauses || [];
+        setDashShifts(shifts);
+        setDashUnits(dayUnits);
+        setDashPauses(dayPauses);
+      }
+    }
+    if (!shifts.length && shift) {
+      shifts = [shift];
+      dayUnits = units;
+      dayPauses = pauses;
+    }
+    downloadTalladoDayConsolidatedPdf({
+      shifts,
+      units: dayUnits,
+      pauses: dayPauses,
+      dayLabel: new Date().toLocaleDateString('es-CO'),
+    });
+  };
+
+  const handlePdfHoraDashboard = () => {
+    downloadTalladoHourlyPdf({
+      hour: Number(dashReportHour),
+      units: dashUnits,
+      pauses: dashPauses,
+      scopeLabel: 'Consolidado del día',
+      dayLabel: new Date().toLocaleDateString('es-CO'),
+    });
   };
 
   const loadDashboard = useCallback(async () => {
@@ -294,14 +377,16 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
 
     const byHour = new Map<string, { qty: number; units: number; pauseMin: number }>();
     for (const u of done) {
-      const h = String(u.endedAt || u.startedAt).slice(11, 13) || '??';
+      const hn = localHourFromIso(u.endedAt || u.startedAt);
+      const h = hn == null ? '??' : String(hn).padStart(2, '0');
       const prev = byHour.get(h) || { qty: 0, units: 0, pauseMin: 0 };
       prev.qty += Number(u.cantidad) || 0;
       prev.units += 1;
       byHour.set(h, prev);
     }
     for (const p of dashPauses) {
-      const h = String(p.pausedAt).slice(11, 13) || '??';
+      const hn = localHourFromIso(p.pausedAt);
+      const h = hn == null ? '??' : String(hn).padStart(2, '0');
       const prev = byHour.get(h) || { qty: 0, units: 0, pauseMin: 0 };
       prev.pauseMin += Math.round((Number(p.durationMs) || 0) / 60000);
       byHour.set(h, prev);
@@ -414,11 +499,48 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                 )}
                 <Badge variant="outline">{inProgress.length} en proceso</Badge>
                 <Badge variant="outline">{doneUnits.length} cerradas</Badge>
-                <Button type="button" size="sm" variant="outline" onClick={handlePdf}>
-                  <FileDown className="mr-1.5 h-4 w-4" />
-                  PDF reporte
-                </Button>
               </div>
+
+              <Card className="border-sky-600/20">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Reportes PDF</CardTitle>
+                  <CardDescription>
+                    Turno actual, franja horaria específica o consolidado del día (usa datos del dashboard si ya se
+                    cargaron).
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-wrap items-end gap-2">
+                  <Button type="button" size="sm" variant="outline" onClick={handlePdfTurno}>
+                    <FileDown className="mr-1.5 h-4 w-4" />
+                    PDF turno
+                  </Button>
+                  <div className="flex items-end gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Hora</Label>
+                      <Select value={reportHour} onValueChange={setReportHour}>
+                        <SelectTrigger className="w-[100px] h-9">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {hourOptions.map((o) => (
+                            <SelectItem key={o.value} value={o.value}>
+                              {o.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <Button type="button" size="sm" variant="outline" onClick={handlePdfHoraTurno}>
+                      <FileDown className="mr-1.5 h-4 w-4" />
+                      PDF por hora
+                    </Button>
+                  </div>
+                  <Button type="button" size="sm" variant="secondary" onClick={() => void handlePdfDiaConsolidado()}>
+                    <FileDown className="mr-1.5 h-4 w-4" />
+                    PDF día consolidado
+                  </Button>
+                </CardContent>
+              </Card>
 
               <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
                 <div className="space-y-4">
@@ -435,15 +557,21 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                           ref={scanRef}
                           value={scanCode}
                           onChange={(e) => setScanCode(e.target.value)}
-                          placeholder="Escanee aquí…"
+                          placeholder="Escanee o digite aquí…"
                           className="font-mono text-lg h-12"
                           disabled={!!openPause || scanning}
                           autoComplete="off"
+                          inputMode="text"
                         />
                         <Button type="submit" disabled={!!openPause || scanning || !scanCode.trim()}>
                           {scanning ? <Loader2 className="h-4 w-4 animate-spin" /> : 'OK'}
                         </Button>
                       </form>
+
+                      <TalladoCameraScanner
+                        disabled={!!openPause || scanning}
+                        onDetected={handleCameraDetected}
+                      />
 
                       {pendingLookup ? (
                         <div className="rounded-md border border-sky-600/30 bg-sky-50/50 dark:bg-sky-950/20 p-3 space-y-2">
@@ -661,7 +789,30 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
 
         {canAdmin ? (
           <TabsContent value="admin" className="space-y-4 mt-4">
-            <div className="flex justify-end">
+            <div className="flex flex-wrap justify-end gap-2 items-end">
+              <div className="space-y-1">
+                <Label className="text-xs">Hora PDF</Label>
+                <Select value={dashReportHour} onValueChange={setDashReportHour}>
+                  <SelectTrigger className="w-[100px] h-9">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {hourOptions.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={handlePdfHoraDashboard}>
+                <FileDown className="mr-1.5 h-4 w-4" />
+                PDF por hora
+              </Button>
+              <Button type="button" variant="secondary" size="sm" onClick={() => void handlePdfDiaConsolidado()}>
+                <FileDown className="mr-1.5 h-4 w-4" />
+                PDF día consolidado
+              </Button>
               <Button type="button" variant="outline" disabled={dashLoading} onClick={() => void loadDashboard()}>
                 {dashLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Actualizar
