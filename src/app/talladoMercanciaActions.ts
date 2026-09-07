@@ -40,7 +40,7 @@ function stripUndefinedDeep(value: unknown): unknown {
   return out;
 }
 
-export function normalizeTalladoScanCode(raw: string): string {
+function normalizeTalladoScanCode(raw: string): string {
   return String(raw || '')
     .trim()
     .toUpperCase()
@@ -54,7 +54,7 @@ function overlapMs(aStart: number, aEnd: number, bStart: number, bEnd: number): 
 }
 
 /** Resta de un intervalo los solapes con pausas cerradas/abiertas del mismo turno. */
-export function computeNetDurationMs(
+function computeNetDurationMs(
   startedAtIso: string,
   endedAtIso: string,
   pauses: Array<Pick<TalladoPause, 'pausedAt' | 'resumedAt'>>
