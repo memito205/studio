@@ -1,6 +1,7 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type { TalladoPause, TalladoShift, TalladoUnit } from '@/types';
+import { TALLADO_DEFAULT_DESTINO } from '@/lib/talladoCatalog';
 
 const PAUSE_LABELS: Record<string, string> = {
   desayuno: 'Desayuno',
@@ -8,6 +9,33 @@ const PAUSE_LABELS: Record<string, string> = {
   fin_jornada: 'Fin jornada',
   otros: 'Otros',
 };
+
+function isSinRemision(u: TalladoUnit): boolean {
+  if (u.source === 'catalogo') return true;
+  const dest = String(u.bodegaDestino || '')
+    .trim()
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  const marca = String(u.marca || '')
+    .trim()
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  const target = TALLADO_DEFAULT_DESTINO.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return dest === target || marca === target || dest.includes('SIN REMISION') || marca.includes('SIN REMISION');
+}
+
+/** Marca para reportes: catálogo / sin remisión siempre como MERCANCIA SIN REMISIONAR. */
+function reportMarca(u: TalladoUnit): string {
+  if (isSinRemision(u)) return TALLADO_DEFAULT_DESTINO;
+  return u.marca || 'Sin marca';
+}
+
+function reportDestino(u: TalladoUnit): string {
+  if (isSinRemision(u)) return TALLADO_DEFAULT_DESTINO;
+  return u.bodegaDestino || '—';
+}
 
 function fmtTime(iso?: string) {
   if (!iso) return '—';
@@ -58,15 +86,15 @@ function writeUnitsAndPauses(
 ) {
   autoTable(doc, {
     startY,
-    head: [['Código', 'TF', 'Destino', 'Marca', 'Cant.', 'Inicio', 'Fin', 'Bruto', 'Neto', 'Grupo']],
+    head: [['Código', 'TF / Ref', 'Destino', 'Marca', 'Cant.', 'Inicio', 'Fin', 'Bruto', 'Neto', 'Grupo']],
     body:
       units.length === 0
         ? [['—', 'Sin unidades', '—', '—', '—', '—', '—', '—', '—', '—']]
         : units.map((u) => [
             u.scanCode,
-            u.numeroTF,
-            u.bodegaDestino,
-            u.marca,
+            isSinRemision(u) ? u.referencia || u.numeroTF || u.scanCode : u.numeroTF,
+            reportDestino(u),
+            reportMarca(u),
             String(u.cantidad),
             fmtTime(u.startedAt),
             fmtTime(u.endedAt),
@@ -212,7 +240,7 @@ export function downloadTalladoDayConsolidatedPdf(opts: {
 
   const byMarca = new Map<string, number>();
   for (const u of done) {
-    const m = u.marca || 'Sin marca';
+    const m = reportMarca(u);
     byMarca.set(m, (byMarca.get(m) || 0) + (Number(u.cantidad) || 0));
   }
 

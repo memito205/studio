@@ -207,7 +207,8 @@ function catalogToLookup(scanCode: string, item: TalladoCatalogItem): TalladoTra
     numeroTF: item.referencia || scanCode,
     codigoAlterno: item.codigoBarras,
     bodegaDestino: DEFAULT_DESTINO_SIN_REMISION,
-    marca: item.referencia || 'Sin referencia',
+    // En reportes/UI de marca siempre "MERCANCIA SIN REMISIONAR"; la ref va en numeroTF/referencia
+    marca: DEFAULT_DESTINO_SIN_REMISION,
     grupoMercancia: item.talla ? `Talla ${item.talla}` : undefined,
     cantidad: Math.max(0, Number(item.cantidad) || 0),
     lineCount: 1,

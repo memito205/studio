@@ -68,7 +68,7 @@ import {
   downloadTalladoReportPdf,
   localHourFromIso,
 } from '@/lib/talladoMercanciaPdf';
-import { downloadTalladoCatalogTemplate, parseTalladoCatalogSheet } from '@/lib/talladoCatalog';
+import { downloadTalladoCatalogTemplate, parseTalladoCatalogSheet, TALLADO_DEFAULT_DESTINO } from '@/lib/talladoCatalog';
 import { TalladoCameraScanner } from '@/components/tallado-mercancia/TalladoCameraScanner';
 
 interface TalladoMercanciaModuleProps {
@@ -81,6 +81,23 @@ const PAUSE_LABELS: Record<TalladoPauseType, string> = {
   fin_jornada: 'Fin jornada',
   otros: 'Otros',
 };
+
+function isTalladoSinRemision(u: Pick<TalladoUnit, 'source' | 'bodegaDestino' | 'marca'>): boolean {
+  if (u.source === 'catalogo') return true;
+  const dest = String(u.bodegaDestino || '').toUpperCase();
+  const marca = String(u.marca || '').toUpperCase();
+  return (
+    dest.includes('SIN REMISION') ||
+    marca.includes('SIN REMISION') ||
+    dest === TALLADO_DEFAULT_DESTINO ||
+    marca === TALLADO_DEFAULT_DESTINO
+  );
+}
+
+function displayTalladoMarca(u: TalladoUnit): string {
+  if (isTalladoSinRemision(u)) return TALLADO_DEFAULT_DESTINO;
+  return u.marca || '—';
+}
 
 function fmtDuration(ms?: number) {
   if (ms == null || !Number.isFinite(ms) || ms < 0) return '—';
@@ -640,7 +657,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
 
     const byMarca = new Map<string, number>();
     for (const u of done) {
-      const m = u.marca || 'Sin marca';
+      const m = displayTalladoMarca(u);
       byMarca.set(m, (byMarca.get(m) || 0) + (Number(u.cantidad) || 0));
     }
 
@@ -1041,7 +1058,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                               <TableRow key={u.id}>
                                 <TableCell className="font-mono text-xs">
                                   <div>{u.scanCode}</div>
-                                  <div className="text-muted-foreground">{u.marca}</div>
+                                  <div className="text-muted-foreground">{displayTalladoMarca(u)}</div>
                                 </TableCell>
                                 <TableCell>{u.bodegaDestino}</TableCell>
                                 <TableCell className="text-right tabular-nums">{u.cantidad}</TableCell>
@@ -1342,7 +1359,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                             <TableCell className="font-mono text-xs">{u.numeroTF}</TableCell>
                             <TableCell>{u.grupo || sh?.grupo || '—'}</TableCell>
                             <TableCell>{u.bodegaDestino}</TableCell>
-                            <TableCell className="text-sm">{u.marca || '—'}</TableCell>
+                            <TableCell className="text-sm">{displayTalladoMarca(u)}</TableCell>
                             <TableCell className="text-right tabular-nums font-semibold">{u.cantidad}</TableCell>
                             <TableCell className="tabular-nums text-xs">{fmtClock(u.startedAt)}</TableCell>
                             <TableCell className="tabular-nums text-xs">
