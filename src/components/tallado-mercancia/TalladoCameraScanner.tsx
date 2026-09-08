@@ -3,7 +3,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Camera, CameraOff, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 
 interface TalladoCameraScannerProps {
   disabled?: boolean;
@@ -12,11 +11,16 @@ interface TalladoCameraScannerProps {
 
 const SCANNER_ID = 'tallado-html5-qrcode';
 
+type ScannerHandle = {
+  stop: () => Promise<void>;
+  clear: () => void;
+};
+
 export function TalladoCameraScanner({ disabled, onDetected }: TalladoCameraScannerProps) {
   const [open, setOpen] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const scannerRef = useRef<Html5Qrcode | null>(null);
+  const scannerRef = useRef<ScannerHandle | null>(null);
   const lastCodeRef = useRef<{ code: string; at: number }>({ code: '', at: 0 });
   const onDetectedRef = useRef(onDetected);
   onDetectedRef.current = onDetected;
@@ -29,10 +33,10 @@ export function TalladoCameraScanner({ disabled, onDetected }: TalladoCameraScan
       setStarting(true);
       setError(null);
       try {
-        // Esperar a que el div exista en el DOM
         await new Promise((r) => setTimeout(r, 50));
         if (cancelled) return;
 
+        const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import('html5-qrcode');
         const scanner = new Html5Qrcode(SCANNER_ID, {
           verbose: false,
           formatsToSupport: [
@@ -135,7 +139,7 @@ export function TalladoCameraScanner({ disabled, onDetected }: TalladoCameraScan
         <div className="rounded-md overflow-hidden border bg-black/90">
           <div id={SCANNER_ID} className="w-full min-h-[220px]" />
           <p className="text-xs text-center text-white/80 py-1.5 px-2">
-            Apunte al código de barras / etiqueta. Tras leer, puede confirmar Inicio o reescaneear para Fin.
+            Apunte al código de barras / etiqueta. Tras leer, confirme Inicio o reescanee para Fin.
           </p>
         </div>
       ) : null}
