@@ -44,6 +44,7 @@ import type {
 import {
   listTalladoDashboard,
   listTalladoLiveMonitor,
+  cleanupTalladoDuplicates,
   listTalladoShiftBundle,
   resumeTalladoPause,
   scanTalladoCode,
@@ -183,7 +184,15 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     setUnits([]);
     setPauses([]);
     setPendingLookup(null);
-    toast({ title: 'Turno iniciado', description: `${res.data.grupo} · ${res.data.peopleCount} persona(s)` });
+    if (res.rejoined) {
+      toast({
+        title: 'Turno ya activo',
+        description: `Se reanudó el turno existente de ${res.data.grupo} (no se creó otro).`,
+      });
+      await refreshShift(res.data.id);
+    } else {
+      toast({ title: 'Turno iniciado', description: `${res.data.grupo} · ${res.data.peopleCount} persona(s)` });
+    }
   };
 
   const processScanCode = useCallback(
@@ -380,9 +389,9 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     setDashPauses(res.pauses || []);
   }, [toast]);
 
-  const loadLiveMonitor = useCallback(async () => {
+  const loadLiveMonitor = useCallback(async (withCleanup = false) => {
     setLiveLoading(true);
-    const res = await listTalladoLiveMonitor();
+    const res = await listTalladoLiveMonitor({ cleanup: withCleanup });
     setLiveLoading(false);
     if (!res.success) {
       toast({ variant: 'destructive', title: 'En vivo', description: res.error });
@@ -392,20 +401,41 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     setLiveActiveUnits(res.activeUnits || []);
     setLiveTodayUnits(res.todayUnits || []);
     setLiveOpenPauses(res.openPauses || []);
+    if (res.cleanup && (res.cleanup.deletedUnits > 0 || res.cleanup.closedShifts > 0)) {
+      toast({
+        title: 'Duplicados limpiados',
+        description: `Unidades borradas: ${res.cleanup.deletedUnits}. Turnos cerrados: ${res.cleanup.closedShifts}. Se dejó la hora más antigua.`,
+      });
+    }
   }, [toast]);
+
+  const handleCleanupDuplicates = async () => {
+    setLiveLoading(true);
+    const res = await cleanupTalladoDuplicates();
+    if (!res.success) {
+      setLiveLoading(false);
+      toast({ variant: 'destructive', title: 'Limpieza', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Limpieza hecha',
+      description: `Unidades borradas: ${res.deletedUnits || 0}. Turnos cerrados: ${res.closedShifts || 0}. Reasignadas: ${res.reassignedUnits || 0}.`,
+    });
+    await loadLiveMonitor(false);
+  };
 
   useEffect(() => {
     if (mainTab === 'admin' && canAdmin) void loadDashboard();
   }, [mainTab, canAdmin, loadDashboard]);
 
   useEffect(() => {
-    if (mainTab === 'vivo' && canAdmin) void loadLiveMonitor();
+    if (mainTab === 'vivo' && canAdmin) void loadLiveMonitor(true);
   }, [mainTab, canAdmin, loadLiveMonitor]);
 
   // Auto-refresh del monitor en vivo cada 20s + tick para tiempos transcurridos
   useEffect(() => {
     if (mainTab !== 'vivo' || !canAdmin) return;
-    const refreshId = setInterval(() => void loadLiveMonitor(), 20000);
+    const refreshId = setInterval(() => void loadLiveMonitor(false), 20000);
     const tickId = setInterval(() => setLiveTick((n) => n + 1), 1000);
     return () => {
       clearInterval(refreshId);
@@ -883,7 +913,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                   variant="outline"
                   size="sm"
                   disabled={liveLoading}
-                  onClick={() => void loadLiveMonitor()}
+                  onClick={() => void loadLiveMonitor(true)}
                 >
                   {liveLoading ? (
                     <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
@@ -891,6 +921,15 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                     <RefreshCcw className="mr-1.5 h-4 w-4" />
                   )}
                   Actualizar
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={liveLoading}
+                  onClick={() => void handleCleanupDuplicates()}
+                >
+                  Limpiar duplicados
                 </Button>
               </div>
             </div>

@@ -2,6 +2,7 @@
 
 import {
   collection,
+  deleteDoc,
   doc,
   getDocs,
   limit,
@@ -45,6 +46,37 @@ function normalizeTalladoScanCode(raw: string): string {
     .trim()
     .toUpperCase()
     .replace(/\s+/g, '');
+}
+
+function normalizeGrupoKey(raw: string): string {
+  return String(raw || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, ' ');
+}
+
+function unitMatchesScanCode(unit: TalladoUnit, scanCode: string): boolean {
+  const code = normalizeTalladoScanCode(scanCode);
+  if (!code) return false;
+  return (
+    normalizeTalladoScanCode(unit.scanCode) === code ||
+    normalizeTalladoScanCode(unit.numeroTF) === code ||
+    normalizeTalladoScanCode(unit.codigoAlterno || '') === code
+  );
+}
+
+async function listInProgressUnits(): Promise<TalladoUnit[]> {
+  const snap = await getDocs(
+    query(collection(firestore, UNITS_COL), where('status', '==', 'in_progress'), limit(500))
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoUnit));
+}
+
+async function listActiveShifts(): Promise<TalladoShift[]> {
+  const snap = await getDocs(
+    query(collection(firestore, SHIFTS_COL), where('status', '==', 'active'), limit(200))
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoShift));
 }
 
 function overlapMs(aStart: number, aEnd: number, bStart: number, bEnd: number): number {
@@ -161,12 +193,35 @@ export async function startTalladoShift(input: {
   peopleCount: number;
   userId: string;
   userName: string;
-}): Promise<{ success: boolean; data?: TalladoShift; error?: string }> {
+}): Promise<{ success: boolean; data?: TalladoShift; rejoined?: boolean; error?: string }> {
   try {
     const grupo = String(input.grupo || '').trim();
     const peopleCount = Math.max(1, Math.round(Number(input.peopleCount) || 0));
     if (!grupo) return { success: false, error: 'Indique el grupo (ej. Grupo 1).' };
     if (!input.userId) return { success: false, error: 'Usuario no autenticado.' };
+
+    const grupoKey = normalizeGrupoKey(grupo);
+    const active = await listActiveShifts();
+    const sameGrupo = active
+      .filter((s) => normalizeGrupoKey(s.grupo) === grupoKey)
+      .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+
+    if (sameGrupo.length > 0) {
+      const kept = sameGrupo[0];
+      // Cerrar turnos activos duplicados del mismo grupo (deja el más viejo)
+      for (const dup of sameGrupo.slice(1)) {
+        await updateDoc(doc(firestore, SHIFTS_COL, dup.id), {
+          status: 'closed',
+          endedAt: new Date().toISOString(),
+          closedReason: 'duplicate_grupo',
+        });
+      }
+      if (peopleCount !== kept.peopleCount) {
+        await updateDoc(doc(firestore, SHIFTS_COL, kept.id), { peopleCount });
+        kept.peopleCount = peopleCount;
+      }
+      return { success: true, data: { ...kept, grupo }, rejoined: true };
+    }
 
     const now = new Date().toISOString();
     const ref = doc(collection(firestore, SHIFTS_COL));
@@ -180,7 +235,7 @@ export async function startTalladoShift(input: {
       status: 'active',
     };
     await setDoc(ref, stripUndefinedDeep(row) as TalladoShift);
-    return { success: true, data: row };
+    return { success: true, data: row, rejoined: false };
   } catch (error: any) {
     return { success: false, error: error?.message || 'No se pudo iniciar el turno.' };
   }
@@ -262,17 +317,22 @@ export async function startTalladoUnit(input: {
       return { success: false, error: 'El grupo está en pausa. Reanude antes de iniciar una unidad.' };
     }
 
-    const openUnit = await getDocs(
-      query(
-        collection(firestore, UNITS_COL),
-        where('shiftId', '==', input.shiftId),
-        where('scanCode', '==', scanCode),
-        where('status', '==', 'in_progress'),
-        limit(1)
-      )
-    );
-    if (!openUnit.empty) {
-      return { success: false, error: 'Esta unidad ya tiene Inicio. Escanee de nuevo para marcar Fin.' };
+    // Global: no permitir la misma unidad activa dos veces (cualquier turno)
+    const openUnits = (await listInProgressUnits())
+      .filter((u) => unitMatchesScanCode(u, scanCode))
+      .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+    if (openUnits.length > 0) {
+      const existing = openUnits[0];
+      if (existing.shiftId === input.shiftId) {
+        return {
+          success: false,
+          error: 'Esta unidad ya tiene Inicio. Escanee de nuevo para marcar Fin.',
+        };
+      }
+      return {
+        success: false,
+        error: `El código ${existing.scanCode} ya está activo desde ${existing.startedAt} (grupo ${existing.grupo}). Cierre Fin antes de reiniciarlo.`,
+      };
     }
 
     const now = new Date().toISOString();
@@ -311,26 +371,21 @@ export async function finishTalladoUnit(input: {
     const scanCode = normalizeTalladoScanCode(input.scanCode);
     if (!input.shiftId || !scanCode) return { success: false, error: 'Datos incompletos.' };
 
-    const openUnit = await getDocs(
-      query(
-        collection(firestore, UNITS_COL),
-        where('shiftId', '==', input.shiftId),
-        where('scanCode', '==', scanCode),
-        where('status', '==', 'in_progress'),
-        limit(1)
-      )
-    );
-    if (openUnit.empty) {
-      return { success: false, error: 'No hay Inicio abierto para este código en el turno.' };
+    const matches = (await listInProgressUnits())
+      .filter((u) => unitMatchesScanCode(u, scanCode))
+      .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+
+    if (matches.length === 0) {
+      return { success: false, error: 'No hay Inicio abierto para este código.' };
     }
 
-    const unitDoc = openUnit.docs[0];
-    const unit = { id: unitDoc.id, ...unitDoc.data() } as TalladoUnit;
+    // Preferir unidad del turno actual; si no, la más antigua
+    const unit = matches.find((u) => u.shiftId === input.shiftId) || matches[0];
     const endedAt = new Date().toISOString();
     const durationMs = Math.max(0, new Date(endedAt).getTime() - new Date(unit.startedAt).getTime());
 
     const pausesSnap = await getDocs(
-      query(collection(firestore, PAUSES_COL), where('shiftId', '==', input.shiftId), limit(200))
+      query(collection(firestore, PAUSES_COL), where('shiftId', '==', unit.shiftId), limit(200))
     );
     const pauses = pausesSnap.docs.map((d) => d.data() as TalladoPause);
     const durationNetMs = computeNetDurationMs(unit.startedAt, endedAt, pauses);
@@ -342,6 +397,13 @@ export async function finishTalladoUnit(input: {
       status: 'done' as const,
     };
     await updateDoc(doc(firestore, UNITS_COL, unit.id), patch);
+
+    // Si quedaron duplicados abiertos del mismo código, borrarlos (deja cerrado el más viejo)
+    for (const dup of matches) {
+      if (dup.id === unit.id) continue;
+      await deleteDoc(doc(firestore, UNITS_COL, dup.id));
+    }
+
     return { success: true, data: { ...unit, ...patch } };
   } catch (error: any) {
     console.error('finishTalladoUnit:', error);
@@ -368,17 +430,15 @@ export async function scanTalladoCode(input: {
     const scanCode = normalizeTalladoScanCode(input.rawCode);
     if (!scanCode) return { success: false, error: 'Código vacío.' };
 
-    const openUnit = await getDocs(
-      query(
-        collection(firestore, UNITS_COL),
-        where('shiftId', '==', input.shiftId),
-        where('scanCode', '==', scanCode),
-        where('status', '==', 'in_progress'),
-        limit(1)
-      )
-    );
-    if (!openUnit.empty) {
-      const fin = await finishTalladoUnit({ shiftId: input.shiftId, scanCode });
+    const openMatches = (await listInProgressUnits())
+      .filter((u) => unitMatchesScanCode(u, scanCode))
+      .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+
+    if (openMatches.length > 0) {
+      const fin = await finishTalladoUnit({
+        shiftId: input.shiftId,
+        scanCode: openMatches[0].scanCode || scanCode,
+      });
       if (!fin.success) return { success: false, error: fin.error };
       return { success: true, action: 'finished', unit: fin.data };
     }
@@ -547,15 +607,22 @@ export async function updateTalladoShiftPeople(
 /** Monitor admin: turnos activos, unidades abiertas y códigos leídos del día. */
 export async function listTalladoLiveMonitor(opts?: {
   dayKey?: string;
+  cleanup?: boolean;
 }): Promise<{
   success: boolean;
   shifts?: TalladoShift[];
   activeUnits?: TalladoUnit[];
   todayUnits?: TalladoUnit[];
   openPauses?: TalladoPause[];
+  cleanup?: { deletedUnits: number; closedShifts: number };
   error?: string;
 }> {
   try {
+    let cleanupResult: Awaited<ReturnType<typeof cleanupTalladoDuplicates>> | null = null;
+    if (opts?.cleanup) {
+      cleanupResult = await cleanupTalladoDuplicates();
+    }
+
     const dayKey =
       opts?.dayKey ||
       (() => {
@@ -573,7 +640,6 @@ export async function listTalladoLiveMonitor(opts?: {
     let units = unitsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoUnit));
     let pauses = pausesSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoPause));
 
-    // Turnos del día (activos primero) + unidades asociadas
     shifts = shifts
       .filter((s) => String(s.startedAt || '').startsWith(dayKey) || s.status === 'active')
       .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
@@ -601,9 +667,114 @@ export async function listTalladoLiveMonitor(opts?: {
       activeUnits,
       todayUnits,
       openPauses,
+      cleanup: cleanupResult?.success
+        ? { deletedUnits: cleanupResult.deletedUnits || 0, closedShifts: cleanupResult.closedShifts || 0 }
+        : undefined,
     };
   } catch (error: any) {
     console.error('listTalladoLiveMonitor:', error);
     return { success: false, error: error?.message || 'No se pudo cargar el monitor en vivo.' };
+  }
+}
+
+/**
+ * Borra unidades in_progress duplicadas (mismo código) dejando la lectura más antigua.
+ * Cierra turnos activos duplicados del mismo grupo dejando el más antiguo.
+ */
+export async function cleanupTalladoDuplicates(): Promise<{
+  success: boolean;
+  deletedUnits?: number;
+  closedShifts?: number;
+  reassignedUnits?: number;
+  error?: string;
+}> {
+  try {
+    let deletedUnits = 0;
+    let closedShifts = 0;
+    let reassignedUnits = 0;
+
+    // --- Unidades activas duplicadas por código ---
+    const openUnits = await listInProgressUnits();
+    const byCode = new Map<string, TalladoUnit[]>();
+    for (const u of openUnits) {
+      const key = normalizeTalladoScanCode(u.scanCode) || normalizeTalladoScanCode(u.numeroTF) || u.id;
+      const list = byCode.get(key) || [];
+      list.push(u);
+      byCode.set(key, list);
+    }
+    for (const list of byCode.values()) {
+      if (list.length < 2) continue;
+      list.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+      const [, ...dups] = list;
+      for (const dup of dups) {
+        await deleteDoc(doc(firestore, UNITS_COL, dup.id));
+        deletedUnits += 1;
+      }
+    }
+
+    // --- Turnos activos duplicados por grupo ---
+    const activeShifts = await listActiveShifts();
+    const byGrupo = new Map<string, TalladoShift[]>();
+    for (const s of activeShifts) {
+      const key = normalizeGrupoKey(s.grupo) || s.id;
+      const list = byGrupo.get(key) || [];
+      list.push(s);
+      byGrupo.set(key, list);
+    }
+
+    const allUnitsSnap = await getDocs(query(collection(firestore, UNITS_COL), limit(1000)));
+    const allUnits = allUnitsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoUnit));
+
+    for (const list of byGrupo.values()) {
+      if (list.length < 2) continue;
+      list.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+      const [kept, ...dups] = list;
+      for (const dup of dups) {
+        // Mover unidades del turno duplicado al turno más viejo
+        const owned = allUnits.filter((u) => u.shiftId === dup.id);
+        for (const u of owned) {
+          if (u.status === 'in_progress') {
+            const keptOpen = allUnits.find(
+              (x) =>
+                x.id !== u.id &&
+                x.shiftId === kept.id &&
+                x.status === 'in_progress' &&
+                unitMatchesScanCode(x, u.scanCode)
+            );
+            if (keptOpen) {
+              await deleteDoc(doc(firestore, UNITS_COL, u.id));
+              deletedUnits += 1;
+            } else {
+              await updateDoc(doc(firestore, UNITS_COL, u.id), { shiftId: kept.id, grupo: kept.grupo });
+              reassignedUnits += 1;
+              u.shiftId = kept.id;
+            }
+          } else {
+            await updateDoc(doc(firestore, UNITS_COL, u.id), { shiftId: kept.id, grupo: kept.grupo });
+            reassignedUnits += 1;
+          }
+        }
+
+        // Pausas del turno duplicado → al kept
+        const pausesSnap = await getDocs(
+          query(collection(firestore, PAUSES_COL), where('shiftId', '==', dup.id), limit(100))
+        );
+        for (const p of pausesSnap.docs) {
+          await updateDoc(p.ref, { shiftId: kept.id, grupo: kept.grupo });
+        }
+
+        await updateDoc(doc(firestore, SHIFTS_COL, dup.id), {
+          status: 'closed',
+          endedAt: new Date().toISOString(),
+          closedReason: 'duplicate_grupo_cleanup',
+        });
+        closedShifts += 1;
+      }
+    }
+
+    return { success: true, deletedUnits, closedShifts, reassignedUnits };
+  } catch (error: any) {
+    console.error('cleanupTalladoDuplicates:', error);
+    return { success: false, error: error?.message || 'No se pudieron limpiar duplicados.' };
   }
 }
