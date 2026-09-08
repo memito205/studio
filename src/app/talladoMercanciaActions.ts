@@ -42,10 +42,15 @@ function stripUndefinedDeep(value: unknown): unknown {
 }
 
 function normalizeTalladoScanCode(raw: string): string {
+  // Lectores a veces emiten ' o , en vez del guion medio (-)
   return String(raw || '')
     .trim()
     .toUpperCase()
-    .replace(/\s+/g, '');
+    .replace(/[\u2018\u2019\u201A\uFF07`´′ʼ']/g, '-')
+    .replace(/[,;]/g, '-')
+    .replace(/\s+/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
 }
 
 function normalizeGrupoKey(raw: string): string {
@@ -168,12 +173,20 @@ export async function lookupTransferForTallado(
       return { success: true, data: aggregateTransfers(scanCode, 'codigoAlterno', docs) };
     }
 
-    // Case-insensitive-ish: try original trim if different
-    const soft = String(rawCode || '').trim();
-    if (soft && soft !== scanCode) {
-      const bySoft = await getDocs(query(col, where('codigoAlterno', '==', soft), limit(50)));
-      if (!bySoft.empty) {
-        const docs = bySoft.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
+    // Variantes guardadas con ' o , en vez de -
+    const altVariants = Array.from(
+      new Set([
+        scanCode.replace(/-/g, "'"),
+        scanCode.replace(/-/g, ','),
+        String(rawCode || '').trim(),
+        String(rawCode || '').trim().toUpperCase(),
+      ])
+    ).filter((v) => v && v !== scanCode);
+
+    for (const variant of altVariants) {
+      const byVariant = await getDocs(query(col, where('codigoAlterno', '==', variant), limit(50)));
+      if (!byVariant.empty) {
+        const docs = byVariant.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
         return { success: true, data: aggregateTransfers(scanCode, 'codigoAlterno', docs) };
       }
     }
