@@ -543,3 +543,67 @@ export async function updateTalladoShiftPeople(
     return { success: false, error: error?.message || 'No se pudo actualizar personas.' };
   }
 }
+
+/** Monitor admin: turnos activos, unidades abiertas y códigos leídos del día. */
+export async function listTalladoLiveMonitor(opts?: {
+  dayKey?: string;
+}): Promise<{
+  success: boolean;
+  shifts?: TalladoShift[];
+  activeUnits?: TalladoUnit[];
+  todayUnits?: TalladoUnit[];
+  openPauses?: TalladoPause[];
+  error?: string;
+}> {
+  try {
+    const dayKey =
+      opts?.dayKey ||
+      (() => {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      })();
+
+    const [shiftsSnap, unitsSnap, pausesSnap] = await Promise.all([
+      getDocs(query(collection(firestore, SHIFTS_COL), limit(200))),
+      getDocs(query(collection(firestore, UNITS_COL), limit(1000))),
+      getDocs(query(collection(firestore, PAUSES_COL), limit(500))),
+    ]);
+
+    let shifts = shiftsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoShift));
+    let units = unitsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoUnit));
+    let pauses = pausesSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoPause));
+
+    // Turnos del día (activos primero) + unidades asociadas
+    shifts = shifts
+      .filter((s) => String(s.startedAt || '').startsWith(dayKey) || s.status === 'active')
+      .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+
+    const shiftIds = new Set(shifts.map((s) => s.id));
+    const todayUnits = units
+      .filter((u) => shiftIds.has(u.shiftId) || String(u.startedAt || '').startsWith(dayKey))
+      .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+
+    const activeUnits = todayUnits
+      .filter((u) => u.status === 'in_progress')
+      .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+
+    const openPauses = pauses
+      .filter(
+        (p) =>
+          p.status === 'open' &&
+          (shiftIds.has(p.shiftId) || String(p.pausedAt || '').startsWith(dayKey))
+      )
+      .sort((a, b) => String(b.pausedAt).localeCompare(String(a.pausedAt)));
+
+    return {
+      success: true,
+      shifts: shifts.filter((s) => s.status === 'active' || String(s.startedAt || '').startsWith(dayKey)),
+      activeUnits,
+      todayUnits,
+      openPauses,
+    };
+  } catch (error: any) {
+    console.error('listTalladoLiveMonitor:', error);
+    return { success: false, error: error?.message || 'No se pudo cargar el monitor en vivo.' };
+  }
+}

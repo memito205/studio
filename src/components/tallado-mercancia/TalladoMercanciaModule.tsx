@@ -14,6 +14,8 @@ import {
   Utensils,
   Moon,
   MoreHorizontal,
+  Radio,
+  RefreshCcw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -41,6 +43,7 @@ import type {
 } from '@/types';
 import {
   listTalladoDashboard,
+  listTalladoLiveMonitor,
   listTalladoShiftBundle,
   resumeTalladoPause,
   scanTalladoCode,
@@ -86,13 +89,20 @@ function fmtClock(iso?: string) {
   }
 }
 
+function fmtElapsedSince(iso?: string) {
+  if (!iso) return '—';
+  const start = new Date(iso).getTime();
+  if (!Number.isFinite(start)) return '—';
+  return fmtDuration(Date.now() - start);
+}
+
 export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModuleProps) {
   const { toast } = useToast();
   const { user, role } = useAuth() as { user: any; role?: string };
   const canAdmin = role === 'admin' || role === 'supervisor';
   const scanRef = useRef<HTMLInputElement>(null);
 
-  const [mainTab, setMainTab] = useState<'operario' | 'admin'>(canAdmin ? 'operario' : 'operario');
+  const [mainTab, setMainTab] = useState<'operario' | 'admin' | 'vivo'>(canAdmin ? 'operario' : 'operario');
   const [grupo, setGrupo] = useState('Grupo 1');
   const [peopleCount, setPeopleCount] = useState(1);
   const [shift, setShift] = useState<TalladoShift | null>(null);
@@ -113,6 +123,14 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const [dashPauses, setDashPauses] = useState<TalladoPause[]>([]);
   const [reportHour, setReportHour] = useState(() => String(new Date().getHours()));
   const [dashReportHour, setDashReportHour] = useState(() => String(new Date().getHours()));
+
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [liveShifts, setLiveShifts] = useState<TalladoShift[]>([]);
+  const [liveActiveUnits, setLiveActiveUnits] = useState<TalladoUnit[]>([]);
+  const [liveTodayUnits, setLiveTodayUnits] = useState<TalladoUnit[]>([]);
+  const [liveOpenPauses, setLiveOpenPauses] = useState<TalladoPause[]>([]);
+  const [liveFilter, setLiveFilter] = useState<'activos' | 'todos'>('activos');
+  const [liveTick, setLiveTick] = useState(0);
 
   const openPause = useMemo(() => pauses.find((p) => p.status === 'open') || null, [pauses]);
   const inProgress = useMemo(() => units.filter((u) => u.status === 'in_progress'), [units]);
@@ -362,9 +380,57 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     setDashPauses(res.pauses || []);
   }, [toast]);
 
+  const loadLiveMonitor = useCallback(async () => {
+    setLiveLoading(true);
+    const res = await listTalladoLiveMonitor();
+    setLiveLoading(false);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'En vivo', description: res.error });
+      return;
+    }
+    setLiveShifts(res.shifts || []);
+    setLiveActiveUnits(res.activeUnits || []);
+    setLiveTodayUnits(res.todayUnits || []);
+    setLiveOpenPauses(res.openPauses || []);
+  }, [toast]);
+
   useEffect(() => {
     if (mainTab === 'admin' && canAdmin) void loadDashboard();
   }, [mainTab, canAdmin, loadDashboard]);
+
+  useEffect(() => {
+    if (mainTab === 'vivo' && canAdmin) void loadLiveMonitor();
+  }, [mainTab, canAdmin, loadLiveMonitor]);
+
+  // Auto-refresh del monitor en vivo cada 20s + tick para tiempos transcurridos
+  useEffect(() => {
+    if (mainTab !== 'vivo' || !canAdmin) return;
+    const refreshId = setInterval(() => void loadLiveMonitor(), 20000);
+    const tickId = setInterval(() => setLiveTick((n) => n + 1), 1000);
+    return () => {
+      clearInterval(refreshId);
+      clearInterval(tickId);
+    };
+  }, [mainTab, canAdmin, loadLiveMonitor]);
+
+  const liveShiftById = useMemo(() => {
+    const m = new Map<string, TalladoShift>();
+    for (const s of liveShifts) m.set(s.id, s);
+    return m;
+  }, [liveShifts]);
+
+  const livePausedShiftIds = useMemo(
+    () => new Set(liveOpenPauses.map((p) => p.shiftId)),
+    [liveOpenPauses]
+  );
+
+  const liveRows = useMemo(() => {
+    const list = liveFilter === 'activos' ? liveActiveUnits : liveTodayUnits;
+    return list;
+  }, [liveFilter, liveActiveUnits, liveTodayUnits]);
+
+  // liveTick fuerza re-render de duraciones en curso
+  void liveTick;
 
   const dashStats = useMemo(() => {
     const done = dashUnits.filter((u) => u.status === 'done');
@@ -434,12 +500,18 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         </div>
       </div>
 
-      <Tabs value={mainTab} onValueChange={(v) => setMainTab(v as 'operario' | 'admin')}>
+      <Tabs value={mainTab} onValueChange={(v) => setMainTab(v as 'operario' | 'admin' | 'vivo')}>
         <TabsList>
           <TabsTrigger value="operario">
             <PlayCircle className="mr-1.5 h-4 w-4" />
             Operario
           </TabsTrigger>
+          {canAdmin ? (
+            <TabsTrigger value="vivo">
+              <Radio className="mr-1.5 h-4 w-4" />
+              En vivo
+            </TabsTrigger>
+          ) : null}
           {canAdmin ? (
             <TabsTrigger value="admin">
               <LayoutDashboard className="mr-1.5 h-4 w-4" />
@@ -786,6 +858,222 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
             </>
           )}
         </TabsContent>
+
+        {canAdmin ? (
+          <TabsContent value="vivo" className="space-y-4 mt-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">Monitor en vivo</h2>
+                <p className="text-sm text-muted-foreground">
+                  Códigos leídos y unidades activas (sin cerrar). Se actualiza cada 20 s.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Select value={liveFilter} onValueChange={(v) => setLiveFilter(v as 'activos' | 'todos')}>
+                  <SelectTrigger className="w-[160px] h-9">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="activos">Solo activos</SelectItem>
+                    <SelectItem value="todos">Todos hoy</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={liveLoading}
+                  onClick={() => void loadLiveMonitor()}
+                >
+                  {liveLoading ? (
+                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCcw className="mr-1.5 h-4 w-4" />
+                  )}
+                  Actualizar
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Card>
+                <CardHeader className="py-3">
+                  <CardDescription>Unidades activas (sin cerrar)</CardDescription>
+                  <CardTitle className="text-2xl tabular-nums text-amber-700">
+                    {liveActiveUnits.length}
+                  </CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader className="py-3">
+                  <CardDescription>Códigos leídos hoy</CardDescription>
+                  <CardTitle className="text-2xl tabular-nums">{liveTodayUnits.length}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader className="py-3">
+                  <CardDescription>Grupos en pausa</CardDescription>
+                  <CardTitle className="text-2xl tabular-nums">{liveOpenPauses.length}</CardTitle>
+                </CardHeader>
+              </Card>
+            </div>
+
+            {liveOpenPauses.length > 0 ? (
+              <Card className="border-amber-600/30">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Pausas abiertas ahora</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-1">
+                  {liveOpenPauses.map((p) => (
+                    <div key={p.id} className="text-sm flex flex-wrap justify-between gap-2 border-b py-1.5">
+                      <span>
+                        <Badge variant="destructive" className="mr-2">
+                          {PAUSE_LABELS[p.type]}
+                        </Badge>
+                        {p.grupo}
+                        {p.note ? ` · ${p.note}` : ''}
+                      </span>
+                      <span className="tabular-nums text-muted-foreground">
+                        desde {fmtClock(p.pausedAt)} · {fmtElapsedSince(p.pausedAt)}
+                      </span>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            ) : null}
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">
+                  {liveFilter === 'activos' ? 'Unidades activas (sin Fin)' : 'Códigos leídos hoy'}
+                </CardTitle>
+                <CardDescription>
+                  {liveFilter === 'activos'
+                    ? 'Unidades con Inicio registrado que aún no tienen Fin.'
+                    : 'Todos los códigos escaneados del día (activos y cerrados).'}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Estado</TableHead>
+                      <TableHead>Código</TableHead>
+                      <TableHead>TF</TableHead>
+                      <TableHead>Grupo</TableHead>
+                      <TableHead>Destino</TableHead>
+                      <TableHead>Marca</TableHead>
+                      <TableHead className="text-right">Cant.</TableHead>
+                      <TableHead>Inicio</TableHead>
+                      <TableHead>Transcurrido / Neto</TableHead>
+                      <TableHead>Operario</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {liveRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
+                          {liveLoading
+                            ? 'Cargando…'
+                            : liveFilter === 'activos'
+                              ? 'No hay unidades activas en este momento.'
+                              : 'Sin códigos leídos hoy.'}
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      liveRows.map((u) => {
+                        const sh = liveShiftById.get(u.shiftId);
+                        const paused = livePausedShiftIds.has(u.shiftId);
+                        return (
+                          <TableRow key={u.id} className={u.status === 'in_progress' ? 'bg-amber-50/60 dark:bg-amber-950/20' : undefined}>
+                            <TableCell>
+                              {u.status === 'in_progress' ? (
+                                <div className="flex flex-col gap-1">
+                                  <Badge className="bg-amber-500/20 text-amber-900 w-fit">En proceso</Badge>
+                                  {paused ? (
+                                    <Badge variant="destructive" className="w-fit text-[10px]">
+                                      Grupo en pausa
+                                    </Badge>
+                                  ) : null}
+                                </div>
+                              ) : (
+                                <Badge variant="secondary">Cerrada</Badge>
+                              )}
+                            </TableCell>
+                            <TableCell className="font-mono text-xs font-semibold">{u.scanCode}</TableCell>
+                            <TableCell className="font-mono text-xs">{u.numeroTF}</TableCell>
+                            <TableCell>{u.grupo || sh?.grupo || '—'}</TableCell>
+                            <TableCell>{u.bodegaDestino}</TableCell>
+                            <TableCell className="text-sm">{u.marca || '—'}</TableCell>
+                            <TableCell className="text-right tabular-nums font-semibold">{u.cantidad}</TableCell>
+                            <TableCell className="tabular-nums text-xs">{fmtClock(u.startedAt)}</TableCell>
+                            <TableCell className="tabular-nums text-xs">
+                              {u.status === 'in_progress'
+                                ? fmtElapsedSince(u.startedAt)
+                                : fmtDuration(u.durationNetMs ?? u.durationMs)}
+                            </TableCell>
+                            <TableCell className="text-xs">{u.userName || '—'}</TableCell>
+                          </TableRow>
+                        );
+                      })
+                    )}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">Turnos del día</CardTitle>
+              </CardHeader>
+              <CardContent className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Estado</TableHead>
+                      <TableHead>Grupo</TableHead>
+                      <TableHead>Personas</TableHead>
+                      <TableHead>Inicio</TableHead>
+                      <TableHead>Operario</TableHead>
+                      <TableHead className="text-right">Activas</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {liveShifts.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center text-muted-foreground py-6">
+                          Sin turnos hoy.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      liveShifts.map((s) => {
+                        const actives = liveActiveUnits.filter((u) => u.shiftId === s.id).length;
+                        return (
+                          <TableRow key={s.id}>
+                            <TableCell>
+                              {s.status === 'active' ? (
+                                <Badge className="bg-emerald-500/15 text-emerald-800">Activo</Badge>
+                              ) : (
+                                <Badge variant="secondary">Cerrado</Badge>
+                              )}
+                            </TableCell>
+                            <TableCell className="font-medium">{s.grupo}</TableCell>
+                            <TableCell className="tabular-nums">{s.peopleCount}</TableCell>
+                            <TableCell className="tabular-nums text-xs">{fmtClock(s.startedAt)}</TableCell>
+                            <TableCell className="text-xs">{s.userName}</TableCell>
+                            <TableCell className="text-right tabular-nums font-semibold text-amber-700">
+                              {actives}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
+                    )}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        ) : null}
 
         {canAdmin ? (
           <TabsContent value="admin" className="space-y-4 mt-4">
