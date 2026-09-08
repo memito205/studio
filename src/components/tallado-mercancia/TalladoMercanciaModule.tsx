@@ -16,6 +16,8 @@ import {
   MoreHorizontal,
   Radio,
   RefreshCcw,
+  CheckCircle2,
+  XCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -97,6 +99,18 @@ function fmtElapsedSince(iso?: string) {
   return fmtDuration(Date.now() - start);
 }
 
+/** Misma normalización visual que el servidor: ' y , → - */
+function displayScanCode(raw: string): string {
+  return String(raw || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\u2018\u2019\u201A\uFF07`´′ʼ']/g, '-')
+    .replace(/[,;]/g, '-')
+    .replace(/\s+/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModuleProps) {
   const { toast } = useToast();
   const { user, role } = useAuth() as { user: any; role?: string };
@@ -132,6 +146,30 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const [liveOpenPauses, setLiveOpenPauses] = useState<TalladoPause[]>([]);
   const [liveFilter, setLiveFilter] = useState<'activos' | 'todos'>('activos');
   const [liveTick, setLiveTick] = useState(0);
+  const [scanFlash, setScanFlash] = useState<{
+    code: string;
+    label: string;
+    variant: 'ok' | 'fin' | 'error';
+  } | null>(null);
+  const scanFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showScanFlash = useCallback(
+    (code: string, label: string, variant: 'ok' | 'fin' | 'error' = 'ok') => {
+      if (scanFlashTimerRef.current) clearTimeout(scanFlashTimerRef.current);
+      setScanFlash({ code: displayScanCode(code) || code, label, variant });
+      scanFlashTimerRef.current = setTimeout(() => {
+        setScanFlash(null);
+        scanFlashTimerRef.current = null;
+      }, 2000);
+    },
+    []
+  );
+
+  useEffect(() => {
+    return () => {
+      if (scanFlashTimerRef.current) clearTimeout(scanFlashTimerRef.current);
+    };
+  }, []);
 
   const openPause = useMemo(() => pauses.find((p) => p.status === 'open') || null, [pauses]);
   const inProgress = useMemo(() => units.filter((u) => u.status === 'in_progress'), [units]);
@@ -204,6 +242,10 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       }
       const code = String(raw || '').trim();
       if (!code) return;
+
+      // Feedback inmediato en pantalla (~2s)
+      showScanFlash(code, 'Código leído…', 'ok');
+
       setScanning(true);
       const res = await scanTalladoCode({
         shiftId: shift.id,
@@ -216,25 +258,29 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       setScanning(false);
       setScanCode('');
       if (!res.success) {
+        showScanFlash(code, res.error || 'No se pudo leer', 'error');
         toast({ variant: 'destructive', title: 'Escaneo', description: res.error });
         setPendingLookup(null);
         return;
       }
       if (res.action === 'finished') {
+        const finCode = res.unit?.scanCode || code;
+        showScanFlash(finCode, 'FIN registrado', 'fin');
         setPendingLookup(null);
         toast({
           title: 'Fin registrado',
-          description: `${res.unit?.scanCode} · neto ${fmtDuration(res.unit?.durationNetMs)}`,
+          description: `${finCode} · neto ${fmtDuration(res.unit?.durationNetMs)}`,
         });
         await refreshShift(shift.id);
         return;
       }
       if (res.lookup) {
+        showScanFlash(res.lookup.scanCode || code, 'Listo — confirme Inicio', 'ok');
         setPendingLookup(res.lookup);
         toast({ title: 'TF encontrada', description: 'Confirme Inicio para registrar el comienzo.' });
       }
     },
-    [shift, user, openPause, toast, refreshShift]
+    [shift, user, openPause, toast, refreshShift, showScanFlash]
   );
 
   const handleScanSubmit = async (e?: React.FormEvent) => {
@@ -265,6 +311,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       return;
     }
     setPendingLookup(null);
+    showScanFlash(res.data?.scanCode || pendingLookup.scanCode, 'INICIO registrado', 'ok');
     toast({ title: 'Inicio', description: `${res.data?.scanCode} · cant. ${res.data?.cantidad}` });
     await refreshShift(shift.id);
   };
@@ -511,7 +558,44 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   }, [dashUnits, dashPauses, dashShifts]);
 
   return (
-    <div className="space-y-4 p-3 sm:p-5">
+    <div className="space-y-4 p-3 sm:p-5 relative">
+      {scanFlash ? (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 animate-in fade-in-0 duration-150"
+          role="status"
+          aria-live="assertive"
+          onClick={() => {
+            if (scanFlashTimerRef.current) clearTimeout(scanFlashTimerRef.current);
+            setScanFlash(null);
+          }}
+        >
+          <div
+            className={`w-full max-w-xl rounded-2xl border-2 px-6 py-8 text-center shadow-2xl ${
+              scanFlash.variant === 'error'
+                ? 'border-red-500 bg-red-950 text-white'
+                : scanFlash.variant === 'fin'
+                  ? 'border-emerald-400 bg-emerald-950 text-white'
+                  : 'border-sky-400 bg-slate-950 text-white'
+            }`}
+          >
+            <div className="flex justify-center mb-3">
+              {scanFlash.variant === 'error' ? (
+                <XCircle className="h-12 w-12 text-red-300" />
+              ) : (
+                <CheckCircle2
+                  className={`h-12 w-12 ${scanFlash.variant === 'fin' ? 'text-emerald-300' : 'text-sky-300'}`}
+                />
+              )}
+            </div>
+            <p className="text-sm uppercase tracking-widest text-white/70 mb-2">{scanFlash.label}</p>
+            <p className="font-mono text-4xl sm:text-5xl font-bold tracking-wide break-all leading-tight">
+              {scanFlash.code}
+            </p>
+            <p className="mt-4 text-xs text-white/50">Se cierra en ~2 s · toque para cerrar</p>
+          </div>
+        </div>
+      ) : null}
+
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-3">
           <Button variant="ghost" size="icon" onClick={onReturnToSuite} aria-label="Volver">
