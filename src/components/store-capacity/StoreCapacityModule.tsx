@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import {
   ArrowLeft,
   Box,
+  FileDown,
   LayoutDashboard,
   Loader2,
   Plus,
@@ -42,6 +43,10 @@ import {
   parseTfPendingReceiveSheet,
   parseStoreCapacitySheet,
 } from '@/lib/storeCapacity';
+import {
+  downloadStoreCapacityReportPdf,
+  downloadStoreCapacityStorePdf,
+} from '@/lib/storeCapacityPdf';
 import {
   applyCediEnProceso,
   applyGlobalStoreInventory,
@@ -262,6 +267,47 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
       avgFutura: avgFuturaWith,
     };
   }, [dashboardRows]);
+
+  const handlePdfBoard = () => {
+    const selected = new Set(selectedPdvCodes.map((c) => normalizePdvCode(c)));
+    const rows =
+      selected.size > 0
+        ? dashboardRows.filter((r) => selected.has(normalizePdvCode(r.profile.pdvCode)))
+        : dashboardRows;
+    if (rows.length === 0) {
+      toast({ variant: 'destructive', title: 'PDF', description: 'No hay tiendas para exportar.' });
+      return;
+    }
+    downloadStoreCapacityReportPdf({
+      rows,
+      garmentsPerDrawer,
+      forecastHorizonDays,
+      title:
+        selected.size > 0
+          ? `Capacidad de tiendas (selección: ${rows.length})`
+          : 'Capacidad de tiendas — red completa',
+    });
+    toast({
+      title: 'PDF generado',
+      description:
+        selected.size > 0
+          ? `Exportadas ${rows.length} tienda(s) seleccionada(s).`
+          : `Exportadas ${rows.length} tienda(s). Incluye guía de lectura.`,
+    });
+  };
+
+  const handlePdfCurrentStore = () => {
+    if (!draft.pdvCode?.trim()) {
+      toast({ variant: 'destructive', title: 'PDF', description: 'Seleccione o cree una tienda primero.' });
+      return;
+    }
+    downloadStoreCapacityStorePdf({
+      row: { profile: draft as StoreCapacityProfile, breakdown },
+      garmentsPerDrawer,
+      forecastHorizonDays,
+    });
+    toast({ title: 'PDF generado', description: `Tienda ${draft.pdvCode}` });
+  };
 
   const startNew = () => {
     setSelectedId(null);
@@ -932,6 +978,16 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                       Todas
                     </Label>
                   </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={dashboardRows.length === 0}
+                    onClick={handlePdfBoard}
+                  >
+                    <FileDown className="mr-1 h-3.5 w-3.5" />
+                    PDF{selectedPdvCodes.length > 0 ? ` (${selectedPdvCodes.length})` : ' red'}
+                  </Button>
                   <Button
                     type="button"
                     size="sm"
@@ -1897,6 +1953,15 @@ export function StoreCapacityModule({ onReturnToSuite }: StoreCapacityModuleProp
                     Eliminar
                   </Button>
                 ) : null}
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handlePdfCurrentStore}
+                  disabled={!draft.pdvCode?.trim()}
+                >
+                  <FileDown className="mr-2 h-4 w-4" />
+                  PDF esta tienda
+                </Button>
                 <Button type="button" onClick={() => void handleSave()} disabled={saving}>
                   {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                   Guardar maestro
