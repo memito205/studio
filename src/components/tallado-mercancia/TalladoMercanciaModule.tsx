@@ -153,24 +153,6 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   } | null>(null);
   const scanFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const showScanFlash = useCallback(
-    (code: string, label: string, variant: 'ok' | 'fin' | 'error' = 'ok') => {
-      if (scanFlashTimerRef.current) clearTimeout(scanFlashTimerRef.current);
-      setScanFlash({ code: displayScanCode(code) || code, label, variant });
-      scanFlashTimerRef.current = setTimeout(() => {
-        setScanFlash(null);
-        scanFlashTimerRef.current = null;
-      }, 2000);
-    },
-    []
-  );
-
-  useEffect(() => {
-    return () => {
-      if (scanFlashTimerRef.current) clearTimeout(scanFlashTimerRef.current);
-    };
-  }, []);
-
   const openPause = useMemo(() => pauses.find((p) => p.status === 'open') || null, [pauses]);
   const inProgress = useMemo(() => units.filter((u) => u.status === 'in_progress'), [units]);
   const doneUnits = useMemo(() => units.filter((u) => u.status === 'done'), [units]);
@@ -178,6 +160,44 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     () => Array.from({ length: 24 }, (_, h) => ({ value: String(h), label: `${String(h).padStart(2, '0')}:00` })),
     []
   );
+
+  const focusScanInput = useCallback(
+    (delayMs = 50) => {
+      if (openPause) return;
+      window.setTimeout(() => {
+        const el = scanRef.current;
+        if (!el || el.disabled) return;
+        el.focus({ preventScroll: true });
+        try {
+          const len = el.value.length;
+          el.setSelectionRange(len, len);
+        } catch {
+          /* ignore */
+        }
+      }, delayMs);
+    },
+    [openPause]
+  );
+
+  const showScanFlash = useCallback(
+    (code: string, label: string, variant: 'ok' | 'fin' | 'error' = 'ok') => {
+      if (scanFlashTimerRef.current) clearTimeout(scanFlashTimerRef.current);
+      setScanFlash({ code: displayScanCode(code) || code, label, variant });
+      focusScanInput(30);
+      scanFlashTimerRef.current = setTimeout(() => {
+        setScanFlash(null);
+        scanFlashTimerRef.current = null;
+        focusScanInput(30);
+      }, 2000);
+    },
+    [focusScanInput]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (scanFlashTimerRef.current) clearTimeout(scanFlashTimerRef.current);
+    };
+  }, []);
 
   const refreshShift = useCallback(async (shiftId: string) => {
     const res = await listTalladoShiftBundle(shiftId);
@@ -195,11 +215,8 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   }, [shift?.id, refreshShift]);
 
   useEffect(() => {
-    if (shift && !openPause) {
-      const t = setTimeout(() => scanRef.current?.focus(), 100);
-      return () => clearTimeout(t);
-    }
-  }, [shift, openPause, pendingLookup]);
+    if (shift && !openPause) focusScanInput(100);
+  }, [shift, openPause, pendingLookup, scanning, focusScanInput]);
 
   const handleStartShift = async () => {
     if (!user?.uid) {
@@ -243,44 +260,49 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       const code = String(raw || '').trim();
       if (!code) return;
 
-      // Feedback inmediato en pantalla (~2s)
       showScanFlash(code, 'Código leído…', 'ok');
-
       setScanning(true);
-      const res = await scanTalladoCode({
-        shiftId: shift.id,
-        rawCode: code,
-        userId: user.uid,
-        userName: user.displayName || user.email || 'Operario',
-        grupo: shift.grupo,
-        autoStart: false,
-      });
-      setScanning(false);
-      setScanCode('');
-      if (!res.success) {
-        showScanFlash(code, res.error || 'No se pudo leer', 'error');
-        toast({ variant: 'destructive', title: 'Escaneo', description: res.error });
-        setPendingLookup(null);
-        return;
-      }
-      if (res.action === 'finished') {
-        const finCode = res.unit?.scanCode || code;
-        showScanFlash(finCode, 'FIN registrado', 'fin');
-        setPendingLookup(null);
-        toast({
-          title: 'Fin registrado',
-          description: `${finCode} · neto ${fmtDuration(res.unit?.durationNetMs)}`,
+      try {
+        const res = await scanTalladoCode({
+          shiftId: shift.id,
+          rawCode: code,
+          userId: user.uid,
+          userName: user.displayName || user.email || 'Operario',
+          grupo: shift.grupo,
+          autoStart: false,
         });
-        await refreshShift(shift.id);
-        return;
-      }
-      if (res.lookup) {
-        showScanFlash(res.lookup.scanCode || code, 'Listo — confirme Inicio', 'ok');
-        setPendingLookup(res.lookup);
-        toast({ title: 'TF encontrada', description: 'Confirme Inicio para registrar el comienzo.' });
+        setScanCode('');
+        if (!res.success) {
+          showScanFlash(code, res.error || 'No se pudo leer', 'error');
+          toast({ variant: 'destructive', title: 'Escaneo', description: res.error });
+          setPendingLookup(null);
+          return;
+        }
+        if (res.action === 'finished') {
+          const finCode = res.unit?.scanCode || code;
+          showScanFlash(finCode, 'FIN registrado', 'fin');
+          setPendingLookup(null);
+          toast({
+            title: 'Fin registrado',
+            description: `${finCode} · neto ${fmtDuration(res.unit?.durationNetMs)}`,
+          });
+          await refreshShift(shift.id);
+          return;
+        }
+        if (res.lookup) {
+          showScanFlash(res.lookup.scanCode || code, 'Listo — confirme Inicio', 'ok');
+          setPendingLookup(res.lookup);
+          toast({ title: 'TF encontrada', description: 'Confirme Inicio para registrar el comienzo.' });
+        }
+      } finally {
+        setScanning(false);
+        setScanCode('');
+        focusScanInput(50);
+        focusScanInput(200);
+        focusScanInput(600);
       }
     },
-    [shift, user, openPause, toast, refreshShift, showScanFlash]
+    [shift, user, openPause, toast, refreshShift, showScanFlash, focusScanInput]
   );
 
   const handleScanSubmit = async (e?: React.FormEvent) => {
@@ -314,6 +336,8 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     showScanFlash(res.data?.scanCode || pendingLookup.scanCode, 'INICIO registrado', 'ok');
     toast({ title: 'Inicio', description: `${res.data?.scanCode} · cant. ${res.data?.cantidad}` });
     await refreshShift(shift.id);
+    focusScanInput(80);
+    focusScanInput(300);
   };
 
   const handleStartPause = async (type: TalladoPauseType) => {
@@ -561,22 +585,23 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     <div className="space-y-4 p-3 sm:p-5 relative">
       {scanFlash ? (
         <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 animate-in fade-in-0 duration-150"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 animate-in fade-in-0 duration-150 pointer-events-none"
           role="status"
           aria-live="assertive"
-          onClick={() => {
-            if (scanFlashTimerRef.current) clearTimeout(scanFlashTimerRef.current);
-            setScanFlash(null);
-          }}
         >
           <div
-            className={`w-full max-w-xl rounded-2xl border-2 px-6 py-8 text-center shadow-2xl ${
+            className={`pointer-events-auto w-full max-w-xl rounded-2xl border-2 px-6 py-8 text-center shadow-2xl ${
               scanFlash.variant === 'error'
                 ? 'border-red-500 bg-red-950 text-white'
                 : scanFlash.variant === 'fin'
                   ? 'border-emerald-400 bg-emerald-950 text-white'
                   : 'border-sky-400 bg-slate-950 text-white'
             }`}
+            onClick={() => {
+              if (scanFlashTimerRef.current) clearTimeout(scanFlashTimerRef.current);
+              setScanFlash(null);
+              focusScanInput(30);
+            }}
           >
             <div className="flex justify-center mb-3">
               {scanFlash.variant === 'error' ? (
@@ -745,9 +770,19 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                           onChange={(e) => setScanCode(e.target.value)}
                           placeholder="Escanee o digite aquí…"
                           className="font-mono text-lg h-12"
-                          disabled={!!openPause || scanning}
+                          disabled={!!openPause}
+                          readOnly={scanning}
                           autoComplete="off"
                           inputMode="text"
+                          autoFocus
+                          onBlur={(e) => {
+                            const next = e.relatedTarget as HTMLElement | null;
+                            if (next && (next.closest('button') || next.closest('[role="button"]') || next.closest('textarea') || next.closest('input'))) {
+                              return;
+                            }
+                            // Tras error/lectura, recuperar foco para el lector de barras
+                            if (shift && !openPause && !scanning) focusScanInput(150);
+                          }}
                         />
                         <Button type="submit" disabled={!!openPause || scanning || !scanCode.trim()}>
                           {scanning ? <Loader2 className="h-4 w-4 animate-spin" /> : 'OK'}
