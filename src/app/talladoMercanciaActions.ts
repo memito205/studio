@@ -84,6 +84,57 @@ async function listActiveShifts(): Promise<TalladoShift[]> {
   return snap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoShift));
 }
 
+/** Busca unidades ya registradas (cualquier estado) que coincidan con el código / TF / alterno. */
+async function findUnitsMatchingCode(scanCode: string): Promise<TalladoUnit[]> {
+  const code = normalizeTalladoScanCode(scanCode);
+  if (!code) return [];
+
+  const variants = Array.from(
+    new Set([code, code.replace(/-/g, "'"), code.replace(/-/g, ','), code.replace(/-/g, '')])
+  );
+
+  const found = new Map<string, TalladoUnit>();
+  const fields = ['scanCode', 'numeroTF', 'codigoAlterno'] as const;
+  for (const field of fields) {
+    for (const variant of variants) {
+      const snap = await getDocs(
+        query(collection(firestore, UNITS_COL), where(field, '==', variant), limit(40))
+      );
+      for (const d of snap.docs) {
+        found.set(d.id, { id: d.id, ...d.data() } as TalladoUnit);
+      }
+    }
+  }
+
+  // Filtrar solo coincidencias reales del código (por si codigoAlterno vacío trajo ruido)
+  const matched = Array.from(found.values()).filter((u) => unitMatchesScanCode(u, code));
+  if (matched.length > 0) {
+    return matched.sort((a, b) =>
+      String(b.endedAt || b.startedAt).localeCompare(String(a.endedAt || a.startedAt))
+    );
+  }
+
+  // Fallback: recientes por si el código se guardó con formato raro
+  const recent = await getDocs(query(collection(firestore, UNITS_COL), limit(400)));
+  for (const d of recent.docs) {
+    const u = { id: d.id, ...d.data() } as TalladoUnit;
+    if (unitMatchesScanCode(u, code)) found.set(u.id, u);
+  }
+
+  return Array.from(found.values())
+    .filter((u) => unitMatchesScanCode(u, code))
+    .sort((a, b) =>
+      String(b.endedAt || b.startedAt).localeCompare(String(a.endedAt || a.startedAt))
+    );
+}
+
+function alreadyDoneError(unit: TalladoUnit): string {
+  const when = unit.endedAt
+    ? new Date(unit.endedAt).toLocaleString('es-CO', { hour12: false })
+    : unit.startedAt;
+  return `El código ${unit.scanCode} ya fue tallado (Fin ${when}, grupo ${unit.grupo}). No se puede iniciar de nuevo.`;
+}
+
 function overlapMs(aStart: number, aEnd: number, bStart: number, bEnd: number): number {
   const start = Math.max(aStart, bStart);
   const end = Math.min(aEnd, bEnd);
@@ -348,6 +399,13 @@ export async function startTalladoUnit(input: {
       };
     }
 
+    // No reiniciar unidades que ya tienen Fin
+    const prior = await findUnitsMatchingCode(scanCode);
+    const done = prior.find((u) => u.status === 'done');
+    if (done) {
+      return { success: false, error: alreadyDoneError(done) };
+    }
+
     const now = new Date().toISOString();
     const ref = doc(collection(firestore, UNITS_COL));
     const row: TalladoUnit = {
@@ -454,6 +512,13 @@ export async function scanTalladoCode(input: {
       });
       if (!fin.success) return { success: false, error: fin.error };
       return { success: true, action: 'finished', unit: fin.data };
+    }
+
+    // Si ya tuvo Fin, bloquear (no volver a preparar Inicio)
+    const prior = await findUnitsMatchingCode(scanCode);
+    const done = prior.find((u) => u.status === 'done');
+    if (done) {
+      return { success: false, error: alreadyDoneError(done) };
     }
 
     const lookup = await lookupTransferForTallado(scanCode);
