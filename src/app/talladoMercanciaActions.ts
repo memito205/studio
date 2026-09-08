@@ -13,6 +13,8 @@ import {
 } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
 import type {
+  TalladoCatalogImportRow,
+  TalladoCatalogItem,
   TalladoPause,
   TalladoPauseType,
   TalladoShift,
@@ -25,6 +27,9 @@ const SHIFTS_COL = 'talladoShifts';
 const UNITS_COL = 'talladoUnits';
 const PAUSES_COL = 'talladoPauses';
 const TRANSFERS_COL = 'transfers';
+const CATALOG_COL = 'talladoCatalog';
+
+const DEFAULT_DESTINO_SIN_REMISION = 'MERCANCIA SIN REMISIONAR';
 
 function stripUndefinedDeep(value: unknown): unknown {
   if (value === undefined) return undefined;
@@ -190,7 +195,67 @@ function aggregateTransfers(
     grupoMercancia: grupos.join(', ') || undefined,
     cantidad: cantidad || docs.length,
     lineCount: docs.length,
+    source: 'transfers',
   };
+}
+
+function catalogToLookup(scanCode: string, item: TalladoCatalogItem): TalladoTransferLookup {
+  return {
+    scanCode,
+    matchedBy: 'catalogo',
+    transferIds: [],
+    numeroTF: item.referencia || scanCode,
+    codigoAlterno: item.codigoBarras,
+    bodegaDestino: DEFAULT_DESTINO_SIN_REMISION,
+    marca: item.referencia || 'Sin referencia',
+    grupoMercancia: item.talla ? `Talla ${item.talla}` : undefined,
+    cantidad: Math.max(0, Number(item.cantidad) || 0),
+    lineCount: 1,
+    source: 'catalogo',
+    referencia: item.referencia,
+    talla: item.talla,
+    catalogId: item.id,
+  };
+}
+
+async function lookupCatalogForTallado(scanCode: string): Promise<TalladoTransferLookup | null> {
+  const variants = Array.from(
+    new Set([
+      scanCode,
+      scanCode.replace(/-/g, "'"),
+      scanCode.replace(/-/g, ','),
+      scanCode.replace(/-/g, ''),
+    ])
+  );
+
+  for (const variant of variants) {
+    const snap = await getDocs(
+      query(
+        collection(firestore, CATALOG_COL),
+        where('codigoBarras', '==', variant),
+        where('active', '==', true),
+        limit(5)
+      )
+    );
+    if (!snap.empty) {
+      const item = { id: snap.docs[0].id, ...snap.docs[0].data() } as TalladoCatalogItem;
+      return catalogToLookup(scanCode, item);
+    }
+  }
+
+  // Fallback sin índice compuesto: buscar solo por código
+  for (const variant of variants) {
+    const snap = await getDocs(
+      query(collection(firestore, CATALOG_COL), where('codigoBarras', '==', variant), limit(5))
+    );
+    if (!snap.empty) {
+      const item = { id: snap.docs[0].id, ...snap.docs[0].data() } as TalladoCatalogItem;
+      if (item.active === false) continue;
+      return catalogToLookup(scanCode, item);
+    }
+  }
+
+  return null;
 }
 
 export async function lookupTransferForTallado(
@@ -242,9 +307,15 @@ export async function lookupTransferForTallado(
       }
     }
 
+    // Alternativa: catálogo Excel (caja / ref / talla / cant) — destino SIN REMISIONAR
+    const fromCatalog = await lookupCatalogForTallado(scanCode);
+    if (fromCatalog) {
+      return { success: true, data: fromCatalog };
+    }
+
     return {
       success: false,
-      error: `No se encontró el código "${scanCode}" en transferencias (Numero TF ni Codigo Alterno).`,
+      error: `No se encontró el código "${scanCode}" en transferencias ni en el catálogo de cajas (sin remisión).`,
     };
   } catch (error: any) {
     console.error('lookupTransferForTallado:', error);
@@ -416,10 +487,13 @@ export async function startTalladoUnit(input: {
       transferIds: input.lookup.transferIds || [],
       numeroTF: input.lookup.numeroTF,
       codigoAlterno: input.lookup.codigoAlterno,
-      bodegaDestino: input.lookup.bodegaDestino,
+      bodegaDestino: input.lookup.bodegaDestino || DEFAULT_DESTINO_SIN_REMISION,
       bodegaOrigen: input.lookup.bodegaOrigen,
       marca: input.lookup.marca,
       grupoMercancia: input.lookup.grupoMercancia,
+      source: input.lookup.source || (input.lookup.matchedBy === 'catalogo' ? 'catalogo' : 'transfers'),
+      referencia: input.lookup.referencia,
+      talla: input.lookup.talla,
       cantidad: Math.max(0, Number(input.lookup.cantidad) || 0),
       startedAt: now,
       userId: input.userId,
@@ -854,5 +928,110 @@ export async function cleanupTalladoDuplicates(): Promise<{
   } catch (error: any) {
     console.error('cleanupTalladoDuplicates:', error);
     return { success: false, error: error?.message || 'No se pudieron limpiar duplicados.' };
+  }
+}
+
+/** Upsert catálogo de cajas (Excel) para Tallado sin remisión/TF. */
+export async function importTalladoCatalog(input: {
+  rows: TalladoCatalogImportRow[];
+  userId: string;
+  userName?: string;
+  replaceAll?: boolean;
+}): Promise<{
+  success: boolean;
+  upserted?: number;
+  deleted?: number;
+  error?: string;
+}> {
+  try {
+    const rows = Array.isArray(input.rows) ? input.rows : [];
+    if (rows.length === 0) return { success: false, error: 'El archivo no trajo filas válidas.' };
+    if (!input.userId) return { success: false, error: 'Usuario no autenticado.' };
+
+    let deleted = 0;
+    if (input.replaceAll) {
+      const existing = await getDocs(query(collection(firestore, CATALOG_COL), limit(2000)));
+      for (const d of existing.docs) {
+        await deleteDoc(d.ref);
+        deleted += 1;
+      }
+    }
+
+    const now = new Date().toISOString();
+    let upserted = 0;
+    for (const row of rows) {
+      const codigoBarras = normalizeTalladoScanCode(row.codigoBarras);
+      if (!codigoBarras) continue;
+      const cantidad = Math.max(0, Math.round(Number(row.cantidad) || 0));
+      if (cantidad <= 0) continue;
+
+      // Doc id = código normalizado para upsert estable
+      const safeId = codigoBarras.replace(/[\/#?[\]]/g, '_').slice(0, 700);
+      const ref = doc(firestore, CATALOG_COL, safeId);
+      const item: TalladoCatalogItem = {
+        id: safeId,
+        codigoBarras,
+        referencia: String(row.referencia || codigoBarras).trim().toUpperCase(),
+        talla: String(row.talla || '—').trim().toUpperCase(),
+        cantidad,
+        uploadedAt: now,
+        uploadedBy: input.userId,
+        uploadedByName: input.userName || undefined,
+        active: true,
+      };
+      await setDoc(ref, stripUndefinedDeep(item) as TalladoCatalogItem);
+      upserted += 1;
+    }
+
+    return { success: true, upserted, deleted };
+  } catch (error: any) {
+    console.error('importTalladoCatalog:', error);
+    return { success: false, error: error?.message || 'No se pudo importar el catálogo.' };
+  }
+}
+
+export async function getTalladoCatalogStats(): Promise<{
+  success: boolean;
+  count?: number;
+  totalQty?: number;
+  lastUploadedAt?: string;
+  error?: string;
+}> {
+  try {
+    const snap = await getDocs(query(collection(firestore, CATALOG_COL), limit(2000)));
+    let totalQty = 0;
+    let lastUploadedAt = '';
+    for (const d of snap.docs) {
+      const item = d.data() as TalladoCatalogItem;
+      if (item.active === false) continue;
+      totalQty += Number(item.cantidad) || 0;
+      if (item.uploadedAt && item.uploadedAt > lastUploadedAt) lastUploadedAt = item.uploadedAt;
+    }
+    return {
+      success: true,
+      count: snap.size,
+      totalQty,
+      lastUploadedAt: lastUploadedAt || undefined,
+    };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'No se pudo leer el catálogo.' };
+  }
+}
+
+export async function clearTalladoCatalog(): Promise<{
+  success: boolean;
+  deleted?: number;
+  error?: string;
+}> {
+  try {
+    const snap = await getDocs(query(collection(firestore, CATALOG_COL), limit(2000)));
+    let deleted = 0;
+    for (const d of snap.docs) {
+      await deleteDoc(d.ref);
+      deleted += 1;
+    }
+    return { success: true, deleted };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'No se pudo vaciar el catálogo.' };
   }
 }

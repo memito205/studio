@@ -1469,7 +1469,7 @@ export interface TalladoUnit {
   id: string;
   shiftId: string;
   grupo: string;
-  /** Código escaneado (numeroTF o codigoAlterno normalizado). */
+  /** Código escaneado (numeroTF, codigoAlterno o código de barras de catálogo). */
   scanCode: string;
   transferIds: string[];
   numeroTF: string;
@@ -1478,6 +1478,10 @@ export interface TalladoUnit {
   bodegaOrigen?: string;
   marca: string;
   grupoMercancia?: string;
+  /** Origen del match: transfers o catálogo sin remisión. */
+  source?: 'transfers' | 'catalogo';
+  referencia?: string;
+  talla?: string;
   cantidad: number;
   startedAt: string;
   endedAt?: string;
@@ -1504,10 +1508,34 @@ export interface TalladoPause {
   status: 'open' | 'closed';
 }
 
-/** Resultado de buscar un código en transferencias para Tallado. */
+/**
+ * Catálogo alterno de Tallado (Excel): códigos de caja no asociados a TF/transferencias.
+ * Destino por defecto al tallar: MERCANCIA SIN REMISIONAR.
+ */
+export interface TalladoCatalogItem {
+  id: string;
+  /** Código de barras de caja normalizado. */
+  codigoBarras: string;
+  referencia: string;
+  talla: string;
+  cantidad: number;
+  uploadedAt: string;
+  uploadedBy?: string;
+  uploadedByName?: string;
+  active: boolean;
+}
+
+export interface TalladoCatalogImportRow {
+  codigoBarras: string;
+  referencia: string;
+  talla: string;
+  cantidad: number;
+}
+
+/** Resultado de buscar un código en transferencias o catálogo para Tallado. */
 export interface TalladoTransferLookup {
   scanCode: string;
-  matchedBy: 'numeroTF' | 'codigoAlterno';
+  matchedBy: 'numeroTF' | 'codigoAlterno' | 'catalogo';
   transferIds: string[];
   numeroTF: string;
   codigoAlterno?: string;
@@ -1517,6 +1545,10 @@ export interface TalladoTransferLookup {
   grupoMercancia?: string;
   cantidad: number;
   lineCount: number;
+  source?: 'transfers' | 'catalogo';
+  referencia?: string;
+  talla?: string;
+  catalogId?: string;
 }
 
 // Types for Merchandise Reception

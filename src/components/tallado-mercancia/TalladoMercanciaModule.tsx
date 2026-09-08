@@ -18,7 +18,10 @@ import {
   RefreshCcw,
   CheckCircle2,
   XCircle,
+  Upload,
+  FileSpreadsheet,
 } from 'lucide-react';
+import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -34,6 +37,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import type {
@@ -54,6 +58,9 @@ import {
   startTalladoShift,
   startTalladoUnit,
   updateTalladoShiftPeople,
+  importTalladoCatalog,
+  getTalladoCatalogStats,
+  clearTalladoCatalog,
 } from '@/app/talladoMercanciaActions';
 import {
   downloadTalladoDayConsolidatedPdf,
@@ -61,6 +68,7 @@ import {
   downloadTalladoReportPdf,
   localHourFromIso,
 } from '@/lib/talladoMercanciaPdf';
+import { downloadTalladoCatalogTemplate, parseTalladoCatalogSheet } from '@/lib/talladoCatalog';
 import { TalladoCameraScanner } from '@/components/tallado-mercancia/TalladoCameraScanner';
 
 interface TalladoMercanciaModuleProps {
@@ -146,6 +154,12 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const [liveOpenPauses, setLiveOpenPauses] = useState<TalladoPause[]>([]);
   const [liveFilter, setLiveFilter] = useState<'activos' | 'todos'>('activos');
   const [liveTick, setLiveTick] = useState(0);
+  const [catalogCount, setCatalogCount] = useState(0);
+  const [catalogQty, setCatalogQty] = useState(0);
+  const [catalogLastAt, setCatalogLastAt] = useState<string | undefined>();
+  const [catalogImporting, setCatalogImporting] = useState(false);
+  const [catalogReplaceAll, setCatalogReplaceAll] = useState(false);
+  const catalogFileRef = useRef<HTMLInputElement>(null);
   const [scanFlash, setScanFlash] = useState<{
     code: string;
     label: string;
@@ -198,6 +212,71 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       if (scanFlashTimerRef.current) clearTimeout(scanFlashTimerRef.current);
     };
   }, []);
+
+  const loadCatalogStats = useCallback(async () => {
+    const res = await getTalladoCatalogStats();
+    if (!res.success) return;
+    setCatalogCount(res.count || 0);
+    setCatalogQty(res.totalQty || 0);
+    setCatalogLastAt(res.lastUploadedAt);
+  }, []);
+
+  useEffect(() => {
+    void loadCatalogStats();
+  }, [loadCatalogStats]);
+
+  const handleCatalogFile = async (file: File | null) => {
+    if (!file || !user?.uid) return;
+    setCatalogImporting(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const parsed = parseTalladoCatalogSheet(wb);
+      if (parsed.rows.length === 0) {
+        toast({
+          variant: 'destructive',
+          title: 'Catálogo',
+          description: parsed.errors[0] || 'Sin filas válidas. Use columnas: Codigo Barras, Referencia, Talla, Cantidad.',
+        });
+        return;
+      }
+      const res = await importTalladoCatalog({
+        rows: parsed.rows,
+        userId: user.uid,
+        userName: user.displayName || user.email || 'Admin',
+        replaceAll: catalogReplaceAll,
+      });
+      if (!res.success) {
+        toast({ variant: 'destructive', title: 'Importación', description: res.error });
+        return;
+      }
+      toast({
+        title: 'Catálogo cargado',
+        description: `Códigos: ${res.upserted || 0}${res.deleted ? ` · borrados previos: ${res.deleted}` : ''}${
+          parsed.skipped ? ` · filas omitidas: ${parsed.skipped}` : ''
+        }. Al escanear: destino MERCANCIA SIN REMISIONAR.`,
+      });
+      await loadCatalogStats();
+    } catch (e: any) {
+      toast({ variant: 'destructive', title: 'Archivo', description: e?.message || 'No se pudo leer el Excel.' });
+    } finally {
+      setCatalogImporting(false);
+      if (catalogFileRef.current) catalogFileRef.current.value = '';
+    }
+  };
+
+  const handleClearCatalog = async () => {
+    if (!canAdmin) return;
+    setCatalogImporting(true);
+    const res = await clearTalladoCatalog();
+    setCatalogImporting(false);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Vaciar', description: res.error });
+      return;
+    }
+    toast({ title: 'Catálogo vacío', description: `Eliminados: ${res.deleted || 0}` });
+    await loadCatalogStats();
+  };
 
   const refreshShift = useCallback(async (shiftId: string) => {
     const res = await listTalladoShiftBundle(shiftId);
@@ -632,12 +711,92 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
               Tallado de mercancía
             </h1>
             <p className="text-sm text-muted-foreground max-w-2xl">
-              Escanee Número TF o Código Alterno de transferencias. Inicio / Fin por unidad. Pausas colectivas no
-              castigan el rendimiento neto.
+              Escanee Número TF / Código Alterno (transferencias) o Código de barras de caja (catálogo Excel). Destino
+              del catálogo: <strong>MERCANCIA SIN REMISIONAR</strong>.
             </p>
           </div>
         </div>
       </div>
+
+      <Card className="border-violet-600/25">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <FileSpreadsheet className="h-4 w-4 text-violet-700" />
+            Catálogo de cajas (sin remisión / sin TF)
+          </CardTitle>
+          <CardDescription>
+            Suba Excel con <strong>Codigo Barras</strong>, <strong>Referencia</strong>, <strong>Talla</strong> y{' '}
+            <strong>Cantidad</strong>. Al leer el código, si no está en transferencias se busca aquí. Destino fijo:{' '}
+            MERCANCIA SIN REMISIONAR.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <Badge variant="secondary">{catalogCount} código(s)</Badge>
+            <Badge variant="outline" className="tabular-nums">
+              {catalogQty.toLocaleString()} pares/uds
+            </Badge>
+            {catalogLastAt ? (
+              <span className="text-xs text-muted-foreground">
+                Última carga: {new Date(catalogLastAt).toLocaleString('es-CO')}
+              </span>
+            ) : (
+              <span className="text-xs text-muted-foreground">Sin catálogo cargado aún</span>
+            )}
+          </div>
+          {canAdmin ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" size="sm" variant="outline" onClick={() => downloadTalladoCatalogTemplate()}>
+                <FileDown className="mr-1.5 h-4 w-4" />
+                Plantilla
+              </Button>
+              <input
+                ref={catalogFileRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                className="hidden"
+                onChange={(e) => void handleCatalogFile(e.target.files?.[0] || null)}
+              />
+              <Button
+                type="button"
+                size="sm"
+                disabled={catalogImporting}
+                onClick={() => catalogFileRef.current?.click()}
+              >
+                {catalogImporting ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <Upload className="mr-1.5 h-4 w-4" />
+                )}
+                Subir Excel
+              </Button>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="catalogReplace"
+                  checked={catalogReplaceAll}
+                  onCheckedChange={(v) => setCatalogReplaceAll(v === true)}
+                />
+                <Label htmlFor="catalogReplace" className="text-xs font-normal cursor-pointer">
+                  Reemplazar todo al subir
+                </Label>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                disabled={catalogImporting || catalogCount === 0}
+                onClick={() => void handleClearCatalog()}
+              >
+                Vaciar catálogo
+              </Button>
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Solo admin/supervisor cargan el Excel. Usted puede escanear códigos ya cargados.
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       <Tabs value={mainTab} onValueChange={(v) => setMainTab(v as 'operario' | 'admin' | 'vivo')}>
         <TabsList>
@@ -796,22 +955,43 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
 
                       {pendingLookup ? (
                         <div className="rounded-md border border-sky-600/30 bg-sky-50/50 dark:bg-sky-950/20 p-3 space-y-2">
-                          <div className="font-semibold">
-                            {pendingLookup.matchedBy === 'codigoAlterno' ? 'Código alterno' : 'Número TF'}:{' '}
-                            {pendingLookup.scanCode}
+                          <div className="font-semibold flex flex-wrap items-center gap-2">
+                            {pendingLookup.matchedBy === 'catalogo'
+                              ? 'Catálogo (caja)'
+                              : pendingLookup.matchedBy === 'codigoAlterno'
+                                ? 'Código alterno'
+                                : 'Número TF'}
+                            : {pendingLookup.scanCode}
+                            {pendingLookup.source === 'catalogo' ? (
+                              <Badge className="bg-violet-500/15 text-violet-900">Sin remisión</Badge>
+                            ) : (
+                              <Badge variant="secondary">Transferencias</Badge>
+                            )}
                           </div>
                           <div className="grid grid-cols-2 gap-2 text-sm">
                             <div>
-                              <span className="text-muted-foreground">TF</span>
-                              <div className="font-semibold">{pendingLookup.numeroTF}</div>
+                              <span className="text-muted-foreground">
+                                {pendingLookup.source === 'catalogo' ? 'Referencia' : 'TF'}
+                              </span>
+                              <div className="font-semibold">
+                                {pendingLookup.source === 'catalogo'
+                                  ? pendingLookup.referencia || pendingLookup.numeroTF
+                                  : pendingLookup.numeroTF}
+                              </div>
                             </div>
                             <div>
                               <span className="text-muted-foreground">Destino</span>
                               <div className="font-semibold">{pendingLookup.bodegaDestino}</div>
                             </div>
                             <div>
-                              <span className="text-muted-foreground">Marca</span>
-                              <div className="font-semibold">{pendingLookup.marca || '—'}</div>
+                              <span className="text-muted-foreground">
+                                {pendingLookup.source === 'catalogo' ? 'Talla' : 'Marca'}
+                              </span>
+                              <div className="font-semibold">
+                                {pendingLookup.source === 'catalogo'
+                                  ? pendingLookup.talla || '—'
+                                  : pendingLookup.marca || '—'}
+                              </div>
                             </div>
                             <div>
                               <span className="text-muted-foreground">Cantidad</span>
