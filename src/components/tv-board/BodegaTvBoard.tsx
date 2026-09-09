@@ -6,9 +6,13 @@ import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { getBodegaTvSnapshot } from '@/app/bodegaTvActions';
 import type { BodegaTvSnapshot } from '@/lib/bodegaTvTypes';
-import { BodegaAreaDetailSlide, BodegaOverviewSlide } from './bodega/BodegaTvSlides';
+import {
+  BodegaAreaDetailSlide,
+  BodegaOverviewSlide,
+  BODEGA_TV_PAGE_SIZE,
+} from './bodega/BodegaTvSlides';
 
-const SLIDE_DURATION = 12000;
+const SLIDE_DURATION = 2000;
 const DATA_SYNC_INTERVAL = 45 * 1000;
 
 export default function BodegaTvBoard() {
@@ -45,12 +49,29 @@ export default function BodegaTvBoard() {
 
   const slides = useMemo(() => {
     if (!data) return [] as React.ReactNode[];
-    return [
-      <BodegaOverviewSlide key="overview" data={data} />,
-      ...data.areas.map((area) => (
-        <BodegaAreaDetailSlide key={`area-${area.key}`} area={area} />
-      )),
-    ];
+    const nodes: React.ReactNode[] = [<BodegaOverviewSlide key="overview" data={data} />];
+
+    for (const area of data.areas) {
+      const ranking = area.ranking || [];
+      const pageCount = Math.max(1, Math.ceil(ranking.length / BODEGA_TV_PAGE_SIZE));
+      for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
+        const rankingPage = ranking.slice(
+          pageIndex * BODEGA_TV_PAGE_SIZE,
+          pageIndex * BODEGA_TV_PAGE_SIZE + BODEGA_TV_PAGE_SIZE
+        );
+        nodes.push(
+          <BodegaAreaDetailSlide
+            key={`area-${area.key}-p${pageIndex}`}
+            area={area}
+            rankingPage={rankingPage}
+            pageIndex={pageIndex}
+            pageCount={pageCount}
+          />
+        );
+      }
+    }
+
+    return nodes;
   }, [data]);
 
   useEffect(() => {
@@ -107,7 +128,7 @@ export default function BodegaTvBoard() {
           slides.map((slide, idx) => (
             <div
               key={idx}
-              className={`absolute inset-0 transition-opacity duration-700 ${
+              className={`absolute inset-0 transition-opacity duration-300 ${
                 idx === currentSlideIndex ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'
               }`}
             >
@@ -118,18 +139,19 @@ export default function BodegaTvBoard() {
       </main>
 
       <footer className="mt-6 flex items-center justify-between shrink-0 px-2">
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap max-w-[70%]">
           {slides.map((_, idx) => (
             <div
               key={idx}
               className={`h-2.5 rounded-full transition-all ${
-                idx === currentSlideIndex ? 'w-10 bg-emerald-400' : 'w-2.5 bg-slate-700'
+                idx === currentSlideIndex ? 'w-8 bg-emerald-400' : 'w-2.5 bg-slate-700'
               }`}
             />
           ))}
         </div>
         <div className="text-sm font-bold uppercase tracking-widest text-slate-500">
-          Slide {slides.length ? currentSlideIndex + 1 : 0} / {slides.length} · rotación 12s · sync 45s
+          Slide {slides.length ? currentSlideIndex + 1 : 0} / {slides.length} · 2s · máx 2 ops · sync
+          45s
         </div>
       </footer>
     </div>

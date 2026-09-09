@@ -59,8 +59,15 @@ async function buildEmpaque(dayKey: string): Promise<BodegaTvAreaSnapshot> {
     area.units = report.totalQuantity || packers.reduce((s, p) => s + (p.totalQuantity || 0), 0);
     area.operators = report.operatorCount || packers.length;
     area.productivity = report.avgProductivity || 0;
-    area.compliance = report.overallCompliance;
-    area.ranking = packers.slice(0, 10).map((p) => ({
+    // Cumplimiento de área = promedio ponderado por unidades de cada empacador
+    {
+      const weight = packers.reduce((s, p) => s + (p.totalQuantity || 0), 0);
+      area.compliance =
+        weight > 0
+          ? packers.reduce((s, p) => s + (p.compliance || 0) * (p.totalQuantity || 0), 0) / weight
+          : report.overallCompliance;
+    }
+    area.ranking = packers.map((p) => ({
       name: p.packerName,
       units: p.totalQuantity || 0,
       productivity: p.productivity || 0,
@@ -89,7 +96,6 @@ async function buildEtiquetado(dayKey: string, nameByUid: Map<string, string>): 
     area.productivity = summary.conversionRate || summary.efficiency || 0;
     area.ranking = [...employeePerformance]
       .sort((a, b) => b.efficiency - a.efficiency || b.totalUnits - a.totalUnits)
-      .slice(0, 10)
       .map((e) => {
         const resolved =
           e.type === 'Interno' ? nameByUid.get(e.id) || nameByUid.get(e.name) || e.name : e.name;
@@ -170,8 +176,7 @@ async function buildTallado(dayKey: string): Promise<BodegaTvAreaSnapshot> {
         };
       })
       .filter((r) => r.units > 0 || r.productivity > 0)
-      .sort((a, b) => b.productivity - a.productivity || b.units - a.units)
-      .slice(0, 10);
+      .sort((a, b) => b.productivity - a.productivity || b.units - a.units);
 
     area.units = qty;
     area.operators = shifts.length;
@@ -228,8 +233,8 @@ async function buildRecepcion(
       { units: number; first: number; last: number }
     >();
     let totalUnits = 0;
-    let complianceAcc = 0;
-    let complianceN = 0;
+    let fillAcc = 0;
+    let fillN = 0;
 
     for (let i = 0; i < targetOps.length; i++) {
       const op = targetOps[i];
@@ -237,8 +242,8 @@ async function buildRecepcion(
       const opUnits = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
       totalUnits += opUnits;
       if (op.expected_quantity > 0 && opUnits > 0) {
-        complianceAcc += Math.min(200, (opUnits / op.expected_quantity) * 100);
-        complianceN += 1;
+        fillAcc += Math.min(200, (opUnits / op.expected_quantity) * 100);
+        fillN += 1;
       }
       for (const it of items) {
         const uid = it.user_id || 'sin-usuario';
@@ -260,8 +265,7 @@ async function buildRecepcion(
           productivity: v.units / hours,
         };
       })
-      .sort((a, b) => b.units - a.units || b.productivity - a.productivity)
-      .slice(0, 10);
+      .sort((a, b) => b.units - a.units || b.productivity - a.productivity);
 
     const totalProdHours = Array.from(byUser.values()).reduce((s, v) => {
       return s + Math.max((v.last - v.first) / 3600000, 1 / 60);
@@ -270,12 +274,16 @@ async function buildRecepcion(
     area.units = totalUnits;
     area.operators = byUser.size;
     area.productivity = totalProdHours > 0 ? totalUnits / totalProdHours : 0;
-    area.compliance = complianceN > 0 ? complianceAcc / complianceN : undefined;
+    // No usar % leído vs esperado como "cumplimiento de productividad"
+    area.compliance = undefined;
     area.ranking = ranking;
     area.extras = [
       { label: 'Completadas', value: String(completed) },
       { label: 'En curso', value: String(inProgress) },
       { label: 'Ops hoy', value: String(todayOps.length) },
+      ...(fillN > 0
+        ? [{ label: 'Avance lectura', value: `${(fillAcc / fillN).toFixed(0)}%` }]
+        : []),
     ];
   } catch (e) {
     console.error('bodegaTv recepcion:', e);
@@ -305,17 +313,36 @@ export async function getBodegaTvSnapshot(): Promise<{
     ]);
 
     const areas = [empaque, etiquetado, tallado, recepcion];
-    const withCompliance = areas.filter((a) => typeof a.compliance === 'number');
+
+    // Cumplimiento medio del resumen = promedio ponderado por unidades
+    // de personas/grupos que reportan compliance de productividad (hoy: empaque).
+    let complianceWeight = 0;
+    let complianceSum = 0;
+    for (const area of areas) {
+      for (const row of area.ranking) {
+        if (typeof row.compliance === 'number' && Number.isFinite(row.compliance)) {
+          const w = Math.max(row.units, 1);
+          complianceSum += row.compliance * w;
+          complianceWeight += w;
+        }
+      }
+    }
+    if (complianceWeight <= 0) {
+      for (const area of areas) {
+        if (typeof area.compliance === 'number' && Number.isFinite(area.compliance) && area.units > 0) {
+          complianceSum += area.compliance * area.units;
+          complianceWeight += area.units;
+        }
+      }
+    }
+
     const snapshot: BodegaTvSnapshot = {
       dayKey,
       generatedAt: new Date().toISOString(),
       areas,
       summary: {
         totalUnits: areas.reduce((s, a) => s + a.units, 0),
-        avgCompliance:
-          withCompliance.length > 0
-            ? withCompliance.reduce((s, a) => s + (a.compliance || 0), 0) / withCompliance.length
-            : 0,
+        avgCompliance: complianceWeight > 0 ? complianceSum / complianceWeight : 0,
         operators: areas.reduce((s, a) => s + a.operators, 0),
       },
     };
