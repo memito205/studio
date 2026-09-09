@@ -148,6 +148,9 @@ async function loadReceptionPhysicalByRef(
   success: boolean;
   physicalByRef?: Map<string, number>;
   operation?: ReceptionOperation;
+  scanDocCount?: number;
+  physicalRawQty?: number;
+  skippedNoQty?: number;
   error?: string;
 }> {
   try {
@@ -157,33 +160,49 @@ async function loadReceptionPhysicalByRef(
     }
     const operation = { id: opSnap.id, ...opSnap.data() } as ReceptionOperation;
 
+    // Sin limit artificial: Cant. Leída de recepción suma TODOS los scannedItems.
     const scansSnap = await getDocs(
-      query(collection(firestore, SCANNED_COL), where('reception_id', '==', receptionOperationId), limit(5000))
+      query(collection(firestore, SCANNED_COL), where('reception_id', '==', receptionOperationId))
     );
     const physicalByRef = new Map<string, number>();
+    let physicalRawQty = 0;
+    let skippedNoQty = 0;
+
     scansSnap.forEach((d) => {
       const item = d.data() as ScannedItem;
-      const ref = normRef(item.reference);
-      if (!ref) return;
       const qty = toNumber(item.quantity);
-      if (!qty) return;
+      if (!qty) {
+        skippedNoQty += 1;
+        return;
+      }
+      physicalRawQty += qty;
+      // Misma base que recepción: no descartar lecturas sin referencia.
+      const ref =
+        normRef(item.reference) ||
+        normRef(item.barcode) ||
+        'SIN_REFERENCIA';
       physicalByRef.set(ref, (physicalByRef.get(ref) || 0) + qty);
     });
 
-    // Si no hay escaneos, usar expectedItems como respaldo informativo (sigue siendo "planificado" no físico).
-    // Fase 1: preferir escaneos; si vacío, sumar totalScannedQuantity no desagrega por ref.
-    // Mejor: si no hay scans, usar expectedItems como físico estimado y marcar en notes en el caller.
-    if (physicalByRef.size === 0 && Array.isArray(operation.expectedItems)) {
+    // Solo si no hay ningún escaneo: respaldo con expectedItems (esperado, no leído).
+    if (scansSnap.size === 0 && Array.isArray(operation.expectedItems)) {
       for (const ei of operation.expectedItems) {
-        const ref = normRef((ei as any).reference);
-        if (!ref) continue;
+        const ref = normRef((ei as any).reference) || normRef((ei as any).barcode) || 'SIN_REFERENCIA';
         const qty = toNumber((ei as any).expected_quantity);
         if (!qty) continue;
         physicalByRef.set(ref, (physicalByRef.get(ref) || 0) + qty);
+        physicalRawQty += qty;
       }
     }
 
-    return { success: true, physicalByRef, operation };
+    return {
+      success: true,
+      physicalByRef,
+      operation,
+      scanDocCount: scansSnap.size,
+      physicalRawQty,
+      skippedNoQty,
+    };
   } catch (e: any) {
     console.error('loadReceptionPhysicalByRef:', e);
     return { success: false, error: e?.message || 'Error al leer recepción.' };
@@ -274,12 +293,21 @@ export async function createDistributionCompare(input: {
           error: 'La recepción no tiene escaneos ni ítems esperados para comparar por referencia.',
         };
       }
-      // Detectar si vinimos de expected (sin scans): heurística — si totalScanned es 0
-      if ((Number(loaded.operation?.totalScannedQuantity) || 0) === 0) {
-        notes = [notes, 'Físico tomado de ítems esperados (sin escaneos en recepción).']
-          .filter(Boolean)
-          .join(' ');
-      }
+      const reported = Number(loaded.operation?.totalScannedQuantity) || 0;
+      const raw = Number(loaded.physicalRawQty) || 0;
+      notes = [
+        notes,
+        `Físico = suma de scannedItems (${loaded.scanDocCount || 0} lecturas → ${raw} und).`,
+        reported > 0 ? `Recepción reporta Cant. Leída ${reported}.` : '',
+        reported > 0 && raw !== reported
+          ? `AVISO: diferencia físico vs Cant. Leída (${raw} vs ${reported}).`
+          : '',
+        (Number(loaded.operation?.totalScannedQuantity) || 0) === 0 && (loaded.scanDocCount || 0) === 0
+          ? 'Físico tomado de ítems esperados (sin escaneos en recepción).'
+          : '',
+      ]
+        .filter(Boolean)
+        .join(' ');
     } else {
       if (!input.stockRows?.length) {
         return { success: false, error: 'Suba el archivo de existencias físicas (REFERENCIA, TALLA, CANTD LEIDA).' };
