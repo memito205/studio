@@ -1804,6 +1804,49 @@ export async function loadLabelingOperations(): Promise<{ success: boolean; data
     }
 }
 
+/**
+ * Borra TODAS las tareas de etiquetado y sus logs de actividad.
+ * Limpia la base usada por el módulo y por el dashboard histórico de etiquetado.
+ */
+export async function purgeAllLabelingOperations(): Promise<{
+  success: boolean;
+  deletedOperations?: number;
+  deletedLogs?: number;
+  error?: string;
+}> {
+  try {
+    const opsSnap = await getDocs(collection(firestore, 'labelingOperations'));
+    let deletedOperations = 0;
+    let deletedLogs = 0;
+
+    for (const opDoc of opsSnap.docs) {
+      // Borrar subcolección activityLog (en lotes de hasta ~400)
+      const logCol = collection(firestore, 'labelingOperations', opDoc.id, 'activityLog');
+      let logSnap = await getDocs(query(logCol, limit(400)));
+      while (!logSnap.empty) {
+        const batch = writeBatch(firestore);
+        logSnap.docs.forEach((d) => {
+          batch.delete(d.ref);
+          deletedLogs += 1;
+        });
+        await batch.commit();
+        logSnap = await getDocs(query(logCol, limit(400)));
+      }
+
+      await deleteDoc(opDoc.ref);
+      deletedOperations += 1;
+    }
+
+    return { success: true, deletedOperations, deletedLogs };
+  } catch (error: any) {
+    console.error('purgeAllLabelingOperations:', error);
+    return {
+      success: false,
+      error: error?.message || 'No se pudieron borrar las tareas de etiquetado.',
+    };
+  }
+}
+
 export async function updateLabelingOperation(operationId: string, updates: Partial<Omit<LabelingOperation, 'id' | 'createdAt'>>): Promise<{ success: boolean; error?: string }> {
     try {
         const opRef = doc(firestore, 'labelingOperations', operationId);

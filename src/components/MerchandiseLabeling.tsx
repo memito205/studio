@@ -4,7 +4,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Loader2, MoreHorizontal, Users, Target, FileDown, Tag, Pause, Search, Play, RotateCcw, Check, Pencil } from 'lucide-react';
+import { ArrowLeft, Loader2, MoreHorizontal, Users, Target, FileDown, Tag, Pause, Search, Play, RotateCcw, Check, Pencil, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -18,8 +18,19 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import type { LabelingOperation, LabelingOperationStatus, LabelingActivityLog, AppUser, ReceptionExpectedItem, OperationPulse, ExternalVendor } from '@/types';
-import { loadLabelingOperations, updateLabelingOperation, getExpectedItemsForLabeling, getAllUserProfiles, getLabelingActivityLog, logLabelingActivity, finishLabelingTaskSession, getExternalVendors, correctLabelingTaskQuantity } from '@/app/reception/actions';
+import { loadLabelingOperations, updateLabelingOperation, getExpectedItemsForLabeling, getAllUserProfiles, getLabelingActivityLog, logLabelingActivity, finishLabelingTaskSession, getExternalVendors, correctLabelingTaskQuantity, purgeAllLabelingOperations } from '@/app/reception/actions';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { FinishWorkDialog } from './FinishWorkDialog';
 import { getUserGoals, getProductivitySettings, getPulsesByDate } from '@/app/actions';
@@ -271,6 +282,8 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
   const [isActivityLogOpen, setIsActivityLogOpen] = useState(false);
   const [selectedOperation, setSelectedOperation] = useState<LabelingOperation | null>(null);
   const [selectedLog, setSelectedLog] = useState<LabelingActivityLog[]>([]);
+  const [purgingHistory, setPurgingHistory] = useState(false);
+  const [purgeDialogOpen, setPurgeDialogOpen] = useState(false);
 
   const [viewMode, setViewMode] = useState<'admin' | 'operator'>('admin');
   const [taskToFinish, setTaskToFinish] = useState<LabelingOperation | null>(null);
@@ -500,6 +513,25 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     setIsQuantityDialogOpen(false);
   };
 
+  const handlePurgeAllLabelingHistory = async () => {
+    setPurgingHistory(true);
+    const result = await purgeAllLabelingOperations();
+    setPurgingHistory(false);
+    if (!result.success) {
+      toast({ variant: 'destructive', title: 'No se pudo borrar', description: result.error });
+      return;
+    }
+    setPurgeDialogOpen(false);
+    setOperations([]);
+    setProductivityData(new Map());
+    setSelectedOperation(null);
+    toast({
+      title: 'Histórico de etiquetado reiniciado',
+      description: `Tareas borradas: ${result.deletedOperations || 0}. Logs: ${result.deletedLogs || 0}. El tablero de etiquetado queda en cero.`,
+    });
+    await fetchOperationsAndProductivity();
+  };
+
     const handleAdminAction = async (operationId: string, actionType: 'START' | 'PAUSE' | 'RESUME' | 'FINISH', reason?: string) => {
         const operation = operations.find(o => o.id === operationId);
         if (!operation) return;
@@ -623,10 +655,58 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
               <CardTitle>Módulo de Etiquetado de Mercancía</CardTitle>
               <CardDescription>Gestione y supervise el progreso de las operaciones de etiquetado.</CardDescription>
             </div>
-            <Button onClick={onReturnToSuite} variant="outline">
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Volver a la Suite
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              {isManager ? (
+                <AlertDialog open={purgeDialogOpen} onOpenChange={setPurgeDialogOpen}>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      disabled={purgingHistory || isLoading || operations.length === 0}
+                    >
+                      {purgingHistory ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="mr-2 h-4 w-4" />
+                      )}
+                      Borrar todo el histórico
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>¿Borrar todas las tareas de etiquetado?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Se eliminarán de la base de datos todas las tareas actuales y sus registros de actividad.
+                        El dashboard / tablero de control de etiquetado quedará en cero para empezar el histórico de
+                        nuevo. Esta acción no se puede deshacer.
+                        {operations.length > 0 ? (
+                          <span className="block mt-2 font-medium text-foreground">
+                            Tareas actuales a borrar: {operations.length.toLocaleString()}
+                          </span>
+                        ) : null}
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel disabled={purgingHistory}>Cancelar</AlertDialogCancel>
+                      <AlertDialogAction
+                        disabled={purgingHistory}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          void handlePurgeAllLabelingHistory();
+                        }}
+                      >
+                        {purgingHistory ? 'Borrando…' : 'Sí, borrar todo'}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              ) : null}
+              <Button onClick={onReturnToSuite} variant="outline">
+                <ArrowLeft className="mr-2 h-4 w-4" />
+                Volver a la Suite
+              </Button>
+            </div>
           </CardHeader>
           
           {isManager && (
