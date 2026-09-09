@@ -1463,6 +1463,11 @@ export interface TalladoShift {
   startedAt: string;
   endedAt?: string;
   status: 'active' | 'closed';
+  /**
+   * Hora real de inicio productivo (admin).
+   * Si existe, la jornada del día usa este valor en lugar de startedAt / primera lectura.
+   */
+  productivityStartedAt?: string;
 }
 
 export interface TalladoUnit {

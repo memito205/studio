@@ -58,6 +58,7 @@ import {
   startTalladoShift,
   startTalladoUnit,
   updateTalladoShiftPeople,
+  updateTalladoShiftProductivityStart,
   importTalladoCatalog,
   getTalladoCatalogStats,
   clearTalladoCatalog,
@@ -83,6 +84,62 @@ const PAUSE_LABELS: Record<TalladoPauseType, string> = {
   fin_jornada: 'Fin jornada',
   otros: 'Otros',
 };
+
+const START_SOURCE_LABEL: Record<'admin' | 'primera_lectura' | 'turno', string> = {
+  admin: 'Admin',
+  primera_lectura: '1ª lectura',
+  turno: 'Inicio turno',
+};
+
+function isoToDatetimeLocalBogota(iso?: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Bogota',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+      .formatToParts(d)
+      .filter((p) => p.type !== 'literal')
+      .map((p) => [p.type, p.value])
+  ) as Record<string, string>;
+  const hour = parts.hour === '24' ? '00' : parts.hour;
+  return `${parts.year}-${parts.month}-${parts.day}T${hour}:${parts.minute}`;
+}
+
+function datetimeLocalBogotaToIso(value: string): string {
+  // Interpreta el valor del input como hora Colombia
+  return new Date(`${value}:00.000-05:00`).toISOString();
+}
+
+function firstUnitStartIsoForShift(units: TalladoUnit[], shiftId: string, dayKey: string, grupo?: string): string | null {
+  let best: number | null = null;
+  for (const u of units) {
+    const sameShift = u.shiftId === shiftId;
+    const sameGrupoFallback = !u.shiftId && !!grupo && u.grupo === grupo;
+    if (!sameShift && !sameGrupoFallback) continue;
+    const iso = u.startedAt;
+    if (!iso) continue;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) continue;
+    const key = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Bogota',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(d);
+    if (key !== dayKey) continue;
+    const ms = d.getTime();
+    if (best == null || ms < best) best = ms;
+  }
+  return best == null ? null : new Date(best).toISOString();
+}
 
 function isTalladoSinRemision(u: Pick<TalladoUnit, 'source' | 'bodegaDestino' | 'marca'>): boolean {
   if (u.source === 'catalogo') return true;
@@ -492,7 +549,9 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   };
 
   const [peopleDrafts, setPeopleDrafts] = useState<Record<string, number>>({});
+  const [startDrafts, setStartDrafts] = useState<Record<string, string>>({});
   const [savingPeopleId, setSavingPeopleId] = useState<string | null>(null);
+  const [savingStartId, setSavingStartId] = useState<string | null>(null);
 
   const handleAdminUpdatePeople = async (shiftId: string, nextCount?: number) => {
     const n = Math.max(1, Math.round(Number(nextCount ?? peopleDrafts[shiftId]) || 0));
@@ -532,6 +591,76 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     toast({
       title: 'Personas actualizadas',
       description: `${n} persona(s). El rendimiento (cant / persona·h) se recalculó.`,
+    });
+  };
+
+  const reloadDashAndLive = async () => {
+    const [dashRes, liveRes] = await Promise.all([
+      listTalladoDashboard({ dayKey: dashDayKey }),
+      listTalladoLiveMonitor({ cleanup: false }),
+    ]);
+    if (dashRes.success) {
+      setDashShifts(dashRes.shifts || []);
+      setDashUnits(dashRes.units || []);
+      setDashPauses(dashRes.pauses || []);
+    }
+    if (liveRes.success) {
+      setLiveShifts(liveRes.shifts || []);
+      setLiveActiveUnits(liveRes.activeUnits || []);
+      setLiveTodayUnits(liveRes.todayUnits || []);
+      setLiveOpenPauses(liveRes.openPauses || []);
+    }
+  };
+
+  const handleAdminUpdateStart = async (shiftId: string, mode: 'save' | 'first_unit' | 'clear') => {
+    let iso: string | null = null;
+    if (mode === 'clear') {
+      iso = null;
+    } else if (mode === 'first_unit') {
+      iso = firstUnitStartIsoForShift(dashUnits, shiftId, dashDayKey, dashShifts.find((x) => x.id === shiftId)?.grupo);
+      if (!iso) {
+        toast({
+          variant: 'destructive',
+          title: 'Inicio',
+          description: 'No hay lecturas de este turno en la fecha seleccionada.',
+        });
+        return;
+      }
+    } else {
+      const draft = startDrafts[shiftId];
+      if (!draft) {
+        toast({ variant: 'destructive', title: 'Inicio', description: 'Indique fecha y hora.' });
+        return;
+      }
+      iso = datetimeLocalBogotaToIso(draft);
+    }
+
+    setSavingStartId(shiftId);
+    const res = await updateTalladoShiftProductivityStart(shiftId, iso);
+    if (!res.success) {
+      setSavingStartId(null);
+      toast({ variant: 'destructive', title: 'Inicio', description: res.error });
+      return;
+    }
+    await reloadDashAndLive();
+    setSavingStartId(null);
+    if (iso) {
+      setStartDrafts((prev) => ({ ...prev, [shiftId]: isoToDatetimeLocalBogota(iso) }));
+    } else {
+      setStartDrafts((prev) => {
+        const next = { ...prev };
+        delete next[shiftId];
+        return next;
+      });
+    }
+    toast({
+      title: 'Hora de inicio actualizada',
+      description:
+        mode === 'clear'
+          ? 'Se volvió al cálculo automático (1ª lectura / turno).'
+          : mode === 'first_unit'
+            ? 'Se usó la primera lectura del día.'
+            : 'Inicio productivo fijado por admin.',
     });
   };
 
@@ -1649,19 +1778,20 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
             {dashStats.shiftRows.length > 0 ? (
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-base">Cómo se calcula la jornada</CardTitle>
+                  <CardTitle className="text-base">Cómo se calcula la jornada / hora de inicio</CardTitle>
                   <CardDescription>
-                    Por turno: ventana del día × personas. Si el turno empezó otro día, la ventana inicia en la
-                    primera lectura de este día (no a las 00:00).
+                    Prioridad: 1) hora fijada por admin · 2) primera lectura del día · 3) inicio del turno.
+                    Puede corregir la hora real aquí; los KPIs y Bodega LIVE se recalculan.
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="overflow-x-auto">
+                <CardContent className="overflow-x-auto space-y-3">
                   <Table>
                     <TableHeader>
                       <TableRow>
                         <TableHead>Grupo</TableHead>
                         <TableHead>Personas</TableHead>
-                        <TableHead>Inicio</TableHead>
+                        <TableHead>Origen</TableHead>
+                        <TableHead>Inicio usado</TableHead>
                         <TableHead>Fin</TableHead>
                         <TableHead className="text-right">Jornada</TableHead>
                         <TableHead className="text-right">Persona·h</TableHead>
@@ -1672,6 +1802,9 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                         <TableRow key={r.shiftId}>
                           <TableCell className="font-medium">{r.grupo}</TableCell>
                           <TableCell className="tabular-nums">{r.people}</TableCell>
+                          <TableCell>
+                            <Badge variant="secondary">{START_SOURCE_LABEL[r.startSource]}</Badge>
+                          </TableCell>
                           <TableCell className="tabular-nums">{r.startClock}</TableCell>
                           <TableCell className="tabular-nums">{r.endClock}</TableCell>
                           <TableCell className="text-right tabular-nums">{fmtDuration(r.workedMs)}</TableCell>
@@ -1680,6 +1813,70 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                       ))}
                     </TableBody>
                   </Table>
+
+                  <div className="space-y-3 border-t pt-3">
+                    {dashShifts.map((s) => {
+                      const draft =
+                        startDrafts[s.id] ??
+                        isoToDatetimeLocalBogota(s.productivityStartedAt) ??
+                        isoToDatetimeLocalBogota(
+                          firstUnitStartIsoForShift(dashUnits, s.id, dashDayKey, s.grupo) || undefined
+                        );
+                      return (
+                        <div
+                          key={`start-${s.id}`}
+                          className="flex flex-wrap items-end gap-2 rounded-lg border p-3 bg-muted/20"
+                        >
+                          <div className="min-w-[120px]">
+                            <div className="text-sm font-semibold">{s.grupo}</div>
+                            <div className="text-xs text-muted-foreground">{s.userName}</div>
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs">Hora real de inicio</Label>
+                            <Input
+                              type="datetime-local"
+                              className="h-9 w-[210px]"
+                              value={draft || ''}
+                              onChange={(e) =>
+                                setStartDrafts((prev) => ({ ...prev, [s.id]: e.target.value }))
+                              }
+                            />
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            disabled={savingStartId === s.id || !draft}
+                            onClick={() => void handleAdminUpdateStart(s.id, 'save')}
+                          >
+                            {savingStartId === s.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              'Guardar inicio'
+                            )}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={savingStartId === s.id}
+                            onClick={() => void handleAdminUpdateStart(s.id, 'first_unit')}
+                          >
+                            Usar 1ª lectura
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={savingStartId === s.id}
+                            onClick={() => void handleAdminUpdateStart(s.id, 'clear')}
+                          >
+                            Quitar fijo
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </CardContent>
               </Card>
             ) : null}

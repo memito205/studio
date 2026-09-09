@@ -3,6 +3,7 @@
 import {
   collection,
   deleteDoc,
+  deleteField,
   doc,
   documentId,
   getDocs,
@@ -784,6 +785,33 @@ export async function updateTalladoShiftPeople(
     return { success: true };
   } catch (error: any) {
     return { success: false, error: error?.message || 'No se pudo actualizar personas.' };
+  }
+}
+
+/** Admin: fija o limpia la hora real de inicio productivo del turno. */
+export async function updateTalladoShiftProductivityStart(
+  shiftId: string,
+  productivityStartedAt: string | null
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!shiftId) return { success: false, error: 'Turno no indicado.' };
+    if (productivityStartedAt == null || productivityStartedAt === '') {
+      await updateDoc(doc(firestore, SHIFTS_COL, shiftId), { productivityStartedAt: deleteField() });
+      return { success: true };
+    }
+    const ms = new Date(productivityStartedAt).getTime();
+    if (!Number.isFinite(ms)) {
+      return { success: false, error: 'Fecha/hora de inicio inválida.' };
+    }
+    await updateDoc(doc(firestore, SHIFTS_COL, shiftId), {
+      productivityStartedAt: new Date(ms).toISOString(),
+    });
+    return { success: true };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error?.message || 'No se pudo actualizar la hora de inicio.',
+    };
   }
 }
 

@@ -45,18 +45,19 @@ export function fmtTalladoClock(ms: number): string {
 }
 
 /**
- * Ventana de jornada del turno en un día:
- * - Si el turno inició ese día → desde startedAt del turno
- * - Si el turno viene de un día anterior → desde la PRIMERA unidad leída ese día
- *   (no desde las 00:00; eso inflaba la jornada)
- * - Fin → ahora (activo) o endedAt, recortado al día
+ * Ventana de jornada del turno en un día.
+ * Prioridad de inicio:
+ * 1) productivityStartedAt (admin)
+ * 2) primera unidad leída ese día
+ * 3) startedAt del turno solo si es ese mismo día
+ * Nunca usar 00:00 del calendario por defecto.
  */
 export function talladoShiftDayWindow(opts: {
   shift: TalladoShift;
   units?: TalladoUnit[];
   dayKey?: string;
   nowMs?: number;
-}): { startMs: number; endMs: number } | null {
+}): { startMs: number; endMs: number; startSource: 'admin' | 'primera_lectura' | 'turno' } | null {
   const nowMs = opts.nowMs ?? Date.now();
   const shiftStart = parseMs(opts.shift.startedAt);
   if (shiftStart == null) return null;
@@ -67,18 +68,26 @@ export function talladoShiftDayWindow(opts: {
       : nowMs;
 
   if (!opts.dayKey) {
-    return { startMs: shiftStart, endMs: Math.max(shiftStart, shiftEnd) };
+    const adminStart = parseMs(opts.shift.productivityStartedAt);
+    return {
+      startMs: adminStart ?? shiftStart,
+      endMs: Math.max(adminStart ?? shiftStart, shiftEnd),
+      startSource: adminStart ? 'admin' : 'turno',
+    };
   }
 
   const { startMs: dayStart, endMs: dayEnd } = talladoBogotaDayBounds(opts.dayKey);
   const cappedEnd = Math.min(shiftEnd, dayEnd, nowMs);
 
-  const dayUnits = (opts.units || []).filter(
-    (u) =>
-      u.shiftId === opts.shift.id &&
-      (isTalladoSameLocalDay(u.startedAt, opts.dayKey!) ||
-        isTalladoSameLocalDay(u.endedAt, opts.dayKey!))
-  );
+  const dayUnits = (opts.units || []).filter((u) => {
+    const sameShift = u.shiftId === opts.shift.id;
+    const sameGrupoFallback = !u.shiftId && u.grupo === opts.shift.grupo;
+    if (!sameShift && !sameGrupoFallback) return false;
+    return (
+      isTalladoSameLocalDay(u.startedAt, opts.dayKey!) ||
+      isTalladoSameLocalDay(u.endedAt, opts.dayKey!)
+    );
+  });
 
   let firstUnitMs: number | null = null;
   let lastUnitMs: number | null = null;
@@ -89,14 +98,21 @@ export function talladoShiftDayWindow(opts: {
     if (e != null) lastUnitMs = lastUnitMs == null ? e : Math.max(lastUnitMs, e);
   }
 
+  const adminStartRaw = parseMs(opts.shift.productivityStartedAt);
+
   let windowStart: number;
-  if (isTalladoSameLocalDay(opts.shift.startedAt, opts.dayKey)) {
-    windowStart = Math.max(shiftStart, dayStart);
+  let startSource: 'admin' | 'primera_lectura' | 'turno';
+
+  if (adminStartRaw != null) {
+    windowStart = Math.min(Math.max(adminStartRaw, dayStart), cappedEnd);
+    startSource = 'admin';
   } else if (firstUnitMs != null) {
-    // Turno cruzó de otro día: contar desde la primera lectura de HOY
     windowStart = Math.max(firstUnitMs, dayStart);
+    startSource = 'primera_lectura';
+  } else if (isTalladoSameLocalDay(opts.shift.startedAt, opts.dayKey)) {
+    windowStart = Math.max(shiftStart, dayStart);
+    startSource = 'turno';
   } else {
-    // Sin lecturas hoy → no hay jornada productiva ese día
     return null;
   }
 
@@ -106,7 +122,7 @@ export function talladoShiftDayWindow(opts: {
   }
 
   if (windowEnd <= windowStart) return null;
-  return { startMs: windowStart, endMs: windowEnd };
+  return { startMs: windowStart, endMs: windowEnd, startSource };
 }
 
 /**
@@ -207,6 +223,7 @@ export type TalladoProductivityBreakdown = {
     people: number;
     startClock: string;
     endClock: string;
+    startSource: 'admin' | 'primera_lectura' | 'turno';
     workedMs: number;
     personHours: number;
   }>;
@@ -254,6 +271,7 @@ export function talladoPersonHours(opts: {
       people,
       startClock: fmtTalladoClock(window.startMs),
       endClock: fmtTalladoClock(window.endMs),
+      startSource: window.startSource,
       workedMs,
       personHours: ph,
     });
@@ -263,7 +281,7 @@ export function talladoPersonHours(opts: {
     shiftRows.length === 0
       ? 'Sin jornada del día'
       : shiftRows.length === 1
-        ? `Jornada ${shiftRows[0].startClock}→${shiftRows[0].endClock} (− pausas) × ${shiftRows[0].people} pers.`
+        ? `Jornada ${shiftRows[0].startClock}→${shiftRows[0].endClock} (${shiftRows[0].startSource}) × ${shiftRows[0].people} pers.`
         : `${shiftRows.length} turnos: Σ (jornada_turno × personas)`;
 
   return { personHours, peopleTotal, workedMsTotal, formulaLabel, shiftRows };
