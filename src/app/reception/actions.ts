@@ -1805,6 +1805,39 @@ export async function loadLabelingOperations(): Promise<{ success: boolean; data
 }
 
 /**
+ * Borra únicamente las tareas con los IDs indicados y sus logs de actividad.
+ */
+export async function deleteSelectedLabelingOperations(ids: string[]): Promise<{
+  success: boolean;
+  deletedOperations?: number;
+  deletedLogs?: number;
+  error?: string;
+}> {
+  if (!ids || ids.length === 0) return { success: true, deletedOperations: 0, deletedLogs: 0 };
+  try {
+    let deletedOperations = 0;
+    let deletedLogs = 0;
+    for (const id of ids) {
+      const opRef = doc(firestore, 'labelingOperations', id);
+      const logCol = collection(firestore, 'labelingOperations', id, 'activityLog');
+      let logSnap = await getDocs(query(logCol, limit(400)));
+      while (!logSnap.empty) {
+        const batch = writeBatch(firestore);
+        logSnap.docs.forEach((d) => { batch.delete(d.ref); deletedLogs += 1; });
+        await batch.commit();
+        logSnap = await getDocs(query(logCol, limit(400)));
+      }
+      await deleteDoc(opRef);
+      deletedOperations += 1;
+    }
+    return { success: true, deletedOperations, deletedLogs };
+  } catch (error: any) {
+    console.error('deleteSelectedLabelingOperations:', error);
+    return { success: false, error: error?.message || 'No se pudieron borrar las tareas seleccionadas.' };
+  }
+}
+
+/**
  * Borra TODAS las tareas de etiquetado y sus logs de actividad.
  * Limpia la base usada por el módulo y por el dashboard histórico de etiquetado.
  */

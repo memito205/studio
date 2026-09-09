@@ -8,6 +8,7 @@ import { ArrowLeft, Loader2, MoreHorizontal, Users, Target, FileDown, Tag, Pause
 import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -30,7 +31,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import type { LabelingOperation, LabelingOperationStatus, LabelingActivityLog, AppUser, ReceptionExpectedItem, OperationPulse, ExternalVendor } from '@/types';
-import { loadLabelingOperations, updateLabelingOperation, getExpectedItemsForLabeling, getAllUserProfiles, getLabelingActivityLog, logLabelingActivity, finishLabelingTaskSession, getExternalVendors, correctLabelingTaskQuantity, purgeAllLabelingOperations } from '@/app/reception/actions';
+import { loadLabelingOperations, updateLabelingOperation, getExpectedItemsForLabeling, getAllUserProfiles, getLabelingActivityLog, logLabelingActivity, finishLabelingTaskSession, getExternalVendors, correctLabelingTaskQuantity, purgeAllLabelingOperations, deleteSelectedLabelingOperations } from '@/app/reception/actions';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { FinishWorkDialog } from './FinishWorkDialog';
 import { getUserGoals, getProductivitySettings, getPulsesByDate } from '@/app/actions';
@@ -142,7 +143,7 @@ interface ProductivityMetrics {
     compliance: number;
 }
 
-const AdminDashboard: React.FC<{
+interface AdminDashboardProps {
     operations: LabelingOperation[];
     productivityData: Map<string, ProductivityMetrics>;
     isSubmitting: boolean;
@@ -153,16 +154,32 @@ const AdminDashboard: React.FC<{
     onAdminPause: (operation: LabelingOperation) => void;
     onAction: (operationId: string, actionType: 'START' | 'PAUSE' | 'RESUME' | 'FINISH', reason?: string) => void;
     onFinish: (operation: LabelingOperation) => void;
-}> = ({ operations, productivityData, isSubmitting, onOpenDialog, onGenerateExcel, users, vendors, onAdminPause, onAction, onFinish }) => {
+    selectedIds: Set<string>;
+    onToggleSelect: (id: string) => void;
+    onToggleAll: (ids: string[]) => void;
+}
+
+const AdminDashboard: React.FC<AdminDashboardProps> = ({ operations, productivityData, isSubmitting, onOpenDialog, onGenerateExcel, users, vendors, onAdminPause, onAction, onFinish, selectedIds, onToggleSelect, onToggleAll }) => {
     
     const userMap = useMemo(() => new Map(users.map(u => [u.uid, u.displayName || u.email])), [users]);
     const vendorMap = useMemo(() => new Map(vendors.map(v => [v.id, v.name])), [vendors]);
+    const allIds = operations.map(op => op.id);
+    const allSelected = allIds.length > 0 && allIds.every(id => selectedIds.has(id));
+    const someSelected = allIds.some(id => selectedIds.has(id));
     
     return (
     <div className="border rounded-md">
         <Table>
             <TableHeader>
                 <TableRow>
+                    <TableHead className="w-10">
+                        <Checkbox
+                            checked={allSelected}
+                            data-state={someSelected && !allSelected ? 'indeterminate' : undefined}
+                            onCheckedChange={() => onToggleAll(allIds)}
+                            aria-label="Seleccionar todas"
+                        />
+                    </TableHead>
                     <TableHead>RK / Referencia</TableHead>
                     <TableHead>Operario</TableHead>
                     <TableHead>Estado</TableHead>
@@ -186,7 +203,14 @@ const AdminDashboard: React.FC<{
                         displayOperator = userMap.get(op.assignedOperatorId) || 'Interno';
                     }
                     return (
-                        <TableRow key={op.id}>
+                        <TableRow key={op.id} data-state={selectedIds.has(op.id) ? 'selected' : undefined}>
+                            <TableCell>
+                                <Checkbox
+                                    checked={selectedIds.has(op.id)}
+                                    onCheckedChange={() => onToggleSelect(op.id)}
+                                    aria-label={`Seleccionar ${op.rk_identifier}`}
+                                />
+                            </TableCell>
                             <TableCell>
                                 <div className="font-medium">{op.rk_identifier}</div>
                                 <div className="text-sm text-muted-foreground">{op.reference}</div>
@@ -284,6 +308,8 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
   const [selectedLog, setSelectedLog] = useState<LabelingActivityLog[]>([]);
   const [purgingHistory, setPurgingHistory] = useState(false);
   const [purgeDialogOpen, setPurgeDialogOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleteSelectedDialogOpen, setDeleteSelectedDialogOpen] = useState(false);
 
   const [viewMode, setViewMode] = useState<'admin' | 'operator'>('admin');
   const [taskToFinish, setTaskToFinish] = useState<LabelingOperation | null>(null);
@@ -532,6 +558,24 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     await fetchOperationsAndProductivity();
   };
 
+  const handleDeleteSelected = async () => {
+    if (selectedIds.size === 0) return;
+    setPurgingHistory(true);
+    const result = await deleteSelectedLabelingOperations(Array.from(selectedIds));
+    setPurgingHistory(false);
+    if (!result.success) {
+      toast({ variant: 'destructive', title: 'No se pudieron borrar', description: result.error });
+      return;
+    }
+    setDeleteSelectedDialogOpen(false);
+    setSelectedIds(new Set());
+    toast({
+      title: 'Tareas borradas',
+      description: `Se eliminaron ${result.deletedOperations || 0} tarea(s) y ${result.deletedLogs || 0} registro(s) de actividad.`,
+    });
+    await fetchOperationsAndProductivity();
+  };
+
     const handleAdminAction = async (operationId: string, actionType: 'START' | 'PAUSE' | 'RESUME' | 'FINISH', reason?: string) => {
         const operation = operations.find(o => o.id === operationId);
         if (!operation) return;
@@ -656,51 +700,54 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
               <CardDescription>Gestione y supervise el progreso de las operaciones de etiquetado.</CardDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              {isManager ? (
-                <AlertDialog open={purgeDialogOpen} onOpenChange={setPurgeDialogOpen}>
-                  <AlertDialogTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      disabled={purgingHistory || isLoading || operations.length === 0}
-                    >
-                      {purgingHistory ? (
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="mr-2 h-4 w-4" />
-                      )}
-                      Borrar todo el histórico
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>¿Borrar todas las tareas de etiquetado?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        Se eliminarán de la base de datos todas las tareas actuales y sus registros de actividad.
-                        El dashboard / tablero de control de etiquetado quedará en cero para empezar el histórico de
-                        nuevo. Esta acción no se puede deshacer.
-                        {operations.length > 0 ? (
-                          <span className="block mt-2 font-medium text-foreground">
-                            Tareas actuales a borrar: {operations.length.toLocaleString()}
-                          </span>
-                        ) : null}
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel disabled={purgingHistory}>Cancelar</AlertDialogCancel>
-                      <AlertDialogAction
+              {isManager && selectedIds.size > 0 ? (
+                <>
+                  <span className="text-sm text-muted-foreground">{selectedIds.size} tarea(s) seleccionada(s)</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setSelectedIds(new Set())}
+                    disabled={purgingHistory}
+                  >
+                    Cancelar selección
+                  </Button>
+                  <AlertDialog open={deleteSelectedDialogOpen} onOpenChange={setDeleteSelectedDialogOpen}>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
                         disabled={purgingHistory}
-                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          void handlePurgeAllLabelingHistory();
-                        }}
                       >
-                        {purgingHistory ? 'Borrando…' : 'Sí, borrar todo'}
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
+                        {purgingHistory ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="mr-2 h-4 w-4" />
+                        )}
+                        Borrar {selectedIds.size} tarea(s)
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>¿Borrar las tareas seleccionadas?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Se eliminarán permanentemente {selectedIds.size} tarea(s) y todos sus registros de actividad de la base de datos.
+                          Esto también afectará el tablero de control de etiquetado. Esta acción no se puede deshacer.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel disabled={purgingHistory}>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction
+                          disabled={purgingHistory}
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          onClick={(e) => { e.preventDefault(); void handleDeleteSelected(); }}
+                        >
+                          {purgingHistory ? 'Borrando…' : `Sí, borrar ${selectedIds.size} tarea(s)`}
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </>
               ) : null}
               <Button onClick={onReturnToSuite} variant="outline">
                 <ArrowLeft className="mr-2 h-4 w-4" />
@@ -807,6 +854,17 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
                         onAdminPause={handleAdminPauseClick}
                         onAction={handleAdminAction}
                         onFinish={handleOpenFinishDialog}
+                        selectedIds={selectedIds}
+                        onToggleSelect={(id) => setSelectedIds(prev => {
+                          const next = new Set(prev);
+                          next.has(id) ? next.delete(id) : next.add(id);
+                          return next;
+                        })}
+                        onToggleAll={(ids) => setSelectedIds(prev => {
+                          const allSelected = ids.every(id => prev.has(id));
+                          if (allSelected) return new Set();
+                          return new Set(ids);
+                        })}
                     />
                     )
                  ) : (
