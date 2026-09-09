@@ -77,7 +77,7 @@ function buildTotals(lines: DistributionCompareLine[]): DistributionCompareTotal
 }
 
 /** Agrega físico por referencia desde filas tipo existencias. */
-export function aggregatePhysicalFromStockRows(
+function aggregatePhysicalFromStockRows(
   rows: DistributionStockRowInput[]
 ): Map<string, number> {
   const map = new Map<string, number>();
@@ -93,7 +93,7 @@ export function aggregatePhysicalFromStockRows(
 }
 
 /** Agrega reparto por referencia y detalle por bodega. */
-export function aggregateDistributedFromPlanRows(rows: DistributionPlanRowInput[]): {
+function aggregateDistributedFromPlanRows(rows: DistributionPlanRowInput[]): {
   byRef: Map<string, number>;
   byRefBodega: Map<string, Map<string, number>>;
 } {
@@ -112,7 +112,7 @@ export function aggregateDistributedFromPlanRows(rows: DistributionPlanRowInput[
   return { byRef, byRefBodega };
 }
 
-export function buildCompareLines(opts: {
+function buildCompareLines(opts: {
   physicalByRef: Map<string, number>;
   distributedByRef: Map<string, number>;
   byRefBodega: Map<string, Map<string, number>>;
