@@ -160,6 +160,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const [pauseBusy, setPauseBusy] = useState(false);
 
   const [dashLoading, setDashLoading] = useState(false);
+  const [dashDayKey, setDashDayKey] = useState(() => talladoLocalDayKey());
   const [dashShifts, setDashShifts] = useState<TalladoShift[]>([]);
   const [dashUnits, setDashUnits] = useState<TalladoUnit[]>([]);
   const [dashPauses, setDashPauses] = useState<TalladoPause[]>([]);
@@ -509,7 +510,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     }
     // Recargar desde Firestore para que el KPI use el peopleCount nuevo
     const [dashRes, liveRes] = await Promise.all([
-      listTalladoDashboard(),
+      listTalladoDashboard({ dayKey: dashDayKey }),
       listTalladoLiveMonitor({ cleanup: false }),
     ]);
     setSavingPeopleId(null);
@@ -551,8 +552,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     });
   };
 
-  const loadTodayConsolidatedBundle = async () => {
-    const dayKey = talladoLocalDayKey();
+  const loadTodayConsolidatedBundle = async (dayKey = talladoLocalDayKey()) => {
     const res = await listTalladoDashboard({ dayKey });
     if (!res.success) {
       toast({ variant: 'destructive', title: 'Consolidado', description: res.error });
@@ -561,20 +561,23 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     const shifts = res.shifts || [];
     const dayUnits = res.units || [];
     const dayPauses = res.pauses || [];
-    setDashShifts(shifts);
-    setDashUnits(dayUnits);
-    setDashPauses(dayPauses);
+    if (dayKey === dashDayKey) {
+      setDashShifts(shifts);
+      setDashUnits(dayUnits);
+      setDashPauses(dayPauses);
+    }
     return { dayKey, shifts, units: dayUnits, pauses: dayPauses };
   };
 
   const handlePdfDiaConsolidado = async () => {
-    const bundle = await loadTodayConsolidatedBundle();
+    const dayKey = mainTab === 'admin' ? dashDayKey : talladoLocalDayKey();
+    const bundle = await loadTodayConsolidatedBundle(dayKey);
     if (!bundle) return;
     if (!bundle.shifts.length && !bundle.units.length) {
       toast({
         variant: 'destructive',
-        title: 'Sin datos de hoy',
-        description: 'No hay turnos ni unidades de tallado para la fecha de hoy.',
+        title: 'Sin datos',
+        description: `No hay turnos ni unidades de tallado para ${dayKey}.`,
       });
       return;
     }
@@ -583,22 +586,23 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       shifts: bundle.shifts,
       units: bundle.units,
       pauses: bundle.pauses,
-      dayLabel: new Date().toLocaleDateString('es-CO', { timeZone: 'America/Bogota' }),
+      dayLabel: bundle.dayKey,
     });
     toast({
       title: 'PDF generado',
-      description: `Consolidado solo del día ${bundle.dayKey}.`,
+      description: `Consolidado del día ${bundle.dayKey}.`,
     });
   };
 
   const handleExcelDiaConsolidado = async () => {
-    const bundle = await loadTodayConsolidatedBundle();
+    const dayKey = mainTab === 'admin' ? dashDayKey : talladoLocalDayKey();
+    const bundle = await loadTodayConsolidatedBundle(dayKey);
     if (!bundle) return;
     if (!bundle.shifts.length && !bundle.units.length) {
       toast({
         variant: 'destructive',
-        title: 'Sin datos de hoy',
-        description: 'No hay turnos ni unidades de tallado para la fecha de hoy.',
+        title: 'Sin datos',
+        description: `No hay turnos ni unidades de tallado para ${dayKey}.`,
       });
       return;
     }
@@ -607,11 +611,11 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       shifts: bundle.shifts,
       units: bundle.units,
       pauses: bundle.pauses,
-      dayLabel: new Date().toLocaleDateString('es-CO', { timeZone: 'America/Bogota' }),
+      dayLabel: bundle.dayKey,
     });
     toast({
       title: 'Excel generado',
-      description: `Consolidado solo del día ${bundle.dayKey}.`,
+      description: `Consolidado del día ${bundle.dayKey}.`,
     });
   };
 
@@ -620,14 +624,14 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       hour: Number(dashReportHour),
       units: dashUnits,
       pauses: dashPauses,
-      scopeLabel: 'Consolidado del día',
-      dayLabel: new Date().toLocaleDateString('es-CO'),
+      scopeLabel: `Día ${dashDayKey}`,
+      dayLabel: dashDayKey,
     });
   };
 
   const loadDashboard = useCallback(async () => {
     setDashLoading(true);
-    const res = await listTalladoDashboard({ dayKey: talladoLocalDayKey() });
+    const res = await listTalladoDashboard({ dayKey: dashDayKey });
     setDashLoading(false);
     if (!res.success) {
       toast({ variant: 'destructive', title: 'Dashboard', description: res.error });
@@ -636,7 +640,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     setDashShifts(res.shifts || []);
     setDashUnits(res.units || []);
     setDashPauses(res.pauses || []);
-  }, [toast]);
+  }, [toast, dashDayKey]);
 
   const loadLiveMonitor = useCallback(async (withCleanup = false) => {
     setLiveLoading(true);
@@ -714,11 +718,12 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const dashStats = useMemo(() => {
     const done = dashUnits.filter((u) => u.status === 'done');
     const boxNetMs = done.reduce((s, u) => s + (Number(u.durationNetMs ?? u.durationMs) || 0), 0);
-    const pauseMs = talladoPauseMs(dashPauses);
+    const pauseMs = talladoPauseMs(dashPauses, dashDayKey);
     const { qty, personHours, perPersonHour, peopleTotal, workedMsTotal } = talladoPerPersonHour({
       shifts: dashShifts,
       units: dashUnits,
       pauses: dashPauses,
+      dayKey: dashDayKey,
     });
 
     const byHour = new Map<string, { qty: number; units: number; pauseMin: number }>();
@@ -761,7 +766,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         .slice(0, 12)
         .map(([marca, cant]) => ({ marca, cant })),
     };
-  }, [dashUnits, dashPauses, dashShifts]);
+  }, [dashUnits, dashPauses, dashShifts, dashDayKey]);
 
   return (
     <div className="space-y-4 p-3 sm:p-5 relative">
@@ -1557,6 +1562,15 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
           <TabsContent value="admin" className="space-y-4 mt-4">
             <div className="flex flex-wrap justify-end gap-2 items-end">
               <div className="space-y-1">
+                <Label className="text-xs">Fecha</Label>
+                <Input
+                  type="date"
+                  className="h-9 w-[160px]"
+                  value={dashDayKey}
+                  onChange={(e) => setDashDayKey(e.target.value || talladoLocalDayKey())}
+                />
+              </div>
+              <div className="space-y-1">
                 <Label className="text-xs">Hora PDF</Label>
                 <Select value={dashReportHour} onValueChange={setDashReportHour}>
                   <SelectTrigger className="w-[100px] h-9">
@@ -1588,10 +1602,14 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                 Actualizar
               </Button>
             </div>
+            <p className="text-sm text-muted-foreground">
+              Mostrando solo el día <span className="font-semibold text-foreground">{dashDayKey}</span> (Colombia).
+              Bodega LIVE siempre usa el día de hoy.
+            </p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <Card>
                 <CardHeader className="py-3">
-                  <CardDescription>Cantidad cerrada (hoy)</CardDescription>
+                  <CardDescription>Cantidad cerrada ({dashDayKey})</CardDescription>
                   <CardTitle className="text-2xl tabular-nums">{dashStats.qty.toLocaleString()}</CardTitle>
                 </CardHeader>
               </Card>

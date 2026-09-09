@@ -24,7 +24,7 @@ import type {
   TalladoUnit,
   TransferEntry,
 } from '@/types';
-import { isTalladoSameLocalDay, talladoLocalDayKey } from '@/lib/talladoProductivity';
+import { isTalladoSameLocalDay, talladoLocalDayKey, filterTalladoBundleToDay } from '@/lib/talladoProductivity';
 
 const SHIFTS_COL = 'talladoShifts';
 const UNITS_COL = 'talladoUnits';
@@ -740,14 +740,13 @@ export async function listTalladoDashboard(opts?: {
     let units = unitsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoUnit));
     let pauses = pausesSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoPause));
 
-    shifts = shifts.filter(
-      (s) => s.status === 'active' || isTalladoSameLocalDay(s.startedAt, dayKey)
-    );
+    // Primero unidades del día; luego turnos ligados (evita arrastrar histórico de active viejos)
     units = units.filter(
-      (u) =>
-        shifts.some((s) => s.id === u.shiftId) ||
-        isTalladoSameLocalDay(u.startedAt, dayKey) ||
-        isTalladoSameLocalDay(u.endedAt, dayKey)
+      (u) => isTalladoSameLocalDay(u.startedAt, dayKey) || isTalladoSameLocalDay(u.endedAt, dayKey)
+    );
+    const unitShiftIds = new Set(units.map((u) => u.shiftId).filter(Boolean) as string[]);
+    shifts = shifts.filter(
+      (s) => isTalladoSameLocalDay(s.startedAt, dayKey) || unitShiftIds.has(s.id)
     );
 
     // Recuperar turnos referenciados por unidades del día que no vinieron en el limit
@@ -760,14 +759,15 @@ export async function listTalladoDashboard(opts?: {
       shifts = [...shifts, ...recovered];
     }
 
-    const shiftIds = new Set(shifts.map((s) => s.id));
-    pauses = pauses.filter(
-      (p) => shiftIds.has(p.shiftId) || isTalladoSameLocalDay(p.pausedAt, dayKey)
-    );
+    const filtered = filterTalladoBundleToDay(dayKey, shifts, units, pauses);
+    filtered.shifts.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
 
-    shifts.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
-
-    return { success: true, shifts, units, pauses };
+    return {
+      success: true,
+      shifts: filtered.shifts,
+      units: filtered.units,
+      pauses: filtered.pauses,
+    };
   } catch (error: any) {
     console.error('listTalladoDashboard:', error);
     return { success: false, error: error?.message || 'No se pudo cargar el dashboard.' };
@@ -818,37 +818,45 @@ export async function listTalladoLiveMonitor(opts?: {
     let units = unitsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoUnit));
     let pauses = pausesSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoPause));
 
-    shifts = shifts
-      .filter((s) => s.status === 'active' || isTalladoSameLocalDay(s.startedAt, dayKey))
-      .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
-
-    let todayUnits = units.filter(
-      (u) =>
-        shifts.some((s) => s.id === u.shiftId) ||
-        isTalladoSameLocalDay(u.startedAt, dayKey) ||
-        isTalladoSameLocalDay(u.endedAt, dayKey)
+    units = units.filter(
+      (u) => isTalladoSameLocalDay(u.startedAt, dayKey) || isTalladoSameLocalDay(u.endedAt, dayKey)
+    );
+    const unitShiftIds = new Set(units.map((u) => u.shiftId).filter(Boolean) as string[]);
+    shifts = shifts.filter(
+      (s) =>
+        s.status === 'active' ||
+        isTalladoSameLocalDay(s.startedAt, dayKey) ||
+        unitShiftIds.has(s.id)
     );
 
     const known = new Set(shifts.map((s) => s.id));
     const missingIds = Array.from(
-      new Set(todayUnits.map((u) => u.shiftId).filter((id): id is string => !!id && !known.has(id)))
+      new Set(units.map((u) => u.shiftId).filter((id): id is string => !!id && !known.has(id)))
     );
     if (missingIds.length > 0) {
       const recovered = await fetchTalladoShiftsByIds(missingIds);
-      shifts = [...shifts, ...recovered].sort((a, b) =>
-        String(b.startedAt).localeCompare(String(a.startedAt))
-      );
+      shifts = [...shifts, ...recovered];
     }
 
-    const shiftIds = new Set(shifts.map((s) => s.id));
-    todayUnits = todayUnits
-      .filter((u) => shiftIds.has(u.shiftId) || isTalladoSameLocalDay(u.startedAt, dayKey))
-      .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+    const filtered = filterTalladoBundleToDay(dayKey, shifts, units, pauses);
+    // En vivo también muestra turnos active del día (aunque aún sin unidades)
+    const liveShifts = [
+      ...filtered.shifts,
+      ...shifts.filter(
+        (s) =>
+          s.status === 'active' &&
+          isTalladoSameLocalDay(s.startedAt, dayKey) &&
+          !filtered.shifts.some((x) => x.id === s.id)
+      ),
+    ].sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
 
+    const shiftIds = new Set(liveShifts.map((s) => s.id));
+    const todayUnits = filtered.units.sort((a, b) =>
+      String(b.startedAt).localeCompare(String(a.startedAt))
+    );
     const activeUnits = todayUnits
       .filter((u) => u.status === 'in_progress')
       .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
-
     const openPauses = pauses
       .filter(
         (p) =>
@@ -859,9 +867,7 @@ export async function listTalladoLiveMonitor(opts?: {
 
     return {
       success: true,
-      shifts: shifts.filter(
-        (s) => s.status === 'active' || isTalladoSameLocalDay(s.startedAt, dayKey)
-      ),
+      shifts: liveShifts,
       activeUnits,
       todayUnits,
       openPauses,

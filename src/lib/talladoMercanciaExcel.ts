@@ -87,8 +87,9 @@ export function prepareTalladoDayConsolidated(opts: {
     shifts: filtered.shifts,
     units: filtered.units,
     pauses: filtered.pauses,
+    dayKey,
   });
-  const pauseMs = talladoPauseMs(filtered.pauses);
+  const pauseMs = talladoPauseMs(filtered.pauses, dayKey);
 
   const byHour = new Map<number, { qty: number; units: number; pauseMin: number }>();
   for (const u of done) {

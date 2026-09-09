@@ -14,7 +14,13 @@ import type {
   BodegaTvAreaSnapshot,
   BodegaTvSnapshot,
 } from '@/lib/bodegaTvTypes';
-import { talladoPauseMs, talladoPerPersonHour, talladoRankingByGrupo } from '@/lib/talladoProductivity';
+import {
+  filterTalladoBundleToDay,
+  talladoLocalDayKey,
+  talladoPauseMs,
+  talladoPerPersonHour,
+  talladoRankingByGrupo,
+} from '@/lib/talladoProductivity';
 
 function todayKeyLocal(): string {
   return format(new Date(), 'yyyy-MM-dd');
@@ -124,26 +130,33 @@ async function buildEtiquetado(dayKey: string, nameByUid: Map<string, string>): 
 async function buildTallado(dayKey: string): Promise<BodegaTvAreaSnapshot> {
   const area = emptyArea('tallado', 'Tallado');
   try {
-    const result = await listTalladoDashboard({ dayKey });
+    const todayKey = dayKey || talladoLocalDayKey();
+    const result = await listTalladoDashboard({ dayKey: todayKey });
     if (!result.success) return area;
 
-    const units = result.units || [];
-    const shifts = result.shifts || [];
-    const pauses = result.pauses || [];
+    const filtered = filterTalladoBundleToDay(
+      todayKey,
+      result.shifts || [],
+      result.units || [],
+      result.pauses || []
+    );
+    const { shifts, units, pauses } = filtered;
     const done = units.filter((u) => u.status === 'done');
-    const pauseMs = talladoPauseMs(pauses);
+    const pauseMs = talladoPauseMs(pauses, todayKey);
     const { qty, personHours, perPersonHour, peopleTotal, workedMsTotal } = talladoPerPersonHour({
       shifts,
       units,
       pauses,
+      dayKey: todayKey,
     });
-    const ranking = talladoRankingByGrupo({ shifts, units, pauses });
+    const ranking = talladoRankingByGrupo({ shifts, units, pauses, dayKey: todayKey });
 
     area.units = qty;
     area.operators = shifts.length;
     area.productivity = perPersonHour;
     area.ranking = ranking;
     area.extras = [
+      { label: 'Día', value: todayKey },
       { label: 'Cajas hechas', value: String(done.length) },
       { label: 'Jornada', value: `${(workedMsTotal / 3600000).toFixed(1)} h` },
       { label: 'Pausas', value: `${Math.round(pauseMs / 60000)} min` },
