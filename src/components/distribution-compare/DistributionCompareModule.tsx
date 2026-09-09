@@ -42,7 +42,6 @@ import {
   deleteDistributionCompare,
   getDistributionCompare,
   listAssignableOperatorsForRemainders,
-  listDistributionCompares,
   listMyRemainderTasks,
   listPendingValidationRemainderTasks,
   listReceptionOptionsForCompare,
@@ -56,6 +55,11 @@ import {
 } from '@/app/distributionCompareActions';
 import type { DistributionCompareOperation, DistributionRemainderTask } from '@/types';
 import { parseExcelFile, validateStockData } from '@/components/distributor-module/services/parser';
+import {
+  fetchDistributionCompareSummariesClient,
+  ensureCompareSummaryMirrors,
+  withTimeout,
+} from '@/lib/distributionCompareClient';
 
 interface Props {
   onReturnToSuite: () => void;
@@ -113,7 +117,8 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
 
   const [tab, setTab] = useState<'compares' | 'myTasks' | 'pendingValidation'>('compares');
   const [view, setView] = useState<'list' | 'new' | 'detail'>('list');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [items, setItems] = useState<DistributionCompareOperation[]>([]);
   const [selected, setSelected] = useState<DistributionCompareOperation | null>(null);
@@ -156,55 +161,72 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const [detailLoading, setDetailLoading] = useState(false);
   const receptionsLoadedRef = React.useRef(false);
   const operatorsLoadedRef = React.useRef(false);
+  const loadGenRef = React.useRef(0);
+  const userUidRef = React.useRef<string | undefined>(user?.uid);
+  const isManagerRef = React.useRef(isManager);
+  userUidRef.current = user?.uid;
+  isManagerRef.current = isManager;
+  const toastRef = React.useRef(toast);
+  toastRef.current = toast;
 
-  /** Listado liviano al entrar: NO carga recepciones ni todos los usuarios. */
+  /**
+   * Listado liviano (REST field-mask / colección espejo).
+   * Timeout duro: el spinner NUNCA puede quedar pegado.
+   * Tareas de pestañas en segundo plano (no bloquean).
+   */
   const reloadList = useCallback(async () => {
+    const gen = ++loadGenRef.current;
     setLoading(true);
+    setListError(null);
+
+    const safetyMs = 12000;
+    const safety = window.setTimeout(() => {
+      if (gen !== loadGenRef.current) return;
+      setLoading(false);
+      setListError((prev) => prev || 'La carga tardó demasiado. Reintenta.');
+    }, safetyMs);
+
     try {
-      // allSettled: un fallo no deja el spinner eterno
-      const listP = listDistributionCompares(30);
-      const myP = user?.uid
-        ? listMyRemainderTasks(user.uid)
-        : Promise.resolve({ success: true as const, data: [] as typeof myTasks });
-      const pendP = isManager
-        ? listPendingValidationRemainderTasks()
-        : Promise.resolve({ success: true as const, data: [] as typeof pendingTasks });
-
-      const [listSettled, mySettled, pendSettled] = await Promise.allSettled([listP, myP, pendP]);
-
-      if (listSettled.status === 'fulfilled' && listSettled.value.success) {
-        setItems(listSettled.value.data || []);
-      } else {
-        setItems([]);
-        const err =
-          listSettled.status === 'fulfilled'
-            ? listSettled.value.error
-            : listSettled.reason?.message || 'Error al listar';
-        toast({
-          variant: 'destructive',
-          title: 'Comparaciones',
-          description: err || 'No se pudo cargar el listado.',
-        });
-      }
-
-      if (mySettled.status === 'fulfilled' && mySettled.value.success) {
-        setMyTasks(mySettled.value.data || []);
-      }
-      if (pendSettled.status === 'fulfilled' && pendSettled.value.success) {
-        setPendingTasks(pendSettled.value.data || []);
-      }
+      const data = await withTimeout(
+        fetchDistributionCompareSummariesClient(30),
+        10000,
+        'listado comparaciones'
+      );
+      if (gen !== loadGenRef.current) return;
+      setItems(data);
+      // Espejos livianos en background (no bloquea UI).
+      void ensureCompareSummaryMirrors(data).catch(() => undefined);
     } catch (e: any) {
+      if (gen !== loadGenRef.current) return;
       setItems([]);
-      toast({
+      const msg = e?.message || 'No se pudo cargar el listado.';
+      setListError(msg);
+      toastRef.current({
         variant: 'destructive',
         title: 'Comparaciones',
-        description: e?.message || 'Error inesperado al cargar.',
+        description: msg,
       });
     } finally {
-      setLoading(false);
+      window.clearTimeout(safety);
+      if (gen === loadGenRef.current) setLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- toast no estable; evita bucle de carga
-  }, [user?.uid, isManager]);
+
+    const uid = userUidRef.current;
+    if (uid) {
+      void listMyRemainderTasks(uid)
+        .then((res) => {
+          if (gen === loadGenRef.current && res.success) setMyTasks(res.data || []);
+        })
+        .catch(() => undefined);
+    }
+    if (isManagerRef.current) {
+      void listPendingValidationRemainderTasks()
+        .then((res) => {
+          if (gen === loadGenRef.current && res.success) setPendingTasks(res.data || []);
+        })
+        .catch(() => undefined);
+    }
+  }, []);
 
   const ensureReceptionsLoaded = useCallback(async () => {
     if (receptionsLoadedRef.current) return;
@@ -226,6 +248,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     else setTasks([]);
   }, []);
 
+  // Una sola carga al montar (reloadList es estable).
   useEffect(() => {
     void reloadList();
   }, [reloadList]);
@@ -703,6 +726,13 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
             {loading ? (
               <div className="flex justify-center py-10 text-muted-foreground">
                 <Loader2 className="h-6 w-6 animate-spin" />
+              </div>
+            ) : listError ? (
+              <div className="text-center py-10 text-muted-foreground space-y-3">
+                <p className="text-sm text-destructive">{listError}</p>
+                <Button type="button" variant="outline" size="sm" onClick={() => void reloadList()}>
+                  Reintentar
+                </Button>
               </div>
             ) : items.length === 0 ? (
               <div className="text-center py-10 text-muted-foreground space-y-3">

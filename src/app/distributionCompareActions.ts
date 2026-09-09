@@ -29,11 +29,35 @@ import type {
 } from '@/types';
 
 const COL = 'distributionCompares';
+/** Espejo liviano para listados (nunca incluye `lines`). */
+const SUMMARY_COL = 'distributionCompareSummaries';
 const TASKS_COL = 'distributionRemainderTasks';
 const RECEPTION_COL = 'receptionOperations';
 const SCANNED_COL = 'scannedItems';
 const USERS_COL = 'users';
 const STATS_SUB = 'referenceStats';
+
+async function upsertCompareSummary(data: DistributionCompareOperation): Promise<void> {
+  const payload = stripUndefinedDeep({
+    id: data.id,
+    receptionOperationId: data.receptionOperationId,
+    rkIdentifier: data.rkIdentifier,
+    receptionSupplier: data.receptionSupplier,
+    physicalSource: data.physicalSource,
+    planFileName: data.planFileName,
+    stockFileName: data.stockFileName,
+    notes: data.notes,
+    lineCount: data.lineCount ?? 0,
+    linesInSubcollection: data.linesInSubcollection ?? true,
+    totals: data.totals,
+    status: data.status,
+    createdAt: data.createdAt,
+    updatedAt: data.updatedAt,
+    createdBy: data.createdBy,
+    createdByName: data.createdByName,
+  }) as Record<string, unknown>;
+  await setDoc(doc(firestore, SUMMARY_COL, data.id), payload, { merge: true });
+}
 
 function stripUndefinedDeep(value: unknown): unknown {
   if (value === undefined) return undefined;
@@ -168,18 +192,22 @@ async function migrateEmbeddedLinesIfNeeded(
   }
   try {
     await writeCompareLinesSubcollection(compareId, embedded);
+    const updatedAt = new Date().toISOString();
     await updateDoc(doc(firestore, COL, compareId), {
       lines: deleteField(),
       lineCount: embedded.length,
       linesInSubcollection: true,
-      updatedAt: new Date().toISOString(),
+      updatedAt,
     });
-    return {
+    const slimmed: DistributionCompareOperation = {
       ...data,
       lines: [],
       lineCount: embedded.length,
       linesInSubcollection: true,
+      updatedAt,
     };
+    await upsertCompareSummary(slimmed);
+    return slimmed;
   } catch (e) {
     console.error('migrateEmbeddedLinesIfNeeded:', e);
     return data;
@@ -514,6 +542,7 @@ export async function createDistributionCompare(input: {
 
     await setDoc(ref, stripUndefinedDeep({ ...payload, lines: undefined }));
     await writeCompareLinesSubcollection(ref.id, lines);
+    await upsertCompareSummary(payload);
     return { success: true, id: ref.id, data: { ...payload, lines } };
   } catch (e: any) {
     console.error('createDistributionCompare:', e);
@@ -607,10 +636,12 @@ export async function archiveDistributionCompare(
   id: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const updatedAt = new Date().toISOString();
     await updateDoc(doc(firestore, COL, id), {
       status: 'archived',
-      updatedAt: new Date().toISOString(),
+      updatedAt,
     });
+    await setDoc(doc(firestore, SUMMARY_COL, id), { status: 'archived', updatedAt }, { merge: true });
     return { success: true };
   } catch (e: any) {
     return { success: false, error: e?.message || 'No se pudo archivar.' };
@@ -644,6 +675,7 @@ export async function deleteDistributionCompare(
       }
     }
     batch.delete(doc(firestore, COL, id));
+    batch.delete(doc(firestore, SUMMARY_COL, id));
     await batch.commit();
     return { success: true, deletedTasks, deletedLines };
   } catch (e: any) {
@@ -660,10 +692,16 @@ async function refreshCompareWorkflowStatus(compareId: string): Promise<void> {
 
   const remainderCount = Number(compare.totals?.referencesWithRemainder) || 0;
   if (remainderCount <= 0) {
+    const updatedAt = new Date().toISOString();
     await updateDoc(doc(firestore, COL, compareId), {
       status: 'completed',
-      updatedAt: new Date().toISOString(),
+      updatedAt,
     });
+    await setDoc(
+      doc(firestore, SUMMARY_COL, compareId),
+      { status: 'completed', updatedAt },
+      { merge: true }
+    );
     return;
   }
 
@@ -678,10 +716,12 @@ async function refreshCompareWorkflowStatus(compareId: string): Promise<void> {
   else if (active.length > 0 && active.every((t) => t.status === 'validated')) status = 'completed';
   else if (active.length > 0) status = 'in_progress';
 
+  const updatedAt = new Date().toISOString();
   await updateDoc(doc(firestore, COL, compareId), {
     status,
-    updatedAt: new Date().toISOString(),
+    updatedAt,
   });
+  await setDoc(doc(firestore, SUMMARY_COL, compareId), { status, updatedAt }, { merge: true });
 }
 
 export async function listAssignableOperatorsForRemainders(): Promise<{

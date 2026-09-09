@@ -1181,7 +1181,8 @@ export interface DistributionCompareTotals {
 
 /**
  * Comparación guardada (fase 1).
- * Colección Firestore: `distributionCompares`
+ * Colección Firestore: `distributionCompares` (detalle / subcolección `lines`)
+ * Espejo liviano de listado: `distributionCompareSummaries`
  * No modifica recepción ni el Distribuidor IA.
  */
 export interface DistributionCompareOperation {
