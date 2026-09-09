@@ -4,7 +4,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Loader2, MoreHorizontal, Users, Target, FileDown, Tag, Pause, Search, Play, RotateCcw, Check } from 'lucide-react';
+import { ArrowLeft, Loader2, MoreHorizontal, Users, Target, FileDown, Tag, Pause, Search, Play, RotateCcw, Check, Pencil } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -19,13 +19,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { LabelingOperation, LabelingOperationStatus, LabelingActivityLog, AppUser, ReceptionExpectedItem, OperationPulse, ExternalVendor } from '@/types';
-import { loadLabelingOperations, updateLabelingOperation, getExpectedItemsForLabeling, getAllUserProfiles, getLabelingActivityLog, logLabelingActivity, finishLabelingTaskSession, getExternalVendors } from '@/app/reception/actions';
+import { loadLabelingOperations, updateLabelingOperation, getExpectedItemsForLabeling, getAllUserProfiles, getLabelingActivityLog, logLabelingActivity, finishLabelingTaskSession, getExternalVendors, correctLabelingTaskQuantity } from '@/app/reception/actions';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { FinishWorkDialog } from './FinishWorkDialog';
 import { getUserGoals, getProductivitySettings, getPulsesByDate } from '@/app/actions';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { AssignOperatorsDialog } from './AssignOperatorsDialog';
 import { SetLabelingStandardDialog } from './SetLabelingStandardDialog';
+import { CorrectLabelingQuantityDialog } from './CorrectLabelingQuantityDialog';
 import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -134,7 +135,7 @@ const AdminDashboard: React.FC<{
     operations: LabelingOperation[];
     productivityData: Map<string, ProductivityMetrics>;
     isSubmitting: boolean;
-    onOpenDialog: (operation: LabelingOperation, dialog: 'assign' | 'standard' | 'log') => void | Promise<void>;
+    onOpenDialog: (operation: LabelingOperation, dialog: 'assign' | 'standard' | 'log' | 'quantity') => void | Promise<void>;
     onGenerateExcel: (operation: LabelingOperation) => void | Promise<void>;
     users: AppUser[];
     vendors: ExternalVendor[];
@@ -209,6 +210,9 @@ const AdminDashboard: React.FC<{
                                         <DropdownMenuItem onClick={() => onOpenDialog(op, 'standard')}>
                                             <Target className="mr-2 h-4 w-4" /> Definir Estándar
                                         </DropdownMenuItem>
+                                        <DropdownMenuItem onClick={() => onOpenDialog(op, 'quantity')}>
+                                            <Pencil className="mr-2 h-4 w-4" /> Corregir cantidad
+                                        </DropdownMenuItem>
                                         <DropdownMenuItem onClick={() => onGenerateExcel(op)} disabled={isSubmitting}>
                                             <FileDown className="mr-2 h-4 w-4" /> Generar Excel de Trabajo
                                         </DropdownMenuItem>
@@ -263,6 +267,7 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
 
   const [isAssignDialogOpen, setIsAssignDialogOpen] = useState(false);
   const [isStandardDialogOpen, setIsStandardDialogOpen] = useState(false);
+  const [isQuantityDialogOpen, setIsQuantityDialogOpen] = useState(false);
   const [isActivityLogOpen, setIsActivityLogOpen] = useState(false);
   const [selectedOperation, setSelectedOperation] = useState<LabelingOperation | null>(null);
   const [selectedLog, setSelectedLog] = useState<LabelingActivityLog[]>([]);
@@ -430,10 +435,11 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     fetchOperationsAndProductivity();
   }, [allPulses]);
   
-  const handleOpenDialog = async (operation: LabelingOperation, dialog: 'assign' | 'standard' | 'log') => {
+  const handleOpenDialog = async (operation: LabelingOperation, dialog: 'assign' | 'standard' | 'log' | 'quantity') => {
     setSelectedOperation(operation);
     if (dialog === 'assign') setIsAssignDialogOpen(true);
     if (dialog === 'standard') setIsStandardDialogOpen(true);
+    if (dialog === 'quantity') setIsQuantityDialogOpen(true);
     if (dialog === 'log') {
         const logResult = await getLabelingActivityLog(operation.id);
         if (logResult.data) {
@@ -475,6 +481,23 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     }
     setIsSubmitting(false);
     setIsStandardDialogOpen(false);
+  };
+
+  const handleCorrectQuantity = async (quantity: number) => {
+    if (!selectedOperation) return;
+    setIsSubmitting(true);
+    const result = await correctLabelingTaskQuantity(selectedOperation.id, quantity);
+    if (result.success) {
+      toast({
+        title: 'Cantidad corregida',
+        description: `Nueva cantidad: ${quantity.toLocaleString()}. La productividad se recalculará con este valor.`,
+      });
+      await fetchOperationsAndProductivity();
+    } else {
+      toast({ variant: 'destructive', title: 'Error', description: result.error });
+    }
+    setIsSubmitting(false);
+    setIsQuantityDialogOpen(false);
   };
 
     const handleAdminAction = async (operationId: string, actionType: 'START' | 'PAUSE' | 'RESUME' | 'FINISH', reason?: string) => {
@@ -579,6 +602,13 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
         onConfirm={handleSetStandard}
         isLoading={isSubmitting}
         currentValue={selectedOperation?.standard_units_per_hour}
+      />
+      <CorrectLabelingQuantityDialog
+        isOpen={isQuantityDialogOpen}
+        onOpenChange={setIsQuantityDialogOpen}
+        onConfirm={handleCorrectQuantity}
+        isLoading={isSubmitting}
+        operation={selectedOperation}
       />
        <LabelingActivityLogDialog 
         isOpen={isActivityLogOpen}

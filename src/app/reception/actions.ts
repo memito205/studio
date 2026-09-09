@@ -1819,6 +1819,109 @@ export async function updateLabelingOperation(operationId: string, updates: Part
     }
 }
 
+/**
+ * Corrige la cantidad asignada de una tarea de etiquetado y sincroniza productividad:
+ * - actualiza totalUnits (y completedUnits si aplica)
+ * - reescala tallas proporcionalmente
+ * - escribe completedUnits en el log FINISH (dashboard histórico)
+ */
+export async function correctLabelingTaskQuantity(
+  operationId: string,
+  newQuantity: number
+): Promise<{ success: boolean; error?: string; data?: LabelingOperation }> {
+  try {
+    const qty = Math.round(Number(newQuantity));
+    if (!operationId) return { success: false, error: 'Tarea inválida.' };
+    if (!Number.isFinite(qty) || qty < 1) {
+      return { success: false, error: 'La cantidad debe ser un entero mayor o igual a 1.' };
+    }
+
+    const opRef = doc(firestore, 'labelingOperations', operationId);
+    const snap = await getDoc(opRef);
+    if (!snap.exists()) return { success: false, error: 'La tarea de etiquetado no existe.' };
+
+    const op = { id: snap.id, ...snap.data() } as LabelingOperation;
+    const oldTotal = Math.max(0, Number(op.totalUnits) || 0);
+    const oldCompleted =
+      op.completedUnits != null && Number.isFinite(Number(op.completedUnits))
+        ? Number(op.completedUnits)
+        : null;
+
+    // Reescalar tallas para que sumen la nueva cantidad
+    let newSizes = op.sizes ? { ...op.sizes } : undefined;
+    if (newSizes && Object.keys(newSizes).length > 0 && oldTotal > 0) {
+      const entries = Object.entries(newSizes);
+      const scaled = entries.map(([size, n]) => ({
+        size,
+        raw: (Number(n) || 0) * (qty / oldTotal),
+      }));
+      const floored = scaled.map((s) => ({ size: s.size, value: Math.max(0, Math.floor(s.raw)) }));
+      let sum = floored.reduce((a, s) => a + s.value, 0);
+      let remainder = qty - sum;
+      // Distribuir resto a las tallas con mayor fracción
+      const order = scaled
+        .map((s, i) => ({ i, frac: s.raw - Math.floor(s.raw) }))
+        .sort((a, b) => b.frac - a.frac);
+      let idx = 0;
+      while (remainder > 0 && order.length > 0) {
+        floored[order[idx % order.length].i].value += 1;
+        remainder -= 1;
+        idx += 1;
+      }
+      while (remainder < 0 && order.length > 0) {
+        const target = floored[order[idx % order.length].i];
+        if (target.value > 0) {
+          target.value -= 1;
+          remainder += 1;
+        }
+        idx += 1;
+        if (idx > order.length * 3) break;
+      }
+      newSizes = Object.fromEntries(floored.map((s) => [s.size, s.value]));
+    }
+
+    const updates: Partial<LabelingOperation> = {
+      totalUnits: qty,
+      ...(newSizes ? { sizes: newSizes } : {}),
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (op.status === 'Completada') {
+      // Si finalizó con la cantidad total (o sin completed), alinear completed a la nueva
+      if (oldCompleted == null || oldCompleted === oldTotal || oldCompleted > qty) {
+        updates.completedUnits = qty;
+      }
+    } else if (oldCompleted != null && oldCompleted > qty) {
+      updates.completedUnits = qty;
+    }
+
+    await updateDoc(opRef, convertDatesToTimestamps(updates));
+
+    // Sincronizar logs FINISH para dashboards históricos
+    if (op.status === 'Completada' || updates.completedUnits != null) {
+      const unitsForLog = Number(updates.completedUnits ?? oldCompleted ?? qty);
+      const logSnap = await getDocs(
+        query(
+          collection(firestore, 'labelingOperations', operationId, 'activityLog'),
+          where('type', '==', 'FINISH'),
+          limit(20)
+        )
+      );
+      for (const logDoc of logSnap.docs) {
+        await updateDoc(logDoc.ref, { completedUnits: unitsForLog });
+      }
+    }
+
+    return {
+      success: true,
+      data: { ...op, ...updates } as LabelingOperation,
+    };
+  } catch (error: any) {
+    console.error('correctLabelingTaskQuantity:', error);
+    return { success: false, error: error?.message || 'No se pudo corregir la cantidad.' };
+  }
+}
+
 export async function getExpectedItemsForLabeling(receptionId: string): Promise<{ success: boolean; data?: ReceptionExpectedItem[]; error?: string; }> {
     try {
         const receptionSnap = await getDoc(doc(firestore, 'receptionOperations', receptionId));
@@ -1984,6 +2087,7 @@ export async function finishLabelingTaskSession(
           operatorId: isExternal ? operationData.assignedExternalVendorId! : (operationData.assignedOperatorId || 'system'),
           type: 'FINISH',
           timestamp: new Date().toISOString(),
+          completedUnits: completedUnits,
           isExternal: !!isExternal,
           ...(externalOperatorName && { externalOperatorName })
       };
@@ -2278,8 +2382,14 @@ export async function getLabelingHistoricalData(dateRange?: { from: Date; to?: D
                     }
                 }
                 
-                if (log.type === 'FINISH' && log.completedUnits) {
-                    opUnits += log.completedUnits;
+                if (log.type === 'FINISH') {
+                    const unitsFromLog = Number(log.completedUnits) || 0;
+                    if (unitsFromLog > 0) {
+                        opUnits += unitsFromLog;
+                    } else {
+                        const opForUnits = filteredOps.find((o) => o.id === log.labelingOperationId);
+                        opUnits += Number(opForUnits?.completedUnits ?? opForUnits?.totalUnits) || 0;
+                    }
                 }
             });
 
@@ -2302,7 +2412,12 @@ export async function getLabelingHistoricalData(dateRange?: { from: Date; to?: D
 
             sortedLogs.filter(l => l.type === 'FINISH').forEach(l => {
                 const hour = new Date(l.timestamp).getHours().toString().padStart(2, '0') + ':00';
-                hourlyMap.set(hour, (hourlyMap.get(hour) || 0) + (l.completedUnits || 0));
+                let finishUnits = Number(l.completedUnits) || 0;
+                if (finishUnits <= 0) {
+                    const opForUnits = filteredOps.find((o) => o.id === l.labelingOperationId);
+                    finishUnits = Number(opForUnits?.completedUnits ?? opForUnits?.totalUnits) || 0;
+                }
+                hourlyMap.set(hour, (hourlyMap.get(hour) || 0) + finishUnits);
             });
         }
 
