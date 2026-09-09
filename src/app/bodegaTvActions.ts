@@ -14,6 +14,7 @@ import type {
   BodegaTvAreaSnapshot,
   BodegaTvSnapshot,
 } from '@/lib/bodegaTvTypes';
+import { talladoPauseMs, talladoPerPersonHour, talladoRankingByGrupo } from '@/lib/talladoProductivity';
 
 function todayKeyLocal(): string {
   return format(new Date(), 'yyyy-MM-dd');
@@ -130,53 +131,9 @@ async function buildTallado(dayKey: string): Promise<BodegaTvAreaSnapshot> {
     const shifts = result.shifts || [];
     const pauses = result.pauses || [];
     const done = units.filter((u) => u.status === 'done');
-    const qty = done.reduce((s, u) => s + (Number(u.cantidad) || 0), 0);
-    const netMs = done.reduce((s, u) => s + (Number(u.durationNetMs ?? u.durationMs) || 0), 0);
-    const pauseMs = pauses.reduce((s, p) => s + (Number(p.durationMs) || 0), 0);
-    const people = shifts.reduce((s, sh) => s + (Number(sh.peopleCount) || 0), 0) || 1;
-    const netHours = netMs / 3600000;
-    const perPersonHour = netHours > 0 ? qty / (netHours * people) : 0;
-
-    const byGrupo = new Map<
-      string,
-      { qty: number; netMs: number; people: number; userName: string }
-    >();
-    for (const sh of shifts) {
-      const prev = byGrupo.get(sh.grupo) || {
-        qty: 0,
-        netMs: 0,
-        people: Number(sh.peopleCount) || 1,
-        userName: sh.userName || sh.grupo,
-      };
-      prev.people = Math.max(prev.people, Number(sh.peopleCount) || 1);
-      byGrupo.set(sh.grupo, prev);
-    }
-    for (const u of done) {
-      const key = u.grupo || u.userName || 'SIN GRUPO';
-      const prev = byGrupo.get(key) || {
-        qty: 0,
-        netMs: 0,
-        people: 1,
-        userName: u.userName || key,
-      };
-      prev.qty += Number(u.cantidad) || 0;
-      prev.netMs += Number(u.durationNetMs ?? u.durationMs) || 0;
-      byGrupo.set(key, prev);
-    }
-
-    const ranking = Array.from(byGrupo.entries())
-      .map(([grupo, v]) => {
-        const hours = v.netMs / 3600000;
-        const productivity = hours > 0 ? v.qty / (hours * Math.max(1, v.people)) : 0;
-        return {
-          name: grupo,
-          units: v.qty,
-          productivity,
-          meta: `${v.people} pers. · ${v.userName}`,
-        };
-      })
-      .filter((r) => r.units > 0 || r.productivity > 0)
-      .sort((a, b) => b.productivity - a.productivity || b.units - a.units);
+    const pauseMs = talladoPauseMs(pauses);
+    const { qty, personHours, perPersonHour, peopleTotal } = talladoPerPersonHour({ shifts, units });
+    const ranking = talladoRankingByGrupo({ shifts, units });
 
     area.units = qty;
     area.operators = shifts.length;
@@ -185,7 +142,8 @@ async function buildTallado(dayKey: string): Promise<BodegaTvAreaSnapshot> {
     area.extras = [
       { label: 'Cajas hechas', value: String(done.length) },
       { label: 'Pausas', value: `${Math.round(pauseMs / 60000)} min` },
-      { label: 'Personas', value: String(people) },
+      { label: 'Personas', value: String(peopleTotal) },
+      { label: 'Persona·h', value: personHours.toFixed(2) },
     ];
   } catch (e) {
     console.error('bodegaTv tallado:', e);

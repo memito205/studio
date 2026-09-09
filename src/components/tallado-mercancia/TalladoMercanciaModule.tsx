@@ -69,6 +69,7 @@ import {
   localHourFromIso,
 } from '@/lib/talladoMercanciaPdf';
 import { downloadTalladoCatalogTemplate, parseTalladoCatalogSheet, TALLADO_DEFAULT_DESTINO } from '@/lib/talladoCatalog';
+import { talladoPauseMs, talladoPerPersonHour } from '@/lib/talladoProductivity';
 import { TalladoCameraScanner } from '@/components/tallado-mercancia/TalladoCameraScanner';
 
 interface TalladoMercanciaModuleProps {
@@ -495,19 +496,41 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     const n = Math.max(1, Math.round(Number(nextCount ?? peopleDrafts[shiftId]) || 0));
     setSavingPeopleId(shiftId);
     const res = await updateTalladoShiftPeople(shiftId, n);
-    setSavingPeopleId(null);
     if (!res.success) {
+      setSavingPeopleId(null);
       toast({ variant: 'destructive', title: 'Personas', description: res.error });
       return;
     }
     setPeopleDrafts((prev) => ({ ...prev, [shiftId]: n }));
-    setLiveShifts((prev) => prev.map((s) => (s.id === shiftId ? { ...s, peopleCount: n } : s)));
-    setDashShifts((prev) => prev.map((s) => (s.id === shiftId ? { ...s, peopleCount: n } : s)));
     if (shift?.id === shiftId) {
       setPeopleCount(n);
       setShift((s) => (s ? { ...s, peopleCount: n } : s));
     }
-    toast({ title: 'Personas actualizadas', description: `${n} persona(s)` });
+    // Recargar desde Firestore para que el KPI use el peopleCount nuevo
+    const [dashRes, liveRes] = await Promise.all([
+      listTalladoDashboard(),
+      listTalladoLiveMonitor({ cleanup: false }),
+    ]);
+    setSavingPeopleId(null);
+    if (dashRes.success) {
+      setDashShifts(dashRes.shifts || []);
+      setDashUnits(dashRes.units || []);
+      setDashPauses(dashRes.pauses || []);
+    } else {
+      setDashShifts((prev) => prev.map((s) => (s.id === shiftId ? { ...s, peopleCount: n } : s)));
+    }
+    if (liveRes.success) {
+      setLiveShifts(liveRes.shifts || []);
+      setLiveActiveUnits(liveRes.activeUnits || []);
+      setLiveTodayUnits(liveRes.todayUnits || []);
+      setLiveOpenPauses(liveRes.openPauses || []);
+    } else {
+      setLiveShifts((prev) => prev.map((s) => (s.id === shiftId ? { ...s, peopleCount: n } : s)));
+    }
+    toast({
+      title: 'Personas actualizadas',
+      description: `${n} persona(s). El rendimiento (cant / persona·h) se recalculó.`,
+    });
   };
 
   const handlePdfTurno = () => {
@@ -653,12 +676,12 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
 
   const dashStats = useMemo(() => {
     const done = dashUnits.filter((u) => u.status === 'done');
-    const qty = done.reduce((s, u) => s + (Number(u.cantidad) || 0), 0);
     const netMs = done.reduce((s, u) => s + (Number(u.durationNetMs ?? u.durationMs) || 0), 0);
-    const pauseMs = dashPauses.reduce((s, p) => s + (Number(p.durationMs) || 0), 0);
-    const people = dashShifts.reduce((s, sh) => s + (Number(sh.peopleCount) || 0), 0) || 1;
-    const netHours = netMs / 3600000;
-    const perPersonHour = netHours > 0 ? qty / (netHours * people) : 0;
+    const pauseMs = talladoPauseMs(dashPauses);
+    const { qty, personHours, perPersonHour, peopleTotal } = talladoPerPersonHour({
+      shifts: dashShifts,
+      units: dashUnits,
+    });
 
     const byHour = new Map<string, { qty: number; units: number; pauseMin: number }>();
     for (const u of done) {
@@ -688,6 +711,8 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       doneCount: done.length,
       netMs,
       pauseMs,
+      personHours,
+      peopleTotal,
       perPersonHour,
       hourRows: Array.from(byHour.entries())
         .sort((a, b) => a[0].localeCompare(b[0]))
@@ -1541,6 +1566,9 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                 <CardHeader className="py-3">
                   <CardDescription>Rendimiento neto (cant / persona·h)</CardDescription>
                   <CardTitle className="text-2xl tabular-nums">{dashStats.perPersonHour.toFixed(1)}</CardTitle>
+                  <p className="text-xs text-muted-foreground pt-1">
+                    {dashStats.peopleTotal} pers. · {dashStats.personHours.toFixed(2)} persona·h
+                  </p>
                 </CardHeader>
               </Card>
             </div>
