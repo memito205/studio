@@ -25,7 +25,6 @@ import type {
   DistributionRemainderTask,
   DistributionRemainderTaskStatus,
   ReceptionOperation,
-  ScannedItem,
 } from '@/types';
 
 const COL = 'distributionCompares';
@@ -33,9 +32,7 @@ const COL = 'distributionCompares';
 const SUMMARY_COL = 'distributionCompareSummaries';
 const TASKS_COL = 'distributionRemainderTasks';
 const RECEPTION_COL = 'receptionOperations';
-const SCANNED_COL = 'scannedItems';
 const USERS_COL = 'users';
-const STATS_SUB = 'referenceStats';
 
 async function upsertCompareSummary(data: DistributionCompareOperation): Promise<void> {
   const payload = stripUndefinedDeep({
@@ -92,11 +89,19 @@ export type DistributionPlanRowInput = {
 };
 
 export type DistributionStockRowInput = {
-  REFERENCIA: string;
+  REFERENCIA?: string;
+  Referencia?: string;
+  referencia?: string;
   TALLA?: string;
+  Talla?: string;
   'CANTD LEIDA'?: number | string;
   CANTD_LEIDA?: number | string;
   CANT?: number | string;
+  CANTIDAD?: number | string;
+  'Cant. Leída'?: number | string;
+  'Cantidad Leída'?: number | string;
+  'Total Leído'?: number | string;
+  [key: string]: unknown;
 };
 
 function buildTotals(lines: DistributionCompareLine[]): DistributionCompareTotals {
@@ -214,16 +219,25 @@ async function migrateEmbeddedLinesIfNeeded(
   }
 }
 
-/** Agrega físico por referencia desde filas tipo existencias. */
+/** Agrega físico por referencia desde Excel de recepción / existencias. */
 function aggregatePhysicalFromStockRows(
   rows: DistributionStockRowInput[]
 ): Map<string, number> {
   const map = new Map<string, number>();
   for (const row of rows || []) {
-    const ref = normRef(row.REFERENCIA);
+    const anyRow = row as Record<string, unknown>;
+    const ref = normRef(
+      anyRow.REFERENCIA ?? anyRow.Referencia ?? anyRow.referencia ?? anyRow.Reference
+    );
     if (!ref) continue;
     const qty =
-      toNumber(row['CANTD LEIDA']) || toNumber(row.CANTD_LEIDA) || toNumber(row.CANT);
+      toNumber(anyRow['CANTD LEIDA']) ||
+      toNumber(anyRow.CANTD_LEIDA) ||
+      toNumber(anyRow['Cant. Leída']) ||
+      toNumber(anyRow['Cantidad Leída']) ||
+      toNumber(anyRow['Total Leído']) ||
+      toNumber(anyRow.CANT) ||
+      toNumber(anyRow.CANTIDAD);
     if (qty === 0) continue;
     map.set(ref, (map.get(ref) || 0) + qty);
   }
@@ -274,36 +288,11 @@ function buildCompareLines(opts: {
   return lines;
 }
 
-async function loadPhysicalFromScannedItems(receptionOperationId: string): Promise<{
-  physicalByRef: Map<string, number>;
-  scanDocCount: number;
-  physicalRawQty: number;
-}> {
-  const scansSnap = await getDocs(
-    query(collection(firestore, SCANNED_COL), where('reception_id', '==', receptionOperationId))
-  );
-  const physicalByRef = new Map<string, number>();
-  let physicalRawQty = 0;
-  scansSnap.forEach((d) => {
-    const item = d.data() as ScannedItem;
-    const qty = toNumber(item.quantity) || 1;
-    if (!qty) return;
-    physicalRawQty += qty;
-    const ref = normRef(item.reference) || normRef(item.barcode) || 'UNKNOWN';
-    physicalByRef.set(ref, (physicalByRef.get(ref) || 0) + qty);
-  });
-  return { physicalByRef, scanDocCount: scansSnap.size, physicalRawQty };
-}
-
-async function loadReceptionPhysicalByRef(
-  receptionOperationId: string
-): Promise<{
+/** Solo metadatos de la operación (nombre RK / proveedor). No lee escaneos. */
+async function getReceptionMetaForCompare(receptionOperationId: string): Promise<{
   success: boolean;
-  physicalByRef?: Map<string, number>;
-  operation?: ReceptionOperation;
-  scanDocCount?: number;
-  physicalRawQty?: number;
-  physicalSourceDetail?: string;
+  rkIdentifier?: string;
+  receptionSupplier?: string;
   error?: string;
 }> {
   try {
@@ -311,91 +300,13 @@ async function loadReceptionPhysicalByRef(
     if (!opSnap.exists()) {
       return { success: false, error: 'No se encontró la operación de recepción.' };
     }
-    const operation = { id: opSnap.id, ...opSnap.data() } as ReceptionOperation;
-    const reported = Number(operation.totalScannedQuantity) || 0;
-
-    // 1) Preferir índice liviano referenceStats (1 doc por referencia, no por escaneo).
-    //    No modifica el módulo de recepción: solo lectura de lo que ya escribe recepción.
-    const statsSnap = await getDocs(
-      collection(firestore, RECEPTION_COL, receptionOperationId, STATS_SUB)
-    );
-    const fromStats = new Map<string, number>();
-    let statsQty = 0;
-    statsSnap.forEach((d) => {
-      const data = d.data() as { reference?: string; totalScanned?: number };
-      const ref = normRef(data.reference || d.id);
-      const qty = toNumber(data.totalScanned);
-      if (!qty) return;
-      fromStats.set(ref, (fromStats.get(ref) || 0) + qty);
-      statsQty += qty;
-    });
-
-    const statsLookComplete =
-      fromStats.size > 0 &&
-      (reported <= 0 || statsQty >= reported * 0.98 || Math.abs(statsQty - reported) <= 2);
-
-    if (statsLookComplete) {
-      return {
-        success: true,
-        physicalByRef: fromStats,
-        operation,
-        scanDocCount: statsSnap.size,
-        physicalRawQty: statsQty,
-        physicalSourceDetail: `referenceStats (${statsSnap.size} refs → ${statsQty} und)`,
-      };
-    }
-
-    // 2) Fallback: scannedItems (recepciones viejas o stats incompletos).
-    if (fromStats.size > 0 && reported > 0 && statsQty < reported * 0.98) {
-      // Stats existen pero no cuadran: usar lecturas completas.
-      const full = await loadPhysicalFromScannedItems(receptionOperationId);
-      return {
-        success: true,
-        physicalByRef: full.physicalByRef,
-        operation,
-        scanDocCount: full.scanDocCount,
-        physicalRawQty: full.physicalRawQty,
-        physicalSourceDetail: `scannedItems fallback (stats incompletos ${statsQty}/${reported}; ${full.scanDocCount} lecturas → ${full.physicalRawQty} und)`,
-      };
-    }
-
-    if (fromStats.size === 0) {
-      const full = await loadPhysicalFromScannedItems(receptionOperationId);
-      if (full.physicalRawQty > 0) {
-        return {
-          success: true,
-          physicalByRef: full.physicalByRef,
-          operation,
-          scanDocCount: full.scanDocCount,
-          physicalRawQty: full.physicalRawQty,
-          physicalSourceDetail: `scannedItems (${full.scanDocCount} lecturas → ${full.physicalRawQty} und)`,
-        };
-      }
-    }
-
-    // 3) Último recurso: expectedItems
-    const physicalByRef = new Map<string, number>();
-    let physicalRawQty = 0;
-    if (Array.isArray(operation.expectedItems)) {
-      for (const ei of operation.expectedItems) {
-        const ref = normRef((ei as any).reference) || normRef((ei as any).barcode) || 'UNKNOWN';
-        const qty = toNumber((ei as any).expected_quantity);
-        if (!qty) continue;
-        physicalByRef.set(ref, (physicalByRef.get(ref) || 0) + qty);
-        physicalRawQty += qty;
-      }
-    }
-
+    const operation = opSnap.data() as ReceptionOperation;
     return {
       success: true,
-      physicalByRef,
-      operation,
-      scanDocCount: 0,
-      physicalRawQty,
-      physicalSourceDetail: `expectedItems (sin stats/escaneos → ${physicalRawQty} und)`,
+      rkIdentifier: operation.rk_identifier || receptionOperationId,
+      receptionSupplier: operation.supplier || '',
     };
   } catch (e: any) {
-    console.error('loadReceptionPhysicalByRef:', e);
     return { success: false, error: e?.message || 'Error al leer recepción.' };
   }
 }
@@ -466,54 +377,38 @@ export async function createDistributionCompare(input: {
     let receptionSupplier: string | undefined;
     let notes = input.notes || '';
 
-    if (input.physicalSource === 'reception_scan') {
-      if (!input.receptionOperationId) {
-        return { success: false, error: 'Seleccione la operación de recepción.' };
-      }
-      const loaded = await loadReceptionPhysicalByRef(input.receptionOperationId);
-      if (!loaded.success || !loaded.physicalByRef) {
-        return { success: false, error: loaded.error || 'No se pudo cargar el físico de recepción.' };
-      }
-      physicalByRef = loaded.physicalByRef;
-      receptionOperationId = input.receptionOperationId;
-      rkIdentifier = loaded.operation?.rk_identifier;
-      receptionSupplier = loaded.operation?.supplier;
-      if (physicalByRef.size === 0) {
-        return {
-          success: false,
-          error: 'La recepción no tiene escaneos ni ítems esperados para comparar por referencia.',
-        };
-      }
-      const reported = Number(loaded.operation?.totalScannedQuantity) || 0;
-      const raw = Number(loaded.physicalRawQty) || 0;
-      notes = [
-        notes,
-        `Físico = ${loaded.physicalSourceDetail || `${raw} und`}.`,
-        reported > 0 ? `Recepción reporta Cant. Leída ${reported}.` : '',
-        reported > 0 && raw !== reported
-          ? `AVISO: diferencia físico vs Cant. Leída (${raw} vs ${reported}).`
-          : '',
-      ]
-        .filter(Boolean)
-        .join(' ');
-    } else {
-      if (!input.stockRows?.length) {
-        return { success: false, error: 'Suba el archivo de existencias físicas (REFERENCIA, TALLA, CANTD LEIDA).' };
-      }
-      physicalByRef = aggregatePhysicalFromStockRows(input.stockRows);
-      if (physicalByRef.size === 0) {
-        return { success: false, error: 'El archivo de existencias no tiene cantidades válidas.' };
-      }
-      if (input.receptionOperationId) {
-        receptionOperationId = input.receptionOperationId;
-        const opSnap = await getDoc(doc(firestore, RECEPTION_COL, input.receptionOperationId));
-        if (opSnap.exists()) {
-          const op = opSnap.data() as ReceptionOperation;
-          rkIdentifier = op.rk_identifier;
-          receptionSupplier = op.supplier;
-        }
-      }
+    // Físico SOLO desde Excel (reporte de recepción / existencias).
+    // No leemos scannedItems ni referenceStats: evita lecturas masivas en Firebase.
+    if (!input.stockRows?.length) {
+      return {
+        success: false,
+        error:
+          'Suba el Excel de recepción (Referencia + Cant. Leída / Total Leído) o el de existencias. Ya no se cargan escaneos desde Firebase.',
+      };
     }
+    physicalByRef = aggregatePhysicalFromStockRows(input.stockRows);
+    if (physicalByRef.size === 0) {
+      return {
+        success: false,
+        error:
+          'El Excel de físico no tiene cantidades válidas (use columnas Referencia y Cant. Leída / Total Leído / CANTD LEIDA).',
+      };
+    }
+
+    if (input.receptionOperationId) {
+      receptionOperationId = input.receptionOperationId;
+      const meta = await getReceptionMetaForCompare(input.receptionOperationId);
+      if (!meta.success) {
+        return { success: false, error: meta.error || 'No se pudo leer el nombre de la recepción.' };
+      }
+      rkIdentifier = meta.rkIdentifier;
+      receptionSupplier = meta.receptionSupplier;
+    }
+
+    const physicalSource: DistributionComparePhysicalSource = 'excel_stock';
+    notes = [notes, `Físico desde Excel (${physicalByRef.size} refs).`]
+      .filter(Boolean)
+      .join(' ');
 
     const lines = buildCompareLines({ physicalByRef, distributedByRef, byRefBodega });
     const totals = buildTotals(lines);
@@ -525,7 +420,7 @@ export async function createDistributionCompare(input: {
       receptionOperationId,
       rkIdentifier,
       receptionSupplier,
-      physicalSource: input.physicalSource,
+      physicalSource,
       planFileName: input.planFileName,
       stockFileName: input.stockFileName,
       notes: notes || undefined,

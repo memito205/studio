@@ -44,7 +44,6 @@ import {
   listAssignableOperatorsForRemainders,
   listMyRemainderTasks,
   listPendingValidationRemainderTasks,
-  listReceptionOptionsForCompare,
   listRemainderTasksByCompare,
   rejectRemainderTask,
   submitRemainderReturn,
@@ -54,10 +53,13 @@ import {
   type DistributionStockRowInput,
 } from '@/app/distributionCompareActions';
 import type { DistributionCompareOperation, DistributionRemainderTask } from '@/types';
-import { parseExcelFile, validateStockData } from '@/components/distributor-module/services/parser';
+import { parseExcelFile } from '@/components/distributor-module/services/parser';
 import {
   fetchDistributionCompareSummariesClient,
   ensureCompareSummaryMirrors,
+  fetchReceptionOptionsForCompareClient,
+  parsePhysicalExcelForCompare,
+  validateComparePhysicalRows,
   withTimeout,
 } from '@/lib/distributionCompareClient';
 
@@ -141,9 +143,6 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     }>
   >([]);
   const [receptionId, setReceptionId] = useState<string>('');
-  const [physicalSource, setPhysicalSource] = useState<'reception_scan' | 'excel_stock'>(
-    'reception_scan'
-  );
   const [planRows, setPlanRows] = useState<DistributionPlanRowInput[] | null>(null);
   const [planFileName, setPlanFileName] = useState('');
   const [stockRows, setStockRows] = useState<DistributionStockRowInput[] | null>(null);
@@ -230,8 +229,21 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
 
   const ensureReceptionsLoaded = useCallback(async () => {
     if (receptionsLoadedRef.current) return;
-    const recvRes = await listReceptionOptionsForCompare(40);
-    if (recvRes.success) setReceptions(recvRes.data || []);
+    try {
+      const data = await withTimeout(
+        fetchReceptionOptionsForCompareClient(40),
+        8000,
+        'listado recepciones'
+      );
+      setReceptions(data);
+    } catch (e: any) {
+      toastRef.current({
+        variant: 'destructive',
+        title: 'Recepciones',
+        description: e?.message || 'No se pudo cargar el listado de RK (solo nombres).',
+      });
+      setReceptions([]);
+    }
     receptionsLoadedRef.current = true;
   }, []);
 
@@ -294,19 +306,24 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const onStockFile = async (file: File | null) => {
     if (!file) return;
     try {
-      const data = await parseExcelFile<DistributionStockRowInput>(file);
-      if (!validateStockData(data as any[])) {
-        throw new Error('Columnas requeridas: REFERENCIA, NOMBRE, TALLA, CANTD LEIDA');
+      const { rows, sheetName } = await parsePhysicalExcelForCompare(file);
+      if (!validateComparePhysicalRows(rows)) {
+        throw new Error(
+          'Columnas requeridas: Referencia + Cant. Leída (o Total Leído / CANTD LEIDA).'
+        );
       }
-      setStockRows(data);
-      setStockFileName(file.name);
-      toast({ title: 'Existencias cargadas', description: `${data.length} filas` });
+      setStockRows(rows as DistributionStockRowInput[]);
+      setStockFileName(`${file.name} · ${sheetName}`);
+      toast({
+        title: 'Físico cargado',
+        description: `${rows.length} filas (${sheetName})`,
+      });
     } catch (e: any) {
       setStockRows(null);
       setStockFileName('');
       toast({
         variant: 'destructive',
-        title: 'Archivo de existencias',
+        title: 'Excel de recepción / existencias',
         description: e?.message || 'No se pudo leer el Excel.',
       });
     }
@@ -317,20 +334,29 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       toast({ variant: 'destructive', title: 'Sesión', description: 'Inicie sesión.' });
       return;
     }
+    if (!stockRows?.length) {
+      toast({
+        variant: 'destructive',
+        title: 'Físico',
+        description:
+          'Suba el Excel de recepción (Reporte completo: Referencia + Cant. Leída) o existencias.',
+      });
+      return;
+    }
     if (!planRows?.length) {
       toast({
         variant: 'destructive',
         title: 'Distribución',
-        description: 'Suba el Excel de reparto (REFERENCIA, BODEGA, CANT).',
+        description: 'Suba el Excel de reparto (REFERENCIA, CANT).',
       });
       return;
     }
     setSaving(true);
     const res = await createDistributionCompare({
       receptionOperationId: receptionId || null,
-      physicalSource,
+      physicalSource: 'excel_stock',
       planRows,
-      stockRows: stockRows || undefined,
+      stockRows,
       planFileName,
       stockFileName: stockFileName || undefined,
       notes: notes || undefined,
@@ -631,7 +657,6 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
 
   const resetNewForm = () => {
     setReceptionId('');
-    setPhysicalSource('reception_scan');
     setPlanRows(null);
     setPlanFileName('');
     setStockRows(null);
@@ -985,58 +1010,48 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
             <CardHeader>
               <CardTitle>1. Físico recibido</CardTitle>
               <CardDescription>
-                Preferido: escaneos de una recepción. Alternativa: Excel de existencias.
+                Suba el mismo Excel de recepción (<strong>Reporte completo</strong>: Referencia +
+                Cant. Leída / Total Leído). Firebase solo guarda el nombre de la operación vinculada;
+                no lee escaneos.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label>Fuente del físico</Label>
-                <Select
-                  value={physicalSource}
-                  onValueChange={(v) => setPhysicalSource(v as 'reception_scan' | 'excel_stock')}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="reception_scan">Recepción (escaneos)</SelectItem>
-                    <SelectItem value="excel_stock">Excel existencias</SelectItem>
-                  </SelectContent>
-                </Select>
+                <Label>Excel de recepción / existencias *</Label>
+                <Input
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  onChange={(e) => void onStockFile(e.target.files?.[0] || null)}
+                />
+                {stockFileName ? (
+                  <p className="text-xs text-muted-foreground flex items-center gap-1">
+                    <FileSpreadsheet className="h-3 w-3" /> {stockFileName} (
+                    {stockRows?.length || 0} filas)
+                  </p>
+                ) : null}
               </div>
               <div className="space-y-2">
-                <Label>
-                  Operación de recepción {physicalSource === 'reception_scan' ? '*' : '(opcional)'}
-                </Label>
-                <Select value={receptionId || undefined} onValueChange={setReceptionId}>
+                <Label>Vincular operación (solo nombre RK, opcional)</Label>
+                <Select
+                  value={receptionId || undefined}
+                  onValueChange={setReceptionId}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Seleccione RK / recepción" />
                   </SelectTrigger>
                   <SelectContent>
                     {receptions.map((r) => (
                       <SelectItem key={r.id} value={r.id}>
-                        {r.rk_identifier} · {r.status} · esc {fmt(r.totalScannedQuantity)} / esp{' '}
-                        {fmt(r.expected_quantity)}
+                        {r.rk_identifier}
+                        {r.supplier ? ` · ${r.supplier}` : ''} · {r.status}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground">
+                  Solo se lee el nombre/proveedor (1 documento). Las cantidades vienen del Excel.
+                </p>
               </div>
-              {physicalSource === 'excel_stock' ? (
-                <div className="space-y-2">
-                  <Label>Archivo existencias *</Label>
-                  <Input
-                    type="file"
-                    accept=".xlsx,.xls,.csv"
-                    onChange={(e) => void onStockFile(e.target.files?.[0] || null)}
-                  />
-                  {stockFileName ? (
-                    <p className="text-xs text-muted-foreground flex items-center gap-1">
-                      <FileSpreadsheet className="h-3 w-3" /> {stockFileName}
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
               <div className="space-y-2">
                 <Label>Notas</Label>
                 <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Opcional" />

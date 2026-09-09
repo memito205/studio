@@ -63,7 +63,7 @@ function mapSummary(
     receptionOperationId: raw.receptionOperationId,
     rkIdentifier: raw.rkIdentifier,
     receptionSupplier: raw.receptionSupplier,
-    physicalSource: raw.physicalSource || 'reception_scan',
+    physicalSource: raw.physicalSource || 'excel_stock',
     planFileName: raw.planFileName,
     stockFileName: raw.stockFileName,
     notes: raw.notes,
@@ -330,4 +330,150 @@ export async function ensureCompareSummaryMirrors(
       }
     })
   );
+}
+
+const RECEPTION_COL = 'receptionOperations';
+const RECEPTION_LIST_FIELDS = [
+  'rk_identifier',
+  'supplier',
+  'status',
+  'totalScannedQuantity',
+  'expected_quantity',
+  'created_at',
+] as const;
+
+export type ReceptionOptionForCompare = {
+  id: string;
+  rk_identifier: string;
+  supplier: string;
+  status: string;
+  totalScannedQuantity: number;
+  expected_quantity: number;
+  created_at: string;
+};
+
+/** Listado liviano de recepciones (solo nombre/estado; sin expectedItems ni escaneos). */
+export async function fetchReceptionOptionsForCompareClient(
+  limitN = 40
+): Promise<ReceptionOptionForCompare[]> {
+  const token = await waitForIdToken();
+  const url = `https://firestore.googleapis.com/v1/projects/${firebaseProjectId}/databases/(default)/documents:runQuery`;
+  const structuredQuery = {
+    from: [{ collectionId: RECEPTION_COL }],
+    orderBy: [{ field: { fieldPath: 'created_at' }, direction: 'DESCENDING' }],
+    limit: limitN,
+    select: {
+      fields: RECEPTION_LIST_FIELDS.map((fieldPath) => ({ fieldPath })),
+    },
+  };
+
+  let res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ structuredQuery }),
+  });
+
+  if (!res.ok) {
+    const fallback = {
+      from: [{ collectionId: RECEPTION_COL }],
+      limit: limitN,
+      select: {
+        fields: RECEPTION_LIST_FIELDS.map((fieldPath) => ({ fieldPath })),
+      },
+    };
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ structuredQuery: fallback }),
+    });
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Recepciones REST ${res.status}: ${text.slice(0, 160) || res.statusText}`);
+  }
+
+  const rows = (await res.json()) as Array<{ document?: any }>;
+  const items: ReceptionOptionForCompare[] = [];
+  for (const row of rows) {
+    const name = String(row?.document?.name || '');
+    const id = name.split('/').pop();
+    if (!id || !row.document) continue;
+    const fields = row.document.fields || {};
+    const raw: Record<string, unknown> = {};
+    for (const key of RECEPTION_LIST_FIELDS) {
+      if (fields[key] != null) raw[key] = readRestValue(fields[key]);
+    }
+    items.push({
+      id,
+      rk_identifier: String(raw.rk_identifier || id),
+      supplier: String(raw.supplier || ''),
+      status: String(raw.status || ''),
+      totalScannedQuantity: Number(raw.totalScannedQuantity) || 0,
+      expected_quantity: Number(raw.expected_quantity) || 0,
+      created_at: String(raw.created_at || ''),
+    });
+  }
+  return items;
+}
+
+function sheetHasPhysicalColumns(rows: Record<string, unknown>[]): boolean {
+  if (!rows.length) return false;
+  const keys = Object.keys(rows[0] || {}).map((k) => k.toLowerCase());
+  const hasRef = keys.some((k) => k === 'referencia' || k === 'reference');
+  const hasQty = keys.some(
+    (k) =>
+      k.includes('cant. leída') ||
+      k.includes('cantidad leída') ||
+      k.includes('total leído') ||
+      k === 'cantd leida' ||
+      k === 'cantd_leida' ||
+      k === 'cant' ||
+      k === 'cantidad'
+  );
+  return hasRef && hasQty;
+}
+
+/**
+ * Lee el Excel de recepción (Reporte_Completo) o existencias.
+ * Prefiere hoja "Detalle…" / "Resumen…"; acepta Cant. Leída / Total Leído.
+ */
+export async function parsePhysicalExcelForCompare(
+  file: File
+): Promise<{ rows: Record<string, unknown>[]; sheetName: string }> {
+  const XLSX = await import('xlsx');
+  const buf = await file.arrayBuffer();
+  const workbook = XLSX.read(new Uint8Array(buf), { type: 'array' });
+  const names = workbook.SheetNames || [];
+  if (!names.length) throw new Error('El Excel no tiene hojas.');
+
+  const preferred =
+    names.find((n) => /detalle/i.test(n)) ||
+    names.find((n) => /resumen/i.test(n) && /referencia/i.test(n)) ||
+    names.find((n) => /resumen/i.test(n)) ||
+    names[0];
+
+  const tryOrder = [preferred, ...names.filter((n) => n !== preferred)];
+  for (const sheetName of tryOrder) {
+    const worksheet = workbook.Sheets[sheetName];
+    if (!worksheet) continue;
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet);
+    if (sheetHasPhysicalColumns(rows)) {
+      return { rows, sheetName };
+    }
+  }
+
+  throw new Error(
+    'No se encontraron columnas de físico. Use el Reporte completo de recepción (Referencia + Cant. Leída / Total Leído) o existencias (REFERENCIA + CANTD LEIDA).'
+  );
+}
+
+export function validateComparePhysicalRows(rows: Record<string, unknown>[]): boolean {
+  return sheetHasPhysicalColumns(rows);
 }
