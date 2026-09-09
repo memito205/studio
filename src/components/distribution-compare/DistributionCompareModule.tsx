@@ -313,6 +313,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     setTab('compares');
     setOnlyRemainder(true);
     await loadDetailTasks(res.data.id);
+  };
 
   const openDetail = async (it: DistributionCompareOperation) => {
     setView('detail');
