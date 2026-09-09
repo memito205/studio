@@ -8,10 +8,8 @@ export const metadata = {
 
 export default function TvBodegaPage() {
   return (
-    <div className="min-h-screen w-full bg-black flex items-center justify-center font-sans overflow-hidden">
-      <div className="w-full max-h-screen aspect-video max-w-[calc(100vh*16/9)] relative bg-slate-950 text-white shadow-2xl overflow-hidden ring-1 ring-slate-800">
-        <BodegaTvBoard />
-      </div>
+    <div className="h-screen w-screen bg-black overflow-hidden">
+      <BodegaTvBoard />
     </div>
   );
 }
