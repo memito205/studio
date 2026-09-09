@@ -80,9 +80,11 @@ export function talladoShiftDayWindow(opts: {
   const cappedEnd = Math.min(shiftEnd, dayEnd, nowMs);
 
   const dayUnits = (opts.units || []).filter((u) => {
+    // Prefer shiftId; if missing/mismatched, still use same grupo on this day
+    // so jornada starts at first scan (not calendar 00:00).
     const sameShift = u.shiftId === opts.shift.id;
-    const sameGrupoFallback = !u.shiftId && u.grupo === opts.shift.grupo;
-    if (!sameShift && !sameGrupoFallback) return false;
+    const sameGrupo = u.grupo === opts.shift.grupo;
+    if (!sameShift && !sameGrupo) return false;
     return (
       isTalladoSameLocalDay(u.startedAt, opts.dayKey!) ||
       isTalladoSameLocalDay(u.endedAt, opts.dayKey!)

@@ -122,8 +122,8 @@ function firstUnitStartIsoForShift(units: TalladoUnit[], shiftId: string, dayKey
   let best: number | null = null;
   for (const u of units) {
     const sameShift = u.shiftId === shiftId;
-    const sameGrupoFallback = !u.shiftId && !!grupo && u.grupo === grupo;
-    if (!sameShift && !sameGrupoFallback) continue;
+    const sameGrupo = !!grupo && u.grupo === grupo;
+    if (!sameShift && !sameGrupo) continue;
     const iso = u.startedAt;
     if (!iso) continue;
     const d = new Date(iso);
