@@ -1153,7 +1153,55 @@ export interface CyclicInventoryCountRecord {
   consolidatedLineIds?: string[];
 }
 
-export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'dashboards_gastos_transporte' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'tf_platform_lookup' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory' | 'store_capacity' | 'tallado_mercancia';
+export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'distribution_compare' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'dashboards_gastos_transporte' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'tf_platform_lookup' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory' | 'store_capacity' | 'tallado_mercancia';
+
+/** Fase 1: comparar físico (recepción) vs reparto comercial → remanente bodega. */
+export type DistributionComparePhysicalSource = 'reception_scan' | 'excel_stock';
+
+export interface DistributionCompareBodegaQty {
+  bodega: string;
+  qty: number;
+}
+
+export interface DistributionCompareLine {
+  reference: string;
+  physicalQty: number;
+  distributedQty: number;
+  /** physicalQty − distributedQty (puede ser negativo si se repartió de más). */
+  remainderQty: number;
+  byBodega: DistributionCompareBodegaQty[];
+}
+
+export interface DistributionCompareTotals {
+  physicalQty: number;
+  distributedQty: number;
+  remainderQty: number;
+  referencesWithRemainder: number;
+}
+
+/**
+ * Comparación guardada (fase 1).
+ * Colección Firestore: `distributionCompares`
+ * No modifica recepción ni el Distribuidor IA.
+ */
+export interface DistributionCompareOperation {
+  id: string;
+  receptionOperationId?: string;
+  rkIdentifier?: string;
+  receptionSupplier?: string;
+  physicalSource: DistributionComparePhysicalSource;
+  planFileName?: string;
+  stockFileName?: string;
+  notes?: string;
+  lines: DistributionCompareLine[];
+  totals: DistributionCompareTotals;
+  /** open = listo para fases posteriores (asignación / validación). */
+  status: 'open' | 'archived';
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  createdByName?: string;
+}
 
 /** Capacidad de un tipo de cajón en una tienda (medida × carga × cantidad). */
 export interface StoreDrawerCapacity {

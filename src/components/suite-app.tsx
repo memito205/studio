@@ -70,6 +70,7 @@ const SampleControl = dynamic(() => import('./sample-control/SampleControl').the
 const TransfersModule = dynamic(() => import('./TransfersModule').then(mod => mod.TransfersModule), { loading: () => <LoadingSpinner /> });
 const PropuestaTransportadora = dynamic(() => import('./PropuestaTransportadora').then(mod => mod.PropuestaTransportadora), { loading: () => <LoadingSpinner /> });
 const DistributorModule = dynamic(() => import('@/components/distributor-module/DistributorModule').then(mod => mod.default), { loading: () => <LoadingSpinner /> });
+const DistributionCompareModule = dynamic(() => import('@/components/distribution-compare/DistributionCompareModule').then(mod => mod.default), { loading: () => <LoadingSpinner /> });
 const ControlPiso = dynamic(() => import('@/components/ControlPiso').then(mod => mod.ControlPiso), { loading: () => <LoadingSpinner /> });
 const ExternalLabelingPortal = dynamic(() => import('@/components/ExternalLabelingPortal').then(mod => mod.ExternalLabelingPortal), { loading: () => <LoadingSpinner /> });
 const LabelingDashboard = dynamic(() => import('@/components/LabelingDashboard').then(mod => mod.LabelingDashboard), { loading: () => <LoadingSpinner /> });
@@ -725,6 +726,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const handleNavigateToPropuestaTransportadora = () => setAppStep('propuesta_transportadora');
   const handleNavigateToDispatchManager = () => setAppStep('dispatch_manager');
   const handleNavigateToDistributorModule = () => setAppStep('distributor_module');
+  const handleNavigateToDistributionCompare = () => setAppStep('distribution_compare');
   const handleNavigateToControlPiso = () => setAppStep('control_piso');
   const handleNavigateToExternalPortal = () => setAppStep('external_labeling_portal');
   const handleNavigateToLogisticsPlatform = () => setAppStep('logistics_platform');
@@ -888,6 +890,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToTransfersModule={handleNavigateToTransfersModule}
                 onNavigateToDispatchManager={handleNavigateToDispatchManager}
                 onNavigateToDistributorModule={handleNavigateToDistributorModule}
+                onNavigateToDistributionCompare={handleNavigateToDistributionCompare}
                 onNavigateToControlPiso={handleNavigateToControlPiso}
                 onNavigateToExternalPortal={handleNavigateToExternalPortal}
                 onNavigateToLogisticsPlatform={handleNavigateToLogisticsPlatform}
@@ -955,6 +958,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           case 'propuesta_transportadora': return <PropuestaTransportadora onReturn={() => setAppStep('other_features')} />;
           case 'dispatch_manager': return <DispatchManager onReturnToSuite={handleReturnToSuite} />;
           case 'distributor_module': return <DistributorModule onReturnToSuite={handleReturnToSuite} />;
+          case 'distribution_compare': return <DistributionCompareModule onReturnToSuite={handleReturnToSuite} />;
           case 'control_piso': return <ControlPiso onReturn={handleReturnToSuite} />;
           case 'external_labeling_portal': return <ExternalLabelingPortal />;
           case 'transfer_novelties': return <TransferNovelties onBack={handleReturnToSuite} />;
@@ -992,6 +996,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToTransfersModule={handleNavigateToTransfersModule} 
                 onNavigateToDispatchManager={handleNavigateToDispatchManager}
                 onNavigateToDistributorModule={handleNavigateToDistributorModule}
+                onNavigateToDistributionCompare={handleNavigateToDistributionCompare}
                 onNavigateToControlPiso={handleNavigateToControlPiso}
                 onNavigateToExternalPortal={handleNavigateToExternalPortal}
                 onNavigateToLogisticsPlatform={handleNavigateToLogisticsPlatform}

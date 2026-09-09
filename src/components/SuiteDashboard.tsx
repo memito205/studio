@@ -2,7 +2,7 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle, Timer, ClipboardList, Store, Warehouse, ScanLine } from 'lucide-react';
+import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle, Timer, ClipboardList, Store, Warehouse, ScanLine, Scale } from 'lucide-react';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -59,6 +59,7 @@ interface SuiteDashboardProps {
     onNavigateToTransfersModule: () => void;
     onNavigateToDispatchManager: () => void;
     onNavigateToDistributorModule: () => void;
+    onNavigateToDistributionCompare: () => void;
     onNavigateToControlPiso: () => void;
     onNavigateToExternalPortal: () => void;
     onNavigateToLogisticsPlatform: () => void;
@@ -87,6 +88,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToTransfersModule,
     onNavigateToDispatchManager,
     onNavigateToDistributorModule,
+    onNavigateToDistributionCompare,
     onNavigateToControlPiso,
     onNavigateToExternalPortal,
     onNavigateToLogisticsPlatform,
@@ -196,6 +198,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Acceder",
             onAction: onNavigateToMerchandiseReceptionModule,
             roles: ['admin', 'supervisor', 'operator']
+        },
+        {
+            key: 'distribution_compare',
+            icon: Scale,
+            title: "Físico vs Distribución",
+            description: "Suba el reparto comercial, compárelo con lo recibido y vea el remanente en bodega.",
+            actionText: "Acceder",
+            onAction: onNavigateToDistributionCompare,
+            roles: ['admin', 'supervisor']
         },
         {
             key: 'bag_distribution',
