@@ -359,6 +359,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Abrir Modo TV",
             onAction: () => window.open('/tv-ecommerce', '_blank'),
             roles: ['admin']
+        },
+        {
+            key: 'bodega_tv',
+            icon: Warehouse,
+            title: "Modo TV Operación Bodega",
+            description: "Resumen unificado de empaque, etiquetado, tallado y recepción con ranking del día para proyección en TV.",
+            actionText: "Abrir Modo TV",
+            onAction: () => window.open('/tv-bodega', '_blank'),
+            roles: ['admin']
         }
     ];
 

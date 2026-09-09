@@ -3,7 +3,8 @@
 import React from 'react';
 import { Card, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, PackageSearch, FileBarChart, Truck } from 'lucide-react';
+import { ArrowLeft, PackageSearch, FileBarChart, Truck, Tv } from 'lucide-react';
+import { useAuth } from '@/hooks/use-auth-context';
 
 interface Props {
     onNavigateRemision: () => void;
@@ -20,6 +21,9 @@ export const BodegaDashboardsMenu: React.FC<Props> = ({
     onNavigateGastosTransporte,
     onReturnToMain 
 }) => {
+    const { role } = useAuth();
+    const isAdmin = String(role || '').toLowerCase() === 'admin';
+
     return (
         <div className="space-y-6 max-w-5xl mx-auto p-4 md:p-8 animate-in fade-in zoom-in-95 duration-300">
             <div className="flex items-center justify-between bg-card p-6 rounded-xl shadow-sm border">
@@ -34,6 +38,20 @@ export const BodegaDashboardsMenu: React.FC<Props> = ({
             </div>
 
             <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+                {isAdmin ? (
+                <Card className="hover:border-primary hover:shadow-md cursor-pointer transition-all duration-300 transform hover:-translate-y-1" onClick={() => window.open('/tv-bodega', '_blank')}>
+                    <CardHeader className="flex flex-col items-center gap-4 space-y-2 text-center pt-8 pb-8">
+                        <div className="p-4 bg-emerald-500/10 rounded-full">
+                            <Tv className="h-12 w-12 text-emerald-600" />
+                        </div>
+                        <div>
+                            <CardTitle className="text-xl">TV Operación Bodega</CardTitle>
+                            <CardDescription className="mt-2 text-base">Resumen + empaque, etiquetado, tallado y recepción con ranking del día.</CardDescription>
+                        </div>
+                    </CardHeader>
+                </Card>
+                ) : null}
+
                 <Card className="hover:border-primary hover:shadow-md cursor-pointer transition-all duration-300 transform hover:-translate-y-1" onClick={onNavigateRemision}>
                     <CardHeader className="flex flex-col items-center gap-4 space-y-2 text-center pt-8 pb-8">
                         <div className="p-4 bg-primary/10 rounded-full">
