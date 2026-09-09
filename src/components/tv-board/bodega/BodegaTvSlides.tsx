@@ -39,35 +39,35 @@ function RankTable({
 }) {
   if (!ranking.length) {
     return (
-      <div className="flex-1 flex items-center justify-center text-3xl text-slate-500 font-semibold">
+      <div className="flex-1 flex items-center justify-center text-[1.5em] text-slate-500 font-semibold">
         Sin actividad registrada hoy
       </div>
     );
   }
 
   return (
-    <div className="flex-1 min-h-0 overflow-hidden flex flex-col justify-center gap-5">
-      <div className="grid grid-cols-[5rem_minmax(0,2.4fr)_repeat(3,minmax(7rem,0.85fr))] gap-x-8 text-2xl font-bold uppercase tracking-wider text-slate-500 px-3">
+    <div className="flex-1 min-h-0 overflow-hidden flex flex-col justify-center gap-[1.1em]">
+      <div className="grid grid-cols-[4.2em_minmax(0,2.6fr)_repeat(3,minmax(5.5em,0.9fr))] gap-x-[1.2em] text-[0.95em] font-bold uppercase tracking-wider text-slate-500 px-[0.4em]">
         <span>#</span>
         <span>Persona / Grupo</span>
         <span className="text-right">Unidades</span>
         <span className="text-right">U/H</span>
         <span className="text-right">{showCompliance ? 'Cumpl. %' : 'Detalle'}</span>
       </div>
-      <div className="space-y-5">
+      <div className="space-y-[1em]">
         {ranking.map((row, idx) => {
           const rank = rankOffset + idx + 1;
           return (
             <div
               key={`${row.name}-${rank}`}
-              className={`grid grid-cols-[5rem_minmax(0,2.4fr)_repeat(3,minmax(7rem,0.85fr))] gap-x-8 items-center rounded-3xl px-6 py-7 border ${
+              className={`grid grid-cols-[4.2em_minmax(0,2.6fr)_repeat(3,minmax(5.5em,0.9fr))] gap-x-[1.2em] items-center rounded-[1em] px-[1em] py-[1.15em] border ${
                 rank === 1
                   ? 'bg-amber-500/10 border-amber-500/40'
-                  : 'bg-slate-900/70 border-slate-800'
+                  : 'bg-slate-900/80 border-slate-700'
               }`}
             >
               <span
-                className={`w-16 h-16 rounded-full flex items-center justify-center font-black text-3xl shrink-0 ${
+                className={`w-[2.6em] h-[2.6em] rounded-full flex items-center justify-center font-black text-[1.25em] shrink-0 ${
                   rank === 1
                     ? 'bg-amber-400 text-slate-950'
                     : rank === 2
@@ -79,21 +79,23 @@ function RankTable({
               >
                 {rank}
               </span>
-              <div className="min-w-0 pr-2">
-                <div className="text-4xl xl:text-5xl font-extrabold text-slate-100 leading-tight break-words whitespace-normal">
+              <div className="min-w-0 pr-[0.4em]">
+                <div className="text-[1.85em] font-extrabold text-slate-100 leading-[1.15] break-words whitespace-normal">
                   {row.name}
                 </div>
                 {row.meta ? (
-                  <div className="text-xl text-slate-500 font-semibold mt-2 break-words whitespace-normal leading-snug">
+                  <div className="text-[0.95em] text-slate-400 font-semibold mt-[0.35em] break-words whitespace-normal leading-snug">
                     {row.meta}
                   </div>
                 ) : null}
               </div>
-              <div className="text-5xl font-black text-right tabular-nums">{fmt(row.units)}</div>
-              <div className="text-5xl font-black text-right tabular-nums text-sky-300">
+              <div className="text-[2em] font-black text-right tabular-nums leading-none">
+                {fmt(row.units)}
+              </div>
+              <div className="text-[2em] font-black text-right tabular-nums text-sky-300 leading-none">
                 {fmt(row.productivity, 1)}
               </div>
-              <div className="text-5xl font-black text-right tabular-nums">
+              <div className="text-[2em] font-black text-right tabular-nums leading-none">
                 {showCompliance && typeof row.compliance === 'number'
                   ? `${fmt(row.compliance, 0)}%`
                   : '—'}
@@ -108,78 +110,77 @@ function RankTable({
 
 export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
   return (
-    <div className="w-full h-full flex flex-col">
-      <h2 className="text-5xl font-black tracking-tight text-slate-100 mb-2 flex items-center gap-4">
-        <Trophy className="w-12 h-12 text-amber-400 shrink-0" />
+    <div className="w-full h-full flex flex-col min-h-0">
+      <h2 className="text-[1.85em] font-black tracking-tight text-slate-100 mb-[0.35em] flex items-center gap-[0.55em] leading-none">
+        <Trophy className="w-[1.1em] h-[1.1em] text-amber-400 shrink-0" />
         Resumen operación bodega · Hoy
       </h2>
-      <p className="text-lg text-slate-500 font-semibold mb-6 max-w-5xl leading-snug">
-        Recursos activos = personas únicas (sin repetir entre áreas). Cumplimiento = empaque ponderado
-        por unidades.
+      <p className="text-[0.85em] text-slate-500 font-semibold mb-[1em] leading-snug">
+        Recursos = personas únicas · Cumplimiento = empaque ponderado
       </p>
 
-      <div className="grid grid-cols-3 gap-6 mb-8">
-        <div className="rounded-3xl border border-slate-700 bg-slate-900/80 px-8 py-7 text-center">
-          <div className="text-xl uppercase tracking-widest text-slate-400 font-bold mb-2">
+      <div className="grid grid-cols-3 gap-[1.1em] mb-[1.2em] shrink-0">
+        <div className="rounded-[1em] border-2 border-slate-600 bg-slate-900 px-[1.2em] py-[1.3em] text-center">
+          <div className="text-[0.8em] uppercase tracking-widest text-slate-400 font-bold mb-[0.4em]">
             Unidades totales
           </div>
-          <div className="text-7xl font-black text-blue-400 leading-none">
+          <div className="text-[3.4em] font-black text-blue-400 leading-none">
             {fmt(data.summary.totalUnits)}
           </div>
         </div>
-        <div className="rounded-3xl border border-slate-700 bg-slate-900/80 px-8 py-7 text-center">
-          <div className="text-xl uppercase tracking-widest text-slate-400 font-bold mb-2">
+        <div className="rounded-[1em] border-2 border-slate-600 bg-slate-900 px-[1.2em] py-[1.3em] text-center">
+          <div className="text-[0.8em] uppercase tracking-widest text-slate-400 font-bold mb-[0.4em]">
             Cumplimiento medio
           </div>
-          <div className="text-7xl font-black text-emerald-400 leading-none">
+          <div className="text-[3.4em] font-black text-emerald-400 leading-none">
             {fmt(data.summary.avgCompliance, 0)}%
           </div>
         </div>
-        <div className="rounded-3xl border border-slate-700 bg-slate-900/80 px-8 py-7 text-center">
-          <div className="text-xl uppercase tracking-widest text-slate-400 font-bold mb-2">
+        <div className="rounded-[1em] border-2 border-slate-600 bg-slate-900 px-[1.2em] py-[1.3em] text-center">
+          <div className="text-[0.8em] uppercase tracking-widest text-slate-400 font-bold mb-[0.4em]">
             Recursos activos
           </div>
-          <div className="text-7xl font-black text-violet-400 leading-none">
+          <div className="text-[3.4em] font-black text-violet-400 leading-none">
             {fmt(data.summary.operators)}
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-5 flex-1 min-h-0">
+      <div className="grid grid-cols-4 gap-[1em] flex-1 min-h-0">
         {data.areas.map((area) => {
           const Icon = AREA_ICON[area.key];
           return (
             <div
               key={area.key}
-              className="rounded-3xl border border-slate-800 bg-slate-900/60 p-6 flex flex-col min-h-0"
+              className="rounded-[1em] border-2 border-slate-700 bg-slate-900/90 px-[1.1em] py-[1.2em] flex flex-col min-h-0"
             >
-              <div className="flex items-center gap-3 mb-5">
-                <Icon className={`w-10 h-10 shrink-0 ${AREA_ACCENT[area.key]}`} />
-                <span className={`text-3xl font-black leading-tight ${AREA_ACCENT[area.key]}`}>
+              <div className="flex items-center gap-[0.5em] mb-[0.85em]">
+                <Icon className={`w-[1.15em] h-[1.15em] shrink-0 ${AREA_ACCENT[area.key]}`} />
+                <span className={`text-[1.35em] font-black leading-tight ${AREA_ACCENT[area.key]}`}>
                   {area.title}
                 </span>
               </div>
-              <div className="text-6xl font-black text-slate-100 mb-1 leading-none">
+              <div className="text-[2.8em] font-black text-slate-100 mb-[0.15em] leading-none">
                 {fmt(area.units)}
               </div>
-              <div className="text-xl text-slate-400 font-semibold mb-5">unidades hoy</div>
-              <div className="mt-auto space-y-3 text-2xl">
-                <div className="flex justify-between gap-3">
-                  <span className="text-slate-500 flex items-center gap-2">
-                    <Gauge className="w-5 h-5" /> U/H
+              <div className="text-[0.9em] text-slate-400 font-semibold mb-[0.9em]">unidades hoy</div>
+              <div className="mt-auto space-y-[0.55em] text-[1.15em]">
+                <div className="flex justify-between gap-[0.5em]">
+                  <span className="text-slate-500 flex items-center gap-[0.35em]">
+                    <Gauge className="w-[0.9em] h-[0.9em]" /> U/H
                   </span>
-                  <span className="font-bold tabular-nums">{fmt(area.productivity, 1)}</span>
+                  <span className="font-black tabular-nums">{fmt(area.productivity, 1)}</span>
                 </div>
-                <div className="flex justify-between gap-3">
-                  <span className="text-slate-500 flex items-center gap-2">
-                    <Users className="w-5 h-5" /> Pers.
+                <div className="flex justify-between gap-[0.5em]">
+                  <span className="text-slate-500 flex items-center gap-[0.35em]">
+                    <Users className="w-[0.9em] h-[0.9em]" /> Pers.
                   </span>
-                  <span className="font-bold tabular-nums">{fmt(area.operators)}</span>
+                  <span className="font-black tabular-nums">{fmt(area.operators)}</span>
                 </div>
                 {typeof area.compliance === 'number' ? (
-                  <div className="flex justify-between gap-3">
+                  <div className="flex justify-between gap-[0.5em]">
                     <span className="text-slate-500">Cumpl.</span>
-                    <span className="font-bold tabular-nums">{fmt(area.compliance, 0)}%</span>
+                    <span className="font-black tabular-nums">{fmt(area.compliance, 0)}%</span>
                   </div>
                 ) : null}
               </div>
@@ -205,7 +206,6 @@ export function BodegaAreaDetailSlide({
   const Icon = AREA_ICON[area.key];
   const showCompliance = area.key === 'empaque';
   const rankOffset = pageIndex * BODEGA_TV_PAGE_SIZE;
-  // Solo chips cortos en TV; el resto satura y empuja el ranking.
   const tvExtras = (area.extras || []).filter((ex) =>
     ['Personas', 'Grupos', 'Jornada', 'Pausas', 'Horas', 'Horas prod.', 'Interno', 'Externo'].includes(
       ex.label
@@ -214,40 +214,50 @@ export function BodegaAreaDetailSlide({
 
   return (
     <div className="w-full h-full flex flex-col min-h-0">
-      <div className="flex items-end justify-between mb-5 gap-6 shrink-0">
+      <div className="flex items-end justify-between mb-[0.9em] gap-[1em] shrink-0">
         <div className="min-w-0">
-          <div className="flex items-center gap-4 mb-2">
-            <Icon className={`w-12 h-12 shrink-0 ${AREA_ACCENT[area.key]}`} />
-            <h2 className={`text-6xl font-black tracking-tight leading-none ${AREA_ACCENT[area.key]}`}>
+          <div className="flex items-center gap-[0.55em] mb-[0.35em]">
+            <Icon className={`w-[1.35em] h-[1.35em] shrink-0 ${AREA_ACCENT[area.key]}`} />
+            <h2
+              className={`text-[2.4em] font-black tracking-tight leading-none ${AREA_ACCENT[area.key]}`}
+            >
               {area.title}
             </h2>
           </div>
-          <p className="text-2xl text-slate-400 font-semibold">
+          <p className="text-[1em] text-slate-400 font-semibold">
             Ranking · día en curso
             {pageCount > 1 ? ` · página ${pageIndex + 1}/${pageCount}` : ''}
           </p>
         </div>
-        <div className="flex gap-4 shrink-0">
-          <div className="rounded-2xl border border-slate-700 bg-slate-900/80 px-6 py-4 text-center min-w-[150px]">
-            <div className="text-sm uppercase tracking-widest text-slate-500 font-bold">Unidades</div>
-            <div className="text-4xl font-black text-slate-100 tabular-nums">{fmt(area.units)}</div>
+        <div className="flex gap-[0.7em] shrink-0">
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+            <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
+              Unidades
+            </div>
+            <div className="text-[1.7em] font-black text-slate-100 tabular-nums leading-none mt-[0.2em]">
+              {fmt(area.units)}
+            </div>
           </div>
-          <div className="rounded-2xl border border-slate-700 bg-slate-900/80 px-6 py-4 text-center min-w-[150px]">
-            <div className="text-sm uppercase tracking-widest text-slate-500 font-bold">U/H</div>
-            <div className="text-4xl font-black text-sky-300 tabular-nums">
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+            <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">U/H</div>
+            <div className="text-[1.7em] font-black text-sky-300 tabular-nums leading-none mt-[0.2em]">
               {fmt(area.productivity, 1)}
             </div>
           </div>
-          <div className="rounded-2xl border border-slate-700 bg-slate-900/80 px-6 py-4 text-center min-w-[150px]">
-            <div className="text-sm uppercase tracking-widest text-slate-500 font-bold">Pers.</div>
-            <div className="text-4xl font-black text-violet-300 tabular-nums">
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+            <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
+              Pers.
+            </div>
+            <div className="text-[1.7em] font-black text-violet-300 tabular-nums leading-none mt-[0.2em]">
               {fmt(area.operators)}
             </div>
           </div>
           {typeof area.compliance === 'number' ? (
-            <div className="rounded-2xl border border-slate-700 bg-slate-900/80 px-6 py-4 text-center min-w-[150px]">
-              <div className="text-sm uppercase tracking-widest text-slate-500 font-bold">Cumpl.</div>
-              <div className="text-4xl font-black text-emerald-400 tabular-nums">
+            <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+              <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
+                Cumpl.
+              </div>
+              <div className="text-[1.7em] font-black text-emerald-400 tabular-nums leading-none mt-[0.2em]">
                 {fmt(area.compliance, 0)}%
               </div>
             </div>
@@ -256,13 +266,13 @@ export function BodegaAreaDetailSlide({
       </div>
 
       {tvExtras.length > 0 ? (
-        <div className="flex flex-wrap gap-3 mb-4 shrink-0">
+        <div className="flex flex-wrap gap-[0.55em] mb-[0.75em] shrink-0">
           {tvExtras.map((ex) => (
             <div
               key={ex.label}
-              className="rounded-full border border-slate-700 bg-slate-900/60 px-5 py-2 text-lg max-w-full"
+              className="rounded-full border border-slate-600 bg-slate-900/80 px-[0.9em] py-[0.35em] text-[0.85em] max-w-full"
             >
-              <span className="text-slate-500 font-semibold mr-2">{ex.label}:</span>
+              <span className="text-slate-500 font-semibold mr-[0.4em]">{ex.label}:</span>
               <span className="font-bold text-slate-200 break-words">{ex.value}</span>
             </div>
           ))}
