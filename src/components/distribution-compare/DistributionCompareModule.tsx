@@ -9,6 +9,7 @@ import {
   PackageSearch,
   RefreshCw,
   Scale,
+  Trash2,
   UserCheck,
   XCircle,
 } from 'lucide-react';
@@ -38,6 +39,7 @@ import { useToast } from '@/hooks/use-toast';
 import {
   assignDistributionRemainders,
   createDistributionCompare,
+  deleteDistributionCompare,
   listAssignableOperatorsForRemainders,
   listDistributionCompares,
   listMyRemainderTasks,
@@ -144,10 +146,12 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const [onlyRemainder, setOnlyRemainder] = useState(true);
 
   const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
+  const [rowOperatorByRef, setRowOperatorByRef] = useState<Record<string, string>>({});
   const [assignOperatorId, setAssignOperatorId] = useState('');
   const [returnDrafts, setReturnDrafts] = useState<Record<string, string>>({});
   const [rejectDrafts, setRejectDrafts] = useState<Record<string, string>>({});
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -312,25 +316,37 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
 
   const handleAssign = async () => {
     if (!selected || !user?.uid) return;
-    if (!assignOperatorId) {
-      toast({ variant: 'destructive', title: 'Asignación', description: 'Elija un operario.' });
-      return;
-    }
-    if (selectedRefs.size === 0) {
+
+    // Preferir operario por fila; si hay seleccionadas sin fila, usar el dropdown global.
+    const refs = selectedRefs.size
+      ? [...selectedRefs]
+      : Object.keys(rowOperatorByRef).filter((r) => rowOperatorByRef[r]);
+
+    const assignments = refs
+      .map((reference) => {
+        const operatorId = rowOperatorByRef[reference] || assignOperatorId;
+        const op = operators.find((o) => o.uid === operatorId);
+        return {
+          reference,
+          operatorId,
+          operatorName: op?.displayName || operatorId,
+        };
+      })
+      .filter((a) => a.operatorId);
+
+    if (!assignments.length) {
       toast({
         variant: 'destructive',
         title: 'Asignación',
-        description: 'Marque referencias con remanente > 0.',
+        description: 'Elija operario por referencia (o seleccione filas + operario).',
       });
       return;
     }
-    const op = operators.find((o) => o.uid === assignOperatorId);
+
     setSaving(true);
     const res = await assignDistributionRemainders({
       compareId: selected.id,
-      references: [...selectedRefs],
-      operatorId: assignOperatorId,
-      operatorName: op?.displayName || assignOperatorId,
+      assignments,
       assignedBy: user.uid,
       assignedByName: user.displayName || user.email || user.uid,
     });
@@ -345,6 +361,66 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     });
     setSelectedRefs(new Set());
     await loadDetailTasks(selected.id);
+    await reload();
+  };
+
+  const handleAssignOne = async (reference: string) => {
+    if (!selected || !user?.uid) return;
+    const operatorId = rowOperatorByRef[reference];
+    if (!operatorId) {
+      toast({
+        variant: 'destructive',
+        title: 'Asignación',
+        description: 'Seleccione el operario de esa referencia.',
+      });
+      return;
+    }
+    const op = operators.find((o) => o.uid === operatorId);
+    setSaving(true);
+    const res = await assignDistributionRemainders({
+      compareId: selected.id,
+      assignments: [
+        {
+          reference,
+          operatorId,
+          operatorName: op?.displayName || operatorId,
+        },
+      ],
+      assignedBy: user.uid,
+      assignedByName: user.displayName || user.email || user.uid,
+    });
+    setSaving(false);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Asignación', description: res.error });
+      return;
+    }
+    toast({ title: 'Asignada', description: `${reference} → ${op?.displayName || operatorId}` });
+    await loadDetailTasks(selected.id);
+    await reload();
+  };
+
+  const handleDeleteCompare = async (id: string) => {
+    if (!isManager) return;
+    const ok = window.confirm(
+      '¿Eliminar esta comparación y sus tareas de remanente? No afecta recepción ni Distribuidor IA.'
+    );
+    if (!ok) return;
+    setDeletingId(id);
+    const res = await deleteDistributionCompare(id);
+    setDeletingId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Eliminar', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Comparación eliminada',
+      description: `Tareas borradas: ${res.deletedTasks || 0}`,
+    });
+    if (selected?.id === id) {
+      setSelected(null);
+      setView('list');
+      setTasks([]);
+    }
     await reload();
   };
 
@@ -604,14 +680,31 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                           <Badge variant="secondary">{compareStatusLabel(it.status)}</Badge>
                         </TableCell>
                         <TableCell className="text-right">
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => void openDetail(it)}
-                          >
-                            Ver / asignar
-                          </Button>
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => void openDetail(it)}
+                            >
+                              Ver / asignar
+                            </Button>
+                            {isManager ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                disabled={deletingId === it.id}
+                                onClick={() => void handleDeleteCompare(it.id)}
+                              >
+                                {deletingId === it.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-4 w-4" />
+                                )}
+                              </Button>
+                            ) : null}
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -924,15 +1017,26 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   <UserCheck className="h-5 w-5" /> Remanente · asignación o validación directa
                 </CardTitle>
                 <CardDescription>
-                  Opción A: asigne a un operario para que reporte la devolución. Opción B: usted
-                  (supervisor/admin) confirma aquí la cantidad que le entregaron, sin asignar.
+                  Cada referencia puede ir a un operario distinto (elige en la fila). También puede
+                  marcar varias y usar un operario común, o confirmar usted mismo sin asignar.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex flex-wrap items-end gap-3">
                   <div className="space-y-1 min-w-[220px]">
-                    <Label>Operario (solo si asigna)</Label>
-                    <Select value={assignOperatorId || undefined} onValueChange={setAssignOperatorId}>
+                    <Label>Operario común (opcional, para selección múltiple)</Label>
+                    <Select
+                      value={assignOperatorId || undefined}
+                      onValueChange={(v) => {
+                        setAssignOperatorId(v);
+                        // Aplica el mismo operario a las filas marcadas
+                        setRowOperatorByRef((prev) => {
+                          const next = { ...prev };
+                          for (const ref of selectedRefs) next[ref] = v;
+                          return next;
+                        });
+                      }}
+                    >
                       <SelectTrigger>
                         <SelectValue placeholder="Seleccionar…" />
                       </SelectTrigger>
@@ -947,7 +1051,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   </div>
                   <Button type="button" disabled={saving} onClick={() => void handleAssign()}>
                     {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                    Asignar a operario ({selectedRefs.size})
+                    Asignar configuradas
                   </Button>
                   <Button
                     type="button"
@@ -974,10 +1078,23 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   >
                     Seleccionar remanentes
                   </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    disabled={deletingId === selected.id}
+                    onClick={() => void handleDeleteCompare(selected.id)}
+                  >
+                    {deletingId === selected.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                    ) : (
+                      <Trash2 className="h-4 w-4 mr-1" />
+                    )}
+                    Eliminar comparación
+                  </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  En confirmación directa, si no escribe otra cantidad se usa el remanente calculado
-                  (ej. 20). Puede ajustar por referencia en la columna de validación.
+                  En cada fila con remanente &gt; 0 elija el operario y pulse Asignar, o configure varias
+                  y use &quot;Asignar configuradas&quot;.
                 </p>
               </CardContent>
             </Card>
@@ -1055,22 +1172,56 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                           {!task ? (
                             line.remainderQty > 0 ? (
                               <div className="space-y-1">
-                                <span className="text-muted-foreground">Sin asignar</span>
-                                {isManager && selectedRefs.has(line.reference) ? (
-                                  <Input
-                                    className="h-8 w-28"
-                                    type="number"
-                                    min={0}
-                                    placeholder={`Confirmar ${line.remainderQty}`}
-                                    value={returnDrafts[`direct:${line.reference}`] ?? ''}
-                                    onChange={(e) =>
-                                      setReturnDrafts((prev) => ({
-                                        ...prev,
-                                        [`direct:${line.reference}`]: e.target.value,
-                                      }))
-                                    }
-                                  />
-                                ) : null}
+                                {isManager && canSelect ? (
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Select
+                                      value={rowOperatorByRef[line.reference] || undefined}
+                                      onValueChange={(v) =>
+                                        setRowOperatorByRef((prev) => ({
+                                          ...prev,
+                                          [line.reference]: v,
+                                        }))
+                                      }
+                                    >
+                                      <SelectTrigger className="h-8 w-[180px]">
+                                        <SelectValue placeholder="Operario…" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {operators.map((o) => (
+                                          <SelectItem key={o.uid} value={o.uid}>
+                                            {o.displayName}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      disabled={saving || !rowOperatorByRef[line.reference]}
+                                      onClick={() => void handleAssignOne(line.reference)}
+                                    >
+                                      Asignar
+                                    </Button>
+                                    {selectedRefs.has(line.reference) ? (
+                                      <Input
+                                        className="h-8 w-24"
+                                        type="number"
+                                        min={0}
+                                        placeholder={`${line.remainderQty}`}
+                                        title="Cantidad para confirmar yo mismo"
+                                        value={returnDrafts[`direct:${line.reference}`] ?? ''}
+                                        onChange={(e) =>
+                                          setReturnDrafts((prev) => ({
+                                            ...prev,
+                                            [`direct:${line.reference}`]: e.target.value,
+                                          }))
+                                        }
+                                      />
+                                    ) : null}
+                                  </div>
+                                ) : (
+                                  <span className="text-muted-foreground">Sin asignar</span>
+                                )}
                               </div>
                             ) : (
                               '—'

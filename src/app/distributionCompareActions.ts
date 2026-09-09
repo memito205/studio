@@ -2,6 +2,7 @@
 
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -11,8 +12,10 @@ import {
   setDoc,
   updateDoc,
   where,
+  writeBatch,
 } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
+import { normalizeReceptionReference } from '@/lib/receptionReference';
 import type {
   AppUser,
   DistributionCompareLine,
@@ -30,6 +33,7 @@ const TASKS_COL = 'distributionRemainderTasks';
 const RECEPTION_COL = 'receptionOperations';
 const SCANNED_COL = 'scannedItems';
 const USERS_COL = 'users';
+const STATS_SUB = 'referenceStats';
 
 function stripUndefinedDeep(value: unknown): unknown {
   if (value === undefined) return undefined;
@@ -46,10 +50,8 @@ function stripUndefinedDeep(value: unknown): unknown {
 }
 
 function normRef(value: unknown): string {
-  return String(value ?? '')
-    .trim()
-    .toUpperCase()
-    .replace(/\s+/g, ' ');
+  // Misma normalización que recepción (referenceStats), para que el cruce cuadre.
+  return normalizeReceptionReference(String(value ?? ''));
 }
 
 function toNumber(value: unknown): number {
@@ -142,6 +144,27 @@ function buildCompareLines(opts: {
   return lines;
 }
 
+async function loadPhysicalFromScannedItems(receptionOperationId: string): Promise<{
+  physicalByRef: Map<string, number>;
+  scanDocCount: number;
+  physicalRawQty: number;
+}> {
+  const scansSnap = await getDocs(
+    query(collection(firestore, SCANNED_COL), where('reception_id', '==', receptionOperationId))
+  );
+  const physicalByRef = new Map<string, number>();
+  let physicalRawQty = 0;
+  scansSnap.forEach((d) => {
+    const item = d.data() as ScannedItem;
+    const qty = toNumber(item.quantity) || 1;
+    if (!qty) return;
+    physicalRawQty += qty;
+    const ref = normRef(item.reference) || normRef(item.barcode) || 'UNKNOWN';
+    physicalByRef.set(ref, (physicalByRef.get(ref) || 0) + qty);
+  });
+  return { physicalByRef, scanDocCount: scansSnap.size, physicalRawQty };
+}
+
 async function loadReceptionPhysicalByRef(
   receptionOperationId: string
 ): Promise<{
@@ -150,7 +173,7 @@ async function loadReceptionPhysicalByRef(
   operation?: ReceptionOperation;
   scanDocCount?: number;
   physicalRawQty?: number;
-  skippedNoQty?: number;
+  physicalSourceDetail?: string;
   error?: string;
 }> {
   try {
@@ -159,35 +182,73 @@ async function loadReceptionPhysicalByRef(
       return { success: false, error: 'No se encontró la operación de recepción.' };
     }
     const operation = { id: opSnap.id, ...opSnap.data() } as ReceptionOperation;
+    const reported = Number(operation.totalScannedQuantity) || 0;
 
-    // Sin limit artificial: Cant. Leída de recepción suma TODOS los scannedItems.
-    const scansSnap = await getDocs(
-      query(collection(firestore, SCANNED_COL), where('reception_id', '==', receptionOperationId))
+    // 1) Preferir índice liviano referenceStats (1 doc por referencia, no por escaneo).
+    //    No modifica el módulo de recepción: solo lectura de lo que ya escribe recepción.
+    const statsSnap = await getDocs(
+      collection(firestore, RECEPTION_COL, receptionOperationId, STATS_SUB)
     );
-    const physicalByRef = new Map<string, number>();
-    let physicalRawQty = 0;
-    let skippedNoQty = 0;
-
-    scansSnap.forEach((d) => {
-      const item = d.data() as ScannedItem;
-      const qty = toNumber(item.quantity);
-      if (!qty) {
-        skippedNoQty += 1;
-        return;
-      }
-      physicalRawQty += qty;
-      // Misma base que recepción: no descartar lecturas sin referencia.
-      const ref =
-        normRef(item.reference) ||
-        normRef(item.barcode) ||
-        'SIN_REFERENCIA';
-      physicalByRef.set(ref, (physicalByRef.get(ref) || 0) + qty);
+    const fromStats = new Map<string, number>();
+    let statsQty = 0;
+    statsSnap.forEach((d) => {
+      const data = d.data() as { reference?: string; totalScanned?: number };
+      const ref = normRef(data.reference || d.id);
+      const qty = toNumber(data.totalScanned);
+      if (!qty) return;
+      fromStats.set(ref, (fromStats.get(ref) || 0) + qty);
+      statsQty += qty;
     });
 
-    // Solo si no hay ningún escaneo: respaldo con expectedItems (esperado, no leído).
-    if (scansSnap.size === 0 && Array.isArray(operation.expectedItems)) {
+    const statsLookComplete =
+      fromStats.size > 0 &&
+      (reported <= 0 || statsQty >= reported * 0.98 || Math.abs(statsQty - reported) <= 2);
+
+    if (statsLookComplete) {
+      return {
+        success: true,
+        physicalByRef: fromStats,
+        operation,
+        scanDocCount: statsSnap.size,
+        physicalRawQty: statsQty,
+        physicalSourceDetail: `referenceStats (${statsSnap.size} refs → ${statsQty} und)`,
+      };
+    }
+
+    // 2) Fallback: scannedItems (recepciones viejas o stats incompletos).
+    if (fromStats.size > 0 && reported > 0 && statsQty < reported * 0.98) {
+      // Stats existen pero no cuadran: usar lecturas completas.
+      const full = await loadPhysicalFromScannedItems(receptionOperationId);
+      return {
+        success: true,
+        physicalByRef: full.physicalByRef,
+        operation,
+        scanDocCount: full.scanDocCount,
+        physicalRawQty: full.physicalRawQty,
+        physicalSourceDetail: `scannedItems fallback (stats incompletos ${statsQty}/${reported}; ${full.scanDocCount} lecturas → ${full.physicalRawQty} und)`,
+      };
+    }
+
+    if (fromStats.size === 0) {
+      const full = await loadPhysicalFromScannedItems(receptionOperationId);
+      if (full.physicalRawQty > 0) {
+        return {
+          success: true,
+          physicalByRef: full.physicalByRef,
+          operation,
+          scanDocCount: full.scanDocCount,
+          physicalRawQty: full.physicalRawQty,
+          physicalSourceDetail: `scannedItems (${full.scanDocCount} lecturas → ${full.physicalRawQty} und)`,
+        };
+      }
+    }
+
+    // 3) Último recurso: expectedItems
+    const physicalByRef = new Map<string, number>();
+    let physicalRawQty = 0;
+    if (Array.isArray(operation.expectedItems)) {
       for (const ei of operation.expectedItems) {
-        const ref = normRef((ei as any).reference) || normRef((ei as any).barcode) || 'SIN_REFERENCIA';
+        const ref = normRef((ei as any).reference) || normRef((ei as any).barcode) || 'UNKNOWN';
         const qty = toNumber((ei as any).expected_quantity);
         if (!qty) continue;
         physicalByRef.set(ref, (physicalByRef.get(ref) || 0) + qty);
@@ -199,9 +260,9 @@ async function loadReceptionPhysicalByRef(
       success: true,
       physicalByRef,
       operation,
-      scanDocCount: scansSnap.size,
+      scanDocCount: 0,
       physicalRawQty,
-      skippedNoQty,
+      physicalSourceDetail: `expectedItems (sin stats/escaneos → ${physicalRawQty} und)`,
     };
   } catch (e: any) {
     console.error('loadReceptionPhysicalByRef:', e);
@@ -297,13 +358,10 @@ export async function createDistributionCompare(input: {
       const raw = Number(loaded.physicalRawQty) || 0;
       notes = [
         notes,
-        `Físico = suma de scannedItems (${loaded.scanDocCount || 0} lecturas → ${raw} und).`,
+        `Físico = ${loaded.physicalSourceDetail || `${raw} und`}.`,
         reported > 0 ? `Recepción reporta Cant. Leída ${reported}.` : '',
         reported > 0 && raw !== reported
           ? `AVISO: diferencia físico vs Cant. Leída (${raw} vs ${reported}).`
-          : '',
-        (Number(loaded.operation?.totalScannedQuantity) || 0) === 0 && (loaded.scanDocCount || 0) === 0
-          ? 'Físico tomado de ítems esperados (sin escaneos en recepción).'
           : '',
       ]
         .filter(Boolean)
@@ -399,6 +457,37 @@ export async function archiveDistributionCompare(
     return { success: true };
   } catch (e: any) {
     return { success: false, error: e?.message || 'No se pudo archivar.' };
+  }
+}
+
+/** Elimina comparación y sus tareas de remanente. No toca recepción. */
+export async function deleteDistributionCompare(
+  id: string
+): Promise<{ success: boolean; deletedTasks?: number; error?: string }> {
+  try {
+    if (!id) return { success: false, error: 'ID requerido.' };
+    const tasksSnap = await getDocs(
+      query(collection(firestore, TASKS_COL), where('compareId', '==', id), limit(500))
+    );
+    let deletedTasks = 0;
+    let batch = writeBatch(firestore);
+    let ops = 0;
+    for (const d of tasksSnap.docs) {
+      batch.delete(d.ref);
+      deletedTasks += 1;
+      ops += 1;
+      if (ops >= 400) {
+        await batch.commit();
+        batch = writeBatch(firestore);
+        ops = 0;
+      }
+    }
+    batch.delete(doc(firestore, COL, id));
+    await batch.commit();
+    return { success: true, deletedTasks };
+  } catch (e: any) {
+    console.error('deleteDistributionCompare:', e);
+    return { success: false, error: e?.message || 'No se pudo eliminar.' };
   }
 }
 
@@ -522,21 +611,40 @@ export async function listPendingValidationRemainderTasks(): Promise<{
   }
 }
 
-/** Asigna remanentes (>0) de una comparación a un operario. */
+/**
+ * Asigna remanentes. Cada referencia puede ir a un operario distinto.
+ * Acepta `assignments: [{ reference, operatorId, operatorName }]`
+ * o el modo legado references[] + un solo operatorId.
+ */
 export async function assignDistributionRemainders(input: {
   compareId: string;
-  references: string[];
-  operatorId: string;
-  operatorName: string;
+  assignments?: Array<{ reference: string; operatorId: string; operatorName: string }>;
+  /** @deprecated Preferir assignments[] por referencia. */
+  references?: string[];
+  operatorId?: string;
+  operatorName?: string;
   assignedBy: string;
   assignedByName?: string;
 }): Promise<{ success: boolean; created?: number; updated?: number; error?: string }> {
   try {
-    if (!input.compareId || !input.operatorId || !input.assignedBy) {
+    if (!input.compareId || !input.assignedBy) {
       return { success: false, error: 'Faltan datos de asignación.' };
     }
-    if (!input.references?.length) {
-      return { success: false, error: 'Seleccione al menos una referencia con remanente.' };
+
+    const assignments =
+      input.assignments && input.assignments.length > 0
+        ? input.assignments
+        : (input.references || []).map((reference) => ({
+            reference,
+            operatorId: String(input.operatorId || ''),
+            operatorName: String(input.operatorName || input.operatorId || ''),
+          }));
+
+    if (!assignments.length) {
+      return { success: false, error: 'Indique al menos una referencia con operario.' };
+    }
+    if (assignments.some((a) => !a.reference || !a.operatorId)) {
+      return { success: false, error: 'Cada referencia debe tener operario asignado.' };
     }
 
     const compareSnap = await getDoc(doc(firestore, COL, input.compareId));
@@ -560,21 +668,21 @@ export async function assignDistributionRemainders(input: {
     let created = 0;
     let updated = 0;
 
-    for (const reference of input.references) {
-      const line = lineByRef.get(reference);
+    for (const a of assignments) {
+      const line = lineByRef.get(a.reference);
       if (!line || !(line.remainderQty > 0)) continue;
 
-      const prev = existingByRef.get(reference);
+      const prev = existingByRef.get(a.reference);
       if (prev && (prev.data.status === 'submitted' || prev.data.status === 'validated')) {
-        continue; // no reasignar en flujo avanzado
+        continue;
       }
 
       if (prev) {
         await updateDoc(doc(firestore, TASKS_COL, prev.id), {
           expectedRemainderQty: line.remainderQty,
           status: 'assigned' satisfies DistributionRemainderTaskStatus,
-          assignedOperatorId: input.operatorId,
-          assignedOperatorName: input.operatorName,
+          assignedOperatorId: a.operatorId,
+          assignedOperatorName: a.operatorName,
           assignedAt: now,
           assignedBy: input.assignedBy,
           assignedByName: input.assignedByName || null,
@@ -595,11 +703,11 @@ export async function assignDistributionRemainders(input: {
           id: ref.id,
           compareId: input.compareId,
           rkIdentifier: compare.rkIdentifier,
-          reference,
+          reference: a.reference,
           expectedRemainderQty: line.remainderQty,
           status: 'assigned',
-          assignedOperatorId: input.operatorId,
-          assignedOperatorName: input.operatorName,
+          assignedOperatorId: a.operatorId,
+          assignedOperatorName: a.operatorName,
           assignedAt: now,
           assignedBy: input.assignedBy,
           assignedByName: input.assignedByName,
