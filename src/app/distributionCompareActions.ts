@@ -2,7 +2,7 @@
 
 import {
   collection,
-  deleteDoc,
+  deleteField,
   doc,
   getDoc,
   getDocs,
@@ -82,6 +82,108 @@ function buildTotals(lines: DistributionCompareLine[]): DistributionCompareTotal
     remainderQty: lines.reduce((s, l) => s + l.remainderQty, 0),
     referencesWithRemainder: lines.filter((l) => l.remainderQty > 0).length,
   };
+}
+
+function lineDocId(reference: string): string {
+  // IDs seguros para Firestore (alineado a normalizeReceptionReference).
+  return normalizeReceptionReference(reference).replace(/[/#[\]]/g, '_').slice(0, 700) || 'UNKNOWN';
+}
+
+function slimLineForStorage(line: DistributionCompareLine): DistributionCompareLine {
+  const byBodega = (line.byBodega || []).filter(
+    (b) => b.bodega && b.bodega !== 'TOTAL' && b.qty !== 0
+  );
+  return {
+    reference: line.reference,
+    physicalQty: line.physicalQty,
+    distributedQty: line.distributedQty,
+    remainderQty: line.remainderQty,
+    byBodega,
+  };
+}
+
+async function writeCompareLinesSubcollection(
+  compareId: string,
+  lines: DistributionCompareLine[]
+): Promise<void> {
+  let batch = writeBatch(firestore);
+  let ops = 0;
+  for (const line of lines) {
+    const slim = slimLineForStorage(line);
+    const lineRef = doc(firestore, COL, compareId, 'lines', lineDocId(slim.reference));
+    batch.set(lineRef, stripUndefinedDeep(slim));
+    ops += 1;
+    if (ops >= 400) {
+      await batch.commit();
+      batch = writeBatch(firestore);
+      ops = 0;
+    }
+  }
+  if (ops > 0) await batch.commit();
+}
+
+async function loadCompareLines(compareId: string): Promise<DistributionCompareLine[]> {
+  const sub = await getDocs(collection(firestore, COL, compareId, 'lines'));
+  if (!sub.empty) {
+    return sub.docs
+      .map((d) => d.data() as DistributionCompareLine)
+      .sort((a, b) => a.reference.localeCompare(b.reference, 'es'));
+  }
+  // Legacy: líneas embebidas en el documento padre (docs antiguos pesados).
+  const parent = await getDoc(doc(firestore, COL, compareId));
+  if (!parent.exists()) return [];
+  const embedded = (parent.data() as DistributionCompareOperation).lines;
+  return Array.isArray(embedded) ? embedded : [];
+}
+
+async function deleteCompareLinesSubcollection(compareId: string): Promise<number> {
+  const sub = await getDocs(collection(firestore, COL, compareId, 'lines'));
+  if (sub.empty) return 0;
+  let batch = writeBatch(firestore);
+  let ops = 0;
+  let deleted = 0;
+  for (const d of sub.docs) {
+    batch.delete(d.ref);
+    ops += 1;
+    deleted += 1;
+    if (ops >= 400) {
+      await batch.commit();
+      batch = writeBatch(firestore);
+      ops = 0;
+    }
+  }
+  if (ops > 0) await batch.commit();
+  return deleted;
+}
+
+/** Migra líneas embebidas a subcolección para que el listado deje de bajar docs gigantes. */
+async function migrateEmbeddedLinesIfNeeded(
+  compareId: string,
+  data: DistributionCompareOperation
+): Promise<DistributionCompareOperation> {
+  const embedded = data.lines;
+  if (!Array.isArray(embedded) || embedded.length === 0) return data;
+  if (data.linesInSubcollection) {
+    return { ...data, lines: [] };
+  }
+  try {
+    await writeCompareLinesSubcollection(compareId, embedded);
+    await updateDoc(doc(firestore, COL, compareId), {
+      lines: deleteField(),
+      lineCount: embedded.length,
+      linesInSubcollection: true,
+      updatedAt: new Date().toISOString(),
+    });
+    return {
+      ...data,
+      lines: [],
+      lineCount: embedded.length,
+      linesInSubcollection: true,
+    };
+  } catch (e) {
+    console.error('migrateEmbeddedLinesIfNeeded:', e);
+    return data;
+  }
 }
 
 /** Agrega físico por referencia desde filas tipo existencias. */
@@ -389,6 +491,7 @@ export async function createDistributionCompare(input: {
     const totals = buildTotals(lines);
     const now = new Date().toISOString();
     const ref = doc(collection(firestore, COL));
+    // Documento padre liviano: el detalle va a subcolección `lines` (evita lecturas enormes al listar).
     const payload: DistributionCompareOperation = {
       id: ref.id,
       receptionOperationId,
@@ -398,7 +501,9 @@ export async function createDistributionCompare(input: {
       planFileName: input.planFileName,
       stockFileName: input.stockFileName,
       notes: notes || undefined,
-      lines,
+      lines: [],
+      lineCount: lines.length,
+      linesInSubcollection: true,
       totals,
       status: 'open',
       createdAt: now,
@@ -407,15 +512,16 @@ export async function createDistributionCompare(input: {
       createdByName: input.createdByName,
     };
 
-    await setDoc(ref, stripUndefinedDeep(payload));
-    return { success: true, id: ref.id, data: payload };
+    await setDoc(ref, stripUndefinedDeep({ ...payload, lines: undefined }));
+    await writeCompareLinesSubcollection(ref.id, lines);
+    return { success: true, id: ref.id, data: { ...payload, lines } };
   } catch (e: any) {
     console.error('createDistributionCompare:', e);
     return { success: false, error: e?.message || 'No se pudo guardar la comparación.' };
   }
 }
 
-export async function listDistributionCompares(limitN = 50): Promise<{
+export async function listDistributionCompares(limitN = 40): Promise<{
   success: boolean;
   data?: DistributionCompareOperation[];
   error?: string;
@@ -424,7 +530,19 @@ export async function listDistributionCompares(limitN = 50): Promise<{
     const snap = await getDocs(
       query(collection(firestore, COL), orderBy('createdAt', 'desc'), limit(limitN))
     );
-    const data = snap.docs.map((d) => ({ id: d.id, ...d.data() } as DistributionCompareOperation));
+    // No devolver el array `lines` al cliente en el listado (aunque el doc legacy lo traiga).
+    const data = snap.docs.map((d) => {
+      const raw = d.data() as DistributionCompareOperation;
+      const { lines: _omit, ...rest } = raw as DistributionCompareOperation & {
+        lines?: DistributionCompareLine[];
+      };
+      return {
+        ...rest,
+        id: d.id,
+        lines: [],
+        lineCount: raw.lineCount ?? (Array.isArray(raw.lines) ? raw.lines.length : 0),
+      } as DistributionCompareOperation;
+    });
     return { success: true, data };
   } catch (e: any) {
     console.error('listDistributionCompares:', e);
@@ -440,7 +558,23 @@ export async function getDistributionCompare(id: string): Promise<{
   try {
     const snap = await getDoc(doc(firestore, COL, id));
     if (!snap.exists()) return { success: false, error: 'Comparación no encontrada.' };
-    return { success: true, data: { id: snap.id, ...snap.data() } as DistributionCompareOperation };
+    let data = { id: snap.id, ...snap.data() } as DistributionCompareOperation;
+
+    // Si el doc legacy trae lines embebidas, migrar a subcolección (una vez).
+    if (Array.isArray(data.lines) && data.lines.length > 0 && !data.linesInSubcollection) {
+      data = await migrateEmbeddedLinesIfNeeded(id, data);
+    }
+
+    const lines = await loadCompareLines(id);
+    return {
+      success: true,
+      data: {
+        ...data,
+        lines,
+        lineCount: lines.length,
+        linesInSubcollection: true,
+      },
+    };
   } catch (e: any) {
     return { success: false, error: e?.message || 'Error al cargar comparación.' };
   }
@@ -460,15 +594,19 @@ export async function archiveDistributionCompare(
   }
 }
 
-/** Elimina comparación y sus tareas de remanente. No toca recepción. */
+/** Elimina comparación, líneas y tareas. No toca recepción. */
 export async function deleteDistributionCompare(
   id: string
-): Promise<{ success: boolean; deletedTasks?: number; error?: string }> {
+): Promise<{ success: boolean; deletedTasks?: number; deletedLines?: number; error?: string }> {
   try {
     if (!id) return { success: false, error: 'ID requerido.' };
-    const tasksSnap = await getDocs(
-      query(collection(firestore, TASKS_COL), where('compareId', '==', id), limit(500))
-    );
+
+    // Borrar subtareas y líneas en paralelo (docs livianos).
+    const [tasksSnap, deletedLines] = await Promise.all([
+      getDocs(query(collection(firestore, TASKS_COL), where('compareId', '==', id), limit(500))),
+      deleteCompareLinesSubcollection(id),
+    ]);
+
     let deletedTasks = 0;
     let batch = writeBatch(firestore);
     let ops = 0;
@@ -484,7 +622,7 @@ export async function deleteDistributionCompare(
     }
     batch.delete(doc(firestore, COL, id));
     await batch.commit();
-    return { success: true, deletedTasks };
+    return { success: true, deletedTasks, deletedLines };
   } catch (e: any) {
     console.error('deleteDistributionCompare:', e);
     return { success: false, error: e?.message || 'No se pudo eliminar.' };
@@ -497,10 +635,8 @@ async function refreshCompareWorkflowStatus(compareId: string): Promise<void> {
   const compare = compareSnap.data() as DistributionCompareOperation;
   if (compare.status === 'archived') return;
 
-  const remainderRefs = new Set(
-    (compare.lines || []).filter((l) => (l.remainderQty || 0) > 0).map((l) => l.reference)
-  );
-  if (remainderRefs.size === 0) {
+  const remainderCount = Number(compare.totals?.referencesWithRemainder) || 0;
+  if (remainderCount <= 0) {
     await updateDoc(doc(firestore, COL, compareId), {
       status: 'completed',
       updatedAt: new Date().toISOString(),
@@ -512,7 +648,7 @@ async function refreshCompareWorkflowStatus(compareId: string): Promise<void> {
     query(collection(firestore, TASKS_COL), where('compareId', '==', compareId), limit(500))
   );
   const tasks = tasksSnap.docs.map((d) => d.data() as DistributionRemainderTask);
-  const active = tasks.filter((t) => remainderRefs.has(t.reference) && t.status !== 'rejected');
+  const active = tasks.filter((t) => t.status !== 'rejected');
 
   let status: DistributionCompareOperation['status'] = 'open';
   if (active.some((t) => t.status === 'submitted')) status = 'pending_validation';
@@ -654,7 +790,8 @@ export async function assignDistributionRemainders(input: {
       return { success: false, error: 'La comparación está archivada.' };
     }
 
-    const lineByRef = new Map((compare.lines || []).map((l) => [l.reference, l]));
+    const lines = await loadCompareLines(input.compareId);
+    const lineByRef = new Map(lines.map((l) => [l.reference, l]));
     const existingSnap = await getDocs(
       query(collection(firestore, TASKS_COL), where('compareId', '==', input.compareId), limit(500))
     );
@@ -879,7 +1016,8 @@ export async function supervisorConfirmRemaindersDirect(input: {
       return { success: false, error: 'La comparación está archivada.' };
     }
 
-    const lineByRef = new Map((compare.lines || []).map((l) => [l.reference, l]));
+    const lines = await loadCompareLines(input.compareId);
+    const lineByRef = new Map(lines.map((l) => [l.reference, l]));
     const existingSnap = await getDocs(
       query(collection(firestore, TASKS_COL), where('compareId', '==', input.compareId), limit(500))
     );

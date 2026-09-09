@@ -1193,7 +1193,13 @@ export interface DistributionCompareOperation {
   planFileName?: string;
   stockFileName?: string;
   notes?: string;
-  lines: DistributionCompareLine[];
+  /**
+   * Detalle por referencia. En docs nuevos vive en subcolección `lines`
+   * y aquí viene vacío en listados (solo se carga al abrir detalle).
+   */
+  lines?: DistributionCompareLine[];
+  lineCount?: number;
+  linesInSubcollection?: boolean;
   totals: DistributionCompareTotals;
   /**
    * open = solo comparación

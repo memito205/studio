@@ -40,6 +40,7 @@ import {
   assignDistributionRemainders,
   createDistributionCompare,
   deleteDistributionCompare,
+  getDistributionCompare,
   listAssignableOperatorsForRemainders,
   listDistributionCompares,
   listMyRemainderTasks,
@@ -152,38 +153,51 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const [rejectDrafts, setRejectDrafts] = useState<Record<string, string>>({});
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const receptionsLoadedRef = React.useRef(false);
+  const operatorsLoadedRef = React.useRef(false);
 
-  const reload = useCallback(async () => {
+  /** Listado liviano al entrar: NO carga recepciones ni todos los usuarios. */
+  const reloadList = useCallback(async () => {
     setLoading(true);
-    const ops: Promise<any>[] = [
-      listDistributionCompares(60),
-      listReceptionOptionsForCompare(100),
-      listAssignableOperatorsForRemainders(),
-    ];
-    if (user?.uid) ops.push(listMyRemainderTasks(user.uid));
-    if (isManager) ops.push(listPendingValidationRemainderTasks());
+    try {
+      const ops: Promise<any>[] = [listDistributionCompares(30)];
+      if (user?.uid) ops.push(listMyRemainderTasks(user.uid));
+      if (isManager) ops.push(listPendingValidationRemainderTasks());
 
-    const results = await Promise.all(ops);
-    const listRes = results[0];
-    const recvRes = results[1];
-    const opRes = results[2];
-    const myRes = user?.uid ? results[3] : null;
-    const pendRes = isManager ? results[user?.uid ? 4 : 3] : null;
+      const results = await Promise.all(ops);
+      const listRes = results[0];
+      const myRes = user?.uid ? results[1] : null;
+      const pendRes = isManager ? results[user?.uid ? 2 : 1] : null;
 
-    if (listRes.success) setItems(listRes.data || []);
-    else {
-      toast({
-        variant: 'destructive',
-        title: 'Comparaciones',
-        description: listRes.error || 'No se pudo cargar el listado.',
-      });
+      if (listRes.success) setItems(listRes.data || []);
+      else {
+        toast({
+          variant: 'destructive',
+          title: 'Comparaciones',
+          description: listRes.error || 'No se pudo cargar el listado.',
+        });
+      }
+      if (myRes?.success) setMyTasks(myRes.data || []);
+      if (pendRes?.success) setPendingTasks(pendRes.data || []);
+    } finally {
+      setLoading(false);
     }
-    if (recvRes.success) setReceptions(recvRes.data || []);
-    if (opRes.success) setOperators(opRes.data || []);
-    if (myRes?.success) setMyTasks(myRes.data || []);
-    if (pendRes?.success) setPendingTasks(pendRes.data || []);
-    setLoading(false);
   }, [toast, user?.uid, isManager]);
+
+  const ensureReceptionsLoaded = useCallback(async () => {
+    if (receptionsLoadedRef.current) return;
+    const recvRes = await listReceptionOptionsForCompare(40);
+    if (recvRes.success) setReceptions(recvRes.data || []);
+    receptionsLoadedRef.current = true;
+  }, []);
+
+  const ensureOperatorsLoaded = useCallback(async () => {
+    if (operatorsLoadedRef.current) return;
+    const opRes = await listAssignableOperatorsForRemainders();
+    if (opRes.success) setOperators(opRes.data || []);
+    operatorsLoadedRef.current = true;
+  }, []);
 
   const loadDetailTasks = useCallback(async (compareId: string) => {
     const res = await listRemainderTasksByCompare(compareId);
@@ -192,8 +206,13 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   }, []);
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    void reloadList();
+  }, [reloadList]);
+
+  useEffect(() => {
+    if (view === 'new') void ensureReceptionsLoaded();
+    if (view === 'new' || view === 'detail') void ensureOperatorsLoaded();
+  }, [view, ensureReceptionsLoaded, ensureOperatorsLoaded]);
 
   const taskByRef = useMemo(() => {
     const m = new Map<string, DistributionRemainderTask>();
@@ -288,21 +307,73 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       description: `Remanente total: ${fmt(res.data.totals.remainderQty)} und.`,
     });
     setSelected(res.data);
+    setItems((prev) => [ { ...res.data!, lines: [] }, ...prev.filter((x) => x.id !== res.data!.id) ]);
     setSelectedRefs(new Set());
     setView('detail');
     setTab('compares');
     setOnlyRemainder(true);
     await loadDetailTasks(res.data.id);
-    await reload();
-  };
 
   const openDetail = async (it: DistributionCompareOperation) => {
-    setSelected(it);
-    setSelectedRefs(new Set());
-    setAssignOperatorId('');
     setView('detail');
     setTab('compares');
-    await loadDetailTasks(it.id);
+    setSelectedRefs(new Set());
+    setAssignOperatorId('');
+    setDetailLoading(true);
+    setSelected({ ...it, lines: it.lines || [] });
+    try {
+      const [full, _tasks] = await Promise.all([
+        getDistributionCompare(it.id),
+        loadDetailTasks(it.id),
+        ensureOperatorsLoaded(),
+      ]);
+      if (full.success && full.data) setSelected(full.data);
+      else if (!full.success) {
+        toast({
+          variant: 'destructive',
+          title: 'Detalle',
+          description: full.error || 'No se pudo cargar el detalle.',
+        });
+      }
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const handleDeleteCompare = async (id: string) => {
+    if (!isManager) return;
+    const ok = window.confirm(
+      '¿Eliminar esta comparación y sus tareas de remanente? No afecta recepción ni Distribuidor IA.'
+    );
+    if (!ok) return;
+    setDeletingId(id);
+    // UI optimista: quitar del listado de inmediato.
+    setItems((prev) => prev.filter((x) => x.id !== id));
+    if (selected?.id === id) {
+      setSelected(null);
+      setView('list');
+      setTasks([]);
+    }
+    const res = await deleteDistributionCompare(id);
+    setDeletingId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Eliminar', description: res.error });
+      await reloadList();
+      return;
+    }
+    toast({
+      title: 'Comparación eliminada',
+      description: `Tareas: ${res.deletedTasks || 0} · Líneas: ${res.deletedLines || 0}`,
+    });
+    // Solo refrescar pestañas livianas de tareas (no recepciones/usuarios).
+    if (user?.uid) {
+      const myRes = await listMyRemainderTasks(user.uid);
+      if (myRes.success) setMyTasks(myRes.data || []);
+    }
+    if (isManager) {
+      const pendRes = await listPendingValidationRemainderTasks();
+      if (pendRes.success) setPendingTasks(pendRes.data || []);
+    }
   };
 
   const toggleRef = (reference: string, checked: boolean) => {
@@ -361,7 +432,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     });
     setSelectedRefs(new Set());
     await loadDetailTasks(selected.id);
-    await reload();
+    await reloadList();
   };
 
   const handleAssignOne = async (reference: string) => {
@@ -396,32 +467,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     }
     toast({ title: 'Asignada', description: `${reference} → ${op?.displayName || operatorId}` });
     await loadDetailTasks(selected.id);
-    await reload();
-  };
-
-  const handleDeleteCompare = async (id: string) => {
-    if (!isManager) return;
-    const ok = window.confirm(
-      '¿Eliminar esta comparación y sus tareas de remanente? No afecta recepción ni Distribuidor IA.'
-    );
-    if (!ok) return;
-    setDeletingId(id);
-    const res = await deleteDistributionCompare(id);
-    setDeletingId(null);
-    if (!res.success) {
-      toast({ variant: 'destructive', title: 'Eliminar', description: res.error });
-      return;
-    }
-    toast({
-      title: 'Comparación eliminada',
-      description: `Tareas borradas: ${res.deletedTasks || 0}`,
-    });
-    if (selected?.id === id) {
-      setSelected(null);
-      setView('list');
-      setTasks([]);
-    }
-    await reload();
+    await reloadList();
   };
 
   /** Supervisor confirma en bodega lo entregado, sin asignar a operario. */
@@ -436,7 +482,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       return;
     }
     const items = [...selectedRefs].map((reference) => {
-      const line = selected.lines.find((l) => l.reference === reference);
+      const line = (selected.lines || []).find((l) => l.reference === reference);
       const draft = returnDrafts[`direct:${reference}`];
       const confirmedQty =
         draft === undefined || draft === ''
@@ -462,7 +508,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     });
     setSelectedRefs(new Set());
     await loadDetailTasks(selected.id);
-    await reload();
+    await reloadList();
   };
 
   const handleSubmitReturn = async (task: DistributionRemainderTask) => {
@@ -488,7 +534,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       title: 'Devolución enviada',
       description: `${task.reference}: ${fmt(qty)} und. esperando validación.`,
     });
-    await reload();
+    await reloadList();
     if (selected) await loadDetailTasks(selected.id);
   };
 
@@ -506,7 +552,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       return;
     }
     toast({ title: 'Validado', description: `${task.reference} cerrado.` });
-    await reload();
+    await reloadList();
     if (selected) await loadDetailTasks(selected.id);
   };
 
@@ -534,7 +580,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       return;
     }
     toast({ title: 'Rechazado', description: 'El operario debe volver a reportar.' });
-    await reload();
+    await reloadList();
     if (selected) await loadDetailTasks(selected.id);
   };
 
@@ -575,7 +621,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
           </div>
         </div>
         <div className="flex gap-2">
-          <Button type="button" variant="outline" onClick={() => void reload()} disabled={loading}>
+          <Button type="button" variant="outline" onClick={() => void reloadList()} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
           </Button>
           {view === 'list' && isManager ? (
@@ -985,6 +1031,11 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
 
       {view === 'detail' && selected ? (
         <div className="space-y-4">
+          {detailLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Cargando detalle por referencia…
+            </div>
+          ) : null}
           <div className="grid gap-3 sm:grid-cols-3">
             <Card>
               <CardHeader className="pb-2">
