@@ -488,6 +488,28 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     toast({ title: 'Personas actualizadas', description: String(peopleCount) });
   };
 
+  const [peopleDrafts, setPeopleDrafts] = useState<Record<string, number>>({});
+  const [savingPeopleId, setSavingPeopleId] = useState<string | null>(null);
+
+  const handleAdminUpdatePeople = async (shiftId: string, nextCount?: number) => {
+    const n = Math.max(1, Math.round(Number(nextCount ?? peopleDrafts[shiftId]) || 0));
+    setSavingPeopleId(shiftId);
+    const res = await updateTalladoShiftPeople(shiftId, n);
+    setSavingPeopleId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Personas', description: res.error });
+      return;
+    }
+    setPeopleDrafts((prev) => ({ ...prev, [shiftId]: n }));
+    setLiveShifts((prev) => prev.map((s) => (s.id === shiftId ? { ...s, peopleCount: n } : s)));
+    setDashShifts((prev) => prev.map((s) => (s.id === shiftId ? { ...s, peopleCount: n } : s)));
+    if (shift?.id === shiftId) {
+      setPeopleCount(n);
+      setShift((s) => (s ? { ...s, peopleCount: n } : s));
+    }
+    toast({ title: 'Personas actualizadas', description: `${n} persona(s)` });
+  };
+
   const handlePdfTurno = () => {
     if (!shift) return;
     downloadTalladoReportPdf({ shift, units, pauses });
@@ -1380,6 +1402,9 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">Turnos del día</CardTitle>
+                <CardDescription>
+                  Si el turno se abrió con mal número de personas, corríjalo aquí para recalcular u/persona·h.
+                </CardDescription>
               </CardHeader>
               <CardContent className="overflow-x-auto">
                 <Table>
@@ -1391,18 +1416,20 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                       <TableHead>Inicio</TableHead>
                       <TableHead>Operario</TableHead>
                       <TableHead className="text-right">Activas</TableHead>
+                      <TableHead className="text-right">Acción</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {liveShifts.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center text-muted-foreground py-6">
+                        <TableCell colSpan={7} className="text-center text-muted-foreground py-6">
                           Sin turnos hoy.
                         </TableCell>
                       </TableRow>
                     ) : (
                       liveShifts.map((s) => {
                         const actives = liveActiveUnits.filter((u) => u.shiftId === s.id).length;
+                        const draft = peopleDrafts[s.id] ?? s.peopleCount;
                         return (
                           <TableRow key={s.id}>
                             <TableCell>
@@ -1413,11 +1440,39 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                               )}
                             </TableCell>
                             <TableCell className="font-medium">{s.grupo}</TableCell>
-                            <TableCell className="tabular-nums">{s.peopleCount}</TableCell>
+                            <TableCell>
+                              <Input
+                                type="number"
+                                min={1}
+                                className="h-8 w-20 tabular-nums"
+                                value={draft}
+                                onChange={(e) =>
+                                  setPeopleDrafts((prev) => ({
+                                    ...prev,
+                                    [s.id]: Math.max(1, Number(e.target.value) || 1),
+                                  }))
+                                }
+                              />
+                            </TableCell>
                             <TableCell className="tabular-nums text-xs">{fmtClock(s.startedAt)}</TableCell>
                             <TableCell className="text-xs">{s.userName}</TableCell>
                             <TableCell className="text-right tabular-nums font-semibold text-amber-700">
                               {actives}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="secondary"
+                                disabled={savingPeopleId === s.id || draft === s.peopleCount}
+                                onClick={() => void handleAdminUpdatePeople(s.id, draft)}
+                              >
+                                {savingPeopleId === s.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  'Guardar'
+                                )}
+                              </Button>
                             </TableCell>
                           </TableRow>
                         );
@@ -1560,6 +1615,87 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                 </CardContent>
               </Card>
             </div>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">Corregir personas por turno</CardTitle>
+                <CardDescription>
+                  Ajuste la cantidad si el turno se inició mal; el rendimiento neto (cant / persona·h) se recalcula
+                  con este valor.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Estado</TableHead>
+                      <TableHead>Grupo</TableHead>
+                      <TableHead>Operario</TableHead>
+                      <TableHead>Personas</TableHead>
+                      <TableHead className="text-right">Acción</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {dashShifts.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center text-muted-foreground py-6">
+                          Sin turnos hoy.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      dashShifts.map((s) => {
+                        const draft = peopleDrafts[s.id] ?? s.peopleCount;
+                        return (
+                          <TableRow key={s.id}>
+                            <TableCell>
+                              {s.status === 'active' ? (
+                                <Badge className="bg-emerald-500/15 text-emerald-800">Activo</Badge>
+                              ) : (
+                                <Badge variant="secondary">Cerrado</Badge>
+                              )}
+                            </TableCell>
+                            <TableCell className="font-medium">{s.grupo}</TableCell>
+                            <TableCell className="text-xs">{s.userName}</TableCell>
+                            <TableCell>
+                              <Input
+                                type="number"
+                                min={1}
+                                className="h-8 w-20 tabular-nums"
+                                value={draft}
+                                onChange={(e) =>
+                                  setPeopleDrafts((prev) => ({
+                                    ...prev,
+                                    [s.id]: Math.max(1, Number(e.target.value) || 1),
+                                  }))
+                                }
+                              />
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="secondary"
+                                disabled={savingPeopleId === s.id || draft === s.peopleCount}
+                                onClick={() => void handleAdminUpdatePeople(s.id, draft)}
+                              >
+                                {savingPeopleId === s.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Users className="mr-1.5 h-3.5 w-3.5" />
+                                    Guardar
+                                  </>
+                                )}
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
+                    )}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
           </TabsContent>
         ) : null}
       </Tabs>
