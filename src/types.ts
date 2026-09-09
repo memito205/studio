@@ -1195,12 +1195,56 @@ export interface DistributionCompareOperation {
   notes?: string;
   lines: DistributionCompareLine[];
   totals: DistributionCompareTotals;
-  /** open = listo para fases posteriores (asignación / validación). */
-  status: 'open' | 'archived';
+  /**
+   * open = solo comparación
+   * in_progress = hay remanentes asignados
+   * pending_validation = hay devoluciones por validar
+   * completed = remanentes >0 validados (o sin remanente)
+   * archived = archivada
+   */
+  status: 'open' | 'in_progress' | 'pending_validation' | 'completed' | 'archived';
   createdAt: string;
   updatedAt: string;
   createdBy: string;
   createdByName?: string;
+}
+
+/**
+ * Tarea de remanente (fase 2).
+ * Colección: `distributionRemainderTasks`
+ * Independiente de recepción / Distribuidor IA / etiquetado.
+ */
+export type DistributionRemainderTaskStatus =
+  | 'assigned'
+  | 'submitted'
+  | 'validated'
+  | 'rejected';
+
+export interface DistributionRemainderTask {
+  id: string;
+  compareId: string;
+  rkIdentifier?: string;
+  reference: string;
+  /** Cantidad esperada a devolver a bodega (remanente). */
+  expectedRemainderQty: number;
+  /** Cantidad que el operario declara haber devuelto. */
+  returnedQty?: number;
+  status: DistributionRemainderTaskStatus;
+  assignedOperatorId: string;
+  assignedOperatorName?: string;
+  assignedAt: string;
+  assignedBy: string;
+  assignedByName?: string;
+  submittedAt?: string;
+  submittedBy?: string;
+  submittedByName?: string;
+  validatedAt?: string;
+  validatedBy?: string;
+  validatedByName?: string;
+  rejectionReason?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** Capacidad de un tipo de cajón en una tienda (medida × carga × cantidad). */

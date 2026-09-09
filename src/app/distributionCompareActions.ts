@@ -14,17 +14,22 @@ import {
 } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
 import type {
+  AppUser,
   DistributionCompareLine,
   DistributionCompareOperation,
   DistributionComparePhysicalSource,
   DistributionCompareTotals,
+  DistributionRemainderTask,
+  DistributionRemainderTaskStatus,
   ReceptionOperation,
   ScannedItem,
 } from '@/types';
 
 const COL = 'distributionCompares';
+const TASKS_COL = 'distributionRemainderTasks';
 const RECEPTION_COL = 'receptionOperations';
 const SCANNED_COL = 'scannedItems';
+const USERS_COL = 'users';
 
 function stripUndefinedDeep(value: unknown): unknown {
   if (value === undefined) return undefined;
@@ -364,5 +369,348 @@ export async function archiveDistributionCompare(
     return { success: true };
   } catch (e: any) {
     return { success: false, error: e?.message || 'No se pudo archivar.' };
+  }
+}
+
+async function refreshCompareWorkflowStatus(compareId: string): Promise<void> {
+  const compareSnap = await getDoc(doc(firestore, COL, compareId));
+  if (!compareSnap.exists()) return;
+  const compare = compareSnap.data() as DistributionCompareOperation;
+  if (compare.status === 'archived') return;
+
+  const remainderRefs = new Set(
+    (compare.lines || []).filter((l) => (l.remainderQty || 0) > 0).map((l) => l.reference)
+  );
+  if (remainderRefs.size === 0) {
+    await updateDoc(doc(firestore, COL, compareId), {
+      status: 'completed',
+      updatedAt: new Date().toISOString(),
+    });
+    return;
+  }
+
+  const tasksSnap = await getDocs(
+    query(collection(firestore, TASKS_COL), where('compareId', '==', compareId), limit(500))
+  );
+  const tasks = tasksSnap.docs.map((d) => d.data() as DistributionRemainderTask);
+  const active = tasks.filter((t) => remainderRefs.has(t.reference) && t.status !== 'rejected');
+
+  let status: DistributionCompareOperation['status'] = 'open';
+  if (active.some((t) => t.status === 'submitted')) status = 'pending_validation';
+  else if (active.length > 0 && active.every((t) => t.status === 'validated')) status = 'completed';
+  else if (active.length > 0) status = 'in_progress';
+
+  await updateDoc(doc(firestore, COL, compareId), {
+    status,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+export async function listAssignableOperatorsForRemainders(): Promise<{
+  success: boolean;
+  data?: Array<{ uid: string; displayName: string; role: string }>;
+  error?: string;
+}> {
+  try {
+    const snap = await getDocs(collection(firestore, USERS_COL));
+    const users = snap.docs.map((d) => ({ uid: d.id, ...d.data() } as AppUser));
+    const data = users
+      .filter((u) => !u.disabled)
+      .filter((u) => {
+        const role = String(u.role || '').toLowerCase();
+        return role === 'operator' || role === 'supervisor' || role === 'admin';
+      })
+      .map((u) => ({
+        uid: u.uid,
+        displayName: u.displayName || u.email || u.uid,
+        role: String(u.role || ''),
+      }))
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'es'));
+    return { success: true, data };
+  } catch (e: any) {
+    return { success: false, error: e?.message || 'No se pudieron cargar operarios.' };
+  }
+}
+
+export async function listRemainderTasksByCompare(compareId: string): Promise<{
+  success: boolean;
+  data?: DistributionRemainderTask[];
+  error?: string;
+}> {
+  try {
+    const snap = await getDocs(
+      query(collection(firestore, TASKS_COL), where('compareId', '==', compareId), limit(500))
+    );
+    const data = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() } as DistributionRemainderTask))
+      .sort((a, b) => a.reference.localeCompare(b.reference, 'es'));
+    return { success: true, data };
+  } catch (e: any) {
+    return { success: false, error: e?.message || 'No se pudieron cargar tareas.' };
+  }
+}
+
+export async function listMyRemainderTasks(operatorId: string): Promise<{
+  success: boolean;
+  data?: DistributionRemainderTask[];
+  error?: string;
+}> {
+  try {
+    if (!operatorId) return { success: false, error: 'Operario no indicado.' };
+    const snap = await getDocs(
+      query(
+        collection(firestore, TASKS_COL),
+        where('assignedOperatorId', '==', operatorId),
+        limit(200)
+      )
+    );
+    const data = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() } as DistributionRemainderTask))
+      .filter((t) => t.status === 'assigned' || t.status === 'submitted' || t.status === 'rejected')
+      .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    return { success: true, data };
+  } catch (e: any) {
+    return { success: false, error: e?.message || 'No se pudieron cargar sus tareas.' };
+  }
+}
+
+export async function listPendingValidationRemainderTasks(): Promise<{
+  success: boolean;
+  data?: DistributionRemainderTask[];
+  error?: string;
+}> {
+  try {
+    const snap = await getDocs(
+      query(collection(firestore, TASKS_COL), where('status', '==', 'submitted'), limit(200))
+    );
+    const data = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() } as DistributionRemainderTask))
+      .sort((a, b) => String(b.submittedAt || '').localeCompare(String(a.submittedAt || '')));
+    return { success: true, data };
+  } catch (e: any) {
+    return { success: false, error: e?.message || 'No se pudieron cargar pendientes.' };
+  }
+}
+
+/** Asigna remanentes (>0) de una comparación a un operario. */
+export async function assignDistributionRemainders(input: {
+  compareId: string;
+  references: string[];
+  operatorId: string;
+  operatorName: string;
+  assignedBy: string;
+  assignedByName?: string;
+}): Promise<{ success: boolean; created?: number; updated?: number; error?: string }> {
+  try {
+    if (!input.compareId || !input.operatorId || !input.assignedBy) {
+      return { success: false, error: 'Faltan datos de asignación.' };
+    }
+    if (!input.references?.length) {
+      return { success: false, error: 'Seleccione al menos una referencia con remanente.' };
+    }
+
+    const compareSnap = await getDoc(doc(firestore, COL, input.compareId));
+    if (!compareSnap.exists()) return { success: false, error: 'Comparación no encontrada.' };
+    const compare = { id: compareSnap.id, ...compareSnap.data() } as DistributionCompareOperation;
+    if (compare.status === 'archived') {
+      return { success: false, error: 'La comparación está archivada.' };
+    }
+
+    const lineByRef = new Map((compare.lines || []).map((l) => [l.reference, l]));
+    const existingSnap = await getDocs(
+      query(collection(firestore, TASKS_COL), where('compareId', '==', input.compareId), limit(500))
+    );
+    const existingByRef = new Map<string, { id: string; data: DistributionRemainderTask }>();
+    existingSnap.forEach((d) => {
+      const data = d.data() as DistributionRemainderTask;
+      existingByRef.set(data.reference, { id: d.id, data });
+    });
+
+    const now = new Date().toISOString();
+    let created = 0;
+    let updated = 0;
+
+    for (const reference of input.references) {
+      const line = lineByRef.get(reference);
+      if (!line || !(line.remainderQty > 0)) continue;
+
+      const prev = existingByRef.get(reference);
+      if (prev && (prev.data.status === 'submitted' || prev.data.status === 'validated')) {
+        continue; // no reasignar en flujo avanzado
+      }
+
+      if (prev) {
+        await updateDoc(doc(firestore, TASKS_COL, prev.id), {
+          expectedRemainderQty: line.remainderQty,
+          status: 'assigned' satisfies DistributionRemainderTaskStatus,
+          assignedOperatorId: input.operatorId,
+          assignedOperatorName: input.operatorName,
+          assignedAt: now,
+          assignedBy: input.assignedBy,
+          assignedByName: input.assignedByName || null,
+          returnedQty: null,
+          submittedAt: null,
+          submittedBy: null,
+          submittedByName: null,
+          validatedAt: null,
+          validatedBy: null,
+          validatedByName: null,
+          rejectionReason: null,
+          updatedAt: now,
+        });
+        updated += 1;
+      } else {
+        const ref = doc(collection(firestore, TASKS_COL));
+        const payload: DistributionRemainderTask = {
+          id: ref.id,
+          compareId: input.compareId,
+          rkIdentifier: compare.rkIdentifier,
+          reference,
+          expectedRemainderQty: line.remainderQty,
+          status: 'assigned',
+          assignedOperatorId: input.operatorId,
+          assignedOperatorName: input.operatorName,
+          assignedAt: now,
+          assignedBy: input.assignedBy,
+          assignedByName: input.assignedByName,
+          createdAt: now,
+          updatedAt: now,
+        };
+        await setDoc(ref, stripUndefinedDeep(payload));
+        created += 1;
+      }
+    }
+
+    if (created + updated === 0) {
+      return {
+        success: false,
+        error: 'No hay referencias asignables (remanente ≤ 0 o ya enviadas/validadas).',
+      };
+    }
+
+    await refreshCompareWorkflowStatus(input.compareId);
+    return { success: true, created, updated };
+  } catch (e: any) {
+    console.error('assignDistributionRemainders:', e);
+    return { success: false, error: e?.message || 'No se pudo asignar.' };
+  }
+}
+
+export async function submitRemainderReturn(input: {
+  taskId: string;
+  returnedQty: number;
+  operatorId: string;
+  operatorName?: string;
+  notes?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const qty = Number(input.returnedQty);
+    if (!input.taskId || !input.operatorId) {
+      return { success: false, error: 'Faltan datos de devolución.' };
+    }
+    if (!Number.isFinite(qty) || qty < 0) {
+      return { success: false, error: 'Indique una cantidad válida (≥ 0).' };
+    }
+
+    const taskRef = doc(firestore, TASKS_COL, input.taskId);
+    const snap = await getDoc(taskRef);
+    if (!snap.exists()) return { success: false, error: 'Tarea no encontrada.' };
+    const task = snap.data() as DistributionRemainderTask;
+
+    if (task.assignedOperatorId !== input.operatorId) {
+      return { success: false, error: 'Esta tarea no está asignada a usted.' };
+    }
+    if (task.status !== 'assigned' && task.status !== 'rejected') {
+      return { success: false, error: 'La tarea ya fue enviada o validada.' };
+    }
+
+    const now = new Date().toISOString();
+    await updateDoc(taskRef, {
+      returnedQty: qty,
+      status: 'submitted',
+      submittedAt: now,
+      submittedBy: input.operatorId,
+      submittedByName: input.operatorName || null,
+      notes: input.notes || null,
+      rejectionReason: null,
+      updatedAt: now,
+    });
+    await refreshCompareWorkflowStatus(task.compareId);
+    return { success: true };
+  } catch (e: any) {
+    console.error('submitRemainderReturn:', e);
+    return { success: false, error: e?.message || 'No se pudo registrar la devolución.' };
+  }
+}
+
+export async function validateRemainderTask(input: {
+  taskId: string;
+  validatorId: string;
+  validatorName?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!input.taskId || !input.validatorId) {
+      return { success: false, error: 'Faltan datos de validación.' };
+    }
+    const taskRef = doc(firestore, TASKS_COL, input.taskId);
+    const snap = await getDoc(taskRef);
+    if (!snap.exists()) return { success: false, error: 'Tarea no encontrada.' };
+    const task = snap.data() as DistributionRemainderTask;
+    if (task.status !== 'submitted') {
+      return { success: false, error: 'Solo se validan devoluciones enviadas.' };
+    }
+
+    const now = new Date().toISOString();
+    await updateDoc(taskRef, {
+      status: 'validated',
+      validatedAt: now,
+      validatedBy: input.validatorId,
+      validatedByName: input.validatorName || null,
+      rejectionReason: null,
+      updatedAt: now,
+    });
+    await refreshCompareWorkflowStatus(task.compareId);
+    return { success: true };
+  } catch (e: any) {
+    console.error('validateRemainderTask:', e);
+    return { success: false, error: e?.message || 'No se pudo validar.' };
+  }
+}
+
+export async function rejectRemainderTask(input: {
+  taskId: string;
+  validatorId: string;
+  validatorName?: string;
+  reason: string;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!input.taskId || !input.validatorId) {
+      return { success: false, error: 'Faltan datos.' };
+    }
+    if (!String(input.reason || '').trim()) {
+      return { success: false, error: 'Indique el motivo del rechazo.' };
+    }
+    const taskRef = doc(firestore, TASKS_COL, input.taskId);
+    const snap = await getDoc(taskRef);
+    if (!snap.exists()) return { success: false, error: 'Tarea no encontrada.' };
+    const task = snap.data() as DistributionRemainderTask;
+    if (task.status !== 'submitted') {
+      return { success: false, error: 'Solo se rechazan devoluciones enviadas.' };
+    }
+
+    const now = new Date().toISOString();
+    await updateDoc(taskRef, {
+      status: 'assigned',
+      rejectionReason: String(input.reason).trim(),
+      validatedAt: now,
+      validatedBy: input.validatorId,
+      validatedByName: input.validatorName || null,
+      updatedAt: now,
+    });
+    await refreshCompareWorkflowStatus(task.compareId);
+    return { success: true };
+  } catch (e: any) {
+    console.error('rejectRemainderTask:', e);
+    return { success: false, error: e?.message || 'No se pudo rechazar.' };
   }
 }

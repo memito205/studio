@@ -206,7 +206,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             description: "Suba el reparto comercial, compárelo con lo recibido y vea el remanente en bodega.",
             actionText: "Acceder",
             onAction: onNavigateToDistributionCompare,
-            roles: ['admin', 'supervisor']
+            roles: ['admin', 'supervisor', 'operator']
         },
         {
             key: 'bag_distribution',

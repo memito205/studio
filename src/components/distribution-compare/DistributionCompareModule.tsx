@@ -1,12 +1,23 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, FileSpreadsheet, Loader2, PackageSearch, RefreshCw, Scale } from 'lucide-react';
+import {
+  ArrowLeft,
+  CheckCircle2,
+  FileSpreadsheet,
+  Loader2,
+  PackageSearch,
+  RefreshCw,
+  Scale,
+  UserCheck,
+  XCircle,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Select,
   SelectContent,
@@ -25,13 +36,21 @@ import {
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import {
+  assignDistributionRemainders,
   createDistributionCompare,
+  listAssignableOperatorsForRemainders,
   listDistributionCompares,
+  listMyRemainderTasks,
+  listPendingValidationRemainderTasks,
   listReceptionOptionsForCompare,
+  listRemainderTasksByCompare,
+  rejectRemainderTask,
+  submitRemainderReturn,
+  validateRemainderTask,
   type DistributionPlanRowInput,
   type DistributionStockRowInput,
 } from '@/app/distributionCompareActions';
-import type { DistributionCompareOperation } from '@/types';
+import type { DistributionCompareOperation, DistributionRemainderTask } from '@/types';
 import {
   parseExcelFile,
   validatePlanData,
@@ -46,15 +65,55 @@ function fmt(n: number) {
   return (Number(n) || 0).toLocaleString('es-CO');
 }
 
-export default function DistributionCompareModule({ onReturnToSuite }: Props) {
-  const { user } = useAuth();
-  const { toast } = useToast();
+function taskStatusLabel(status: DistributionRemainderTask['status']) {
+  switch (status) {
+    case 'assigned':
+      return 'Asignada';
+    case 'submitted':
+      return 'Por validar';
+    case 'validated':
+      return 'Validada';
+    case 'rejected':
+      return 'Rechazada';
+    default:
+      return status;
+  }
+}
 
+function compareStatusLabel(status: DistributionCompareOperation['status']) {
+  switch (status) {
+    case 'open':
+      return 'Abierta';
+    case 'in_progress':
+      return 'En proceso';
+    case 'pending_validation':
+      return 'Por validar';
+    case 'completed':
+      return 'Completada';
+    case 'archived':
+      return 'Archivada';
+    default:
+      return status;
+  }
+}
+
+export default function DistributionCompareModule({ onReturnToSuite }: Props) {
+  const { user, role } = useAuth();
+  const { toast } = useToast();
+  const isManager = role === 'admin' || role === 'supervisor';
+
+  const [tab, setTab] = useState<'compares' | 'myTasks' | 'pendingValidation'>('compares');
   const [view, setView] = useState<'list' | 'new' | 'detail'>('list');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [items, setItems] = useState<DistributionCompareOperation[]>([]);
   const [selected, setSelected] = useState<DistributionCompareOperation | null>(null);
+  const [tasks, setTasks] = useState<DistributionRemainderTask[]>([]);
+  const [myTasks, setMyTasks] = useState<DistributionRemainderTask[]>([]);
+  const [pendingTasks, setPendingTasks] = useState<DistributionRemainderTask[]>([]);
+  const [operators, setOperators] = useState<
+    Array<{ uid: string; displayName: string; role: string }>
+  >([]);
 
   const [receptions, setReceptions] = useState<
     Array<{
@@ -78,12 +137,29 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const [notes, setNotes] = useState('');
   const [onlyRemainder, setOnlyRemainder] = useState(true);
 
+  const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
+  const [assignOperatorId, setAssignOperatorId] = useState('');
+  const [returnDrafts, setReturnDrafts] = useState<Record<string, string>>({});
+  const [rejectDrafts, setRejectDrafts] = useState<Record<string, string>>({});
+  const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+
   const reload = useCallback(async () => {
     setLoading(true);
-    const [listRes, recvRes] = await Promise.all([
+    const ops: Promise<any>[] = [
       listDistributionCompares(60),
       listReceptionOptionsForCompare(100),
-    ]);
+      listAssignableOperatorsForRemainders(),
+    ];
+    if (user?.uid) ops.push(listMyRemainderTasks(user.uid));
+    if (isManager) ops.push(listPendingValidationRemainderTasks());
+
+    const results = await Promise.all(ops);
+    const listRes = results[0];
+    const recvRes = results[1];
+    const opRes = results[2];
+    const myRes = user?.uid ? results[3] : null;
+    const pendRes = isManager ? results[user?.uid ? 4 : 3] : null;
+
     if (listRes.success) setItems(listRes.data || []);
     else {
       toast({
@@ -93,12 +169,27 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       });
     }
     if (recvRes.success) setReceptions(recvRes.data || []);
+    if (opRes.success) setOperators(opRes.data || []);
+    if (myRes?.success) setMyTasks(myRes.data || []);
+    if (pendRes?.success) setPendingTasks(pendRes.data || []);
     setLoading(false);
-  }, [toast]);
+  }, [toast, user?.uid, isManager]);
+
+  const loadDetailTasks = useCallback(async (compareId: string) => {
+    const res = await listRemainderTasksByCompare(compareId);
+    if (res.success) setTasks(res.data || []);
+    else setTasks([]);
+  }, []);
 
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  const taskByRef = useMemo(() => {
+    const m = new Map<string, DistributionRemainderTask>();
+    for (const t of tasks) m.set(t.reference, t);
+    return m;
+  }, [tasks]);
 
   const detailLines = useMemo(() => {
     const lines = selected?.lines || [];
@@ -187,9 +278,141 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       description: `Remanente total: ${fmt(res.data.totals.remainderQty)} und.`,
     });
     setSelected(res.data);
+    setSelectedRefs(new Set());
     setView('detail');
+    setTab('compares');
     setOnlyRemainder(true);
+    await loadDetailTasks(res.data.id);
     await reload();
+  };
+
+  const openDetail = async (it: DistributionCompareOperation) => {
+    setSelected(it);
+    setSelectedRefs(new Set());
+    setAssignOperatorId('');
+    setView('detail');
+    setTab('compares');
+    await loadDetailTasks(it.id);
+  };
+
+  const toggleRef = (reference: string, checked: boolean) => {
+    setSelectedRefs((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(reference);
+      else next.delete(reference);
+      return next;
+    });
+  };
+
+  const handleAssign = async () => {
+    if (!selected || !user?.uid) return;
+    if (!assignOperatorId) {
+      toast({ variant: 'destructive', title: 'Asignación', description: 'Elija un operario.' });
+      return;
+    }
+    if (selectedRefs.size === 0) {
+      toast({
+        variant: 'destructive',
+        title: 'Asignación',
+        description: 'Marque referencias con remanente > 0.',
+      });
+      return;
+    }
+    const op = operators.find((o) => o.uid === assignOperatorId);
+    setSaving(true);
+    const res = await assignDistributionRemainders({
+      compareId: selected.id,
+      references: [...selectedRefs],
+      operatorId: assignOperatorId,
+      operatorName: op?.displayName || assignOperatorId,
+      assignedBy: user.uid,
+      assignedByName: user.displayName || user.email || user.uid,
+    });
+    setSaving(false);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Asignación', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Remanentes asignados',
+      description: `Creadas: ${res.created || 0} · Actualizadas: ${res.updated || 0}`,
+    });
+    setSelectedRefs(new Set());
+    await loadDetailTasks(selected.id);
+    await reload();
+  };
+
+  const handleSubmitReturn = async (task: DistributionRemainderTask) => {
+    if (!user?.uid) return;
+    const raw = returnDrafts[task.id];
+    const qty =
+      raw === undefined || raw === ''
+        ? task.expectedRemainderQty
+        : Number(String(raw).replace(/,/g, ''));
+    setBusyTaskId(task.id);
+    const res = await submitRemainderReturn({
+      taskId: task.id,
+      returnedQty: qty,
+      operatorId: user.uid,
+      operatorName: user.displayName || user.email || user.uid,
+    });
+    setBusyTaskId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Devolución', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Devolución enviada',
+      description: `${task.reference}: ${fmt(qty)} und. esperando validación.`,
+    });
+    await reload();
+    if (selected) await loadDetailTasks(selected.id);
+  };
+
+  const handleValidate = async (task: DistributionRemainderTask) => {
+    if (!user?.uid) return;
+    setBusyTaskId(task.id);
+    const res = await validateRemainderTask({
+      taskId: task.id,
+      validatorId: user.uid,
+      validatorName: user.displayName || user.email || user.uid,
+    });
+    setBusyTaskId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Validación', description: res.error });
+      return;
+    }
+    toast({ title: 'Validado', description: `${task.reference} cerrado.` });
+    await reload();
+    if (selected) await loadDetailTasks(selected.id);
+  };
+
+  const handleReject = async (task: DistributionRemainderTask) => {
+    if (!user?.uid) return;
+    const reason = String(rejectDrafts[task.id] || '').trim();
+    if (!reason) {
+      toast({
+        variant: 'destructive',
+        title: 'Rechazo',
+        description: 'Escriba el motivo (ej. faltan unidades).',
+      });
+      return;
+    }
+    setBusyTaskId(task.id);
+    const res = await rejectRemainderTask({
+      taskId: task.id,
+      validatorId: user.uid,
+      validatorName: user.displayName || user.email || user.uid,
+      reason,
+    });
+    setBusyTaskId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Rechazo', description: res.error });
+      return;
+    }
+    toast({ title: 'Rechazado', description: 'El operario debe volver a reportar.' });
+    await reload();
+    if (selected) await loadDetailTasks(selected.id);
   };
 
   const resetNewForm = () => {
@@ -202,22 +425,20 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     setNotes('');
   };
 
+  const back = () => {
+    if (view === 'list') onReturnToSuite();
+    else {
+      setView('list');
+      setSelected(null);
+      setTasks([]);
+    }
+  };
+
   return (
     <div className="container mx-auto p-4 md:p-6 space-y-4 max-w-7xl">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            onClick={() => {
-              if (view === 'list') onReturnToSuite();
-              else {
-                setView('list');
-                setSelected(null);
-              }
-            }}
-          >
+          <Button type="button" variant="outline" size="icon" onClick={back}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
@@ -226,7 +447,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
               Físico vs Distribución
             </h1>
             <p className="text-sm text-muted-foreground">
-              Fase 1 · Compara lo recibido con el reparto comercial y muestra remanente en bodega
+              Fase 1: comparar · Fase 2: asignar remanente, devolver y validar
             </p>
           </div>
         </div>
@@ -234,7 +455,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
           <Button type="button" variant="outline" onClick={() => void reload()} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
           </Button>
-          {view === 'list' ? (
+          {view === 'list' && isManager ? (
             <Button
               type="button"
               onClick={() => {
@@ -249,11 +470,42 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       </div>
 
       {view === 'list' ? (
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant={tab === 'compares' ? 'default' : 'outline'}
+            onClick={() => setTab('compares')}
+          >
+            Comparaciones
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={tab === 'myTasks' ? 'default' : 'outline'}
+            onClick={() => setTab('myTasks')}
+          >
+            Mis remanentes ({myTasks.length})
+          </Button>
+          {isManager ? (
+            <Button
+              type="button"
+              size="sm"
+              variant={tab === 'pendingValidation' ? 'default' : 'outline'}
+              onClick={() => setTab('pendingValidation')}
+            >
+              Por validar ({pendingTasks.length})
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {view === 'list' && tab === 'compares' ? (
         <Card>
           <CardHeader>
             <CardTitle>Comparaciones guardadas</CardTitle>
             <CardDescription>
-              No modifica Recepción ni Distribuidor IA. Solo lee recepción y guarda el cruce aquí.
+              Módulo aislado: no modifica Recepción ni Distribuidor IA.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -264,7 +516,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
             ) : items.length === 0 ? (
               <div className="text-center py-10 text-muted-foreground space-y-3">
                 <PackageSearch className="h-10 w-10 mx-auto opacity-50" />
-                <p>Aún no hay comparaciones. Cree la primera con el reparto comercial.</p>
+                <p>Aún no hay comparaciones.</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -273,7 +525,6 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                     <TableRow>
                       <TableHead>Fecha</TableHead>
                       <TableHead>RK / Recepción</TableHead>
-                      <TableHead>Fuente físico</TableHead>
                       <TableHead className="text-right">Físico</TableHead>
                       <TableHead className="text-right">Distribuido</TableHead>
                       <TableHead className="text-right">Remanente</TableHead>
@@ -293,11 +544,6 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                             {it.receptionSupplier || it.createdByName || ''}
                           </div>
                         </TableCell>
-                        <TableCell>
-                          <Badge variant="secondary">
-                            {it.physicalSource === 'reception_scan' ? 'Recepción' : 'Excel existencias'}
-                          </Badge>
-                        </TableCell>
                         <TableCell className="text-right tabular-nums">
                           {fmt(it.totals?.physicalQty)}
                         </TableCell>
@@ -308,21 +554,16 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                           {fmt(it.totals?.remainderQty)}
                         </TableCell>
                         <TableCell>
-                          <Badge variant={it.status === 'open' ? 'default' : 'outline'}>
-                            {it.status === 'open' ? 'Abierta' : 'Archivada'}
-                          </Badge>
+                          <Badge variant="secondary">{compareStatusLabel(it.status)}</Badge>
                         </TableCell>
                         <TableCell className="text-right">
                           <Button
                             type="button"
                             size="sm"
                             variant="secondary"
-                            onClick={() => {
-                              setSelected(it);
-                              setView('detail');
-                            }}
+                            onClick={() => void openDetail(it)}
                           >
-                            Ver
+                            Ver / asignar
                           </Button>
                         </TableCell>
                       </TableRow>
@@ -335,14 +576,178 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
         </Card>
       ) : null}
 
-      {view === 'new' ? (
+      {view === 'list' && tab === 'myTasks' ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Mis remanentes asignados</CardTitle>
+            <CardDescription>
+              Registre la cantidad devuelta a bodega. El supervisor validará que coincida.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            {myTasks.length === 0 ? (
+              <p className="text-center text-muted-foreground py-8">No tiene tareas pendientes.</p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>RK</TableHead>
+                    <TableHead>Referencia</TableHead>
+                    <TableHead className="text-right">Esperado</TableHead>
+                    <TableHead>Devuelto</TableHead>
+                    <TableHead>Estado</TableHead>
+                    <TableHead />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {myTasks.map((task) => (
+                    <TableRow key={task.id}>
+                      <TableCell className="text-sm">{task.rkIdentifier || '—'}</TableCell>
+                      <TableCell className="font-medium">{task.reference}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {fmt(task.expectedRemainderQty)}
+                      </TableCell>
+                      <TableCell>
+                        {task.status === 'assigned' || task.status === 'rejected' ? (
+                          <Input
+                            className="h-9 w-28"
+                            type="number"
+                            min={0}
+                            placeholder={String(task.expectedRemainderQty)}
+                            value={returnDrafts[task.id] ?? ''}
+                            onChange={(e) =>
+                              setReturnDrafts((prev) => ({ ...prev, [task.id]: e.target.value }))
+                            }
+                          />
+                        ) : (
+                          <span className="tabular-nums">{fmt(task.returnedQty || 0)}</span>
+                        )}
+                        {task.rejectionReason ? (
+                          <div className="text-xs text-red-600 mt-1">{task.rejectionReason}</div>
+                        ) : null}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{taskStatusLabel(task.status)}</Badge>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {task.status === 'assigned' || task.status === 'rejected' ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={busyTaskId === task.id}
+                            onClick={() => void handleSubmitReturn(task)}
+                          >
+                            {busyTaskId === task.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              'Enviar devolución'
+                            )}
+                          </Button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">En revisión</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {view === 'list' && tab === 'pendingValidation' && isManager ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Devoluciones por validar</CardTitle>
+            <CardDescription>
+              Confirme que devolvieron la cantidad completa del remanente (ej. 20 de 20).
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            {pendingTasks.length === 0 ? (
+              <p className="text-center text-muted-foreground py-8">No hay pendientes.</p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>RK</TableHead>
+                    <TableHead>Referencia</TableHead>
+                    <TableHead>Operario</TableHead>
+                    <TableHead className="text-right">Esperado</TableHead>
+                    <TableHead className="text-right">Devuelto</TableHead>
+                    <TableHead>Validar</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pendingTasks.map((task) => {
+                    const match = (task.returnedQty || 0) === task.expectedRemainderQty;
+                    return (
+                      <TableRow key={task.id}>
+                        <TableCell>{task.rkIdentifier || '—'}</TableCell>
+                        <TableCell className="font-medium">{task.reference}</TableCell>
+                        <TableCell className="text-sm">
+                          {task.assignedOperatorName || task.assignedOperatorId}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {fmt(task.expectedRemainderQty)}
+                        </TableCell>
+                        <TableCell
+                          className={`text-right tabular-nums font-semibold ${
+                            match ? 'text-emerald-600' : 'text-amber-600'
+                          }`}
+                        >
+                          {fmt(task.returnedQty || 0)}
+                          {!match ? ' ≠' : ' ✓'}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              disabled={busyTaskId === task.id}
+                              onClick={() => void handleValidate(task)}
+                            >
+                              <CheckCircle2 className="h-4 w-4 mr-1" />
+                              Validar
+                            </Button>
+                            <Input
+                              className="h-9 w-40"
+                              placeholder="Motivo rechazo"
+                              value={rejectDrafts[task.id] || ''}
+                              onChange={(e) =>
+                                setRejectDrafts((prev) => ({ ...prev, [task.id]: e.target.value }))
+                              }
+                            />
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={busyTaskId === task.id}
+                              onClick={() => void handleReject(task)}
+                            >
+                              <XCircle className="h-4 w-4 mr-1" />
+                              Rechazar
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {view === 'new' && isManager ? (
         <div className="grid gap-4 lg:grid-cols-2">
           <Card>
             <CardHeader>
               <CardTitle>1. Físico recibido</CardTitle>
               <CardDescription>
-                Preferido: escaneos de una recepción. Alternativa: Excel de existencias (mismo formato
-                del Distribuidor IA).
+                Preferido: escaneos de una recepción. Alternativa: Excel de existencias.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -356,14 +761,15 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="reception_scan">Recepción (escaneos por referencia)</SelectItem>
-                    <SelectItem value="excel_stock">Excel existencias (CANTD LEIDA)</SelectItem>
+                    <SelectItem value="reception_scan">Recepción (escaneos)</SelectItem>
+                    <SelectItem value="excel_stock">Excel existencias</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-
               <div className="space-y-2">
-                <Label>Operación de recepción {physicalSource === 'reception_scan' ? '*' : '(opcional)'}</Label>
+                <Label>
+                  Operación de recepción {physicalSource === 'reception_scan' ? '*' : '(opcional)'}
+                </Label>
                 <Select value={receptionId || undefined} onValueChange={setReceptionId}>
                   <SelectTrigger>
                     <SelectValue placeholder="Seleccione RK / recepción" />
@@ -378,7 +784,6 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   </SelectContent>
                 </Select>
               </div>
-
               {physicalSource === 'excel_stock' ? (
                 <div className="space-y-2">
                   <Label>Archivo existencias *</Label>
@@ -389,20 +794,14 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   />
                   {stockFileName ? (
                     <p className="text-xs text-muted-foreground flex items-center gap-1">
-                      <FileSpreadsheet className="h-3 w-3" /> {stockFileName} ({stockRows?.length || 0}{' '}
-                      filas)
+                      <FileSpreadsheet className="h-3 w-3" /> {stockFileName}
                     </p>
                   ) : null}
                 </div>
               ) : null}
-
               <div className="space-y-2">
                 <Label>Notas</Label>
-                <Input
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Opcional"
-                />
+                <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Opcional" />
               </div>
             </CardContent>
           </Card>
@@ -411,8 +810,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
             <CardHeader>
               <CardTitle>2. Distribución comercial</CardTitle>
               <CardDescription>
-                Excel de reparto: columnas <strong>REFERENCIA</strong>, <strong>BODEGA</strong>,{' '}
-                <strong>CANT</strong> (igual que Distribuidor IA).
+                Excel: <strong>REFERENCIA</strong>, <strong>BODEGA</strong>, <strong>CANT</strong>
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -425,19 +823,11 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                 />
                 {planFileName ? (
                   <p className="text-xs text-muted-foreground flex items-center gap-1">
-                    <FileSpreadsheet className="h-3 w-3" /> {planFileName} ({planRows?.length || 0} filas)
+                    <FileSpreadsheet className="h-3 w-3" /> {planFileName} ({planRows?.length || 0}{' '}
+                    filas)
                   </p>
                 ) : null}
               </div>
-
-              <div className="rounded-lg border bg-muted/30 p-3 text-sm space-y-1">
-                <p className="font-medium">Cálculo</p>
-                <p>Remanente = Físico − Distribuido (por referencia).</p>
-                <p className="text-muted-foreground">
-                  Ej.: llegaron 300, se repartieron 280 → quedan 20 en bodega.
-                </p>
-              </div>
-
               <Button type="button" className="w-full" disabled={saving} onClick={() => void handleCreate()}>
                 {saving ? (
                   <>
@@ -476,11 +866,59 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   {fmt(selected.totals.remainderQty)}
                 </CardTitle>
               </CardHeader>
-              <CardContent className="text-xs text-muted-foreground pt-0">
-                {selected.totals.referencesWithRemainder} referencias con sobrante &gt; 0
-              </CardContent>
             </Card>
           </div>
+
+          {isManager && selected.status !== 'archived' ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <UserCheck className="h-5 w-5" /> Fase 2 · Asignar remanente
+                </CardTitle>
+                <CardDescription>
+                  Marque referencias con remanente &gt; 0 y asígnelas a un operario para que las
+                  devuelva a bodega.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-wrap items-end gap-3">
+                <div className="space-y-1 min-w-[220px]">
+                  <Label>Operario</Label>
+                  <Select value={assignOperatorId || undefined} onValueChange={setAssignOperatorId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Seleccionar…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {operators.map((o) => (
+                        <SelectItem key={o.uid} value={o.uid}>
+                          {o.displayName} ({o.role})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button type="button" disabled={saving} onClick={() => void handleAssign()}>
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                  Asignar seleccionadas ({selectedRefs.size})
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    const refs = (selected.lines || [])
+                      .filter((l) => l.remainderQty > 0)
+                      .filter((l) => {
+                        const t = taskByRef.get(l.reference);
+                        return !t || t.status === 'assigned' || t.status === 'rejected';
+                      })
+                      .map((l) => l.reference);
+                    setSelectedRefs(new Set(refs));
+                  }}
+                >
+                  Seleccionar todos los remanentes
+                </Button>
+              </CardContent>
+            </Card>
+          ) : null}
 
           <Card>
             <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
@@ -489,16 +927,14 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   Detalle {selected.rkIdentifier ? `· ${selected.rkIdentifier}` : ''}
                 </CardTitle>
                 <CardDescription>
-                  {selected.physicalSource === 'reception_scan' ? 'Físico desde recepción' : 'Físico desde Excel'}
-                  {selected.planFileName ? ` · Plan: ${selected.planFileName}` : ''}
+                  Estado: {compareStatusLabel(selected.status)}
                   {selected.notes ? ` · ${selected.notes}` : ''}
                 </CardDescription>
               </div>
               <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={onlyRemainder}
-                  onChange={(e) => setOnlyRemainder(e.target.checked)}
+                  onCheckedChange={(v) => setOnlyRemainder(Boolean(v))}
                 />
                 Solo diferencias ≠ 0
               </label>
@@ -507,44 +943,107 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    {isManager ? <TableHead className="w-10" /> : null}
                     <TableHead>Referencia</TableHead>
                     <TableHead className="text-right">Físico</TableHead>
                     <TableHead className="text-right">Distribuido</TableHead>
                     <TableHead className="text-right">Remanente</TableHead>
-                    <TableHead>Tiendas (reparto)</TableHead>
+                    <TableHead>Asignación / validación</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {detailLines.map((line) => (
-                    <TableRow key={line.reference}>
-                      <TableCell className="font-medium">{line.reference}</TableCell>
-                      <TableCell className="text-right tabular-nums">{fmt(line.physicalQty)}</TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {fmt(line.distributedQty)}
-                      </TableCell>
-                      <TableCell
-                        className={`text-right tabular-nums font-semibold ${
-                          line.remainderQty > 0
-                            ? 'text-amber-600'
-                            : line.remainderQty < 0
-                              ? 'text-red-600'
-                              : ''
-                        }`}
-                      >
-                        {fmt(line.remainderQty)}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground max-w-[280px]">
-                        {line.byBodega?.length
-                          ? line.byBodega.map((b) => `${b.bodega}:${b.qty}`).join(' · ')
-                          : '—'}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {detailLines.map((line) => {
+                    const task = taskByRef.get(line.reference);
+                    const canSelect =
+                      isManager &&
+                      line.remainderQty > 0 &&
+                      (!task || task.status === 'assigned' || task.status === 'rejected');
+                    return (
+                      <TableRow key={line.reference}>
+                        {isManager ? (
+                          <TableCell>
+                            {canSelect ? (
+                              <Checkbox
+                                checked={selectedRefs.has(line.reference)}
+                                onCheckedChange={(v) => toggleRef(line.reference, Boolean(v))}
+                              />
+                            ) : null}
+                          </TableCell>
+                        ) : null}
+                        <TableCell className="font-medium">{line.reference}</TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {fmt(line.physicalQty)}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {fmt(line.distributedQty)}
+                        </TableCell>
+                        <TableCell
+                          className={`text-right tabular-nums font-semibold ${
+                            line.remainderQty > 0
+                              ? 'text-amber-600'
+                              : line.remainderQty < 0
+                                ? 'text-red-600'
+                                : ''
+                          }`}
+                        >
+                          {fmt(line.remainderQty)}
+                        </TableCell>
+                        <TableCell className="text-sm">
+                          {!task ? (
+                            line.remainderQty > 0 ? (
+                              <span className="text-muted-foreground">Sin asignar</span>
+                            ) : (
+                              '—'
+                            )
+                          ) : (
+                            <div className="space-y-0.5">
+                              <Badge variant="outline">{taskStatusLabel(task.status)}</Badge>
+                              <div className="text-xs text-muted-foreground">
+                                {task.assignedOperatorName || task.assignedOperatorId}
+                                {typeof task.returnedQty === 'number'
+                                  ? ` · devuelto ${fmt(task.returnedQty)}/${fmt(task.expectedRemainderQty)}`
+                                  : ''}
+                              </div>
+                              {isManager && task.status === 'submitted' ? (
+                                <div className="flex flex-wrap gap-2 pt-1">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    disabled={busyTaskId === task.id}
+                                    onClick={() => void handleValidate(task)}
+                                  >
+                                    Validar
+                                  </Button>
+                                  <Input
+                                    className="h-8 w-36"
+                                    placeholder="Motivo rechazo"
+                                    value={rejectDrafts[task.id] || ''}
+                                    onChange={(e) =>
+                                      setRejectDrafts((prev) => ({
+                                        ...prev,
+                                        [task.id]: e.target.value,
+                                      }))
+                                    }
+                                  />
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={busyTaskId === task.id}
+                                    onClick={() => void handleReject(task)}
+                                  >
+                                    Rechazar
+                                  </Button>
+                                </div>
+                              ) : null}
+                            </div>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
-              {detailLines.length === 0 ? (
-                <p className="text-center text-muted-foreground py-8">Sin filas para mostrar.</p>
-              ) : null}
             </CardContent>
           </Card>
         </div>
