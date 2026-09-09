@@ -2,6 +2,8 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type { TalladoPause, TalladoShift, TalladoUnit } from '@/types';
 import { TALLADO_DEFAULT_DESTINO } from '@/lib/talladoCatalog';
+import { prepareTalladoDayConsolidated } from '@/lib/talladoMercanciaExcel';
+import { talladoLocalDayKey } from '@/lib/talladoProductivity';
 
 const PAUSE_LABELS: Record<string, string> = {
   desayuno: 'Desayuno',
@@ -206,50 +208,35 @@ export function downloadTalladoHourlyPdf(opts: {
   doc.save(`tallado_hora_${String(hour).padStart(2, '0')}_${day.replace(/[^\d\-]/g, '_')}.pdf`);
 }
 
-/** Reporte consolidado de todo el día (todos los turnos/unidades/pausas del día). */
+/** Reporte consolidado de todo el día (solo fecha de hoy / dayKey en Bogotá). */
 export function downloadTalladoDayConsolidatedPdf(opts: {
   dayLabel?: string;
+  dayKey?: string;
   shifts: TalladoShift[];
   units: TalladoUnit[];
   pauses: TalladoPause[];
 }) {
-  const { shifts, units, pauses } = opts;
+  const data = prepareTalladoDayConsolidated({
+    dayKey: opts.dayKey || talladoLocalDayKey(),
+    shifts: opts.shifts,
+    units: opts.units,
+    pauses: opts.pauses,
+  });
+  const { shifts, units, pauses, done, inProg, metrics, pauseMs, byHour, byMarca, dayKey } = data;
   const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'letter' });
-  const { done, inProg, qtyDone, pauseMs, netMs } = summaryLine(units, pauses);
-  const day = opts.dayLabel || new Date().toLocaleDateString('es-CO');
-  const people = shifts.reduce((s, sh) => s + (Number(sh.peopleCount) || 0), 0);
+  const day = opts.dayLabel || dayKey;
   const grupos = Array.from(new Set(shifts.map((s) => s.grupo).filter(Boolean))).join(', ') || '—';
-
-  // Resumen por hora
-  const byHour = new Map<number, { qty: number; units: number; pauseMin: number }>();
-  for (const u of done) {
-    const h = localHourFromIso(u.endedAt || u.startedAt);
-    if (h == null) continue;
-    const prev = byHour.get(h) || { qty: 0, units: 0, pauseMin: 0 };
-    prev.qty += Number(u.cantidad) || 0;
-    prev.units += 1;
-    byHour.set(h, prev);
-  }
-  for (const p of pauses) {
-    const h = localHourFromIso(p.pausedAt);
-    if (h == null) continue;
-    const prev = byHour.get(h) || { qty: 0, units: 0, pauseMin: 0 };
-    prev.pauseMin += Math.round((Number(p.durationMs) || 0) / 60000);
-    byHour.set(h, prev);
-  }
-
-  const byMarca = new Map<string, number>();
-  for (const u of done) {
-    const m = reportMarca(u);
-    byMarca.set(m, (byMarca.get(m) || 0) + (Number(u.cantidad) || 0));
-  }
 
   doc.setFontSize(16);
   doc.text('Reporte Tallado — Consolidado del día', 40, 36);
   doc.setFontSize(10);
-  doc.text(`Día: ${day}  ·  Turnos: ${shifts.length}  ·  Grupos: ${grupos}  ·  Personas (suma turnos): ${people}`, 40, 54);
   doc.text(
-    `Unidades: ${done.length} cerradas / ${inProg.length} en proceso  ·  Cantidad: ${qtyDone}  ·  Neto: ${fmtDuration(netMs)}  ·  Pausas: ${fmtDuration(pauseMs)}`,
+    `Día: ${day} (${dayKey})  ·  Turnos: ${shifts.length}  ·  Grupos: ${grupos}  ·  Personas: ${metrics.peopleTotal}`,
+    40,
+    54
+  );
+  doc.text(
+    `Cantidad: ${metrics.qty}  ·  Cerradas: ${done.length} / En proceso: ${inProg.length}  ·  Jornada: ${fmtDuration(metrics.workedMsTotal)}  ·  Persona·h: ${metrics.personHours.toFixed(2)}  ·  Rend.: ${metrics.perPersonHour.toFixed(1)}  ·  Pausas: ${fmtDuration(pauseMs)}`,
     40,
     68
   );
@@ -285,9 +272,8 @@ export function downloadTalladoDayConsolidatedPdf(opts: {
 
   const afterMarca = (doc as any).lastAutoTable?.finalY || afterHour + 60;
   doc.setFontSize(11);
-  doc.text('Detalle de unidades y pausas', 40, afterMarca + 18);
+  doc.text('Detalle de unidades y pausas (solo hoy)', 40, afterMarca + 18);
   writeUnitsAndPauses(doc, units, pauses, afterMarca + 26);
 
-  const safeDay = day.replace(/[^\d\-]/g, '_');
-  doc.save(`tallado_dia_consolidado_${safeDay}.pdf`);
+  doc.save(`tallado_dia_consolidado_${dayKey}.pdf`);
 }

@@ -78,6 +78,38 @@ export function talladoPauseMs(pauses: TalladoPause[]): number {
   }, 0);
 }
 
+/** Deja solo turnos/unidades/pausas del día (America/Bogota). */
+export function filterTalladoBundleToDay(
+  dayKey: string,
+  shifts: TalladoShift[],
+  units: TalladoUnit[],
+  pauses: TalladoPause[]
+): { shifts: TalladoShift[]; units: TalladoUnit[]; pauses: TalladoPause[]; dayKey: string } {
+  const dayUnits = units.filter(
+    (u) => isTalladoSameLocalDay(u.startedAt, dayKey) || isTalladoSameLocalDay(u.endedAt, dayKey)
+  );
+  const unitShiftIds = new Set(dayUnits.map((u) => u.shiftId).filter(Boolean) as string[]);
+
+  const dayShifts = shifts.filter(
+    (s) =>
+      isTalladoSameLocalDay(s.startedAt, dayKey) ||
+      (s.status === 'active' && unitShiftIds.has(s.id)) ||
+      unitShiftIds.has(s.id)
+  );
+  const shiftIds = new Set(dayShifts.map((s) => s.id));
+
+  const dayPauses = pauses.filter(
+    (p) => shiftIds.has(p.shiftId) || isTalladoSameLocalDay(p.pausedAt, dayKey)
+  );
+
+  // Unidades del día: preferir las ligadas a turnos del día + las fechadas hoy
+  const filteredUnits = dayUnits.filter(
+    (u) => !u.shiftId || shiftIds.has(u.shiftId) || isTalladoSameLocalDay(u.startedAt, dayKey)
+  );
+
+  return { dayKey, shifts: dayShifts, units: filteredUnits, pauses: dayPauses };
+}
+
 /**
  * Persona·horas = Σ (jornada_neta_turno_h × personas_turno).
  * Ejemplo: 7 personas desde 07:00 hasta 12:00 sin pausas → 5 × 7 = 35.

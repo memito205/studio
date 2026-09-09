@@ -68,8 +68,9 @@ import {
   downloadTalladoReportPdf,
   localHourFromIso,
 } from '@/lib/talladoMercanciaPdf';
+import { downloadTalladoDayConsolidatedExcel } from '@/lib/talladoMercanciaExcel';
 import { downloadTalladoCatalogTemplate, parseTalladoCatalogSheet, TALLADO_DEFAULT_DESTINO } from '@/lib/talladoCatalog';
-import { talladoPauseMs, talladoPerPersonHour } from '@/lib/talladoProductivity';
+import { talladoLocalDayKey, talladoPauseMs, talladoPerPersonHour } from '@/lib/talladoProductivity';
 import { TalladoCameraScanner } from '@/components/tallado-mercancia/TalladoCameraScanner';
 
 interface TalladoMercanciaModuleProps {
@@ -550,31 +551,67 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     });
   };
 
-  const handlePdfDiaConsolidado = async () => {
-    let shifts = dashShifts;
-    let dayUnits = dashUnits;
-    let dayPauses = dashPauses;
-    if (!shifts.length) {
-      const res = await listTalladoDashboard();
-      if (res.success) {
-        shifts = res.shifts || [];
-        dayUnits = res.units || [];
-        dayPauses = res.pauses || [];
-        setDashShifts(shifts);
-        setDashUnits(dayUnits);
-        setDashPauses(dayPauses);
-      }
+  const loadTodayConsolidatedBundle = async () => {
+    const dayKey = talladoLocalDayKey();
+    const res = await listTalladoDashboard({ dayKey });
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Consolidado', description: res.error });
+      return null;
     }
-    if (!shifts.length && shift) {
-      shifts = [shift];
-      dayUnits = units;
-      dayPauses = pauses;
+    const shifts = res.shifts || [];
+    const dayUnits = res.units || [];
+    const dayPauses = res.pauses || [];
+    setDashShifts(shifts);
+    setDashUnits(dayUnits);
+    setDashPauses(dayPauses);
+    return { dayKey, shifts, units: dayUnits, pauses: dayPauses };
+  };
+
+  const handlePdfDiaConsolidado = async () => {
+    const bundle = await loadTodayConsolidatedBundle();
+    if (!bundle) return;
+    if (!bundle.shifts.length && !bundle.units.length) {
+      toast({
+        variant: 'destructive',
+        title: 'Sin datos de hoy',
+        description: 'No hay turnos ni unidades de tallado para la fecha de hoy.',
+      });
+      return;
     }
     downloadTalladoDayConsolidatedPdf({
-      shifts,
-      units: dayUnits,
-      pauses: dayPauses,
-      dayLabel: new Date().toLocaleDateString('es-CO'),
+      dayKey: bundle.dayKey,
+      shifts: bundle.shifts,
+      units: bundle.units,
+      pauses: bundle.pauses,
+      dayLabel: new Date().toLocaleDateString('es-CO', { timeZone: 'America/Bogota' }),
+    });
+    toast({
+      title: 'PDF generado',
+      description: `Consolidado solo del día ${bundle.dayKey}.`,
+    });
+  };
+
+  const handleExcelDiaConsolidado = async () => {
+    const bundle = await loadTodayConsolidatedBundle();
+    if (!bundle) return;
+    if (!bundle.shifts.length && !bundle.units.length) {
+      toast({
+        variant: 'destructive',
+        title: 'Sin datos de hoy',
+        description: 'No hay turnos ni unidades de tallado para la fecha de hoy.',
+      });
+      return;
+    }
+    downloadTalladoDayConsolidatedExcel({
+      dayKey: bundle.dayKey,
+      shifts: bundle.shifts,
+      units: bundle.units,
+      pauses: bundle.pauses,
+      dayLabel: new Date().toLocaleDateString('es-CO', { timeZone: 'America/Bogota' }),
+    });
+    toast({
+      title: 'Excel generado',
+      description: `Consolidado solo del día ${bundle.dayKey}.`,
     });
   };
 
@@ -590,7 +627,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
 
   const loadDashboard = useCallback(async () => {
     setDashLoading(true);
-    const res = await listTalladoDashboard();
+    const res = await listTalladoDashboard({ dayKey: talladoLocalDayKey() });
     setDashLoading(false);
     if (!res.success) {
       toast({ variant: 'destructive', title: 'Dashboard', description: res.error });
@@ -974,6 +1011,10 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                   <Button type="button" size="sm" variant="secondary" onClick={() => void handlePdfDiaConsolidado()}>
                     <FileDown className="mr-1.5 h-4 w-4" />
                     PDF día consolidado
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" onClick={() => void handleExcelDiaConsolidado()}>
+                    <FileSpreadsheet className="mr-1.5 h-4 w-4" />
+                    Excel día consolidado
                   </Button>
                 </CardContent>
               </Card>
@@ -1537,6 +1578,10 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
               <Button type="button" variant="secondary" size="sm" onClick={() => void handlePdfDiaConsolidado()}>
                 <FileDown className="mr-1.5 h-4 w-4" />
                 PDF día consolidado
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => void handleExcelDiaConsolidado()}>
+                <FileSpreadsheet className="mr-1.5 h-4 w-4" />
+                Excel día consolidado
               </Button>
               <Button type="button" variant="outline" disabled={dashLoading} onClick={() => void loadDashboard()}>
                 {dashLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
