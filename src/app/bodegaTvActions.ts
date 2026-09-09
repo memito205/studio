@@ -153,16 +153,18 @@ async function buildTallado(dayKey: string): Promise<BodegaTvAreaSnapshot> {
     const ranking = talladoRankingByGrupo({ shifts, units, pauses, dayKey: todayKey });
 
     area.units = qty;
-    area.operators = shifts.length;
+    // Recursos = personas del turno (peopleCount), no cantidad de turnos/grupos.
+    area.operators = peopleTotal;
     area.productivity = perPersonHour;
     area.ranking = ranking;
     area.extras = [
       { label: 'Día', value: todayKey },
+      { label: 'Personas', value: String(peopleTotal) },
+      { label: 'Grupos', value: String(shifts.length) },
       { label: 'Cajas hechas', value: String(done.length) },
       { label: 'Jornada', value: `${(workedMsTotal / 3600000).toFixed(1)} h` },
       { label: 'Cálculo', value: formulaLabel },
       { label: 'Pausas', value: `${Math.round(pauseMs / 60000)} min` },
-      { label: 'Personas', value: String(peopleTotal) },
       { label: 'Persona·h', value: personHours.toFixed(2) },
       {
         label: 'Rendimiento',

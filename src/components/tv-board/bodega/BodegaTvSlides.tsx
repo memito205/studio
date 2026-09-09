@@ -159,7 +159,7 @@ export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500 flex items-center gap-2">
-                    <Users className="w-4 h-4" /> Ops
+                    <Users className="w-4 h-4" /> Pers.
                   </span>
                   <span className="font-bold tabular-nums">{fmt(area.operators)}</span>
                 </div>
@@ -216,6 +216,10 @@ export function BodegaAreaDetailSlide({
           <div className="rounded-2xl border border-slate-700 bg-slate-900/80 px-6 py-4 text-center min-w-[140px]">
             <div className="text-sm uppercase tracking-widest text-slate-500 font-bold">U/H</div>
             <div className="text-4xl font-black text-sky-300">{fmt(area.productivity, 1)}</div>
+          </div>
+          <div className="rounded-2xl border border-slate-700 bg-slate-900/80 px-6 py-4 text-center min-w-[140px]">
+            <div className="text-sm uppercase tracking-widest text-slate-500 font-bold">Pers.</div>
+            <div className="text-4xl font-black text-violet-300">{fmt(area.operators)}</div>
           </div>
           {typeof area.compliance === 'number' ? (
             <div className="rounded-2xl border border-slate-700 bg-slate-900/80 px-6 py-4 text-center min-w-[140px]">
