@@ -132,8 +132,12 @@ async function buildTallado(dayKey: string): Promise<BodegaTvAreaSnapshot> {
     const pauses = result.pauses || [];
     const done = units.filter((u) => u.status === 'done');
     const pauseMs = talladoPauseMs(pauses);
-    const { qty, personHours, perPersonHour, peopleTotal } = talladoPerPersonHour({ shifts, units });
-    const ranking = talladoRankingByGrupo({ shifts, units });
+    const { qty, personHours, perPersonHour, peopleTotal, workedMsTotal } = talladoPerPersonHour({
+      shifts,
+      units,
+      pauses,
+    });
+    const ranking = talladoRankingByGrupo({ shifts, units, pauses });
 
     area.units = qty;
     area.operators = shifts.length;
@@ -141,6 +145,7 @@ async function buildTallado(dayKey: string): Promise<BodegaTvAreaSnapshot> {
     area.ranking = ranking;
     area.extras = [
       { label: 'Cajas hechas', value: String(done.length) },
+      { label: 'Jornada', value: `${(workedMsTotal / 3600000).toFixed(1)} h` },
       { label: 'Pausas', value: `${Math.round(pauseMs / 60000)} min` },
       { label: 'Personas', value: String(peopleTotal) },
       { label: 'Persona·h', value: personHours.toFixed(2) },

@@ -676,11 +676,12 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
 
   const dashStats = useMemo(() => {
     const done = dashUnits.filter((u) => u.status === 'done');
-    const netMs = done.reduce((s, u) => s + (Number(u.durationNetMs ?? u.durationMs) || 0), 0);
+    const boxNetMs = done.reduce((s, u) => s + (Number(u.durationNetMs ?? u.durationMs) || 0), 0);
     const pauseMs = talladoPauseMs(dashPauses);
-    const { qty, personHours, perPersonHour, peopleTotal } = talladoPerPersonHour({
+    const { qty, personHours, perPersonHour, peopleTotal, workedMsTotal } = talladoPerPersonHour({
       shifts: dashShifts,
       units: dashUnits,
+      pauses: dashPauses,
     });
 
     const byHour = new Map<string, { qty: number; units: number; pauseMin: number }>();
@@ -709,7 +710,8 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     return {
       qty,
       doneCount: done.length,
-      netMs,
+      netMs: workedMsTotal,
+      boxNetMs,
       pauseMs,
       personHours,
       peopleTotal,
@@ -1556,10 +1558,13 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
               </Card>
               <Card>
                 <CardHeader className="py-3">
-                  <CardDescription>Tiempo neto / pausas</CardDescription>
+                  <CardDescription>Jornada neta / pausas</CardDescription>
                   <CardTitle className="text-lg tabular-nums">
                     {fmtDuration(dashStats.netMs)} · {fmtDuration(dashStats.pauseMs)}
                   </CardTitle>
+                  <p className="text-xs text-muted-foreground pt-1">
+                    Reloj de turno − pausas (no suma de cajas: {fmtDuration(dashStats.boxNetMs)})
+                  </p>
                 </CardHeader>
               </Card>
               <Card>
@@ -1567,7 +1572,8 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                   <CardDescription>Rendimiento neto (cant / persona·h)</CardDescription>
                   <CardTitle className="text-2xl tabular-nums">{dashStats.perPersonHour.toFixed(1)}</CardTitle>
                   <p className="text-xs text-muted-foreground pt-1">
-                    {dashStats.peopleTotal} pers. · {dashStats.personHours.toFixed(2)} persona·h
+                    {dashStats.peopleTotal || 0} pers. · {dashStats.personHours.toFixed(2)} persona·h
+                    {dashShifts.length === 0 ? ' · sin turnos cargados' : ''}
                   </p>
                 </CardHeader>
               </Card>
