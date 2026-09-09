@@ -527,20 +527,43 @@ export async function listDistributionCompares(limitN = 40): Promise<{
   error?: string;
 }> {
   try {
-    const snap = await getDocs(
-      query(collection(firestore, COL), orderBy('createdAt', 'desc'), limit(limitN))
-    );
-    // No devolver el array `lines` al cliente en el listado (aunque el doc legacy lo traiga).
+    let snap;
+    try {
+      snap = await getDocs(
+        query(collection(firestore, COL), orderBy('createdAt', 'desc'), limit(limitN))
+      );
+    } catch (orderErr) {
+      // Fallback si falta índice / createdAt: listado simple sin orden.
+      console.warn('listDistributionCompares orderBy fallback:', orderErr);
+      snap = await getDocs(query(collection(firestore, COL), limit(limitN)));
+    }
     const data = snap.docs.map((d) => {
       const raw = d.data() as DistributionCompareOperation;
-      const { lines: _omit, ...rest } = raw as DistributionCompareOperation & {
-        lines?: DistributionCompareLine[];
-      };
+      // No materializar lines en memoria del listado (docs legacy pesados).
+      const lineCount = raw.lineCount ?? (Array.isArray(raw.lines) ? raw.lines.length : 0);
       return {
-        ...rest,
         id: d.id,
+        receptionOperationId: raw.receptionOperationId,
+        rkIdentifier: raw.rkIdentifier,
+        receptionSupplier: raw.receptionSupplier,
+        physicalSource: raw.physicalSource,
+        planFileName: raw.planFileName,
+        stockFileName: raw.stockFileName,
+        notes: raw.notes,
         lines: [],
-        lineCount: raw.lineCount ?? (Array.isArray(raw.lines) ? raw.lines.length : 0),
+        lineCount,
+        linesInSubcollection: raw.linesInSubcollection,
+        totals: raw.totals || {
+          physicalQty: 0,
+          distributedQty: 0,
+          remainderQty: 0,
+          referencesWithRemainder: 0,
+        },
+        status: raw.status || 'open',
+        createdAt: raw.createdAt,
+        updatedAt: raw.updatedAt,
+        createdBy: raw.createdBy,
+        createdByName: raw.createdByName,
       } as DistributionCompareOperation;
     });
     return { success: true, data };

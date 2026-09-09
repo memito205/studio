@@ -161,29 +161,50 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const reloadList = useCallback(async () => {
     setLoading(true);
     try {
-      const ops: Promise<any>[] = [listDistributionCompares(30)];
-      if (user?.uid) ops.push(listMyRemainderTasks(user.uid));
-      if (isManager) ops.push(listPendingValidationRemainderTasks());
+      // allSettled: un fallo no deja el spinner eterno
+      const listP = listDistributionCompares(30);
+      const myP = user?.uid
+        ? listMyRemainderTasks(user.uid)
+        : Promise.resolve({ success: true as const, data: [] as typeof myTasks });
+      const pendP = isManager
+        ? listPendingValidationRemainderTasks()
+        : Promise.resolve({ success: true as const, data: [] as typeof pendingTasks });
 
-      const results = await Promise.all(ops);
-      const listRes = results[0];
-      const myRes = user?.uid ? results[1] : null;
-      const pendRes = isManager ? results[user?.uid ? 2 : 1] : null;
+      const [listSettled, mySettled, pendSettled] = await Promise.allSettled([listP, myP, pendP]);
 
-      if (listRes.success) setItems(listRes.data || []);
-      else {
+      if (listSettled.status === 'fulfilled' && listSettled.value.success) {
+        setItems(listSettled.value.data || []);
+      } else {
+        setItems([]);
+        const err =
+          listSettled.status === 'fulfilled'
+            ? listSettled.value.error
+            : listSettled.reason?.message || 'Error al listar';
         toast({
           variant: 'destructive',
           title: 'Comparaciones',
-          description: listRes.error || 'No se pudo cargar el listado.',
+          description: err || 'No se pudo cargar el listado.',
         });
       }
-      if (myRes?.success) setMyTasks(myRes.data || []);
-      if (pendRes?.success) setPendingTasks(pendRes.data || []);
+
+      if (mySettled.status === 'fulfilled' && mySettled.value.success) {
+        setMyTasks(mySettled.value.data || []);
+      }
+      if (pendSettled.status === 'fulfilled' && pendSettled.value.success) {
+        setPendingTasks(pendSettled.value.data || []);
+      }
+    } catch (e: any) {
+      setItems([]);
+      toast({
+        variant: 'destructive',
+        title: 'Comparaciones',
+        description: e?.message || 'Error inesperado al cargar.',
+      });
     } finally {
       setLoading(false);
     }
-  }, [toast, user?.uid, isManager]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- toast no estable; evita bucle de carga
+  }, [user?.uid, isManager]);
 
   const ensureReceptionsLoaded = useCallback(async () => {
     if (receptionsLoadedRef.current) return;
