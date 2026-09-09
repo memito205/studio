@@ -17,6 +17,13 @@ export type BodegaTvAreaSnapshot = {
   compliance?: number;
   ranking: BodegaTvPersonRank[];
   extras?: { label: string; value: string }[];
+  /** Claves canónicas de personas identificadas (uid:/name:) para deduplicar recursos. */
+  peopleKeys?: string[];
+  /**
+   * Personas de tallado sin identidad nominada (peopleCount − operario del turno).
+   * Solo aplica a tallado; el resumen las suma aparte del set único.
+   */
+  anonymousPeople?: number;
 };
 
 export type BodegaTvSnapshot = {
@@ -26,6 +33,7 @@ export type BodegaTvSnapshot = {
   summary: {
     totalUnits: number;
     avgCompliance: number;
+    /** Personas únicas del día (sin repetir la misma persona entre áreas). */
     operators: number;
   };
 };

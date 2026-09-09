@@ -33,6 +33,40 @@ function isSameLocalDay(value: unknown, dayKey: string): boolean {
   return format(d, 'yyyy-MM-dd') === dayKey;
 }
 
+function normalizePersonLabel(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, ' ');
+}
+
+function buildUidByNormName(nameByUid: Map<string, string>): Map<string, string> {
+  const uidByNormName = new Map<string, string>();
+  for (const [uid, name] of nameByUid) {
+    const n = normalizePersonLabel(name || '');
+    if (n) uidByNormName.set(n, uid);
+    if (name?.includes('@')) {
+      const local = normalizePersonLabel(name.split('@')[0].replace(/[._]/g, ' '));
+      if (local) uidByNormName.set(local, uid);
+    }
+  }
+  return uidByNormName;
+}
+
+function personKeyFromUid(uid: string): string {
+  return `uid:${uid}`;
+}
+
+function personKeyFromName(name: string, uidByNormName: Map<string, string>): string {
+  const n = normalizePersonLabel(name);
+  if (!n) return `name:DESCONOCIDO`;
+  const uid = uidByNormName.get(n);
+  if (uid) return personKeyFromUid(uid);
+  return `name:${n}`;
+}
+
 function emptyArea(key: BodegaTvAreaKey, title: string): BodegaTvAreaSnapshot {
   return {
     key,
@@ -43,10 +77,31 @@ function emptyArea(key: BodegaTvAreaKey, title: string): BodegaTvAreaSnapshot {
     compliance: undefined,
     ranking: [],
     extras: [],
+    peopleKeys: [],
+    anonymousPeople: 0,
   };
 }
 
-async function buildEmpaque(dayKey: string): Promise<BodegaTvAreaSnapshot> {
+/**
+ * Recursos únicos: personas identificadas sin repetir + cupo anónimo de tallado
+ * (peopleCount − operario del turno ya nominado).
+ */
+function countUniqueResources(areas: BodegaTvAreaSnapshot[]): number {
+  const named = new Set<string>();
+  let anonymous = 0;
+  for (const area of areas) {
+    for (const key of area.peopleKeys || []) {
+      if (key) named.add(key);
+    }
+    anonymous += Math.max(0, area.anonymousPeople || 0);
+  }
+  return named.size + anonymous;
+}
+
+async function buildEmpaque(
+  dayKey: string,
+  uidByNormName: Map<string, string>
+): Promise<BodegaTvAreaSnapshot> {
   const area = emptyArea('empaque', 'Empaque');
   try {
     const { data, error } = await loadHistoricalReports({ startDate: dayKey, endDate: dayKey });
@@ -54,19 +109,66 @@ async function buildEmpaque(dayKey: string): Promise<BodegaTvAreaSnapshot> {
 
     const withPackers = data.filter((r) => (r.packerProductivity?.length || 0) > 0);
     const pool = withPackers.length ? withPackers : data;
-    const consolidated = pool.find((r) => r.isConsolidated);
-    const report = consolidated || pool[0];
+
+    // KPIs agregados: consolidado más reciente / con más unidades; no el primero a ciegas.
+    const ranked = [...pool].sort((a, b) => {
+      const c = Number(!!b.isConsolidated) - Number(!!a.isConsolidated);
+      if (c !== 0) return c;
+      const q = (b.totalQuantity || 0) - (a.totalQuantity || 0);
+      if (q !== 0) return q;
+      return (b.operatorCount || 0) - (a.operatorCount || 0);
+    });
+    const report = ranked[0];
     if (!report) return area;
 
-    const packers = [...(report.packerProductivity || [])].sort((a, b) => {
+    // Personas: unión de todos los cortes del día (evita quedar en 5 si otro corte trae 7).
+    const byName = new Map<
+      string,
+      {
+        packerName: string;
+        totalQuantity: number;
+        productivity: number;
+        compliance: number;
+      }
+    >();
+    for (const r of pool) {
+      for (const p of r.packerProductivity || []) {
+        const name = String(p.packerName || '').trim();
+        if (!name) continue;
+        const key = normalizePersonLabel(name);
+        const prev = byName.get(key);
+        if (!prev || (p.totalQuantity || 0) >= prev.totalQuantity) {
+          byName.set(key, {
+            packerName: name,
+            totalQuantity: p.totalQuantity || 0,
+            productivity: p.productivity || 0,
+            compliance: p.compliance || 0,
+          });
+        }
+      }
+      for (const n of r.operatorNames || []) {
+        const name = String(n || '').trim();
+        if (!name) continue;
+        const key = normalizePersonLabel(name);
+        if (!byName.has(key)) {
+          byName.set(key, {
+            packerName: name,
+            totalQuantity: 0,
+            productivity: 0,
+            compliance: 0,
+          });
+        }
+      }
+    }
+
+    const packers = [...byName.values()].sort((a, b) => {
       if (b.compliance !== a.compliance) return b.compliance - a.compliance;
       return b.productivity - a.productivity;
     });
 
     area.units = report.totalQuantity || packers.reduce((s, p) => s + (p.totalQuantity || 0), 0);
-    area.operators = report.operatorCount || packers.length;
+    area.operators = packers.length || report.operatorCount || 0;
     area.productivity = report.avgProductivity || 0;
-    // Cumplimiento de área = promedio ponderado por unidades de cada empacador
     {
       const weight = packers.reduce((s, p) => s + (p.totalQuantity || 0), 0);
       area.compliance =
@@ -80,9 +182,11 @@ async function buildEmpaque(dayKey: string): Promise<BodegaTvAreaSnapshot> {
       productivity: p.productivity || 0,
       compliance: p.compliance,
     }));
+    area.peopleKeys = packers.map((p) => personKeyFromName(p.packerName, uidByNormName));
     area.extras = [
       { label: 'Horas', value: `${(report.totalHours || 0).toFixed(1)} h` },
-      { label: 'Fuente', value: report.isConsolidated ? 'Consolidado' : 'Último corte' },
+      { label: 'Fuente', value: report.isConsolidated ? 'Consolidado' : 'Mejor corte del día' },
+      { label: 'Pers. (unión día)', value: String(area.operators) },
     ];
   } catch (e) {
     console.error('bodegaTv empaque:', e);
@@ -90,7 +194,11 @@ async function buildEmpaque(dayKey: string): Promise<BodegaTvAreaSnapshot> {
   return area;
 }
 
-async function buildEtiquetado(dayKey: string, nameByUid: Map<string, string>): Promise<BodegaTvAreaSnapshot> {
+async function buildEtiquetado(
+  dayKey: string,
+  nameByUid: Map<string, string>,
+  uidByNormName: Map<string, string>
+): Promise<BodegaTvAreaSnapshot> {
   const area = emptyArea('etiquetado', 'Etiquetado');
   try {
     const day = new Date(`${dayKey}T12:00:00`);
@@ -113,6 +221,10 @@ async function buildEtiquetado(dayKey: string, nameByUid: Map<string, string>): 
           meta: e.type,
         };
       });
+    area.peopleKeys = employeePerformance.map((e) => {
+      if (e.type === 'Interno' && e.id) return personKeyFromUid(e.id);
+      return personKeyFromName(e.name || e.id, uidByNormName);
+    });
     area.extras = [
       { label: 'Interno', value: String(summary.internalUnits || 0) },
       { label: 'Externo', value: String(summary.externalUnits || 0) },
@@ -127,7 +239,10 @@ async function buildEtiquetado(dayKey: string, nameByUid: Map<string, string>): 
   return area;
 }
 
-async function buildTallado(dayKey: string): Promise<BodegaTvAreaSnapshot> {
+async function buildTallado(
+  dayKey: string,
+  uidByNormName: Map<string, string>
+): Promise<BodegaTvAreaSnapshot> {
   const area = emptyArea('tallado', 'Tallado');
   try {
     const todayKey = dayKey || talladoLocalDayKey();
@@ -143,7 +258,7 @@ async function buildTallado(dayKey: string): Promise<BodegaTvAreaSnapshot> {
     const { shifts, units, pauses } = filtered;
     const done = units.filter((u) => u.status === 'done');
     const pauseMs = talladoPauseMs(pauses, todayKey);
-    const { qty, personHours, perPersonHour, peopleTotal, workedMsTotal, formulaLabel } =
+    const { qty, personHours, perPersonHour, peopleTotal, workedMsTotal, formulaLabel, shiftRows } =
       talladoPerPersonHour({
         shifts,
         units,
@@ -152,11 +267,29 @@ async function buildTallado(dayKey: string): Promise<BodegaTvAreaSnapshot> {
       });
     const ranking = talladoRankingByGrupo({ shifts, units, pauses, dayKey: todayKey });
 
+    const peopleKeys: string[] = [];
+    let anonymousPeople = 0;
+    for (const row of shiftRows) {
+      const sh = shifts.find((s) => s.id === row.shiftId);
+      const people = Math.max(1, row.people || 1);
+      if (sh?.userId) {
+        peopleKeys.push(personKeyFromUid(sh.userId));
+        anonymousPeople += Math.max(0, people - 1);
+      } else if (sh?.userName) {
+        peopleKeys.push(personKeyFromName(sh.userName, uidByNormName));
+        anonymousPeople += Math.max(0, people - 1);
+      } else {
+        anonymousPeople += people;
+      }
+    }
+
     area.units = qty;
-    // Recursos = personas del turno (peopleCount), no cantidad de turnos/grupos.
+    // Por área: headcount configurado (peopleCount), no cantidad de turnos.
     area.operators = peopleTotal;
     area.productivity = perPersonHour;
     area.ranking = ranking;
+    area.peopleKeys = peopleKeys;
+    area.anonymousPeople = anonymousPeople;
     area.extras = [
       { label: 'Día', value: todayKey },
       { label: 'Personas', value: String(peopleTotal) },
@@ -212,10 +345,7 @@ async function buildRecepcion(
       })
     );
 
-    const byUser = new Map<
-      string,
-      { units: number; first: number; last: number }
-    >();
+    const byUser = new Map<string, { units: number; first: number; last: number }>();
     let totalUnits = 0;
     let fillAcc = 0;
     let fillN = 0;
@@ -258,9 +388,11 @@ async function buildRecepcion(
     area.units = totalUnits;
     area.operators = byUser.size;
     area.productivity = totalProdHours > 0 ? totalUnits / totalProdHours : 0;
-    // No usar % leído vs esperado como "cumplimiento de productividad"
     area.compliance = undefined;
     area.ranking = ranking;
+    area.peopleKeys = [...byUser.keys()]
+      .filter((uid) => uid && uid !== 'sin-usuario')
+      .map((uid) => personKeyFromUid(uid));
     area.extras = [
       { label: 'Completadas', value: String(completed) },
       { label: 'En curso', value: String(inProgress) },
@@ -288,18 +420,17 @@ export async function getBodegaTvSnapshot(): Promise<{
     for (const u of profiles || []) {
       nameByUid.set(u.uid, u.displayName || u.email || u.uid);
     }
+    const uidByNormName = buildUidByNormName(nameByUid);
 
     const [empaque, etiquetado, tallado, recepcion] = await Promise.all([
-      buildEmpaque(dayKey),
-      buildEtiquetado(dayKey, nameByUid),
-      buildTallado(dayKey),
+      buildEmpaque(dayKey, uidByNormName),
+      buildEtiquetado(dayKey, nameByUid, uidByNormName),
+      buildTallado(dayKey, uidByNormName),
       buildRecepcion(dayKey, nameByUid),
     ]);
 
     const areas = [empaque, etiquetado, tallado, recepcion];
 
-    // Cumplimiento medio del resumen = promedio ponderado por unidades
-    // de personas/grupos que reportan compliance de productividad (hoy: empaque).
     let complianceWeight = 0;
     let complianceSum = 0;
     for (const area of areas) {
@@ -320,6 +451,8 @@ export async function getBodegaTvSnapshot(): Promise<{
       }
     }
 
+    const uniqueOperators = countUniqueResources(areas);
+
     const snapshot: BodegaTvSnapshot = {
       dayKey,
       generatedAt: new Date().toISOString(),
@@ -327,7 +460,7 @@ export async function getBodegaTvSnapshot(): Promise<{
       summary: {
         totalUnits: areas.reduce((s, a) => s + a.units, 0),
         avgCompliance: complianceWeight > 0 ? complianceSum / complianceWeight : 0,
-        operators: areas.reduce((s, a) => s + a.operators, 0),
+        operators: uniqueOperators,
       },
     };
 

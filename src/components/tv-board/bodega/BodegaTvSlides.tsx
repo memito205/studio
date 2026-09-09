@@ -110,7 +110,8 @@ export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
         Resumen operación bodega · Hoy
       </h2>
       <p className="text-xl text-slate-500 font-semibold mb-8">
-        Cumplimiento medio = promedio ponderado por unidades de operarios con % vs meta (empaque)
+        Cumplimiento medio = promedio ponderado por unidades (empaque). Recursos activos =
+        personas únicas del día (sin repetir entre áreas; tallado suma peopleCount)
       </p>
 
       <div className="grid grid-cols-3 gap-6 mb-10">
