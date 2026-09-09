@@ -46,19 +46,25 @@ import {
   listRemainderTasksByCompare,
   rejectRemainderTask,
   submitRemainderReturn,
+  supervisorConfirmRemaindersDirect,
   validateRemainderTask,
   type DistributionPlanRowInput,
   type DistributionStockRowInput,
 } from '@/app/distributionCompareActions';
 import type { DistributionCompareOperation, DistributionRemainderTask } from '@/types';
-import {
-  parseExcelFile,
-  validatePlanData,
-  validateStockData,
-} from '@/components/distributor-module/services/parser';
+import { parseExcelFile, validateStockData } from '@/components/distributor-module/services/parser';
 
 interface Props {
   onReturnToSuite: () => void;
+}
+
+/** Plan de cruce: REFERENCIA + CANT (BODEGA opcional). No altera el validador del Distribuidor IA. */
+function validateComparePlanData(data: any[]): data is DistributionPlanRowInput[] {
+  if (!data || data.length === 0) return true;
+  const first = data[0] || {};
+  const hasRef = 'REFERENCIA' in first;
+  const hasCant = 'CANT' in first || 'CANTIDAD' in first;
+  return hasRef && hasCant;
 }
 
 function fmt(n: number) {
@@ -201,8 +207,8 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     if (!file) return;
     try {
       const data = await parseExcelFile<DistributionPlanRowInput>(file);
-      if (!validatePlanData(data as any[])) {
-        throw new Error('Columnas requeridas: REFERENCIA, BODEGA, CANT');
+      if (!validateComparePlanData(data as any[])) {
+        throw new Error('Columnas requeridas: REFERENCIA y CANT (o CANTIDAD). BODEGA es opcional.');
       }
       setPlanRows(data);
       setPlanFileName(file.name);
@@ -342,6 +348,47 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     await reload();
   };
 
+  /** Supervisor confirma en bodega lo entregado, sin asignar a operario. */
+  const handleSupervisorDirectConfirm = async () => {
+    if (!selected || !user?.uid) return;
+    if (selectedRefs.size === 0) {
+      toast({
+        variant: 'destructive',
+        title: 'Validación',
+        description: 'Marque las referencias remanentes que recibió/confirmó.',
+      });
+      return;
+    }
+    const items = [...selectedRefs].map((reference) => {
+      const line = selected.lines.find((l) => l.reference === reference);
+      const draft = returnDrafts[`direct:${reference}`];
+      const confirmedQty =
+        draft === undefined || draft === ''
+          ? line?.remainderQty || 0
+          : Number(String(draft).replace(/,/g, ''));
+      return { reference, confirmedQty };
+    });
+    setSaving(true);
+    const res = await supervisorConfirmRemaindersDirect({
+      compareId: selected.id,
+      items,
+      validatorId: user.uid,
+      validatorName: user.displayName || user.email || user.uid,
+    });
+    setSaving(false);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Validación directa', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Confirmado por supervisor',
+      description: `${res.confirmed || 0} referencia(s) validadas sin asignación.`,
+    });
+    setSelectedRefs(new Set());
+    await loadDetailTasks(selected.id);
+    await reload();
+  };
+
   const handleSubmitReturn = async (task: DistributionRemainderTask) => {
     if (!user?.uid) return;
     const raw = returnDrafts[task.id];
@@ -447,7 +494,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
               Físico vs Distribución
             </h1>
             <p className="text-sm text-muted-foreground">
-              Fase 1: comparar · Fase 2: asignar remanente, devolver y validar
+              Cruce por referencia y cantidad · Remanente · Asignación / validación supervisor
             </p>
           </div>
         </div>
@@ -810,7 +857,8 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
             <CardHeader>
               <CardTitle>2. Distribución comercial</CardTitle>
               <CardDescription>
-                Excel: <strong>REFERENCIA</strong>, <strong>BODEGA</strong>, <strong>CANT</strong>
+                Excel mínimo: <strong>REFERENCIA</strong> + <strong>CANT</strong> (o CANTIDAD).{' '}
+                <strong>BODEGA</strong> es opcional.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -873,49 +921,64 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <UserCheck className="h-5 w-5" /> Fase 2 · Asignar remanente
+                  <UserCheck className="h-5 w-5" /> Remanente · asignación o validación directa
                 </CardTitle>
                 <CardDescription>
-                  Marque referencias con remanente &gt; 0 y asígnelas a un operario para que las
-                  devuelva a bodega.
+                  Opción A: asigne a un operario para que reporte la devolución. Opción B: usted
+                  (supervisor/admin) confirma aquí la cantidad que le entregaron, sin asignar.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="flex flex-wrap items-end gap-3">
-                <div className="space-y-1 min-w-[220px]">
-                  <Label>Operario</Label>
-                  <Select value={assignOperatorId || undefined} onValueChange={setAssignOperatorId}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Seleccionar…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {operators.map((o) => (
-                        <SelectItem key={o.uid} value={o.uid}>
-                          {o.displayName} ({o.role})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+              <CardContent className="space-y-4">
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="space-y-1 min-w-[220px]">
+                    <Label>Operario (solo si asigna)</Label>
+                    <Select value={assignOperatorId || undefined} onValueChange={setAssignOperatorId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Seleccionar…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {operators.map((o) => (
+                          <SelectItem key={o.uid} value={o.uid}>
+                            {o.displayName} ({o.role})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button type="button" disabled={saving} onClick={() => void handleAssign()}>
+                    {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                    Asignar a operario ({selectedRefs.size})
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={saving}
+                    onClick={() => void handleSupervisorDirectConfirm()}
+                  >
+                    <CheckCircle2 className="h-4 w-4 mr-1" />
+                    Confirmar yo mismo ({selectedRefs.size})
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      const refs = (selected.lines || [])
+                        .filter((l) => l.remainderQty > 0)
+                        .filter((l) => {
+                          const t = taskByRef.get(l.reference);
+                          return !t || t.status === 'assigned' || t.status === 'rejected';
+                        })
+                        .map((l) => l.reference);
+                      setSelectedRefs(new Set(refs));
+                    }}
+                  >
+                    Seleccionar remanentes
+                  </Button>
                 </div>
-                <Button type="button" disabled={saving} onClick={() => void handleAssign()}>
-                  {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                  Asignar seleccionadas ({selectedRefs.size})
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    const refs = (selected.lines || [])
-                      .filter((l) => l.remainderQty > 0)
-                      .filter((l) => {
-                        const t = taskByRef.get(l.reference);
-                        return !t || t.status === 'assigned' || t.status === 'rejected';
-                      })
-                      .map((l) => l.reference);
-                    setSelectedRefs(new Set(refs));
-                  }}
-                >
-                  Seleccionar todos los remanentes
-                </Button>
+                <p className="text-xs text-muted-foreground">
+                  En confirmación directa, si no escribe otra cantidad se usa el remanente calculado
+                  (ej. 20). Puede ajustar por referencia en la columna de validación.
+                </p>
               </CardContent>
             </Card>
           ) : null}
@@ -991,7 +1054,24 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                         <TableCell className="text-sm">
                           {!task ? (
                             line.remainderQty > 0 ? (
-                              <span className="text-muted-foreground">Sin asignar</span>
+                              <div className="space-y-1">
+                                <span className="text-muted-foreground">Sin asignar</span>
+                                {isManager && selectedRefs.has(line.reference) ? (
+                                  <Input
+                                    className="h-8 w-28"
+                                    type="number"
+                                    min={0}
+                                    placeholder={`Confirmar ${line.remainderQty}`}
+                                    value={returnDrafts[`direct:${line.reference}`] ?? ''}
+                                    onChange={(e) =>
+                                      setReturnDrafts((prev) => ({
+                                        ...prev,
+                                        [`direct:${line.reference}`]: e.target.value,
+                                      }))
+                                    }
+                                  />
+                                ) : null}
+                              </div>
                             ) : (
                               '—'
                             )

@@ -60,8 +60,9 @@ function toNumber(value: unknown): number {
 
 export type DistributionPlanRowInput = {
   REFERENCIA: string;
-  BODEGA: string;
-  CANT: number | string;
+  BODEGA?: string;
+  CANT?: number | string;
+  CANTIDAD?: number | string;
 };
 
 export type DistributionStockRowInput = {
@@ -97,7 +98,7 @@ function aggregatePhysicalFromStockRows(
   return map;
 }
 
-/** Agrega reparto por referencia y detalle por bodega. */
+/** Agrega reparto por referencia (BODEGA opcional). */
 function aggregateDistributedFromPlanRows(rows: DistributionPlanRowInput[]): {
   byRef: Map<string, number>;
   byRefBodega: Map<string, Map<string, number>>;
@@ -106,8 +107,9 @@ function aggregateDistributedFromPlanRows(rows: DistributionPlanRowInput[]): {
   const byRefBodega = new Map<string, Map<string, number>>();
   for (const row of rows || []) {
     const ref = normRef(row.REFERENCIA);
-    const bodega = String(row.BODEGA ?? '').trim() || 'SIN BODEGA';
-    const qty = toNumber(row.CANT);
+    const bodegaRaw = String(row.BODEGA ?? '').trim();
+    const bodega = bodegaRaw || 'TOTAL';
+    const qty = toNumber(row.CANT) || toNumber(row.CANTIDAD);
     if (!ref || qty === 0) continue;
     byRef.set(ref, (byRef.get(ref) || 0) + qty);
     if (!byRefBodega.has(ref)) byRefBodega.set(ref, new Map());
@@ -712,5 +714,125 @@ export async function rejectRemainderTask(input: {
   } catch (e: any) {
     console.error('rejectRemainderTask:', e);
     return { success: false, error: e?.message || 'No se pudo rechazar.' };
+  }
+}
+
+/**
+ * Validación directa del supervisor/admin sobre remanentes,
+ * sin necesidad de asignar a un operario ni esperar envío.
+ */
+export async function supervisorConfirmRemaindersDirect(input: {
+  compareId: string;
+  items: Array<{ reference: string; confirmedQty: number }>;
+  validatorId: string;
+  validatorName?: string;
+  notes?: string;
+}): Promise<{ success: boolean; confirmed?: number; error?: string }> {
+  try {
+    if (!input.compareId || !input.validatorId) {
+      return { success: false, error: 'Faltan datos de validación.' };
+    }
+    if (!input.items?.length) {
+      return { success: false, error: 'Seleccione al menos una referencia a confirmar.' };
+    }
+
+    const compareSnap = await getDoc(doc(firestore, COL, input.compareId));
+    if (!compareSnap.exists()) return { success: false, error: 'Comparación no encontrada.' };
+    const compare = { id: compareSnap.id, ...compareSnap.data() } as DistributionCompareOperation;
+    if (compare.status === 'archived') {
+      return { success: false, error: 'La comparación está archivada.' };
+    }
+
+    const lineByRef = new Map((compare.lines || []).map((l) => [l.reference, l]));
+    const existingSnap = await getDocs(
+      query(collection(firestore, TASKS_COL), where('compareId', '==', input.compareId), limit(500))
+    );
+    const existingByRef = new Map<string, { id: string; data: DistributionRemainderTask }>();
+    existingSnap.forEach((d) => {
+      const data = d.data() as DistributionRemainderTask;
+      existingByRef.set(data.reference, { id: d.id, data });
+    });
+
+    const now = new Date().toISOString();
+    let confirmed = 0;
+
+    for (const item of input.items) {
+      const line = lineByRef.get(item.reference);
+      if (!line || !(line.remainderQty > 0)) continue;
+      const qty = Number(item.confirmedQty);
+      if (!Number.isFinite(qty) || qty < 0) continue;
+
+      const prev = existingByRef.get(item.reference);
+      if (prev?.data.status === 'validated') continue;
+
+      const baseNotes = [
+        input.notes,
+        'Validación directa supervisor (sin asignación a operario).',
+      ]
+        .filter(Boolean)
+        .join(' ');
+
+      if (prev) {
+        await updateDoc(doc(firestore, TASKS_COL, prev.id), {
+          expectedRemainderQty: line.remainderQty,
+          returnedQty: qty,
+          status: 'validated',
+          assignedOperatorId: input.validatorId,
+          assignedOperatorName: input.validatorName || null,
+          assignedAt: now,
+          assignedBy: input.validatorId,
+          assignedByName: input.validatorName || null,
+          submittedAt: now,
+          submittedBy: input.validatorId,
+          submittedByName: input.validatorName || null,
+          validatedAt: now,
+          validatedBy: input.validatorId,
+          validatedByName: input.validatorName || null,
+          rejectionReason: null,
+          notes: baseNotes,
+          updatedAt: now,
+        });
+      } else {
+        const ref = doc(collection(firestore, TASKS_COL));
+        const payload: DistributionRemainderTask = {
+          id: ref.id,
+          compareId: input.compareId,
+          rkIdentifier: compare.rkIdentifier,
+          reference: item.reference,
+          expectedRemainderQty: line.remainderQty,
+          returnedQty: qty,
+          status: 'validated',
+          assignedOperatorId: input.validatorId,
+          assignedOperatorName: input.validatorName,
+          assignedAt: now,
+          assignedBy: input.validatorId,
+          assignedByName: input.validatorName,
+          submittedAt: now,
+          submittedBy: input.validatorId,
+          submittedByName: input.validatorName,
+          validatedAt: now,
+          validatedBy: input.validatorId,
+          validatedByName: input.validatorName,
+          notes: baseNotes,
+          createdAt: now,
+          updatedAt: now,
+        };
+        await setDoc(ref, stripUndefinedDeep(payload));
+      }
+      confirmed += 1;
+    }
+
+    if (confirmed === 0) {
+      return {
+        success: false,
+        error: 'No se confirmó ninguna referencia (sin remanente o ya validadas).',
+      };
+    }
+
+    await refreshCompareWorkflowStatus(input.compareId);
+    return { success: true, confirmed };
+  } catch (e: any) {
+    console.error('supervisorConfirmRemaindersDirect:', e);
+    return { success: false, error: e?.message || 'No se pudo confirmar.' };
   }
 }
