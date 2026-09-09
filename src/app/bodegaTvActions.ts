@@ -143,12 +143,13 @@ async function buildTallado(dayKey: string): Promise<BodegaTvAreaSnapshot> {
     const { shifts, units, pauses } = filtered;
     const done = units.filter((u) => u.status === 'done');
     const pauseMs = talladoPauseMs(pauses, todayKey);
-    const { qty, personHours, perPersonHour, peopleTotal, workedMsTotal } = talladoPerPersonHour({
-      shifts,
-      units,
-      pauses,
-      dayKey: todayKey,
-    });
+    const { qty, personHours, perPersonHour, peopleTotal, workedMsTotal, formulaLabel } =
+      talladoPerPersonHour({
+        shifts,
+        units,
+        pauses,
+        dayKey: todayKey,
+      });
     const ranking = talladoRankingByGrupo({ shifts, units, pauses, dayKey: todayKey });
 
     area.units = qty;
@@ -159,9 +160,14 @@ async function buildTallado(dayKey: string): Promise<BodegaTvAreaSnapshot> {
       { label: 'Día', value: todayKey },
       { label: 'Cajas hechas', value: String(done.length) },
       { label: 'Jornada', value: `${(workedMsTotal / 3600000).toFixed(1)} h` },
+      { label: 'Cálculo', value: formulaLabel },
       { label: 'Pausas', value: `${Math.round(pauseMs / 60000)} min` },
       { label: 'Personas', value: String(peopleTotal) },
       { label: 'Persona·h', value: personHours.toFixed(2) },
+      {
+        label: 'Rendimiento',
+        value: `${qty} ÷ ${personHours.toFixed(2)} = ${perPersonHour.toFixed(1)} u/h`,
+      },
     ];
   } catch (e) {
     console.error('bodegaTv tallado:', e);

@@ -719,12 +719,13 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     const done = dashUnits.filter((u) => u.status === 'done');
     const boxNetMs = done.reduce((s, u) => s + (Number(u.durationNetMs ?? u.durationMs) || 0), 0);
     const pauseMs = talladoPauseMs(dashPauses, dashDayKey);
-    const { qty, personHours, perPersonHour, peopleTotal, workedMsTotal } = talladoPerPersonHour({
-      shifts: dashShifts,
-      units: dashUnits,
-      pauses: dashPauses,
-      dayKey: dashDayKey,
-    });
+    const { qty, personHours, perPersonHour, peopleTotal, workedMsTotal, formulaLabel, shiftRows } =
+      talladoPerPersonHour({
+        shifts: dashShifts,
+        units: dashUnits,
+        pauses: dashPauses,
+        dayKey: dashDayKey,
+      });
 
     const byHour = new Map<string, { qty: number; units: number; pauseMin: number }>();
     for (const u of done) {
@@ -758,6 +759,8 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       personHours,
       peopleTotal,
       perPersonHour,
+      formulaLabel,
+      shiftRows,
       hourRows: Array.from(byHour.entries())
         .sort((a, b) => a[0].localeCompare(b[0]))
         .map(([hour, v]) => ({ hour, ...v })),
@@ -1625,8 +1628,9 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                   <CardTitle className="text-lg tabular-nums">
                     {fmtDuration(dashStats.netMs)} · {fmtDuration(dashStats.pauseMs)}
                   </CardTitle>
-                  <p className="text-xs text-muted-foreground pt-1">
-                    Reloj de turno − pausas (no suma de cajas: {fmtDuration(dashStats.boxNetMs)})
+                  <p className="text-xs text-muted-foreground pt-1">{dashStats.formulaLabel}</p>
+                  <p className="text-xs text-muted-foreground">
+                    No es suma de cajas ({fmtDuration(dashStats.boxNetMs)}).
                   </p>
                 </CardHeader>
               </Card>
@@ -1635,12 +1639,50 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                   <CardDescription>Rendimiento neto (cant / persona·h)</CardDescription>
                   <CardTitle className="text-2xl tabular-nums">{dashStats.perPersonHour.toFixed(1)}</CardTitle>
                   <p className="text-xs text-muted-foreground pt-1">
-                    {dashStats.peopleTotal || 0} pers. · {dashStats.personHours.toFixed(2)} persona·h
-                    {dashShifts.length === 0 ? ' · sin turnos cargados' : ''}
+                    {dashStats.qty.toLocaleString()} und ÷ {dashStats.personHours.toFixed(2)} persona·h
+                    ({dashStats.peopleTotal || 0} pers.)
                   </p>
                 </CardHeader>
               </Card>
             </div>
+
+            {dashStats.shiftRows.length > 0 ? (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Cómo se calcula la jornada</CardTitle>
+                  <CardDescription>
+                    Por turno: ventana del día × personas. Si el turno empezó otro día, la ventana inicia en la
+                    primera lectura de este día (no a las 00:00).
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Grupo</TableHead>
+                        <TableHead>Personas</TableHead>
+                        <TableHead>Inicio</TableHead>
+                        <TableHead>Fin</TableHead>
+                        <TableHead className="text-right">Jornada</TableHead>
+                        <TableHead className="text-right">Persona·h</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {dashStats.shiftRows.map((r) => (
+                        <TableRow key={r.shiftId}>
+                          <TableCell className="font-medium">{r.grupo}</TableCell>
+                          <TableCell className="tabular-nums">{r.people}</TableCell>
+                          <TableCell className="tabular-nums">{r.startClock}</TableCell>
+                          <TableCell className="tabular-nums">{r.endClock}</TableCell>
+                          <TableCell className="text-right tabular-nums">{fmtDuration(r.workedMs)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{r.personHours.toFixed(2)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            ) : null}
 
             <div className="grid gap-4 lg:grid-cols-2">
               <Card>

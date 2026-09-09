@@ -145,8 +145,10 @@ export function downloadTalladoDayConsolidatedExcel(opts: {
     { Campo: 'Unidades cerradas', Valor: data.done.length },
     { Campo: 'Unidades en proceso', Valor: data.inProg.length },
     { Campo: 'Jornada neta', Valor: fmtDuration(data.metrics.workedMsTotal) },
+    { Campo: 'Fórmula jornada', Valor: data.metrics.formulaLabel },
     { Campo: 'Persona·horas', Valor: Number(data.metrics.personHours.toFixed(2)) },
     { Campo: 'Rendimiento (cant/persona·h)', Valor: Number(data.metrics.perPersonHour.toFixed(2)) },
+    { Campo: 'Detalle rendimiento', Valor: `${data.metrics.qty} ÷ ${data.metrics.personHours.toFixed(2)}` },
     { Campo: 'Pausas', Valor: fmtDuration(data.pauseMs) },
   ];
 

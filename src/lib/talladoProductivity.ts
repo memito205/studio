@@ -31,34 +31,98 @@ function parseMs(iso?: string | null): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
+export function fmtTalladoClock(ms: number): string {
+  try {
+    return new Date(ms).toLocaleTimeString('es-CO', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: 'America/Bogota',
+    });
+  } catch {
+    return '—';
+  }
+}
+
 /**
- * Jornada del turno recortada al día (reloj):
- * max(inicioTurno, 00:00 día) → min(fin|ahora, 23:59 día) − pausas en esa ventana.
+ * Ventana de jornada del turno en un día:
+ * - Si el turno inició ese día → desde startedAt del turno
+ * - Si el turno viene de un día anterior → desde la PRIMERA unidad leída ese día
+ *   (no desde las 00:00; eso inflaba la jornada)
+ * - Fin → ahora (activo) o endedAt, recortado al día
+ */
+export function talladoShiftDayWindow(opts: {
+  shift: TalladoShift;
+  units?: TalladoUnit[];
+  dayKey?: string;
+  nowMs?: number;
+}): { startMs: number; endMs: number } | null {
+  const nowMs = opts.nowMs ?? Date.now();
+  const shiftStart = parseMs(opts.shift.startedAt);
+  if (shiftStart == null) return null;
+
+  const shiftEnd =
+    opts.shift.status === 'closed' && opts.shift.endedAt
+      ? parseMs(opts.shift.endedAt) ?? nowMs
+      : nowMs;
+
+  if (!opts.dayKey) {
+    return { startMs: shiftStart, endMs: Math.max(shiftStart, shiftEnd) };
+  }
+
+  const { startMs: dayStart, endMs: dayEnd } = talladoBogotaDayBounds(opts.dayKey);
+  const cappedEnd = Math.min(shiftEnd, dayEnd, nowMs);
+
+  const dayUnits = (opts.units || []).filter(
+    (u) =>
+      u.shiftId === opts.shift.id &&
+      (isTalladoSameLocalDay(u.startedAt, opts.dayKey!) ||
+        isTalladoSameLocalDay(u.endedAt, opts.dayKey!))
+  );
+
+  let firstUnitMs: number | null = null;
+  let lastUnitMs: number | null = null;
+  for (const u of dayUnits) {
+    const s = parseMs(u.startedAt);
+    const e = parseMs(u.endedAt || u.startedAt);
+    if (s != null) firstUnitMs = firstUnitMs == null ? s : Math.min(firstUnitMs, s);
+    if (e != null) lastUnitMs = lastUnitMs == null ? e : Math.max(lastUnitMs, e);
+  }
+
+  let windowStart: number;
+  if (isTalladoSameLocalDay(opts.shift.startedAt, opts.dayKey)) {
+    windowStart = Math.max(shiftStart, dayStart);
+  } else if (firstUnitMs != null) {
+    // Turno cruzó de otro día: contar desde la primera lectura de HOY
+    windowStart = Math.max(firstUnitMs, dayStart);
+  } else {
+    // Sin lecturas hoy → no hay jornada productiva ese día
+    return null;
+  }
+
+  let windowEnd = cappedEnd;
+  if (lastUnitMs != null && opts.shift.status === 'closed') {
+    windowEnd = Math.min(windowEnd, Math.max(lastUnitMs, windowStart));
+  }
+
+  if (windowEnd <= windowStart) return null;
+  return { startMs: windowStart, endMs: windowEnd };
+}
+
+/**
+ * Jornada neta (ms) = ventana del día − pausas que solapan esa ventana.
  */
 export function talladoShiftWorkedMs(
   shift: TalladoShift,
   pauses: TalladoPause[],
   nowMs: number = Date.now(),
-  dayKey?: string
+  dayKey?: string,
+  units?: TalladoUnit[]
 ): number {
-  const shiftStart = parseMs(shift.startedAt);
-  if (shiftStart == null) return 0;
-  const shiftEnd =
-    shift.status === 'closed' && shift.endedAt
-      ? parseMs(shift.endedAt) ?? nowMs
-      : nowMs;
+  const window = talladoShiftDayWindow({ shift, units, dayKey, nowMs });
+  if (!window) return 0;
 
-  let windowStart = shiftStart;
-  let windowEnd = shiftEnd;
-  if (dayKey) {
-    const { startMs, endMs } = talladoBogotaDayBounds(dayKey);
-    const dayEnd = Math.min(endMs, nowMs);
-    windowStart = Math.max(shiftStart, startMs);
-    windowEnd = Math.min(shiftEnd, dayEnd);
-  }
-
-  let raw = Math.max(0, windowEnd - windowStart);
-  if (raw <= 0) return 0;
+  let raw = Math.max(0, window.endMs - window.startMs);
 
   for (const p of pauses) {
     if (p.shiftId !== shift.id) continue;
@@ -67,15 +131,15 @@ export function talladoShiftWorkedMs(
     if (ps == null) continue;
     const pe =
       p.status === 'open'
-        ? windowEnd
+        ? window.endMs
         : p.resumedAt
-          ? parseMs(p.resumedAt) ?? windowEnd
+          ? parseMs(p.resumedAt) ?? window.endMs
           : typeof p.durationMs === 'number'
             ? ps + Math.max(0, Number(p.durationMs) || 0)
-            : windowEnd;
+            : window.endMs;
 
-    const a = Math.max(ps, windowStart);
-    const b = Math.min(pe, windowEnd);
+    const a = Math.max(ps, window.startMs);
+    const b = Math.min(pe, window.endMs);
     if (b > a) raw -= b - a;
   }
 
@@ -85,8 +149,11 @@ export function talladoShiftWorkedMs(
 export function talladoPauseMs(pauses: TalladoPause[], dayKey?: string): number {
   return pauses.reduce((s, p) => {
     if (dayKey && !isTalladoSameLocalDay(p.pausedAt, dayKey) && p.status !== 'open') {
-      // open pauses may have started previous day; still count overlap via shift worked
-      if (!isTalladoSameLocalDay(p.pausedAt, dayKey)) return s;
+      return s;
+    }
+    if (dayKey && p.status === 'open' && !isTalladoSameLocalDay(p.pausedAt, dayKey)) {
+      // pausa abierta de otro día: el solape se descuenta en talladoShiftWorkedMs
+      return s;
     }
     if (typeof p.durationMs === 'number' && Number.isFinite(p.durationMs)) {
       return s + Math.max(0, Number(p.durationMs) || 0);
@@ -109,13 +176,11 @@ export function filterTalladoBundleToDay(
   units: TalladoUnit[],
   pauses: TalladoPause[]
 ): { shifts: TalladoShift[]; units: TalladoUnit[]; pauses: TalladoPause[]; dayKey: string } {
-  // Unidades del día = inicio o fin en ese dayKey (Bogotá)
   const dayUnits = units.filter(
     (u) => isTalladoSameLocalDay(u.startedAt, dayKey) || isTalladoSameLocalDay(u.endedAt, dayKey)
   );
   const unitShiftIds = new Set(dayUnits.map((u) => u.shiftId).filter(Boolean) as string[]);
 
-  // Turnos: empezaron ese día O tienen unidades de ese día
   const dayShifts = shifts.filter(
     (s) => isTalladoSameLocalDay(s.startedAt, dayKey) || unitShiftIds.has(s.id)
   );
@@ -131,34 +196,77 @@ export function filterTalladoBundleToDay(
   return { dayKey, shifts: dayShifts, units: dayUnits, pauses: dayPauses };
 }
 
+export type TalladoProductivityBreakdown = {
+  personHours: number;
+  peopleTotal: number;
+  workedMsTotal: number;
+  formulaLabel: string;
+  shiftRows: Array<{
+    shiftId: string;
+    grupo: string;
+    people: number;
+    startClock: string;
+    endClock: string;
+    workedMs: number;
+    personHours: number;
+  }>;
+};
+
 /**
  * Persona·horas del día = Σ (jornada_neta_del_día_turno_h × personas_turno).
+ * Rendimiento = cantidad_cerrada_del_día ÷ persona·horas
  */
 export function talladoPersonHours(opts: {
   shifts: TalladoShift[];
+  units?: TalladoUnit[];
   pauses?: TalladoPause[];
   nowMs?: number;
   dayKey?: string;
-}): { personHours: number; peopleTotal: number; workedMsTotal: number } {
+}): TalladoProductivityBreakdown {
   const pauses = opts.pauses || [];
+  const units = opts.units || [];
   const nowMs = opts.nowMs ?? Date.now();
   let personHours = 0;
   let peopleTotal = 0;
   let workedMsTotal = 0;
+  const shiftRows: TalladoProductivityBreakdown['shiftRows'] = [];
 
   for (const sh of opts.shifts) {
     const people = Math.max(1, Number(sh.peopleCount) || 1);
-    const workedMs = talladoShiftWorkedMs(sh, pauses, nowMs, opts.dayKey);
-    if (workedMs <= 0 && opts.dayKey && !isTalladoSameLocalDay(sh.startedAt, opts.dayKey)) {
-      // turno de otro día sin solape real en la ventana → no suma personas
-      continue;
-    }
+    const window = talladoShiftDayWindow({
+      shift: sh,
+      units,
+      dayKey: opts.dayKey,
+      nowMs,
+    });
+    if (!window) continue;
+
+    const workedMs = talladoShiftWorkedMs(sh, pauses, nowMs, opts.dayKey, units);
+    if (workedMs <= 0) continue;
+
+    const ph = (workedMs / 3600000) * people;
     peopleTotal += people;
     workedMsTotal += workedMs;
-    personHours += (workedMs / 3600000) * people;
+    personHours += ph;
+    shiftRows.push({
+      shiftId: sh.id,
+      grupo: sh.grupo,
+      people,
+      startClock: fmtTalladoClock(window.startMs),
+      endClock: fmtTalladoClock(window.endMs),
+      workedMs,
+      personHours: ph,
+    });
   }
 
-  return { personHours, peopleTotal, workedMsTotal };
+  const formulaLabel =
+    shiftRows.length === 0
+      ? 'Sin jornada del día'
+      : shiftRows.length === 1
+        ? `Jornada ${shiftRows[0].startClock}→${shiftRows[0].endClock} (− pausas) × ${shiftRows[0].people} pers.`
+        : `${shiftRows.length} turnos: Σ (jornada_turno × personas)`;
+
+  return { personHours, peopleTotal, workedMsTotal, formulaLabel, shiftRows };
 }
 
 export function talladoPerPersonHour(opts: {
@@ -173,6 +281,8 @@ export function talladoPerPersonHour(opts: {
   perPersonHour: number;
   peopleTotal: number;
   workedMsTotal: number;
+  formulaLabel: string;
+  shiftRows: TalladoProductivityBreakdown['shiftRows'];
 } {
   const dayKey = opts.dayKey;
   const units = dayKey
@@ -182,18 +292,21 @@ export function talladoPerPersonHour(opts: {
     : opts.units;
   const done = units.filter((u) => u.status === 'done');
   const qty = done.reduce((s, u) => s + (Number(u.cantidad) || 0), 0);
-  const { personHours, peopleTotal, workedMsTotal } = talladoPersonHours({
+  const breakdown = talladoPersonHours({
     shifts: opts.shifts,
+    units,
     pauses: opts.pauses,
     nowMs: opts.nowMs,
     dayKey,
   });
   return {
     qty,
-    personHours,
-    perPersonHour: personHours > 0 ? qty / personHours : 0,
-    peopleTotal,
-    workedMsTotal,
+    personHours: breakdown.personHours,
+    perPersonHour: breakdown.personHours > 0 ? qty / breakdown.personHours : 0,
+    peopleTotal: breakdown.peopleTotal,
+    workedMsTotal: breakdown.workedMsTotal,
+    formulaLabel: breakdown.formulaLabel,
+    shiftRows: breakdown.shiftRows,
   };
 }
 
@@ -226,7 +339,7 @@ export function talladoRankingByGrupo(opts: {
 
   for (const sh of opts.shifts) {
     const people = Math.max(1, Number(sh.peopleCount) || 1);
-    const workedMs = talladoShiftWorkedMs(sh, pauses, nowMs, dayKey);
+    const workedMs = talladoShiftWorkedMs(sh, pauses, nowMs, dayKey, opts.units);
     if (workedMs <= 0) continue;
     const personHours = (workedMs / 3600000) * people;
     const qty = qtyByShift.get(sh.id) || 0;
