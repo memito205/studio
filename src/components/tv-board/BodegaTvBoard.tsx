@@ -9,7 +9,9 @@ import type { BodegaTvSnapshot } from '@/lib/bodegaTvTypes';
 import {
   BodegaAreaDetailSlide,
   BodegaOverviewSlide,
+  BodegaRemainderAssignmentsSlide,
   BODEGA_TV_PAGE_SIZE,
+  REMAINDER_PAGE_SIZE,
 } from './bodega/BodegaTvSlides';
 
 const SLIDE_DURATION_MS = 5000;
@@ -64,6 +66,25 @@ export default function BodegaTvBoard() {
             key={`area-${area.key}-p${pageIndex}`}
             area={area}
             rankingPage={rankingPage}
+            pageIndex={pageIndex}
+            pageCount={pageCount}
+          />
+        );
+      }
+    }
+
+    const assignments = data.remainderAssignments || [];
+    if (assignments.length > 0) {
+      const pageCount = Math.max(1, Math.ceil(assignments.length / REMAINDER_PAGE_SIZE));
+      for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
+        const pageRows = assignments.slice(
+          pageIndex * REMAINDER_PAGE_SIZE,
+          pageIndex * REMAINDER_PAGE_SIZE + REMAINDER_PAGE_SIZE
+        );
+        nodes.push(
+          <BodegaRemainderAssignmentsSlide
+            key={`remainder-p${pageIndex}`}
+            rows={pageRows}
             pageIndex={pageIndex}
             pageCount={pageCount}
           />

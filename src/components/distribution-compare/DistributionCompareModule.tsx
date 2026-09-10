@@ -301,7 +301,8 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const detailLines = useMemo(() => {
     const lines = selected?.lines || [];
     if (!onlyRemainder) return lines;
-    return lines.filter((l) => l.remainderQty !== 0);
+    // Asignables: remanente > 0 o confirmación en 0. Oculta sobredistribución (< 0).
+    return lines.filter((l) => l.remainderQty >= 0);
   }, [selected, onlyRemainder]);
 
   const onPlanFile = async (file: File | null) => {
@@ -1380,7 +1381,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                     variant="outline"
                     onClick={() => {
                       const refs = (selected.lines || [])
-                        .filter((l) => l.remainderQty > 0)
+                        .filter((l) => l.remainderQty >= 0)
                         .filter((l) => {
                           const t = taskByRef.get(l.reference);
                           return !t || t.status === 'assigned' || t.status === 'rejected';
@@ -1389,7 +1390,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                       setSelectedRefs(new Set(refs));
                     }}
                   >
-                    Seleccionar remanentes
+                    Seleccionar asignables (≥ 0)
                   </Button>
                   <Button
                     type="button"
@@ -1406,8 +1407,8 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  En cada fila con remanente &gt; 0 elija el operario y pulse Asignar, o configure varias
-                  y use &quot;Asignar configuradas&quot;.
+                  Puede asignar remanente &gt; 0 o = 0 (el operario reporta 0). Elija operario por fila o
+                  &quot;Asignar configuradas&quot;.
                 </p>
               </CardContent>
             </Card>
@@ -1429,7 +1430,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   checked={onlyRemainder}
                   onCheckedChange={(v) => setOnlyRemainder(Boolean(v))}
                 />
-                Solo diferencias ≠ 0
+                Solo asignables (remanente ≥ 0)
               </label>
             </CardHeader>
             <CardContent className="overflow-x-auto">
@@ -1449,7 +1450,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                     const task = taskByRef.get(line.reference);
                     const canSelect =
                       isManager &&
-                      line.remainderQty > 0 &&
+                      line.remainderQty >= 0 &&
                       (!task || task.status === 'assigned' || task.status === 'rejected');
                     return (
                       <TableRow key={line.reference}>
@@ -1476,15 +1477,20 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                               ? 'text-amber-600'
                               : line.remainderQty < 0
                                 ? 'text-red-600'
-                                : ''
+                                : 'text-muted-foreground'
                           }`}
                         >
                           {fmt(line.remainderQty)}
                         </TableCell>
                         <TableCell className="text-sm">
                           {!task ? (
-                            line.remainderQty > 0 ? (
+                            line.remainderQty >= 0 ? (
                               <div className="space-y-1">
+                                {line.remainderQty === 0 ? (
+                                  <div className="text-[10px] text-muted-foreground">
+                                    Sin remanente · operario reporta 0
+                                  </div>
+                                ) : null}
                                 {isManager && canSelect ? (
                                   <div className="flex flex-wrap items-center gap-2">
                                     <Select
@@ -1562,9 +1568,12 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                               <div className="text-xs text-muted-foreground">
                                 {task.assignedOperatorName || task.assignedOperatorId}
                                 {task.claimedBySelf ? ' · auto' : ''}
+                                {task.locationName ? ` · ${task.locationName}` : ''}
                                 {typeof task.returnedQty === 'number'
                                   ? ` · devuelto ${fmt(task.returnedQty)}/${fmt(task.expectedRemainderQty)}`
-                                  : ''}
+                                  : task.expectedRemainderQty === 0
+                                    ? ' · esperado 0'
+                                    : ''}
                                 {task.status === 'validated'
                                   ? ` · validado${task.validatedByName ? ` (${task.validatedByName})` : ''}`
                                   : task.status === 'submitted'

@@ -310,3 +310,64 @@ export function BodegaAreaDetailSlide({
     </div>
   );
 }
+
+const REMAINDER_PAGE_SIZE = 6;
+
+export function BodegaRemainderAssignmentsSlide({
+  rows,
+  pageIndex,
+  pageCount,
+}: {
+  rows: import('@/lib/bodegaTvTypes').BodegaTvRemainderAssignmentRow[];
+  pageIndex: number;
+  pageCount: number;
+}) {
+  return (
+    <div className="w-full h-full flex flex-col min-h-0">
+      <div className="shrink-0 mb-[0.9em]">
+        <h2 className="text-[2.2em] font-black tracking-tight text-amber-300 leading-none mb-[0.35em]">
+          Referencias asignadas
+        </h2>
+        <p className="text-[0.95em] text-slate-400 font-semibold">
+          Físico vs Distribución · operario · ref · ubicación
+          {pageCount > 1 ? ` · página ${pageIndex + 1}/${pageCount}` : ''}
+        </p>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center text-[1.4em] text-slate-500 font-semibold">
+          Sin asignaciones activas
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 overflow-hidden flex flex-col justify-start gap-[0.55em]">
+          <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.1fr)_minmax(0,1.2fr)_5.5em] gap-x-[0.9em] text-[0.85em] font-bold uppercase tracking-wider text-slate-500 px-[0.35em]">
+            <div>Operario</div>
+            <div>Referencia</div>
+            <div>Ubicación</div>
+            <div className="text-right">Rem.</div>
+          </div>
+          {rows.map((row, idx) => (
+            <div
+              key={`${row.reference}-${row.operatorName}-${idx}`}
+              className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.1fr)_minmax(0,1.2fr)_5.5em] gap-x-[0.9em] items-center rounded-[0.75em] border border-slate-700 bg-slate-900/90 px-[0.75em] py-[0.65em]"
+            >
+              <div className="min-w-0">
+                <div className="font-black text-[1.05em] text-slate-100 truncate">{row.operatorName}</div>
+                <div className="text-[0.75em] text-slate-500 truncate">
+                  {row.rkIdentifier || '—'} · {row.statusLabel}
+                </div>
+              </div>
+              <div className="font-bold text-[1.05em] text-amber-200 truncate">{row.reference}</div>
+              <div className="text-[0.95em] text-slate-300 truncate">{row.locationName || 'Sin ubicación'}</div>
+              <div className="text-right font-black tabular-nums text-slate-100">
+                {fmt(row.expectedRemainderQty)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export { REMAINDER_PAGE_SIZE };

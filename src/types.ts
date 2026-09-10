@@ -1232,7 +1232,7 @@ export interface DistributionRemainderTask {
   compareId: string;
   rkIdentifier?: string;
   reference: string;
-  /** Cantidad esperada a devolver a bodega (remanente). */
+  /** Cantidad esperada a devolver a bodega (remanente). Puede ser 0 (confirmar sin sobrante). */
   expectedRemainderQty: number;
   /** Cantidad que el operario declara haber devuelto. */
   returnedQty?: number;
@@ -1244,6 +1244,10 @@ export interface DistributionRemainderTask {
   assignedByName?: string;
   /** true si el operario tomó la referencia (no la asignó un supervisor). */
   claimedBySelf?: boolean;
+  /** Ubicación predominante en recepción (si se pudo resolver). */
+  locationId?: string;
+  locationName?: string;
+  receptionOperationId?: string;
   submittedAt?: string;
   submittedBy?: string;
   submittedByName?: string;

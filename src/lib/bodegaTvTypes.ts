@@ -26,6 +26,16 @@ export type BodegaTvAreaSnapshot = {
   anonymousPeople?: number;
 };
 
+export type BodegaTvRemainderAssignmentRow = {
+  operatorName: string;
+  reference: string;
+  rkIdentifier?: string;
+  locationName?: string;
+  expectedRemainderQty: number;
+  status: string;
+  statusLabel: string;
+};
+
 export type BodegaTvSnapshot = {
   dayKey: string;
   generatedAt: string;
@@ -36,4 +46,6 @@ export type BodegaTvSnapshot = {
     /** Personas únicas del día (sin repetir la misma persona entre áreas). */
     operators: number;
   };
+  /** Asignaciones Físico vs Distribución (remanentes / confirmación 0). */
+  remainderAssignments?: BodegaTvRemainderAssignmentRow[];
 };

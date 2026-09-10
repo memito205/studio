@@ -585,31 +585,20 @@ async function refreshCompareWorkflowStatus(compareId: string): Promise<void> {
   const compare = compareSnap.data() as DistributionCompareOperation;
   if (compare.status === 'archived') return;
 
-  const remainderCount = Number(compare.totals?.referencesWithRemainder) || 0;
-  if (remainderCount <= 0) {
-    const updatedAt = new Date().toISOString();
-    await updateDoc(doc(firestore, COL, compareId), {
-      status: 'completed',
-      updatedAt,
-    });
-    await setDoc(
-      doc(firestore, SUMMARY_COL, compareId),
-      { status: 'completed', updatedAt },
-      { merge: true }
-    );
-    return;
-  }
-
   const tasksSnap = await getDocs(
     query(collection(firestore, TASKS_COL), where('compareId', '==', compareId), limit(500))
   );
   const tasks = tasksSnap.docs.map((d) => d.data() as DistributionRemainderTask);
   const active = tasks.filter((t) => t.status !== 'rejected');
 
+  const remainderCount = Number(compare.totals?.referencesWithRemainder) || 0;
+
   let status: DistributionCompareOperation['status'] = 'open';
   if (active.some((t) => t.status === 'submitted')) status = 'pending_validation';
   else if (active.length > 0 && active.every((t) => t.status === 'validated')) status = 'completed';
   else if (active.length > 0) status = 'in_progress';
+  else if (remainderCount <= 0) status = 'completed';
+  else status = 'open';
 
   const updatedAt = new Date().toISOString();
   await updateDoc(doc(firestore, COL, compareId), {
@@ -617,6 +606,53 @@ async function refreshCompareWorkflowStatus(compareId: string): Promise<void> {
     updatedAt,
   });
   await setDoc(doc(firestore, SUMMARY_COL, compareId), { status, updatedAt }, { merge: true });
+}
+
+/** Remanente asignable: sobrante (>0) o confirmación en cero (===0). No negativos. */
+function isAssignableRemainderQty(qty: number): boolean {
+  return Number.isFinite(qty) && qty >= 0;
+}
+
+/**
+ * Ubicación predominante de la ref en reception referenceStats.packUnitsById.
+ */
+async function resolveReceptionLocationForReference(
+  receptionOperationId: string | undefined,
+  reference: string
+): Promise<{ locationId?: string; locationName?: string }> {
+  if (!receptionOperationId || !reference) return {};
+  try {
+    const safeRef = normalizeReceptionReference(reference);
+    const statsSnap = await getDoc(
+      doc(firestore, RECEPTION_COL, receptionOperationId, 'referenceStats', safeRef)
+    );
+    if (!statsSnap.exists()) return {};
+    const packUnitsById = (statsSnap.data() as {
+      packUnitsById?: Record<string, { locationId?: string; locationName?: string }>;
+    }).packUnitsById;
+    if (!packUnitsById || typeof packUnitsById !== 'object') return {};
+
+    const counts = new Map<string, { n: number; locationId?: string; locationName?: string }>();
+    for (const u of Object.values(packUnitsById)) {
+      const label = String(u.locationName || u.locationId || '').trim();
+      if (!label) continue;
+      const prev = counts.get(label) || {
+        n: 0,
+        locationId: u.locationId,
+        locationName: u.locationName || u.locationId,
+      };
+      prev.n += 1;
+      counts.set(label, prev);
+    }
+    const best = [...counts.values()].sort((a, b) => b.n - a.n)[0];
+    if (!best) return {};
+    return {
+      locationId: best.locationId,
+      locationName: best.locationName,
+    };
+  } catch {
+    return {};
+  }
 }
 
 export async function listAssignableOperatorsForRemainders(): Promise<{
@@ -736,7 +772,7 @@ export async function listAvailableRemainderClaims(limitCompares = 25): Promise<
           if (t.reference) taken.add(t.reference);
         });
         for (const line of lines) {
-          if (!(line.remainderQty > 0)) continue;
+          if (!isAssignableRemainderQty(line.remainderQty)) continue;
           if (taken.has(line.reference)) continue;
           out.push({
             compareId: c.id,
@@ -805,8 +841,11 @@ export async function claimDistributionRemainder(input: {
 
     const lines = await loadCompareLines(input.compareId);
     const line = lines.find((l) => l.reference === input.reference);
-    if (!line || !(line.remainderQty > 0)) {
-      return { success: false, error: 'No hay remanente disponible para esa referencia.' };
+    if (!line || !isAssignableRemainderQty(line.remainderQty)) {
+      return {
+        success: false,
+        error: 'Esa referencia no es asignable (solo remanente ≥ 0; no sobredistribución).',
+      };
     }
 
     const existingSnap = await getDocs(
@@ -828,6 +867,10 @@ export async function claimDistributionRemainder(input: {
       };
     }
 
+    const loc = await resolveReceptionLocationForReference(
+      compare.receptionOperationId,
+      input.reference
+    );
     const now = new Date().toISOString();
     const ref = doc(collection(firestore, TASKS_COL));
     const payload: DistributionRemainderTask = stripUndefinedDeep({
@@ -843,6 +886,9 @@ export async function claimDistributionRemainder(input: {
       assignedBy: input.operatorId,
       assignedByName: input.operatorName || input.operatorId,
       claimedBySelf: true,
+      receptionOperationId: compare.receptionOperationId,
+      locationId: loc.locationId,
+      locationName: loc.locationName,
       createdAt: now,
       updatedAt: now,
     });
@@ -915,12 +961,17 @@ export async function assignDistributionRemainders(input: {
 
     for (const a of assignments) {
       const line = lineByRef.get(a.reference);
-      if (!line || !(line.remainderQty > 0)) continue;
+      if (!line || !isAssignableRemainderQty(line.remainderQty)) continue;
 
       const prev = existingByRef.get(a.reference);
       if (prev && (prev.data.status === 'submitted' || prev.data.status === 'validated')) {
         continue;
       }
+
+      const loc = await resolveReceptionLocationForReference(
+        compare.receptionOperationId,
+        a.reference
+      );
 
       if (prev) {
         await updateDoc(doc(firestore, TASKS_COL, prev.id), {
@@ -932,6 +983,9 @@ export async function assignDistributionRemainders(input: {
           assignedBy: input.assignedBy,
           assignedByName: input.assignedByName || null,
           claimedBySelf: false,
+          receptionOperationId: compare.receptionOperationId || null,
+          locationId: loc.locationId || null,
+          locationName: loc.locationName || null,
           returnedQty: null,
           submittedAt: null,
           submittedBy: null,
@@ -958,6 +1012,9 @@ export async function assignDistributionRemainders(input: {
           assignedBy: input.assignedBy,
           assignedByName: input.assignedByName,
           claimedBySelf: false,
+          receptionOperationId: compare.receptionOperationId,
+          locationId: loc.locationId,
+          locationName: loc.locationName,
           createdAt: now,
           updatedAt: now,
         };
@@ -969,7 +1026,8 @@ export async function assignDistributionRemainders(input: {
     if (created + updated === 0) {
       return {
         success: false,
-        error: 'No hay referencias asignables (remanente ≤ 0 o ya enviadas/validadas).',
+        error:
+          'No hay referencias asignables (remanente negativo, o ya enviadas/validadas). Remanente 0 sí se puede asignar.',
       };
     }
 
@@ -1142,12 +1200,17 @@ export async function supervisorConfirmRemaindersDirect(input: {
 
     for (const item of input.items) {
       const line = lineByRef.get(item.reference);
-      if (!line || !(line.remainderQty > 0)) continue;
+      if (!line || !isAssignableRemainderQty(line.remainderQty)) continue;
       const qty = Number(item.confirmedQty);
       if (!Number.isFinite(qty) || qty < 0) continue;
 
       const prev = existingByRef.get(item.reference);
       if (prev?.data.status === 'validated') continue;
+
+      const loc = await resolveReceptionLocationForReference(
+        compare.receptionOperationId,
+        item.reference
+      );
 
       const baseNotes = [
         input.notes,
@@ -1166,6 +1229,9 @@ export async function supervisorConfirmRemaindersDirect(input: {
           assignedAt: now,
           assignedBy: input.validatorId,
           assignedByName: input.validatorName || null,
+          receptionOperationId: compare.receptionOperationId || null,
+          locationId: loc.locationId || null,
+          locationName: loc.locationName || null,
           submittedAt: now,
           submittedBy: input.validatorId,
           submittedByName: input.validatorName || null,
@@ -1191,6 +1257,9 @@ export async function supervisorConfirmRemaindersDirect(input: {
           assignedAt: now,
           assignedBy: input.validatorId,
           assignedByName: input.validatorName,
+          receptionOperationId: compare.receptionOperationId,
+          locationId: loc.locationId,
+          locationName: loc.locationName,
           submittedAt: now,
           submittedBy: input.validatorId,
           submittedByName: input.validatorName,

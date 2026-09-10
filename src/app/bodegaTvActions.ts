@@ -9,9 +9,11 @@ import {
   getScannedItemsByReception,
   loadReceptionOperations,
 } from '@/app/reception/actions';
+import { listRemainderAssignmentBoard } from '@/app/distributionCompareActions';
 import type {
   BodegaTvAreaKey,
   BodegaTvAreaSnapshot,
+  BodegaTvRemainderAssignmentRow,
   BodegaTvSnapshot,
 } from '@/lib/bodegaTvTypes';
 import {
@@ -524,6 +526,66 @@ async function buildRecepcion(
   return area;
 }
 
+function remainderStatusLabel(status: string): string {
+  switch (status) {
+    case 'assigned':
+      return 'Asignada';
+    case 'submitted':
+      return 'Por validar';
+    case 'validated':
+      return 'Validada';
+    case 'rejected':
+      return 'Rechazada';
+    default:
+      return status;
+  }
+}
+
+async function buildRemainderAssignments(
+  dayKey: string
+): Promise<BodegaTvRemainderAssignmentRow[]> {
+  try {
+    const res = await listRemainderAssignmentBoard(250);
+    if (!res.success || !res.data) return [];
+
+    const rows: BodegaTvRemainderAssignmentRow[] = [];
+    for (const t of res.data) {
+      const touchedToday =
+        isSameLocalDay(t.assignedAt, dayKey) ||
+        isSameLocalDay(t.submittedAt, dayKey) ||
+        isSameLocalDay(t.validatedAt, dayKey) ||
+        isSameLocalDay(t.updatedAt, dayKey);
+
+      const show =
+        t.status === 'assigned' ||
+        t.status === 'submitted' ||
+        t.status === 'rejected' ||
+        (t.status === 'validated' && touchedToday);
+      if (!show) continue;
+
+      rows.push({
+        operatorName: t.assignedOperatorName || t.assignedOperatorId || '—',
+        reference: t.reference,
+        rkIdentifier: t.rkIdentifier,
+        locationName: t.locationName || undefined,
+        expectedRemainderQty: Number(t.expectedRemainderQty) || 0,
+        status: t.status,
+        statusLabel: remainderStatusLabel(t.status),
+      });
+    }
+
+    rows.sort((a, b) => {
+      const op = a.operatorName.localeCompare(b.operatorName, 'es');
+      if (op !== 0) return op;
+      return a.reference.localeCompare(b.reference, 'es');
+    });
+    return rows;
+  } catch (e) {
+    console.error('bodegaTv remainderAssignments:', e);
+    return [];
+  }
+}
+
 /** Snapshot unificado del día para el Modo TV Bodega (sin auth de UI). */
 export async function getBodegaTvSnapshot(): Promise<{
   success: boolean;
@@ -539,11 +601,12 @@ export async function getBodegaTvSnapshot(): Promise<{
     }
     const uidByNormName = buildUidByNormName(nameByUid);
 
-    const [empaque, etiquetado, tallado, recepcion] = await Promise.all([
+    const [empaque, etiquetado, tallado, recepcion, remainderAssignments] = await Promise.all([
       buildEmpaque(dayKey, uidByNormName),
       buildEtiquetado(dayKey, nameByUid, uidByNormName),
       buildTallado(dayKey, uidByNormName),
       buildRecepcion(dayKey, nameByUid),
+      buildRemainderAssignments(dayKey),
     ]);
 
     const areas = [empaque, etiquetado, tallado, recepcion];
@@ -579,6 +642,7 @@ export async function getBodegaTvSnapshot(): Promise<{
         avgCompliance: complianceWeight > 0 ? complianceSum / complianceWeight : 0,
         operators: uniqueOperators,
       },
+      remainderAssignments,
     };
 
     return { success: true, data: snapshot };
