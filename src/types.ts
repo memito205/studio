@@ -1268,6 +1268,9 @@ export interface DistributionRemainderAvailableClaim {
   remainderQty: number;
   compareStatus: DistributionCompareOperation['status'];
   updatedAt?: string;
+  /** Ubicación en recepción de mercancía (si se pudo resolver). */
+  locationId?: string;
+  locationName?: string;
 }
 
 /** Capacidad de un tipo de cajón en una tienda (medida × carga × cantidad). */

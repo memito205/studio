@@ -993,7 +993,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
           <CardHeader>
             <CardTitle>Referencias disponibles</CardTitle>
             <CardDescription>
-              Remanentes sin asignar. Puede tomar una referencia y luego registrarla en Mis remanentes.
+              Remanentes sin asignar, con ubicación de recepción para ir directo a la mercancía.
             </CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto">
@@ -1007,6 +1007,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   <TableRow>
                     <TableHead>RK</TableHead>
                     <TableHead>Referencia</TableHead>
+                    <TableHead>Ubicación</TableHead>
                     <TableHead className="text-right">Remanente</TableHead>
                     <TableHead>Comparación</TableHead>
                     <TableHead />
@@ -1019,6 +1020,13 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                       <TableRow key={key}>
                         <TableCell className="text-sm">{row.rkIdentifier || '—'}</TableCell>
                         <TableCell className="font-medium">{row.reference}</TableCell>
+                        <TableCell className="text-sm">
+                          {row.locationName ? (
+                            <span className="font-medium text-foreground">{row.locationName}</span>
+                          ) : (
+                            <span className="text-muted-foreground">Sin ubicación</span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-right tabular-nums text-amber-600">
                           {fmt(row.remainderQty)}
                         </TableCell>

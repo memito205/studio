@@ -9,7 +9,10 @@ import {
   getScannedItemsByReception,
   loadReceptionOperations,
 } from '@/app/reception/actions';
-import { listRemainderAssignmentBoard, resolveReceptionLocationForReference } from '@/app/distributionCompareActions';
+import {
+  listRemainderAssignmentBoard,
+  resolveReceptionLocationsForReferences,
+} from '@/app/distributionCompareActions';
 import type {
   BodegaTvAreaKey,
   BodegaTvAreaSnapshot,
@@ -787,28 +790,68 @@ async function buildRemainderAssignments(
       );
     });
 
-    // Backfill ubicación desde recepción cuando la tarea no la tiene guardada.
-    const needLoc = candidates.filter((t) => !String(t.locationName || '').trim()).slice(0, 25);
+    // Backfill ubicación desde recepción (y compare si falta receptionOperationId).
+    const needLoc = candidates.filter((t) => !String(t.locationName || '').trim()).slice(0, 40);
     const locByTaskId = new Map<string, string>();
+
+    // Agrupar por recepción para resolver en lote.
+    const byReception = new Map<string, typeof needLoc>();
+    const needCompareLookup: typeof needLoc = [];
+    for (const t of needLoc) {
+      const rid = String(t.receptionOperationId || '').trim();
+      if (!rid) {
+        needCompareLookup.push(t);
+        continue;
+      }
+      if (!byReception.has(rid)) byReception.set(rid, []);
+      byReception.get(rid)!.push(t);
+    }
+
+    // Si la tarea no trae recepción, leerla del compare.
+    if (needCompareLookup.length) {
+      const { doc, getDoc } = await import('firebase/firestore');
+      const { firestore } = await import('@/services/firebase');
+      await Promise.all(
+        needCompareLookup.map(async (t) => {
+          if (!t.compareId) return;
+          try {
+            const snap = await getDoc(doc(firestore, 'distributionCompares', t.compareId));
+            if (!snap.exists()) return;
+            const rid = String(
+              (snap.data() as { receptionOperationId?: string }).receptionOperationId || ''
+            ).trim();
+            if (!rid) return;
+            if (!byReception.has(rid)) byReception.set(rid, []);
+            byReception.get(rid)!.push({ ...t, receptionOperationId: rid });
+          } catch {
+            /* ignore */
+          }
+        })
+      );
+    }
+
     await Promise.all(
-      needLoc.map(async (t) => {
-        const loc = await resolveReceptionLocationForReference(
-          t.receptionOperationId,
-          t.reference
+      [...byReception.entries()].map(async ([receptionOperationId, tasks]) => {
+        const locMap = await resolveReceptionLocationsForReferences(
+          receptionOperationId,
+          tasks.map((t) => t.reference)
         );
-        if (!loc.locationName) return;
-        locByTaskId.set(t.id, loc.locationName);
-        // Persistir para que Físico vs Distribución y el TV no queden en "Sin ubicación".
-        try {
-          const { doc, updateDoc } = await import('firebase/firestore');
-          const { firestore } = await import('@/services/firebase');
-          await updateDoc(doc(firestore, 'distributionRemainderTasks', t.id), {
-            locationName: loc.locationName,
-            ...(loc.locationId ? { locationId: loc.locationId } : {}),
-            updatedAt: new Date().toISOString(),
-          });
-        } catch {
-          /* no bloquear el TV si falla el persist */
+        for (const t of tasks) {
+          const loc = locMap.get(t.reference);
+          if (!loc?.locationName) continue;
+          locByTaskId.set(t.id, loc.locationName);
+          try {
+            const { doc, updateDoc } = await import('firebase/firestore');
+            const { firestore } = await import('@/services/firebase');
+            await updateDoc(doc(firestore, 'distributionRemainderTasks', t.id), {
+              locationName: loc.locationName,
+              ...(loc.locationId ? { locationId: loc.locationId } : {}),
+              ...(receptionOperationId ? { receptionOperationId } : {}),
+              updatedAt: new Date().toISOString(),
+            });
+          } catch {
+            /* no bloquear el TV */
+          }
         }
       })
     );

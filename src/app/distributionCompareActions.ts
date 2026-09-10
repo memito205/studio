@@ -685,6 +685,124 @@ export async function resolveReceptionLocationForReference(
   }
 }
 
+/**
+ * Resuelve ubicaciones de varias refs de una misma recepción (1 pasada de escaneos si hace falta).
+ */
+export async function resolveReceptionLocationsForReferences(
+  receptionOperationId: string | undefined,
+  references: string[]
+): Promise<Map<string, { locationId?: string; locationName?: string }>> {
+  const out = new Map<string, { locationId?: string; locationName?: string }>();
+  if (!receptionOperationId || !references.length) return out;
+
+  const uniqueRefs = [...new Set(references.map((r) => String(r || '').trim()).filter(Boolean))];
+  const pending: string[] = [];
+
+  await Promise.all(
+    uniqueRefs.map(async (reference) => {
+      const safeRef = normalizeReceptionReference(reference);
+      try {
+        const statsSnap = await getDoc(
+          doc(firestore, RECEPTION_COL, receptionOperationId, 'referenceStats', safeRef)
+        );
+        if (!statsSnap.exists()) {
+          pending.push(reference);
+          return;
+        }
+        const packUnitsById = (statsSnap.data() as {
+          packUnitsById?: Record<string, { locationId?: string; locationName?: string }>;
+        }).packUnitsById;
+        if (!packUnitsById || typeof packUnitsById !== 'object') {
+          pending.push(reference);
+          return;
+        }
+        const counts = new Map<string, { n: number; locationId?: string; locationName?: string }>();
+        for (const u of Object.values(packUnitsById)) {
+          const label = String(u.locationName || u.locationId || '').trim();
+          if (!label) continue;
+          const prev = counts.get(label) || {
+            n: 0,
+            locationId: u.locationId,
+            locationName: u.locationName || u.locationId,
+          };
+          prev.n += 1;
+          counts.set(label, prev);
+        }
+        const best = [...counts.values()].sort((a, b) => b.n - a.n)[0];
+        if (best?.locationName || best?.locationId) {
+          out.set(reference, {
+            locationId: best.locationId,
+            locationName: best.locationName,
+          });
+        } else {
+          pending.push(reference);
+        }
+      } catch {
+        pending.push(reference);
+      }
+    })
+  );
+
+  if (pending.length === 0) return out;
+
+  try {
+    const itemsSnap = await getDocs(
+      query(
+        collection(firestore, 'scannedItems'),
+        where('reception_id', '==', receptionOperationId),
+        limit(800)
+      )
+    );
+    if (itemsSnap.empty) return out;
+
+    const pendingNorm = new Map(
+      pending.map((r) => [normalizeReceptionReference(r), r] as const)
+    );
+    const locCountsByRef = new Map<string, Map<string, number>>();
+
+    for (const d of itemsSnap.docs) {
+      const item = d.data() as { reference?: string; location_id?: string };
+      const norm = normalizeReceptionReference(String(item.reference || ''));
+      const originalRef = pendingNorm.get(norm);
+      if (!originalRef) continue;
+      const locId = String(item.location_id || '').trim();
+      if (!locId) continue;
+      if (!locCountsByRef.has(originalRef)) locCountsByRef.set(originalRef, new Map());
+      const m = locCountsByRef.get(originalRef)!;
+      m.set(locId, (m.get(locId) || 0) + 1);
+    }
+
+    const allLocIds = [
+      ...new Set(
+        [...locCountsByRef.values()].flatMap((m) => [...m.keys()])
+      ),
+    ].slice(0, 80);
+    const nameById = new Map<string, string>();
+    await Promise.all(
+      allLocIds.map(async (id) => {
+        const s = await getDoc(doc(firestore, 'locations', id));
+        nameById.set(
+          id,
+          s.exists() ? String((s.data() as { name?: string }).name || id) : id
+        );
+      })
+    );
+
+    for (const [reference, counts] of locCountsByRef) {
+      const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+      if (!top) continue;
+      out.set(reference, {
+        locationId: top,
+        locationName: nameById.get(top) || top,
+      });
+    }
+  } catch {
+    /* ignore fallback errors */
+  }
+
+  return out;
+}
+
 export async function listAssignableOperatorsForRemainders(): Promise<{
   success: boolean;
   data?: Array<{ uid: string; displayName: string; role: string }>;
@@ -772,7 +890,8 @@ export async function listPendingValidationRemainderTasks(): Promise<{
 }
 
 /**
- * Remanentes >0 sin tarea activa (para que el operario tome la referencia).
+ * Remanentes ≥0 sin tarea activa (para que el operario tome la referencia).
+ * Incluye ubicación de recepción para no buscar a ciegas.
  */
 export async function listAvailableRemainderClaims(limitCompares = 25): Promise<{
   success: boolean;
@@ -798,12 +917,21 @@ export async function listAvailableRemainderClaims(limitCompares = 25): Promise<
         const taken = new Set<string>();
         tasksSnap.forEach((d) => {
           const t = d.data() as DistributionRemainderTask;
-          // Cualquier tarea existente bloquea "disponible" (incluye rejected → sigue con ese operario).
           if (t.reference) taken.add(t.reference);
         });
-        for (const line of lines) {
-          if (!isAssignableRemainderQty(line.remainderQty)) continue;
-          if (taken.has(line.reference)) continue;
+
+        const availableLines = lines.filter(
+          (line) => isAssignableRemainderQty(line.remainderQty) && !taken.has(line.reference)
+        );
+        if (availableLines.length === 0) return;
+
+        const locByRef = await resolveReceptionLocationsForReferences(
+          c.receptionOperationId,
+          availableLines.map((l) => l.reference)
+        );
+
+        for (const line of availableLines) {
+          const loc = locByRef.get(line.reference);
           out.push({
             compareId: c.id,
             rkIdentifier: c.rkIdentifier,
@@ -811,12 +939,16 @@ export async function listAvailableRemainderClaims(limitCompares = 25): Promise<
             remainderQty: line.remainderQty,
             compareStatus: c.status,
             updatedAt: c.updatedAt,
+            locationId: loc?.locationId,
+            locationName: loc?.locationName,
           });
         }
       })
     );
 
     out.sort((a, b) => {
+      const loc = String(a.locationName || 'ZZZ').localeCompare(String(b.locationName || 'ZZZ'), 'es');
+      if (loc !== 0) return loc;
       const rk = String(a.rkIdentifier || '').localeCompare(String(b.rkIdentifier || ''), 'es');
       if (rk !== 0) return rk;
       return a.reference.localeCompare(b.reference, 'es');
