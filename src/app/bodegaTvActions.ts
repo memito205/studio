@@ -1,7 +1,7 @@
 'use server';
 
 import { format } from 'date-fns';
-import { loadHistoricalReports } from '@/app/actions';
+import { loadHistoricalReports, loadOperatorMappings } from '@/app/actions';
 import { listTalladoDashboard } from '@/app/talladoMercanciaActions';
 import {
   getAllUserProfiles,
@@ -69,6 +69,49 @@ function personKeyFromName(name: string, uidByNormName: Map<string, string>): st
   return `name:${n}`;
 }
 
+/** Cédula / documento numérico (sin mapear a nombre). */
+function looksLikeDocumentId(value: string): boolean {
+  return /^\d{6,}$/.test(String(value || '').trim());
+}
+
+/**
+ * Resuelve cédula → nombre vía maestro de empacadores.
+ * Unifica filas cuando un corte guardó la cédula y otro el nombre.
+ */
+function resolvePackerDisplayName(
+  raw: string,
+  idToName: Record<string, string>,
+  nameNormSet: Set<string>
+): string {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return '';
+  const direct = idToName[trimmed];
+  if (direct) return String(direct).trim();
+  const norm = normalizePersonLabel(trimmed);
+  const byNormId = idToName[norm];
+  if (byNormId) return String(byNormId).trim();
+  // Ya es un nombre conocido del maestro (valor del mapa).
+  if (nameNormSet.has(norm)) return trimmed;
+  return trimmed;
+}
+
+function buildOperatorResolveMaps(mappings: Record<string, string> | undefined | null): {
+  idToName: Record<string, string>;
+  nameNormSet: Set<string>;
+} {
+  const idToName: Record<string, string> = {};
+  const nameNormSet = new Set<string>();
+  for (const [id, name] of Object.entries(mappings || {})) {
+    const idTrim = String(id || '').trim();
+    const nameTrim = String(name || '').trim();
+    if (!idTrim || !nameTrim) continue;
+    idToName[idTrim] = nameTrim;
+    idToName[normalizePersonLabel(idTrim)] = nameTrim;
+    nameNormSet.add(normalizePersonLabel(nameTrim));
+  }
+  return { idToName, nameNormSet };
+}
+
 function emptyArea(key: BodegaTvAreaKey, title: string): BodegaTvAreaSnapshot {
   return {
     key,
@@ -106,8 +149,13 @@ async function buildEmpaque(
 ): Promise<BodegaTvAreaSnapshot> {
   const area = emptyArea('empaque', 'Empaque');
   try {
-    const { data, error } = await loadHistoricalReports({ startDate: dayKey, endDate: dayKey });
+    const [{ data, error }, mappingsResult] = await Promise.all([
+      loadHistoricalReports({ startDate: dayKey, endDate: dayKey }),
+      loadOperatorMappings(),
+    ]);
     if (error || !data?.length) return area;
+
+    const { idToName, nameNormSet } = buildOperatorResolveMaps(mappingsResult.data);
 
     const withPackers = data.filter((r) => (r.packerProductivity?.length || 0) > 0);
     const pool = withPackers.length ? withPackers : data;
@@ -123,8 +171,9 @@ async function buildEmpaque(
     const report = ranked[0];
     if (!report) return area;
 
-    // Personas: unión de todos los cortes del día (evita quedar en 5 si otro corte trae 7).
-    const byName = new Map<
+    // Personas: unión de cortes del día, fusionando cédula↔nombre vía maestro
+    // (evita fila duplicada y NO suma und de ambos: se queda con el mayor del día).
+    const byPerson = new Map<
       string,
       {
         packerName: string;
@@ -133,41 +182,64 @@ async function buildEmpaque(
         compliance: number;
       }
     >();
+
+    const upsertPacker = (
+      rawLabel: string,
+      qty: number,
+      productivity: number,
+      compliance: number,
+      allowCreateZero: boolean
+    ) => {
+      const resolved = resolvePackerDisplayName(rawLabel, idToName, nameNormSet);
+      if (!resolved) return;
+      const key = normalizePersonLabel(resolved);
+      if (!key) return;
+      const prev = byPerson.get(key);
+      if (!prev) {
+        if (!allowCreateZero && qty <= 0) return;
+        byPerson.set(key, {
+          packerName: resolved,
+          totalQuantity: qty,
+          productivity,
+          compliance,
+        });
+        return;
+      }
+      const preferName =
+        looksLikeDocumentId(prev.packerName) && !looksLikeDocumentId(resolved)
+          ? resolved
+          : prev.packerName;
+      if (qty > prev.totalQuantity) {
+        byPerson.set(key, {
+          packerName: preferName,
+          totalQuantity: qty,
+          productivity,
+          compliance,
+        });
+      } else if (preferName !== prev.packerName) {
+        byPerson.set(key, { ...prev, packerName: preferName });
+      }
+    };
+
     for (const r of pool) {
       for (const p of r.packerProductivity || []) {
         const name = String(p.packerName || '').trim();
         if (!name) continue;
-        const key = normalizePersonLabel(name);
-        const prev = byName.get(key);
-        if (!prev || (p.totalQuantity || 0) >= prev.totalQuantity) {
-          byName.set(key, {
-            packerName: name,
-            totalQuantity: p.totalQuantity || 0,
-            productivity: p.productivity || 0,
-            compliance: p.compliance || 0,
-          });
-        }
+        upsertPacker(name, p.totalQuantity || 0, p.productivity || 0, p.compliance || 0, true);
       }
       for (const n of r.operatorNames || []) {
         const name = String(n || '').trim();
         if (!name) continue;
-        const key = normalizePersonLabel(name);
-        if (!byName.has(key)) {
-          byName.set(key, {
-            packerName: name,
-            totalQuantity: 0,
-            productivity: 0,
-            compliance: 0,
-          });
-        }
+        upsertPacker(name, 0, 0, 0, true);
       }
     }
 
-    const packers = [...byName.values()].sort((a, b) => {
+    const packers = [...byPerson.values()].sort((a, b) => {
       if (b.compliance !== a.compliance) return b.compliance - a.compliance;
       return b.productivity - a.productivity;
     });
 
+    // Und de área = un solo corte (no suma del ranking fusionado).
     area.units = report.totalQuantity || packers.reduce((s, p) => s + (p.totalQuantity || 0), 0);
     area.operators = packers.length || report.operatorCount || 0;
     area.productivity = report.avgProductivity || 0;
