@@ -682,10 +682,21 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
         externalVendor?.operatorName
       );
       if (result.success) {
-        toast({
-          title: 'Caja confirmada',
-          description: `Progreso: ${result.confirmedBoxes || 0}/${result.totalBoxes || 0} cajas · ${(result.completedUnitsLive || 0).toLocaleString()} und`,
-        });
+        if (result.autoFinished) {
+          const residualNote =
+            result.residualCreated && result.residualBoxes
+              ? ` Remanente: ${result.residualBoxes} cajas → Pendiente.`
+              : '';
+          toast({
+            title: 'Última caja · tarea finalizada',
+            description: `Todas las cajas confirmadas (${result.confirmedBoxes}/${result.totalBoxes}). ${(result.completedUnitsLive || 0).toLocaleString()} und.${residualNote}`,
+          });
+        } else {
+          toast({
+            title: 'Caja confirmada',
+            description: `Progreso: ${result.confirmedBoxes || 0}/${result.totalBoxes || 0} cajas · ${(result.completedUnitsLive || 0).toLocaleString()} und${result.error ? ` · ${result.error}` : ''}`,
+          });
+        }
         handleRefresh();
         const logRes = await getLabelingActivityLog(operationId, { limitN: 120 });
         if (logRes.success && logRes.data) {

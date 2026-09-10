@@ -3066,6 +3066,9 @@ export async function confirmLabelingPackUnit(
   completedUnitsLive?: number;
   confirmedBoxes?: number;
   totalBoxes?: number;
+  autoFinished?: boolean;
+  residualCreated?: boolean;
+  residualBoxes?: number;
   needsLocation?: boolean;
   candidateLocations?: string[];
 }> {
@@ -3187,6 +3190,38 @@ export async function confirmLabelingPackUnit(
         )
       );
     });
+
+    // Última caja confirmada → finalizar automáticamente.
+    if (totalBoxes > 0 && confirmedBoxes >= totalBoxes) {
+      const finish = await finishLabelingTaskSession(
+        operationId,
+        completedUnitsLive,
+        isExternal,
+        providedPin,
+        externalOperatorName
+      );
+      if (!finish.success) {
+        return {
+          success: true,
+          completedUnitsLive,
+          confirmedBoxes,
+          totalBoxes,
+          autoFinished: false,
+          error: finish.error
+            ? `Caja OK, pero no se pudo auto-finalizar: ${finish.error}`
+            : undefined,
+        };
+      }
+      return {
+        success: true,
+        completedUnitsLive,
+        confirmedBoxes,
+        totalBoxes,
+        autoFinished: true,
+        residualCreated: finish.residualCreated,
+        residualBoxes: finish.residualBoxes,
+      };
+    }
 
     return { success: true, completedUnitsLive, confirmedBoxes, totalBoxes };
   } catch (error: any) {

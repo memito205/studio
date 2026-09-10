@@ -454,6 +454,33 @@ async function buildEtiquetado(
         ? area.units / (activeMinutes / 60)
         : summary.conversionRate || summary.efficiency || 0;
 
+    // Estándar u/h por operario desde tareas del día (también FINISH legacy, no solo LIVE).
+    const standardByKey = new Map<string, { weighted: number; weight: number }>();
+    for (const op of operations || []) {
+      const std = Number(op.standard_units_per_hour) || 0;
+      if (std <= 0) continue;
+      const key = op.isExternal
+        ? op.assignedExternalOperatorName || op.assignedExternalVendorId || ''
+        : op.assignedOperatorId || '';
+      if (!key) continue;
+      const w = Math.max(
+        Number(op.completedUnits) || 0,
+        Number(op.completedUnitsLive) || 0,
+        Number(op.totalUnits) || 0,
+        1
+      );
+      const prev = standardByKey.get(key) || { weighted: 0, weight: 0 };
+      prev.weighted += std * w;
+      prev.weight += w;
+      standardByKey.set(key, prev);
+    }
+    const standardFor = (key: string, fallbackName?: string) => {
+      const a = standardByKey.get(key);
+      const b = fallbackName ? standardByKey.get(fallbackName) : undefined;
+      const row = a?.weight ? a : b;
+      return row && row.weight > 0 ? row.weighted / row.weight : 0;
+    };
+
     const rankingByKey = new Map<
       string,
       { name: string; units: number; productivity: number; compliance?: number; meta?: string }
@@ -466,7 +493,7 @@ async function buildEtiquetado(
       const units = (e.totalUnits || 0) + liveUnitsAdd;
       const minutes = (e.activeMinutes || 0) + liveMinutesAdd;
       const productivity = minutes > 0 ? units / (minutes / 60) : e.efficiency || 0;
-      const standard = live?.standard || 0;
+      const standard = live?.standard || standardFor(e.id, e.name) || 0;
       const compliance = standard > 0 ? (productivity / standard) * 100 : undefined;
       const resolved =
         e.type === 'Interno' ? nameByUid.get(e.id) || nameByUid.get(e.name) || e.name : e.name;
@@ -487,8 +514,9 @@ async function buildEtiquetado(
     for (const [key, live] of liveAggByKey.entries()) {
       if (live.units <= 0 && live.minutes <= 0) continue;
       const productivity = live.minutes > 0 ? live.units / (live.minutes / 60) : 0;
+      const standard = live.standard || standardFor(key, live.displayName) || 0;
       const compliance =
-        live.standard > 0 && productivity > 0 ? (productivity / live.standard) * 100 : undefined;
+        standard > 0 && productivity > 0 ? (productivity / standard) * 100 : undefined;
       rankingByKey.set(key, {
         name: live.displayName,
         units: live.units,
