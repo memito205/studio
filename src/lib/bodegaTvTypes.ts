@@ -56,6 +56,9 @@ export type EtiquetadoContributionRow = {
   units: number;
   /** Cómo se obtuvo la und (log / fallback tarea). */
   unitsSource: 'log' | 'operation_completed' | 'qty';
+  /** true = no suma al total (p. ej. FINISH duplicado de la misma tarea). */
+  excluded?: boolean;
+  excludeReason?: string;
 };
 
 export type EtiquetadoDayBreakdown = {
@@ -64,6 +67,8 @@ export type EtiquetadoDayBreakdown = {
   liveUnits: number;
   /** finishUnits + liveUnits (mismo headline que Bodega Live). */
   totalUnits: number;
+  /** FINISH duplicados omitidos al total. */
+  omittedFinishDuplicates?: number;
   contributions: EtiquetadoContributionRow[];
 };
 

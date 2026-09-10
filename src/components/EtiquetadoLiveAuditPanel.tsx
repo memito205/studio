@@ -191,6 +191,13 @@ export const EtiquetadoLiveAuditPanel: React.FC<Props> = ({ day }) => {
                 <p className="text-2xl font-bold tabular-nums">{data.totalUnits.toLocaleString()}</p>
               </div>
             </div>
+            {(data.omittedFinishDuplicates || 0) > 0 ? (
+              <p className="text-sm text-amber-700 dark:text-amber-400 flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                Se omitieron {data.omittedFinishDuplicates} FINISH duplicado(s) de la misma tarea (no
+                suman al total).
+              </p>
+            ) : null}
 
             <div className="overflow-x-auto rounded-md border">
               <Table>
@@ -211,18 +218,27 @@ export const EtiquetadoLiveAuditPanel: React.FC<Props> = ({ day }) => {
                       timestampLocal: toDatetimeLocalValue(row.timestamp),
                       units: String(row.units),
                     };
-                    const share = total > 0 ? (row.units / total) * 100 : 0;
-                    const suspicious = share >= 35 || row.units >= 500;
+                    const share = total > 0 && !row.excluded ? (row.units / total) * 100 : 0;
+                    const suspicious = !row.excluded && (share >= 35 || row.units >= 500);
                     return (
                       <TableRow
                         key={row.id}
-                        className={cn(suspicious && 'bg-amber-500/10')}
+                        className={cn(
+                          suspicious && 'bg-amber-500/10',
+                          row.excluded && 'bg-muted/40 opacity-70'
+                        )}
                       >
                         <TableCell>
                           <div className="flex flex-col gap-1">
                             <Badge variant={row.source === 'finish' ? 'default' : 'secondary'}>
                               {sourceLabel(row.source)}
                             </Badge>
+                            {row.excluded ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] text-red-600 dark:text-red-400">
+                                <AlertTriangle className="h-3 w-3" />
+                                {row.excludeReason || 'No suma'}
+                              </span>
+                            ) : null}
                             {suspicious ? (
                               <span className="inline-flex items-center gap-1 text-[10px] text-amber-700 dark:text-amber-400">
                                 <AlertTriangle className="h-3 w-3" /> Alto vs día
@@ -233,8 +249,10 @@ export const EtiquetadoLiveAuditPanel: React.FC<Props> = ({ day }) => {
                             </span>
                           </div>
                         </TableCell>
-                        <TableCell className="max-w-[140px] truncate text-sm">
-                          {row.operatorLabel}
+                        <TableCell className="max-w-[160px] text-sm font-medium">
+                          <div className="truncate" title={row.operatorLabel}>
+                            {row.operatorLabel}
+                          </div>
                         </TableCell>
                         <TableCell className="max-w-[120px] truncate text-sm">{row.reference}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">

@@ -3332,6 +3332,24 @@ export async function getLabelingHistoricalData(dateRange?: { from: Date; to?: D
         let externalUnits = 0;
         let totalActiveMinutes = 0;
 
+        // Un solo FINISH por tarea (el más reciente en rango). Logs duplicados inflaban el día.
+        const latestFinishByOp = new Map<string, LabelingActivityLog>();
+        for (const log of logs) {
+            if (log.type !== 'FINISH' || !inRange(log.timestamp)) continue;
+            const prev = latestFinishByOp.get(log.labelingOperationId);
+            if (
+                !prev ||
+                new Date(log.timestamp).getTime() >= new Date(prev.timestamp).getTime()
+            ) {
+                latestFinishByOp.set(log.labelingOperationId, log);
+            }
+        }
+        const countedFinishKey = (log: LabelingActivityLog) =>
+            `${log.labelingOperationId}|${log.id || log.timestamp}|${Number(log.completedUnits) || 0}`;
+        const countedFinishKeys = new Set(
+            [...latestFinishByOp.values()].map((l) => countedFinishKey(l))
+        );
+
         const logsByOperator = new Map<string, LabelingActivityLog[]>();
         logs.forEach((log) => {
             const key = log.isExternal ? log.externalOperatorName || log.operatorId : log.operatorId;
@@ -3375,12 +3393,11 @@ export async function getLabelingHistoricalData(dateRange?: { from: Date; to?: D
                     lastStart = null;
                 }
 
-                // Solo unidades de FINISH ocurridos DENTRO del rango (evita arrastrar días previos).
-                if (log.type === 'FINISH' && inRange(ts)) {
+                // Solo el FINISH canónico por tarea dentro del rango.
+                if (log.type === 'FINISH' && inRange(ts) && countedFinishKeys.has(countedFinishKey(log))) {
                     let unitsFromLog = Number(log.completedUnits) || 0;
                     if (unitsFromLog <= 0) {
                         const opForUnits = filteredOps.find((o) => o.id === log.labelingOperationId);
-                        // Solo fallback si la tarea quedó Completada; nunca usar totalUnits de Pausada/En Progreso.
                         if (opForUnits?.status === 'Completada') {
                             unitsFromLog = Number(opForUnits.completedUnits) || 0;
                         }

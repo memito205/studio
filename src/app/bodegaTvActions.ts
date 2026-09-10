@@ -313,15 +313,25 @@ async function buildEtiquetado(
     let totalBoxes = 0;
     for (const op of packActive) {
       const opLogs = (logs || []).filter((l) => l.labelingOperationId === op.id);
-      const unitsToday = opLogs
-        .filter((l) => l.type === 'UNIT_COMPLETE' && isSameLocalDay(l.timestamp, dayKey))
-        .reduce((s, l) => s + (Number(l.qty ?? l.completedUnits) || 0), 0);
+      const unitCompleteToday = opLogs.filter(
+        (l) => l.type === 'UNIT_COMPLETE' && isSameLocalDay(l.timestamp, dayKey)
+      );
+      const seenBox = new Set<string>();
+      let unitsToday = 0;
+      let boxesToday = 0;
+      for (const l of unitCompleteToday) {
+        const dedupeKey = l.packingUnitId
+          ? `box:${l.packingUnitId}`
+          : l.unitNumber != null
+            ? `n:${l.unitNumber}`
+            : `t:${l.timestamp}:${l.id || ''}`;
+        if (seenBox.has(dedupeKey)) continue;
+        seenBox.add(dedupeKey);
+        unitsToday += Number(l.qty ?? l.completedUnits) || 0;
+        boxesToday += 1;
+      }
       liveUnits += unitsToday;
       const prog = summarizePackPlanProgress(op.labelingPackPlan);
-      // Cajas confirmadas hoy (aprox. por UNIT_COMPLETE del día).
-      const boxesToday = opLogs.filter(
-        (l) => l.type === 'UNIT_COMPLETE' && isSameLocalDay(l.timestamp, dayKey)
-      ).length;
       confirmedBoxes += boxesToday;
       totalBoxes += prog.totalBoxes;
     }
@@ -368,9 +378,21 @@ async function buildEtiquetado(
       if (!key) continue;
 
       const opLogs = (logs || []).filter((l) => l.labelingOperationId === op.id);
-      const unitsToday = opLogs
-        .filter((l) => l.type === 'UNIT_COMPLETE' && isSameLocalDay(l.timestamp, dayKey))
-        .reduce((s, l) => s + (Number(l.qty ?? l.completedUnits) || 0), 0);
+      const unitCompleteToday = opLogs.filter(
+        (l) => l.type === 'UNIT_COMPLETE' && isSameLocalDay(l.timestamp, dayKey)
+      );
+      const seenBox = new Set<string>();
+      let unitsToday = 0;
+      for (const l of unitCompleteToday) {
+        const dedupeKey = l.packingUnitId
+          ? `box:${l.packingUnitId}`
+          : l.unitNumber != null
+            ? `n:${l.unitNumber}`
+            : `t:${l.timestamp}:${l.id || ''}`;
+        if (seenBox.has(dedupeKey)) continue;
+        seenBox.add(dedupeKey);
+        unitsToday += Number(l.qty ?? l.completedUnits) || 0;
+      }
       const metrics = computeLabelingProductivity(opLogs, op, [], Date.now(), {
         fromMs: dayFromMs,
         toMs: dayToMs,
@@ -901,18 +923,62 @@ export async function getEtiquetadoDayBreakdown(dayKey?: string): Promise<{
   try {
     const key = dayKey || todayKeyLocal();
     const day = new Date(`${key}T12:00:00`);
-    const result = await getLabelingHistoricalData({ from: day, to: day });
+    const [result, profiles] = await Promise.all([
+      getLabelingHistoricalData({ from: day, to: day }),
+      getAllUserProfiles(),
+    ]);
     if (!result.success || !result.data) {
       return { success: false, error: result.error || 'Sin datos de etiquetado.' };
     }
+
+    const nameByUid = new Map<string, string>();
+    for (const u of profiles || []) {
+      nameByUid.set(u.uid, u.displayName || u.email || u.uid);
+    }
+
+    const resolveOperatorLabel = (
+      log: { operatorId: string; isExternal?: boolean; externalOperatorName?: string },
+      op?: {
+        assignedOperatorId?: string;
+        assignedExternalOperatorName?: string;
+        isExternal?: boolean;
+      }
+    ) => {
+      if (log.isExternal || op?.isExternal) {
+        return (
+          log.externalOperatorName ||
+          op?.assignedExternalOperatorName ||
+          log.operatorId ||
+          'Externo'
+        );
+      }
+      const uid = log.operatorId || op?.assignedOperatorId || '';
+      return nameByUid.get(uid) || uid || '—';
+    };
 
     const { summary, operations, logs } = result.data;
     const opsById = new Map((operations || []).map((op) => [op.id, op]));
     const contributions: EtiquetadoContributionRow[] = [];
 
-    // FINISH del día (misma regla que getLabelingHistoricalData → summary.totalUnits).
-    for (const log of logs || []) {
-      if (log.type !== 'FINISH' || !isSameLocalDay(log.timestamp, key)) continue;
+    // FINISH: un solo log canónico por tarea (el más reciente del día).
+    const finishLogs = (logs || []).filter(
+      (l) => l.type === 'FINISH' && isSameLocalDay(l.timestamp, key)
+    );
+    const latestFinishByOp = new Map<string, (typeof finishLogs)[number]>();
+    for (const log of finishLogs) {
+      const prev = latestFinishByOp.get(log.labelingOperationId);
+      if (!prev || new Date(log.timestamp).getTime() >= new Date(prev.timestamp).getTime()) {
+        latestFinishByOp.set(log.labelingOperationId, log);
+      }
+    }
+    const canonicalFinishIds = new Set(
+      [...latestFinishByOp.values()].map(
+        (l) => String(l.id || `${l.labelingOperationId}:${l.timestamp}`)
+      )
+    );
+    let omittedFinishDuplicates = 0;
+
+    for (const log of finishLogs) {
       const op = opsById.get(log.labelingOperationId);
       let units = Number(log.completedUnits) || 0;
       let unitsSource: EtiquetadoContributionRow['unitsSource'] = 'log';
@@ -922,26 +988,28 @@ export async function getEtiquetadoDayBreakdown(dayKey?: string): Promise<{
       }
       if (units <= 0) continue;
 
-      const operatorLabel = log.isExternal
-        ? log.externalOperatorName || log.operatorId
-        : log.operatorId;
+      const logKey = String(log.id || `${log.labelingOperationId}:${log.timestamp}`);
+      const isCanonical = canonicalFinishIds.has(logKey);
+      if (!isCanonical) omittedFinishDuplicates += 1;
 
       contributions.push({
-        id: `finish:${log.id || `${log.labelingOperationId}:${log.timestamp}`}`,
+        id: `finish:${logKey}`,
         source: 'finish',
         logId: String(log.id || ''),
         operationId: log.labelingOperationId,
         reference: op?.reference || '—',
         status: op?.status || '—',
         trackingMode: op?.trackingMode,
-        operatorLabel,
+        operatorLabel: resolveOperatorLabel(log, op),
         timestamp: log.timestamp,
         units,
         unitsSource,
+        excluded: !isCanonical,
+        excludeReason: !isCanonical ? 'FINISH duplicado (no suma)' : undefined,
       });
     }
 
-    // LIVE: UNIT_COMPLETE de hoy en tareas pack_units abiertas con actividad hoy.
+    // LIVE: UNIT_COMPLETE de hoy; dedupe por caja.
     const activeOps = (operations || []).filter(
       (op) => op.status === 'En Progreso' || op.status === 'Pausada'
     );
@@ -962,35 +1030,49 @@ export async function getEtiquetadoDayBreakdown(dayKey?: string): Promise<{
         .map((op) => op.id)
     );
 
+    const liveLogs = (logs || []).filter(
+      (l) =>
+        l.type === 'UNIT_COMPLETE' &&
+        isSameLocalDay(l.timestamp, key) &&
+        packActiveIds.has(l.labelingOperationId)
+    );
+    const seenBox = new Set<string>();
     let liveUnits = 0;
-    for (const log of logs || []) {
-      if (log.type !== 'UNIT_COMPLETE' || !isSameLocalDay(log.timestamp, key)) continue;
-      if (!packActiveIds.has(log.labelingOperationId)) continue;
+    for (const log of liveLogs) {
+      const boxKey = `${log.labelingOperationId}|${log.packingUnitId || ''}|${log.unitNumber ?? ''}|${log.timestamp}`;
+      const dedupeKey = log.packingUnitId
+        ? `${log.labelingOperationId}|box:${log.packingUnitId}`
+        : log.unitNumber != null
+          ? `${log.labelingOperationId}|n:${log.unitNumber}`
+          : boxKey;
+      const isDup = seenBox.has(dedupeKey);
+      if (!isDup) seenBox.add(dedupeKey);
+
       const units = Number(log.qty ?? log.completedUnits) || 0;
       if (units <= 0) continue;
-      liveUnits += units;
+      if (!isDup) liveUnits += units;
       const op = opsById.get(log.labelingOperationId);
-      const operatorLabel = log.isExternal
-        ? log.externalOperatorName || log.operatorId
-        : log.operatorId;
       contributions.push({
-        id: `live:${log.id || `${log.labelingOperationId}:${log.timestamp}`}`,
+        id: `live:${log.id || boxKey}`,
         source: 'unit_complete',
         logId: String(log.id || ''),
         operationId: log.labelingOperationId,
         reference: op?.reference || '—',
         status: op?.status || '—',
         trackingMode: op?.trackingMode,
-        operatorLabel,
+        operatorLabel: resolveOperatorLabel(log, op),
         timestamp: log.timestamp,
         units,
         unitsSource: log.qty != null ? 'qty' : 'log',
+        excluded: isDup,
+        excludeReason: isDup ? 'Caja duplicada (no suma)' : undefined,
       });
     }
 
     const finishUnits = summary.totalUnits || 0;
     contributions.sort(
       (a, b) =>
+        Number(!!a.excluded) - Number(!!b.excluded) ||
         b.units - a.units ||
         new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
     );
@@ -1002,6 +1084,7 @@ export async function getEtiquetadoDayBreakdown(dayKey?: string): Promise<{
         finishUnits,
         liveUnits,
         totalUnits: finishUnits + liveUnits,
+        omittedFinishDuplicates,
         contributions,
       },
     };
