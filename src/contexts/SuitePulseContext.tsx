@@ -132,7 +132,7 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
             where('isGlobal', '==', true),
             where('startTime', '>=', dayStart),
             orderBy('startTime', 'desc'),
-            limit(400)
+            limit(80)
         );
 
         const qUser = query(
@@ -140,7 +140,7 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
             where('userId', '==', user.uid),
             where('startTime', '>=', dayStart),
             orderBy('startTime', 'desc'),
-            limit(400)
+            limit(80)
         );
 
         try {
@@ -187,7 +187,11 @@ export function SuitePulseProvider({ children }: { children: ReactNode }) {
     }, [user?.uid]);
 
     useEffect(() => {
-        fetchPulsesOfDay();
+        // Diferir historial del día: no competir con login / primer paint de cada módulo.
+        const t = window.setTimeout(() => {
+            void fetchPulsesOfDay();
+        }, 2000);
+        return () => window.clearTimeout(t);
     }, [fetchPulsesOfDay]);
 
     const changeStatus = useCallback(async (status: UserStatus, type: 'activity' | 'pause' | 'status_change', reason?: PulseReason) => {

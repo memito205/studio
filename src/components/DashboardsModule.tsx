@@ -1792,16 +1792,20 @@ export const DashboardsModule: React.FC<DashboardsModuleProps> = ({ onReturnToSu
   const [globalStoreFilter, setGlobalStoreFilter] = useState<string[]>([]);
   const [isFullHistoryLoaded, setIsFullHistoryLoaded] = useState(false);
 
-  const fetchAllData = useCallback(async () => {
+  const fetchAllData = useCallback(async (opts?: { ordersAlready?: EcommerceOrder[] }) => {
     setIsLoading(true);
     const [ordersResult, logsResult, holidaysResult] = await Promise.all([
-      loadEcommerceOrders(isFullHistoryLoaded),
+      opts?.ordersAlready
+        ? Promise.resolve({ success: true as const, data: opts.ordersAlready, error: undefined as string | undefined })
+        : loadEcommerceOrders(isFullHistoryLoaded),
       getDelayedOrderLogs(),
       loadHolidays()
     ]);
 
     if (ordersResult.success && ordersResult.data) {
-      const filteredOrders = ordersResult.data.filter(o => (o.tienda?.toUpperCase().trim() ?? '') !== 'UNOE');
+      const filteredOrders = opts?.ordersAlready
+        ? ordersResult.data
+        : ordersResult.data.filter(o => (o.tienda?.toUpperCase().trim() ?? '') !== 'UNOE');
       setAllOrders(filteredOrders);
     } else {
       toast({ variant: "destructive", title: "Error", description: ordersResult.error || "No se pudieron cargar los datos de despacho." });

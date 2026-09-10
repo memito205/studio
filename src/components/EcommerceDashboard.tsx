@@ -51,7 +51,7 @@ interface EcommerceDashboardProps {
   orders: EcommerceOrder[];
   logs: DelayedOrderLog[];
   isLoading: boolean;
-  onRefresh: () => void;
+  onRefresh: (opts?: { ordersAlready?: EcommerceOrder[] }) => void | Promise<void>;
   dateRange?: DateRange;
   onDateRangeChange: (dateRange?: DateRange) => void;
   storeFilter: string[];
@@ -502,7 +502,8 @@ export const EcommerceDashboard: React.FC<EcommerceDashboardProps> = ({ onReturn
             await batchUpsertDelayedOrderLogs(upsertsToBatch);
         }
 
-        await onRefresh();
+        // Evita segunda lectura completa de ecommerceOrders (antes: load + onRefresh volvía a cargar).
+        await onRefresh({ ordersAlready: filteredOrders });
         setIsGenerated(true);
         setNewFileLoaded(false);
         setAnalysisDate(referenceDate);

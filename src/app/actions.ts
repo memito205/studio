@@ -374,13 +374,20 @@ export async function setGlobalPulse(active: boolean, reason?: PulseReason, admi
     }
 }
 
+let _userStatusesCache: { at: number; data: any[] } | null = null;
+const USER_STATUSES_TTL_MS = 30_000;
+
 export async function getAllUserStatuses(): Promise<{ data?: any[]; error?: string }> {
     try {
+        if (_userStatusesCache && Date.now() - _userStatusesCache.at < USER_STATUSES_TTL_MS) {
+            return { data: _userStatusesCache.data };
+        }
         const querySnapshot = await getDocs(collection(firestore, 'users'));
         const users = querySnapshot.docs.map(doc => ({
             uid: doc.id,
             ...convertTimestampsToDates(doc.data())
         }));
+        _userStatusesCache = { at: Date.now(), data: users };
         return { data: users };
     } catch (error: any) {
         return { error: `Error loading user statuses: ${error.message}` };
@@ -3135,9 +3142,18 @@ export async function resolveDelayedOrderLog(orderId: string, dispatchDate: Date
 
 export async function getDelayedOrderLogs(): Promise<{ success: boolean; data?: DelayedOrderLog[]; error?: string; }> {
     try {
-        const querySnapshot = await getDocs(collection(firestore, "delayedOrdersLog"));
-        const logs = querySnapshot.docs.map(doc => convertTimestampsToDates({ id: doc.id, ...doc.data() }) as DelayedOrderLog);
-        return { success: true, data: logs };
+        // Antes: getDocs de TODA la colección (crece sin tope y frena Firebase para toda la suite).
+        // Ahora: abiertos + muestra acotada de resueltos (índice de un campo = automático).
+        const col = collection(firestore, "delayedOrdersLog");
+        const [openSnap, resolvedSnap] = await Promise.all([
+            getDocs(query(col, where("isResolved", "==", false), limit(2500))),
+            getDocs(query(col, where("isResolved", "==", true), limit(800))),
+        ]);
+        const byId = new Map<string, DelayedOrderLog>();
+        for (const d of [...openSnap.docs, ...resolvedSnap.docs]) {
+            byId.set(d.id, convertTimestampsToDates({ id: d.id, ...d.data() }) as DelayedOrderLog);
+        }
+        return { success: true, data: Array.from(byId.values()) };
     } catch (error: any) {
         return { success: false, error: `Failed to load delayed order logs: ${error.message}` };
     }

@@ -62,7 +62,7 @@ export const ControlPiso: React.FC<{ onReturn: () => void }> = ({ onReturn }) =>
 
     useEffect(() => {
         fetchData();
-        const fetchInterval = setInterval(fetchData, 15000); // Poll every 15s instead of 30s for better responsiveness
+        const fetchInterval = setInterval(fetchData, 45000); // 45s: evita saturar Firebase (antes 15s + getAllUserStatuses completo)
         const timerInterval = setInterval(() => setNow(new Date()), 1000); // Tick every second
         
         return () => {
