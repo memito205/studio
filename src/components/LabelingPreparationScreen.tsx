@@ -174,31 +174,65 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
   const fetchDependencies = useCallback(async () => {
     setLoadingOperators(true);
     setLoadingVendors(true);
-    const [tasksResult, usersResult, vendorsResult] = await Promise.all([
-      loadLabelingOperations({ receptionOperationId: operation.id, limitN: 200 }),
-      getAllUserProfiles(),
-      getExternalVendors(),
-    ]);
+    try {
+      // Primero tareas + resumen de cajas (lo que pinta la tabla). Usuarios/vendors en paralelo.
+      const [tasksResult, packMeta, usersResult, vendorsResult] = await Promise.all([
+        loadLabelingOperations({ receptionOperationId: operation.id, limitN: 200 }),
+        getReceptionPackSummaries(operation.id),
+        getAllUserProfiles(),
+        getExternalVendors(),
+      ]);
 
-    if (tasksResult.data) {
-      setExistingTasks(tasksResult.data);
+      if (tasksResult.data) {
+        setExistingTasks(tasksResult.data);
+      } else if (tasksResult.error) {
+        const msg = String(tasksResult.error);
+        const isSkew =
+          msg.includes('Server Action') || msg.includes('was not found on the server');
+        toast({
+          variant: 'destructive',
+          title: isSkew ? 'Versión desactualizada' : 'Error',
+          description: isSkew
+            ? 'Recargue con Ctrl+F5 y vuelva a abrir preparación de etiquetado.'
+            : msg,
+        });
+      }
+
+      if (packMeta.success && packMeta.data) {
+        const next: Record<string, number> = {};
+        for (const [refKey, list] of Object.entries(packMeta.data)) {
+          next[normalizeReceptionReference(refKey)] = list.length;
+        }
+        setPackPlanByRef(next);
+      } else {
+        setPackPlanByRef({});
+      }
+
+      if (usersResult) {
+        setOperators(usersResult);
+      } else {
+        toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los operarios.' });
+      }
+
+      if (vendorsResult.success && vendorsResult.data) {
+        setExternalVendors(vendorsResult.data);
+      }
+    } catch (e: any) {
+      const msg = String(e?.message || e || '');
+      const isSkew =
+        msg.includes('Server Action') || msg.includes('was not found on the server');
+      toast({
+        variant: 'destructive',
+        title: isSkew ? 'Versión desactualizada' : 'Error al cargar preparación',
+        description: isSkew
+          ? 'El navegador tiene una build vieja. Ctrl+F5 y reintente.'
+          : msg,
+      });
+    } finally {
+      setLoadingVendors(false);
+      setLoadingOperators(false);
     }
-
-    if (usersResult) {
-      setOperators(usersResult);
-    } else {
-      toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los operarios.' });
-    }
-
-    if (vendorsResult.success && vendorsResult.data) {
-      setExternalVendors(vendorsResult.data);
-    }
-
-    await refreshPackPlanMeta();
-
-    setLoadingVendors(false);
-    setLoadingOperators(false);
-  }, [operation.id, toast, refreshPackPlanMeta]);
+  }, [operation.id, toast]);
 
   useEffect(() => {
     fetchDependencies();

@@ -455,19 +455,28 @@ export async function getLocations(): Promise<{ success: boolean; data?: Locatio
     }
 }
 
+let _userProfilesCache: { at: number; data: AppUser[] } | null = null;
+const USER_PROFILES_TTL_MS = 60_000;
+
 export async function getAllUserProfiles(): Promise<AppUser[]> {
     try {
+        if (_userProfilesCache && Date.now() - _userProfilesCache.at < USER_PROFILES_TTL_MS) {
+            return _userProfilesCache.data;
+        }
         const usersCollection = await getDocs(collection(firestore, "users"));
         if (usersCollection.empty) {
+            _userProfilesCache = { at: Date.now(), data: [] };
             return [];
         }
-        return usersCollection.docs.map(doc => ({
+        const data = usersCollection.docs.map(doc => ({
             uid: doc.id,
             ...doc.data()
         })) as AppUser[];
+        _userProfilesCache = { at: Date.now(), data };
+        return data;
     } catch (error) {
         console.error("Error getting user profiles:", error);
-        return [];
+        return _userProfilesCache?.data || [];
     }
 }
 
@@ -1360,15 +1369,31 @@ export async function rebuildReceptionPackSummaries(receptionId: string): Promis
       });
     });
 
-    // Ubicaciones: opcional (ops viejas a menudo no tienen location_id).
+    // Ubicaciones: solo las que aparecen en escaneos (no toda la colección locations).
     const locationNameById = new Map<string, string>();
-    try {
-      const locSnap = await getDocs(collection(firestore, 'locations'));
-      locSnap.forEach((d) => {
-        locationNameById.set(d.id, String((d.data() as Location).name || d.id));
-      });
-    } catch (locErr) {
-      console.warn('rebuildReceptionPackSummaries: locations omitidas', locErr);
+    const neededLocIds = [
+      ...new Set(
+        scannedItems
+          .map((i) => String(i.location_id || '').trim())
+          .filter(Boolean)
+      ),
+    ].slice(0, 80);
+    if (neededLocIds.length > 0) {
+      try {
+        await Promise.all(
+          neededLocIds.map(async (locId) => {
+            const locSnap = await getDoc(doc(firestore, 'locations', locId));
+            if (locSnap.exists()) {
+              locationNameById.set(
+                locId,
+                String((locSnap.data() as Location).name || locId)
+              );
+            }
+          })
+        );
+      } catch (locErr) {
+        console.warn('rebuildReceptionPackSummaries: locations omitidas', locErr);
+      }
     }
 
     const byRef = aggregatePackUnitsByReference(scannedItems, unitMetaById, locationNameById);

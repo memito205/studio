@@ -372,65 +372,93 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     []
   );
 
-  const fetchOperationsAndProductivity = useCallback(async () => {
-    setIsLoading(true);
+  const fetchOperationsAndProductivity = useCallback(async (opts?: { soft?: boolean }) => {
+    const soft = Boolean(opts?.soft);
+    if (!soft) setIsLoading(true);
     if (!vendorsLoadedRef.current) setLoadingVendors(true);
 
-    const usersPromise = usersLoadedRef.current
-      ? Promise.resolve(null as AppUser[] | null)
-      : getAllUserProfiles();
-    const vendorsPromise = vendorsLoadedRef.current
-      ? Promise.resolve(null as Awaited<ReturnType<typeof getExternalVendors>> | null)
-      : getExternalVendors();
+    try {
+      const usersPromise = usersLoadedRef.current
+        ? Promise.resolve(null as AppUser[] | null)
+        : getAllUserProfiles();
+      const vendorsPromise = vendorsLoadedRef.current
+        ? Promise.resolve(null as Awaited<ReturnType<typeof getExternalVendors>> | null)
+        : getExternalVendors();
 
-    const [opsResult, usersResult, vendorsResult] = await Promise.all([
-      loadLabelingOperations({ limitN: 150 }),
-      usersPromise,
-      vendorsPromise,
-    ]);
+      const [opsResult, usersResult, vendorsResult] = await Promise.all([
+        loadLabelingOperations({ limitN: 150 }),
+        usersPromise,
+        vendorsPromise,
+      ]);
 
-    if (usersResult) {
-      setAllUsers(usersResult);
-      usersLoadedRef.current = true;
-    } else if (!usersLoadedRef.current) {
+      if (usersResult) {
+        setAllUsers(usersResult);
+        usersLoadedRef.current = true;
+      } else if (!usersLoadedRef.current) {
+        toast({
+          variant: 'destructive',
+          title: 'Error',
+          description: 'No se pudieron cargar los perfiles de usuario.',
+        });
+      }
+
+      if (vendorsResult?.success && vendorsResult.data) {
+        setExternalVendors(vendorsResult.data);
+        vendorsLoadedRef.current = true;
+      }
+
+      if (opsResult.success && opsResult.data) {
+        const fetchedOps = opsResult.data;
+        setOperations(fetchedOps);
+        // Mostrar tabla ya; métricas en segundo plano (no bloquear spinner).
+        if (!soft) setIsLoading(false);
+        setLoadingVendors(false);
+
+        const forMetrics = fetchedOps
+          .filter((op) => op.status !== 'Pendiente' && op.status !== 'Asignada')
+          .slice(0, soft ? 25 : 40);
+
+        const logResults = await Promise.all(
+          forMetrics.map(async (op) => {
+            const logResult = await getLabelingActivityLog(op.id, { limitN: soft ? 40 : 80 });
+            return { id: op.id, logs: logResult.success && logResult.data ? logResult.data : [] };
+          })
+        );
+
+        const nextLogs = soft
+          ? new Map(activityLogsRef.current)
+          : new Map<string, LabelingActivityLog[]>();
+        for (const row of logResults) {
+          if (row.logs.length) nextLogs.set(row.id, row.logs);
+        }
+        activityLogsRef.current = nextLogs;
+        recalculateProductivity(fetchedOps, allPulsesRef.current);
+      } else {
+        toast({
+          variant: 'destructive',
+          title: 'Error',
+          description:
+            opsResult.error ||
+            'No se pudieron cargar tareas. Si acaba de desplegarse la app, recargue con Ctrl+F5.',
+        });
+      }
+    } catch (e: any) {
+      const msg = String(e?.message || e || '');
+      const isSkew =
+        msg.includes('Server Action') ||
+        msg.includes('was not found on the server') ||
+        msg.includes('Failed to find Server Action');
       toast({
         variant: 'destructive',
-        title: 'Error',
-        description: 'No se pudieron cargar los perfiles de usuario.',
+        title: isSkew ? 'Versión desactualizada' : 'Error al cargar etiquetado',
+        description: isSkew
+          ? 'El navegador tiene una versión vieja de la app. Recargue con Ctrl+F5 (o cierre pestañas viejas) y vuelva a entrar.'
+          : msg || 'Fallo inesperado al cargar el módulo.',
       });
+    } finally {
+      setIsLoading(false);
+      setLoadingVendors(false);
     }
-
-    if (vendorsResult?.success && vendorsResult.data) {
-      setExternalVendors(vendorsResult.data);
-      vendorsLoadedRef.current = true;
-    }
-
-    if (opsResult.success && opsResult.data) {
-      const fetchedOps = opsResult.data;
-      setOperations(fetchedOps);
-
-      const forMetrics = fetchedOps
-        .filter((op) => op.status !== 'Pendiente' && op.status !== 'Asignada')
-        .slice(0, 40);
-
-      const logResults = await Promise.all(
-        forMetrics.map(async (op) => {
-          const logResult = await getLabelingActivityLog(op.id, { limitN: 80 });
-          return { id: op.id, logs: logResult.success && logResult.data ? logResult.data : [] };
-        })
-      );
-
-      const nextLogs = new Map<string, LabelingActivityLog[]>();
-      for (const row of logResults) {
-        if (row.logs.length) nextLogs.set(row.id, row.logs);
-      }
-      activityLogsRef.current = nextLogs;
-      recalculateProductivity(fetchedOps, allPulsesRef.current);
-    } else {
-      toast({ variant: 'destructive', title: 'Error', description: opsResult.error });
-    }
-    setIsLoading(false);
-    setLoadingVendors(false);
   }, [recalculateProductivity, toast]);
 
   const handleAdminPauseConfirm = async (reason: string, startTime: string) => {
@@ -474,7 +502,7 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     recalculateProductivity(operations, allPulses);
   }, [allPulses, operations, recalculateProductivity]);
 
-  // KPIs live: refrescar tareas pack_units activas cada 30s
+  // KPIs live: refrescar solo tareas (soft), sin bloquear UI ni re-leer toda la productividad pesada igual
   useEffect(() => {
     const hasLivePack = operations.some(
       (op) =>
@@ -483,8 +511,8 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     );
     if (!hasLivePack) return;
     const id = window.setInterval(() => {
-      void fetchOperationsAndProductivity();
-    }, 30000);
+      void fetchOperationsAndProductivity({ soft: true });
+    }, 45000);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
