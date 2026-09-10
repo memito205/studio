@@ -69,24 +69,6 @@ const WarehouseAnalyzer: React.FC = () => {
   const [collectedOnRouteKeys, setCollectedOnRouteKeys] = React.useState<string[]>([]);
   const { user, userName } = useAuth();
 
-  const refreshReceivedInWarehouseKeys = React.useCallback(async () => {
-    try {
-      const res = await getTfKeysReceivedInWarehouse();
-      if (res.keys) setReceivedInWarehouseKeys(res.keys);
-    } catch (err) {
-      console.error('No se pudieron cargar TF Recibido en Bodega:', err);
-    }
-  }, []);
-
-  const refreshCollectedOnRouteKeys = React.useCallback(async () => {
-    try {
-      const res = await getTfKeysCollectedOnRoute();
-      if (res.keys) setCollectedOnRouteKeys(res.keys);
-    } catch (err) {
-      console.error('No se pudieron cargar TF Recolectado en Ruta:', err);
-    }
-  }, []);
-
   // Las claves TF se cargan junto con el snapshot en fetchTransfersFromDB (una sola vez).
 
   const publishPlatformStatusesIfComplete = React.useCallback(
