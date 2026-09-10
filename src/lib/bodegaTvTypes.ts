@@ -36,6 +36,31 @@ export type BodegaTvRemainderAssignmentRow = {
   statusLabel: string;
 };
 
+/** Fila de aporte al total de etiquetado del día (Bodega Live). */
+export type EtiquetadoContributionRow = {
+  id: string;
+  source: 'finish' | 'unit_complete';
+  logId: string;
+  operationId: string;
+  reference: string;
+  status: string;
+  trackingMode?: string;
+  operatorLabel: string;
+  timestamp: string;
+  units: number;
+  /** Cómo se obtuvo la und (log / fallback tarea). */
+  unitsSource: 'log' | 'operation_completed' | 'qty';
+};
+
+export type EtiquetadoDayBreakdown = {
+  dayKey: string;
+  finishUnits: number;
+  liveUnits: number;
+  /** finishUnits + liveUnits (mismo headline que Bodega Live). */
+  totalUnits: number;
+  contributions: EtiquetadoContributionRow[];
+};
+
 export type BodegaTvSnapshot = {
   dayKey: string;
   generatedAt: string;

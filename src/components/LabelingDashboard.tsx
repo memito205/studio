@@ -1,22 +1,23 @@
 /** @jsxImportSource react */
 "use client";
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell, PieChart, Pie, LineChart, Line } from 'recharts';
-import { format, startOfDay, endOfDay } from 'date-fns';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell, PieChart, Pie } from 'recharts';
+import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
 import { StatCard } from '@/components/StatCard';
-import { Loader2, ArrowLeft, Calendar as CalendarIcon, FileDown, Users, Target, Timer, Zap } from 'lucide-react';
+import { Loader2, ArrowLeft, Calendar as CalendarIcon, Users, Target, Timer, Zap } from 'lucide-react';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
-import type { LabelingDashboardData, LabelingEmployeePerformance } from '@/types';
-import { getLabelingDashboardData } from '@/app/reception/actions'; // I named it getLabelingHistoricalData in actions.ts, wait
-import { getLabelingHistoricalData } from '@/app/reception/actions'; // Correcting name
+import type { LabelingDashboardData } from '@/types';
+import { getLabelingHistoricalData } from '@/app/reception/actions';
 import { useToast } from '@/hooks/use-toast';
+import { useAuth } from '@/hooks/use-auth-context';
+import { EtiquetadoLiveAuditPanel } from '@/components/EtiquetadoLiveAuditPanel';
 
 interface LabelingDashboardProps {
     onReturn: () => void;
@@ -26,6 +27,10 @@ const COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff8042', '#0088fe', '#00c49f'
 
 export const LabelingDashboard: React.FC<LabelingDashboardProps> = ({ onReturn }) => {
     const { toast } = useToast();
+    const { role } = useAuth();
+    const canAudit =
+      String(role || '').toLowerCase() === 'admin' ||
+      String(role || '').toLowerCase() === 'supervisor';
     const [dateRange, setDateRange] = useState<{ from: Date; to?: Date | null }>({ from: new Date() });
     const [data, setData] = useState<LabelingDashboardData | null>(null);
     const [isLoading, setIsLoading] = useState(true);
@@ -106,6 +111,8 @@ export const LabelingDashboard: React.FC<LabelingDashboardProps> = ({ onReturn }
                 </div>
             </div>
 
+            {canAudit ? <EtiquetadoLiveAuditPanel day={dateRange.from} /> : null}
+
             {data && (
                 <>
                     {/* Summary Cards */}
@@ -114,7 +121,7 @@ export const LabelingDashboard: React.FC<LabelingDashboardProps> = ({ onReturn }
                             title="Producción Total" 
                             value={data.summary.totalUnits.toLocaleString()} 
                             icon={<Zap className="text-amber-500" />} 
-                            subtitle="Unidades terminadas"
+                            subtitle="Unidades terminadas (FINISH)"
                         />
                         <StatCard 
                             title="Eficiencia Global" 

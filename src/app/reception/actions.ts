@@ -2569,6 +2569,98 @@ export async function correctLabelingTaskQuantity(
   }
 }
 
+/**
+ * Corrige la fecha/hora de un log de actividad (FINISH / UNIT_COMPLETE / etc.).
+ * Útil cuando un evento cayó en el día equivocado y distorsiona Bodega Live.
+ */
+export async function correctLabelingActivityLogTimestamp(
+  operationId: string,
+  logId: string,
+  newTimestampIso: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!operationId || !logId) {
+      return { success: false, error: 'Tarea o log inválido.' };
+    }
+    const next = new Date(newTimestampIso);
+    if (Number.isNaN(next.getTime())) {
+      return { success: false, error: 'Fecha/hora inválida.' };
+    }
+
+    const logRef = doc(firestore, 'labelingOperations', operationId, 'activityLog', logId);
+    const logSnap = await getDoc(logRef);
+    if (!logSnap.exists()) {
+      return { success: false, error: 'El registro de actividad no existe.' };
+    }
+
+    await updateDoc(logRef, {
+      timestamp: next.toISOString(),
+    });
+    await updateDoc(doc(firestore, 'labelingOperations', operationId), {
+      updatedAt: Timestamp.now(),
+    });
+
+    return { success: true };
+  } catch (error: any) {
+    console.error('correctLabelingActivityLogTimestamp:', error);
+    return { success: false, error: error?.message || 'No se pudo corregir la fecha del log.' };
+  }
+}
+
+/**
+ * Corrige las unidades de un log FINISH o UNIT_COMPLETE (sin reescalar tallas).
+ * Para FINISH en tarea Completada también alinea completedUnits de la operación.
+ */
+export async function correctLabelingActivityLogUnits(
+  operationId: string,
+  logId: string,
+  newUnits: number
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const qty = Math.round(Number(newUnits));
+    if (!operationId || !logId) {
+      return { success: false, error: 'Tarea o log inválido.' };
+    }
+    if (!Number.isFinite(qty) || qty < 0) {
+      return { success: false, error: 'Las unidades deben ser un entero ≥ 0.' };
+    }
+
+    const opRef = doc(firestore, 'labelingOperations', operationId);
+    const logRef = doc(firestore, 'labelingOperations', operationId, 'activityLog', logId);
+    const [opSnap, logSnap] = await Promise.all([getDoc(opRef), getDoc(logRef)]);
+    if (!opSnap.exists()) return { success: false, error: 'La tarea no existe.' };
+    if (!logSnap.exists()) return { success: false, error: 'El registro de actividad no existe.' };
+
+    const logData = logSnap.data() as LabelingActivityLog;
+    const type = logData.type;
+    if (type !== 'FINISH' && type !== 'UNIT_COMPLETE') {
+      return { success: false, error: 'Solo se pueden corregir und en FINISH o UNIT_COMPLETE.' };
+    }
+
+    const logUpdates: Record<string, unknown> =
+      type === 'UNIT_COMPLETE'
+        ? { qty, completedUnits: qty }
+        : { completedUnits: qty };
+
+    await updateDoc(logRef, logUpdates);
+
+    const op = { id: opSnap.id, ...opSnap.data() } as LabelingOperation;
+    if (type === 'FINISH' && op.status === 'Completada') {
+      await updateDoc(opRef, {
+        completedUnits: qty,
+        updatedAt: new Date().toISOString(),
+      });
+    } else {
+      await updateDoc(opRef, { updatedAt: Timestamp.now() });
+    }
+
+    return { success: true };
+  } catch (error: any) {
+    console.error('correctLabelingActivityLogUnits:', error);
+    return { success: false, error: error?.message || 'No se pudo corregir las unidades del log.' };
+  }
+}
+
 export async function getExpectedItemsForLabeling(receptionId: string): Promise<{ success: boolean; data?: ReceptionExpectedItem[]; error?: string; }> {
     try {
         const receptionSnap = await getDoc(doc(firestore, 'receptionOperations', receptionId));

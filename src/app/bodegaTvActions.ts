@@ -15,6 +15,8 @@ import type {
   BodegaTvAreaSnapshot,
   BodegaTvRemainderAssignmentRow,
   BodegaTvSnapshot,
+  EtiquetadoContributionRow,
+  EtiquetadoDayBreakdown,
 } from '@/lib/bodegaTvTypes';
 import {
   filterTalladoBundleToDay,
@@ -804,6 +806,131 @@ export async function getBodegaTvSnapshot(): Promise<{
     return {
       success: false,
       error: error?.message || 'No se pudo construir el tablero de bodega.',
+    };
+  }
+}
+
+/**
+ * Auditoría admin: lista cada aporte (FINISH / UNIT_COMPLETE) que suma Bodega Live
+ * para el día, con los mismos filtros que el TV.
+ */
+export async function getEtiquetadoDayBreakdown(dayKey?: string): Promise<{
+  success: boolean;
+  data?: EtiquetadoDayBreakdown;
+  error?: string;
+}> {
+  try {
+    const key = dayKey || todayKeyLocal();
+    const day = new Date(`${key}T12:00:00`);
+    const result = await getLabelingHistoricalData({ from: day, to: day });
+    if (!result.success || !result.data) {
+      return { success: false, error: result.error || 'Sin datos de etiquetado.' };
+    }
+
+    const { summary, operations, logs } = result.data;
+    const opsById = new Map((operations || []).map((op) => [op.id, op]));
+    const contributions: EtiquetadoContributionRow[] = [];
+
+    // FINISH del día (misma regla que getLabelingHistoricalData → summary.totalUnits).
+    for (const log of logs || []) {
+      if (log.type !== 'FINISH' || !isSameLocalDay(log.timestamp, key)) continue;
+      const op = opsById.get(log.labelingOperationId);
+      let units = Number(log.completedUnits) || 0;
+      let unitsSource: EtiquetadoContributionRow['unitsSource'] = 'log';
+      if (units <= 0 && op?.status === 'Completada') {
+        units = Number(op.completedUnits) || 0;
+        unitsSource = 'operation_completed';
+      }
+      if (units <= 0) continue;
+
+      const operatorLabel = log.isExternal
+        ? log.externalOperatorName || log.operatorId
+        : log.operatorId;
+
+      contributions.push({
+        id: `finish:${log.id || `${log.labelingOperationId}:${log.timestamp}`}`,
+        source: 'finish',
+        logId: String(log.id || ''),
+        operationId: log.labelingOperationId,
+        reference: op?.reference || '—',
+        status: op?.status || '—',
+        trackingMode: op?.trackingMode,
+        operatorLabel,
+        timestamp: log.timestamp,
+        units,
+        unitsSource,
+      });
+    }
+
+    // LIVE: UNIT_COMPLETE de hoy en tareas pack_units abiertas con actividad hoy.
+    const activeOps = (operations || []).filter(
+      (op) => op.status === 'En Progreso' || op.status === 'Pausada'
+    );
+    const packActiveIds = new Set(
+      activeOps
+        .filter((op) => {
+          if (op.trackingMode !== 'pack_units' || !(op.labelingPackPlan?.length || 0)) return false;
+          const opLogs = (logs || []).filter((l) => l.labelingOperationId === op.id);
+          return opLogs.some(
+            (l) =>
+              isSameLocalDay(l.timestamp, key) &&
+              (l.type === 'START' ||
+                l.type === 'RESUME' ||
+                l.type === 'UNIT_COMPLETE' ||
+                l.type === 'PAUSE')
+          );
+        })
+        .map((op) => op.id)
+    );
+
+    let liveUnits = 0;
+    for (const log of logs || []) {
+      if (log.type !== 'UNIT_COMPLETE' || !isSameLocalDay(log.timestamp, key)) continue;
+      if (!packActiveIds.has(log.labelingOperationId)) continue;
+      const units = Number(log.qty ?? log.completedUnits) || 0;
+      if (units <= 0) continue;
+      liveUnits += units;
+      const op = opsById.get(log.labelingOperationId);
+      const operatorLabel = log.isExternal
+        ? log.externalOperatorName || log.operatorId
+        : log.operatorId;
+      contributions.push({
+        id: `live:${log.id || `${log.labelingOperationId}:${log.timestamp}`}`,
+        source: 'unit_complete',
+        logId: String(log.id || ''),
+        operationId: log.labelingOperationId,
+        reference: op?.reference || '—',
+        status: op?.status || '—',
+        trackingMode: op?.trackingMode,
+        operatorLabel,
+        timestamp: log.timestamp,
+        units,
+        unitsSource: log.qty != null ? 'qty' : 'log',
+      });
+    }
+
+    const finishUnits = summary.totalUnits || 0;
+    contributions.sort(
+      (a, b) =>
+        b.units - a.units ||
+        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    );
+
+    return {
+      success: true,
+      data: {
+        dayKey: key,
+        finishUnits,
+        liveUnits,
+        totalUnits: finishUnits + liveUnits,
+        contributions,
+      },
+    };
+  } catch (error: any) {
+    console.error('getEtiquetadoDayBreakdown:', error);
+    return {
+      success: false,
+      error: error?.message || 'No se pudo armar el desglose de etiquetado.',
     };
   }
 }
