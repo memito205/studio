@@ -1210,6 +1210,209 @@ export async function updatePackingUnit(unitFirestoreId: string, updates: Partia
     }
 }
 
+/**
+ * Al cerrar una caja: escribe detalle aditivo en referenceStats/{ref}.packUnitsById.
+ * No modifica totalScanned ni packingUnits[] (flujo actual intacto).
+ * Falla silenciosa a nivel de caller: no debe bloquear el cierre de caja.
+ */
+export async function recordPackUnitDetailOnClose(
+  packingUnitFirestoreId: string
+): Promise<{ success: boolean; refsUpdated?: number; error?: string }> {
+  try {
+    if (!packingUnitFirestoreId) return { success: false, error: 'ID de unidad requerido.' };
+
+    const unitRef = doc(firestore, 'packingUnits', packingUnitFirestoreId);
+    const unitSnap = await getDoc(unitRef);
+    if (!unitSnap.exists()) return { success: false, error: 'Unidad de empaque no encontrada.' };
+
+    const unit = { firestoreId: unitSnap.id, ...convertTimestampsToDates(unitSnap.data()) } as PackingUnit;
+    const receptionId = unit.reception_id;
+    if (!receptionId) return { success: false, error: 'La unidad no tiene recepción asociada.' };
+
+    const itemsSnap = await getDocs(
+      query(collection(firestore, 'scannedItems'), where('packing_unit_id', '==', packingUnitFirestoreId))
+    );
+    if (itemsSnap.empty) {
+      return { success: true, refsUpdated: 0 };
+    }
+
+    const locationIds = new Set<string>();
+    const byRef = new Map<string, { qty: number; locationId?: string }>();
+    itemsSnap.forEach((d) => {
+      const item = d.data() as ScannedItem;
+      const ref = normalizeReceptionReference(item.reference);
+      const qty = Number(item.quantity) || 1;
+      const prev = byRef.get(ref) || { qty: 0, locationId: undefined };
+      prev.qty += qty;
+      if (!prev.locationId && item.location_id) {
+        prev.locationId = item.location_id;
+        locationIds.add(item.location_id);
+      }
+      byRef.set(ref, prev);
+    });
+
+    const locationNameById = new Map<string, string>();
+    if (locationIds.size > 0) {
+      const locSnap = await getDocs(collection(firestore, 'locations'));
+      locSnap.forEach((d) => {
+        if (locationIds.has(d.id)) {
+          const name = String((d.data() as Location).name || d.id);
+          locationNameById.set(d.id, name);
+        }
+      });
+    }
+
+    const now = new Date().toISOString();
+    const closedAt = unit.closed_at || now;
+    let batch = writeBatch(firestore);
+    let ops = 0;
+    let refsUpdated = 0;
+
+    for (const [safeRefId, acc] of byRef.entries()) {
+      const statsRef = doc(firestore, 'receptionOperations', receptionId, 'referenceStats', safeRefId);
+      const detail = {
+        packingUnitId: packingUnitFirestoreId,
+        unitNumber: Number(unit.id) || 0,
+        qty: acc.qty,
+        locationId: acc.locationId || undefined,
+        locationName: acc.locationId ? locationNameById.get(acc.locationId) : undefined,
+        status: 'closed' as const,
+        closedAt,
+        updatedAt: now,
+      };
+      batch.set(
+        statsRef,
+        {
+          reference: safeRefId,
+          reception_id: receptionId,
+          packUnitsById: { [packingUnitFirestoreId]: detail },
+          packSummaryUpdatedAt: now,
+        },
+        { merge: true }
+      );
+      refsUpdated += 1;
+      ops += 1;
+      if (ops >= 400) {
+        await batch.commit();
+        batch = writeBatch(firestore);
+        ops = 0;
+      }
+    }
+    if (ops > 0) await batch.commit();
+
+    return { success: true, refsUpdated };
+  } catch (e: any) {
+    console.error('recordPackUnitDetailOnClose:', e);
+    return { success: false, error: e?.message || 'No se pudo registrar el detalle de la caja.' };
+  }
+}
+
+/**
+ * Reconstruye packUnitsById para toda una recepción (1 pasada de escaneos + cajas).
+ * Aditivo: no borra totalScanned ni packingUnits[].
+ * Usado por el botón "Cargar unidades de empaque a esta recepción".
+ */
+export async function rebuildReceptionPackSummaries(receptionId: string): Promise<{
+  success: boolean;
+  references?: number;
+  packUnits?: number;
+  error?: string;
+}> {
+  try {
+    if (!receptionId) return { success: false, error: 'ID de recepción requerido.' };
+
+    const { aggregatePackUnitsByReference } = await import('@/lib/labelingPackPlan');
+
+    const [itemsSnap, unitsSnap, locSnap] = await Promise.all([
+      getDocs(query(collection(firestore, 'scannedItems'), where('reception_id', '==', receptionId))),
+      getDocs(query(collection(firestore, 'packingUnits'), where('reception_id', '==', receptionId))),
+      getDocs(collection(firestore, 'locations')),
+    ]);
+
+    const scannedItems = itemsSnap.docs.map(
+      (d) => ({ id: d.id, ...convertTimestampsToDates(d.data()) } as ScannedItem)
+    );
+
+    const unitMetaById = new Map<
+      string,
+      { unitNumber: number; status: 'open' | 'closed'; closedAt?: string }
+    >();
+    unitsSnap.forEach((d) => {
+      const u = convertTimestampsToDates(d.data()) as PackingUnit;
+      unitMetaById.set(d.id, {
+        unitNumber: Number(u.id) || 0,
+        status: u.status === 'closed' ? 'closed' : 'open',
+        closedAt: u.closed_at,
+      });
+    });
+
+    const locationNameById = new Map<string, string>();
+    locSnap.forEach((d) => {
+      locationNameById.set(d.id, String((d.data() as Location).name || d.id));
+    });
+
+    const byRef = aggregatePackUnitsByReference(scannedItems, unitMetaById, locationNameById);
+    const now = new Date().toISOString();
+    let batch = writeBatch(firestore);
+    let ops = 0;
+    let packUnits = 0;
+
+    for (const [safeRefId, packUnitsById] of byRef.entries()) {
+      packUnits += Object.keys(packUnitsById).length;
+      const statsRef = doc(firestore, 'receptionOperations', receptionId, 'referenceStats', safeRefId);
+      batch.set(
+        statsRef,
+        {
+          reference: safeRefId,
+          reception_id: receptionId,
+          packUnitsById,
+          packSummaryUpdatedAt: now,
+        },
+        { merge: true }
+      );
+      ops += 1;
+      if (ops >= 400) {
+        await batch.commit();
+        batch = writeBatch(firestore);
+        ops = 0;
+      }
+    }
+    if (ops > 0) await batch.commit();
+
+    return { success: true, references: byRef.size, packUnits };
+  } catch (e: any) {
+    console.error('rebuildReceptionPackSummaries:', e);
+    return { success: false, error: e?.message || 'No se pudieron cargar las unidades de empaque.' };
+  }
+}
+
+/**
+ * Lee el resumen de cajas por referencia (sin tocar escaneos).
+ * Para crear tareas pack_units / UI prep (fases siguientes).
+ */
+export async function getReceptionPackSummaries(receptionId: string): Promise<{
+  success: boolean;
+  data?: Record<string, import('@/types').ReceptionPackUnitDetail[]>;
+  error?: string;
+}> {
+  try {
+    if (!receptionId) return { success: false, error: 'ID de recepción requerido.' };
+    const { packUnitsByIdToList } = await import('@/lib/labelingPackPlan');
+    const statsSnap = await getDocs(
+      collection(firestore, 'receptionOperations', receptionId, 'referenceStats')
+    );
+    const data: Record<string, import('@/types').ReceptionPackUnitDetail[]> = {};
+    statsSnap.forEach((d) => {
+      const raw = d.data() as { packUnitsById?: Record<string, import('@/types').ReceptionPackUnitDetail> };
+      const list = packUnitsByIdToList(raw.packUnitsById);
+      if (list.length) data[d.id] = list;
+    });
+    return { success: true, data };
+  } catch (e: any) {
+    return { success: false, error: e?.message || 'No se pudo leer el resumen de empaque.' };
+  }
+}
+
 export async function deletePackingUnitAndContents(unitFirestoreId: string): Promise<{ success: boolean, error?: string }> {
     const unitRef = doc(firestore, 'packingUnits', unitFirestoreId);
     const itemsQuery = query(collection(firestore, "scannedItems"), where("packing_unit_id", "==", unitFirestoreId));

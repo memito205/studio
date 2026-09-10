@@ -1918,6 +1918,36 @@ export interface DiscardedRecord {
 // Types for Merchandise Labeling Module
 export type LabelingOperationStatus = 'Pendiente' | 'Asignada' | 'En Progreso' | 'Pausada' | 'Completada';
 
+/** legacy_finish = Finalizar con cantidad (hoy). pack_units = confirmar cajas. */
+export type LabelingTrackingMode = 'legacy_finish' | 'pack_units';
+
+/**
+ * Detalle de una unidad de empaque por referencia en recepción
+ * (`receptionOperations/{id}/referenceStats/{ref}.packUnitsById`).
+ * Aditivo: no reemplaza `packingUnits[]` ni `totalScanned`.
+ */
+export interface ReceptionPackUnitDetail {
+  packingUnitId: string;
+  unitNumber: number;
+  qty: number;
+  locationId?: string;
+  locationName?: string;
+  status: 'open' | 'closed';
+  closedAt?: string;
+  updatedAt: string;
+}
+
+/** Caja del plan de etiquetado (copia liviana en la tarea). */
+export interface LabelingPackUnit {
+  packingUnitId: string;
+  unitNumber: number;
+  qty: number;
+  locationId?: string;
+  locationName?: string;
+  confirmed?: boolean;
+  confirmedAt?: string;
+}
+
 export interface LabelingOperation {
   id: string; // Firestore document ID
   receptionOperationId: string; // Link to the original reception
@@ -1936,6 +1966,17 @@ export interface LabelingOperation {
   updatedAt: string;
   parentTaskId?: string; // ID of the original task if this is a residual one
   completedUnits?: number; // How many units were actually completed in this task session
+  /**
+   * Modo de seguimiento. Ausente o `legacy_finish` = flujo actual (Finalizar con número).
+   * `pack_units` = confirmar cajas (solo tareas nuevas / Pendiente convertidas).
+   * Las tareas ya en curso al deploy NO deben cambiar de modo.
+   */
+  trackingMode?: LabelingTrackingMode;
+  /** Snapshot de cajas de recepción para esta ref (solo modo pack_units). */
+  labelingPackPlan?: LabelingPackUnit[];
+  packPlanLoadedAt?: string;
+  /** Und confirmadas por caja durante la sesión (productividad en vivo). */
+  completedUnitsLive?: number;
 }
 
 export type LabelingActivityType = 'START' | 'PAUSE' | 'RESUME' | 'FINISH';

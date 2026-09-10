@@ -5,11 +5,11 @@ import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ArrowLeft, Loader2, Tag, Users } from 'lucide-react';
+import { ArrowLeft, Loader2, Package, Tag, Users } from 'lucide-react';
 import type { ReceptionOperation, AppUser, LabelingOperation, LabelingOperationStatus } from '@/types';
 import { CreateLabelingTaskDialog } from './CreateLabelingTaskDialog';
 import { AssignOperatorsDialog } from './AssignOperatorsDialog';
-import { getAllUserProfiles, loadLabelingOperations, getExternalVendors } from '@/app/reception/actions';
+import { getAllUserProfiles, loadLabelingOperations, getExternalVendors, rebuildReceptionPackSummaries } from '@/app/reception/actions';
 import { useToast } from '@/hooks/use-toast';
 import { Badge } from './ui/badge';
 import type { ExternalVendor } from '@/types';
@@ -142,6 +142,7 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
   const [loadingOperators, setLoadingOperators] = useState(true);
   const [loadingVendors, setLoadingVendors] = useState(true);
   const [existingTasks, setExistingTasks] = useState<LabelingOperation[]>([]);
+  const [loadingPackSummary, setLoadingPackSummary] = useState(false);
   const { toast } = useToast();
 
   const fetchDependencies = useCallback(async () => {
@@ -241,6 +242,28 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
     fetchDependencies();
   };
 
+  /** Fase 1/3: solo reconstruye resumen de cajas. No cambia tareas en curso. */
+  const handleLoadPackUnits = async () => {
+    setLoadingPackSummary(true);
+    try {
+      const res = await rebuildReceptionPackSummaries(operation.id);
+      if (!res.success) {
+        toast({
+          variant: 'destructive',
+          title: 'No se pudieron cargar unidades',
+          description: res.error || 'Error desconocido.',
+        });
+        return;
+      }
+      toast({
+        title: 'Unidades de empaque cargadas',
+        description: `Referencias: ${res.references || 0} · Cajas: ${res.packUnits || 0}. Las tareas ya en proceso no se modifican.`,
+      });
+    } finally {
+      setLoadingPackSummary(false);
+    }
+  };
+
   const availableItemsForBulkAssign = useMemo(() => {
     return groupedItems.filter((item) => canCreateTask(item) && item.status === 'Disponible');
   }, [groupedItems]);
@@ -282,6 +305,19 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
           </div>
           <div className="flex gap-2">
             <Button
+              type="button"
+              variant="outline"
+              onClick={() => void handleLoadPackUnits()}
+              disabled={loadingOperators || loadingPackSummary}
+            >
+              {loadingPackSummary ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Package className="mr-2 h-4 w-4" />
+              )}
+              Cargar unidades de empaque a esta recepción
+            </Button>
+            <Button
               onClick={() => setIsAssignDialogOpen(true)}
               disabled={loadingOperators || availableItemsForBulkAssign.length === 0}
             >
@@ -298,6 +334,8 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
             El estado refleja las tareas reales de etiquetado. Si un operario finaliza solo una parte, el
             remanente queda como tarea <strong>Pendiente</strong> en el módulo{' '}
             <strong>Etiquetado</strong> (no aquí): filtre por la referencia y use ⋯ → Reasignar Operario.
+            Use <strong>Cargar unidades de empaque</strong> para guardar el resumen de cajas de esta
+            recepción (no modifica tareas ya en proceso).
           </p>
           <div className="border rounded-md">
             {loadingOperators ? (

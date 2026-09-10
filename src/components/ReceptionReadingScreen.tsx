@@ -6,7 +6,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, PlusCircle, AlertTriangle, RefreshCw } from 'lucide-react';
-import { getReceptionOperationById, getExpectedItemsByReception, getProductsByBarcodes, getLocations, createPackingUnit, startOperationPause, endOperationPause, updateReceptionOperation, addScannedItem, deleteScannedItem, getActivePauseForUser, updatePackingUnit, registerNovelty, getScannedItemsByReception, repairReceptionStats } from '@/app/reception/actions';
+import { getReceptionOperationById, getExpectedItemsByReception, getProductsByBarcodes, getLocations, createPackingUnit, startOperationPause, endOperationPause, updateReceptionOperation, addScannedItem, deleteScannedItem, getActivePauseForUser, updatePackingUnit, registerNovelty, getScannedItemsByReception, repairReceptionStats, recordPackUnitDetailOnClose } from '@/app/reception/actions';
 import { getUserGoals, getProductivitySettings, getUserPulsesForDay } from '@/app/actions';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import type { ReceptionOperation, ScannedItem, ProductDatabaseItem, PackingUnit, Location, OperationPause, ReceptionExpectedItem, UserGoal, PackedItem, ProductivitySettings, OperationPulse } from '@/types';
@@ -541,6 +541,10 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
     
     if (result.success) {
       toast({ title: 'Unidad de empaque cerrada', description: `La unidad ${activePackingUnit.id} ha sido cerrada. El próximo ítem creará una nueva.` });
+      // Resumen aditivo para etiquetado (no bloquea el cierre si falla).
+      void recordPackUnitDetailOnClose(activePackingUnit.firestoreId).catch((err) => {
+        console.warn('recordPackUnitDetailOnClose:', err);
+      });
     } else {
        toast({ variant: "destructive", title: "Error al cerrar", description: result.error });
     }
