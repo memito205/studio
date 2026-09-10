@@ -3880,87 +3880,154 @@ export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'statu
  */
 export async function syncAnalysisRecords(rawJson: any[]): Promise<{ success: boolean; error?: string; count?: number }> {
     const analysisCollection = collection(firestore, 'transfers_analysis');
-    
+
     try {
-        // 1. Get all current records to identify what to delete
         const snapshot = await getDocs(analysisCollection);
-        const existingDocs = new Map<string, string>(); // Key -> docId
-        snapshot.forEach(doc => {
-            const data = doc.data();
-            // Use same composite key logic
+        const existingDocs = new Map<string, string>();
+        snapshot.forEach((d) => {
+            const data = d.data();
             const key = `${data.numeroTF}-${(data.marca || '').trim().toUpperCase()}-${(data.grupo || '').trim().toUpperCase()}`;
-            existingDocs.set(key, doc.id);
+            existingDocs.set(key, d.id);
         });
 
-        const batch = writeBatch(firestore);
-        
-        // 2. Identify incoming records and their keys
         const incomingDocs = new Map<string, any>();
-        rawJson.forEach(row => {
-            const numeroTF = String(row['Numero TF'] || 'N/A');
-            const marca = String(row['Marca'] || '').trim().toUpperCase();
-            const grupo = String(row['Grupo'] || '').trim().toUpperCase();
+        rawJson.forEach((row) => {
+            const numeroTF = String(
+                row['Numero TF'] || row['NUMERO TF'] || row['numeroTF'] || row['doc'] || 'N/A'
+            );
+            const marca = String(row['Marca'] || row['MARCA'] || row['marca'] || '')
+                .trim()
+                .toUpperCase();
+            const grupo = String(row['Grupo'] || row['GRUPO'] || row['grupo'] || '')
+                .trim()
+                .toUpperCase();
             const key = `${numeroTF}-${marca}-${grupo}`;
-            
-            // Add or overwrite if duplicate keys in same file? Usually we keep all lines but composite key implies 1 per combination
             incomingDocs.set(key, row);
         });
 
-        // 3. Delete records NOT in the incoming map
+        type BatchOp = { type: 'delete' | 'set' | 'update'; ref: any; data?: any };
+        const ops: BatchOp[] = [];
+
         existingDocs.forEach((docId, key) => {
             if (!incomingDocs.has(key)) {
-                batch.delete(doc(analysisCollection, docId));
+                ops.push({ type: 'delete', ref: doc(analysisCollection, docId) });
             }
         });
 
-        // 4. Update or Add incoming records
         incomingDocs.forEach((row, key) => {
             const existingId = existingDocs.get(key);
             const docRef = existingId ? doc(analysisCollection, existingId) : doc(analysisCollection);
-            
-            // We save the raw row but normalized for query/sync
             const dataToSave = {
                 ...row,
-                // Normalized fields for consistent identification
-                numeroTF: String(row['Numero TF'] || row['NUMERO TF'] || row['doc'] || 'N/A'),
-                marca: String(row['Marca'] || row['MARCA'] || ''),
-                grupo: String(row['Grupo'] || row['GRUPO'] || ''),
-                bodegaOrigen: String(row['Bodega Origen'] || row['BOD. SALIDA'] || 'N/A'),
-                bodegaDestino: String(row['Bodega Destino'] || row['BOD. ENTRADA'] || row['BOD DESTINO'] || 'N/A'),
-                fecha: row['Fecha'] ? convertDatesToTimestamps({ f: parseFlexibleDate(row['Fecha']) }).f : 
-                       (row['fechaFinalizado'] ? convertDatesToTimestamps({ f: parseFlexibleDate(row['fechaFinalizado']) }).f : null),
-                cantidad: Number(row['Cantidad'] || row['CANTIDAD'] || 1),
-                codigoAlterno: String(
-                    row['Codigo Alterno'] ||
-                      row['Código Alterno'] ||
-                      row['CODIGO ALTERNO'] ||
-                      row['codigoAlterno'] ||
-                      ''
-                ).trim() || undefined,
-
-                // Platform Specific persistence
+                numeroTF: String(
+                    row['Numero TF'] || row['NUMERO TF'] || row['numeroTF'] || row['doc'] || 'N/A'
+                ),
+                marca: String(row['Marca'] || row['MARCA'] || row['marca'] || ''),
+                grupo: String(row['Grupo'] || row['GRUPO'] || row['grupo'] || ''),
+                bodegaOrigen: String(
+                    row['Bodega Origen'] || row['BOD. SALIDA'] || row['bodegaOrigen'] || 'N/A'
+                ),
+                bodegaDestino: String(
+                    row['Bodega Destino'] ||
+                        row['BOD. ENTRADA'] ||
+                        row['BOD DESTINO'] ||
+                        row['bodegaDestino'] ||
+                        'N/A'
+                ),
+                fecha: row['Fecha']
+                    ? convertDatesToTimestamps({ f: parseFlexibleDate(row['Fecha']) }).f
+                    : row['fechaFinalizado']
+                      ? convertDatesToTimestamps({ f: parseFlexibleDate(row['fechaFinalizado']) }).f
+                      : row.fecha || null,
+                cantidad: Number(row['Cantidad'] || row['CANTIDAD'] || row['cantidad'] || 1),
+                codigoAlterno:
+                    String(
+                        row['Codigo Alterno'] ||
+                            row['Código Alterno'] ||
+                            row['CODIGO ALTERNO'] ||
+                            row['codigoAlterno'] ||
+                            ''
+                    ).trim() || undefined,
                 estadoPlataforma: row['estadoPlataforma'] || row['ESTADO PLATAFORMA'] || '',
                 novedad: row['novedad'] || row['NOVEDAD'] || '',
                 image: row['image'] || row['link de imagenes'] || '',
                 fechaFinalizado: row['fechaFinalizado'] || row['fecha de servicio'] || '',
                 hoyRuta: row['hoyRuta'] || row['HOY RUTA'] || '',
-                
-                lastSync: new Date()
+                lastSync: new Date(),
             };
-            
-            if (existingId) {
-                batch.update(docRef, dataToSave);
-            } else {
-                batch.set(docRef, dataToSave);
-            }
+            ops.push({
+                type: existingId ? 'update' : 'set',
+                ref: docRef,
+                data: dataToSave,
+            });
         });
 
-        await batch.commit();
-        return { success: true, count: incomingDocs.size };
+        const CHUNK = 400;
+        for (let i = 0; i < ops.length; i += CHUNK) {
+            const batch = writeBatch(firestore);
+            for (const op of ops.slice(i, i + CHUNK)) {
+                if (op.type === 'delete') batch.delete(op.ref);
+                else if (op.type === 'update') batch.update(op.ref, op.data);
+                else batch.set(op.ref, op.data);
+            }
+            await batch.commit();
+        }
 
+        return { success: true, count: incomingDocs.size };
     } catch (error: any) {
-        console.error("Error syncing analysis records:", error);
+        console.error('Error syncing analysis records:', error);
         return { success: false, error: error.message };
+    }
+}
+
+/** Mapea transferencias vivas (`transfers`) al formato del Analizador de Bodega. */
+function mapTransferToAnalyzerRow(t: TransferEntry): Record<string, unknown> {
+    const fecha =
+        t.fecha instanceof Date ? t.fecha : t.fecha ? new Date(t.fecha as any) : null;
+    return {
+        'Numero TF': t.numeroTF,
+        Fecha: fecha,
+        'Bodega Origen': t.bodegaOrigen,
+        'Bodega Destino': t.bodegaDestino,
+        Cantidad: t.cantidad ?? 1,
+        Marca: t.marca || '',
+        Grupo: t.grupo || '',
+        ESTADO: t.status || '',
+        'Codigo Alterno': t.codigoAlterno || '',
+        numeroTF: t.numeroTF,
+        marca: t.marca || '',
+        grupo: t.grupo || '',
+        bodegaOrigen: t.bodegaOrigen,
+        bodegaDestino: t.bodegaDestino,
+        cantidad: t.cantidad ?? 1,
+        codigoAlterno: t.codigoAlterno || undefined,
+        status: t.status,
+        id: t.id,
+    };
+}
+
+/**
+ * Carga transferencias en vivo para el Analizador (colección `transfers`).
+ * Evita el snapshot congelado `transfers_analysis`.
+ */
+export async function loadLiveTransfersForAnalyzer(options?: {
+    limitN?: number;
+}): Promise<{ data?: any[]; liveCount?: number; error?: string }> {
+    const limitN = Math.min(Math.max(options?.limitN ?? 5000, 1), 10000);
+    try {
+        const snap = await getDocs(
+            query(collection(firestore, 'transfers'), orderBy('fecha', 'desc'), limit(limitN))
+        );
+        const data = snap.docs.map((d) =>
+            mapTransferToAnalyzerRow({
+                id: d.id,
+                ...convertTimestampsToDates(d.data()),
+            } as TransferEntry)
+        );
+        return { data, liveCount: data.length };
+    } catch (error: any) {
+        console.error('Error loading live transfers for analyzer:', error);
+        return { error: error.message };
     }
 }
 

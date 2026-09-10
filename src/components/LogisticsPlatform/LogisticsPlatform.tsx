@@ -20,7 +20,7 @@ import { findHeader, normalizeDate, formatDate, parseDateString, generatePending
 import type { AnalyzerRouteMatch } from './utils/helpers';
 import type { ExcelDataRow, BreaksReportData, ProcessedBreak, EmployeeDailyAnalysis, DailyAnalysis, WeeklyTrend, EmployeePerformance } from './types';
 import type { TransferEntry } from '@/types';
-import { loadAnalysisRecords, syncAnalysisRecords, persistTfPlatformStatuses, getTfKeysReceivedInWarehouse, getTfKeysCollectedOnRoute } from '@/app/actions';
+import { loadLiveTransfersForAnalyzer, syncAnalysisRecords, persistTfPlatformStatuses, getTfKeysReceivedInWarehouse, getTfKeysCollectedOnRoute } from '@/app/actions';
 import { buildTfPlatformStatusRecords } from '@/lib/tfPlatformStatus';
 import { FileIcon, PackageIcon, TruckIcon, ChartIcon, CheckCircleIcon, TableIcon, UserCheckIcon, PdfFileIcon } from './components/icons';
 import { Button } from '@/components/ui/button';
@@ -58,6 +58,7 @@ const WarehouseAnalyzer: React.FC = () => {
   const [startDate, setStartDate] = React.useState<string>('');
   const [endDate, setEndDate] = React.useState<string>('');
   const [documentNumberFilter, setDocumentNumberFilter] = React.useState('');
+  const deferredDocumentNumberFilter = React.useDeferredValue(documentNumberFilter);
   const [dataCount, setDataCount] = React.useState(0);
   const [isSyncing, setIsSyncing] = React.useState(false);
   const [platformFileName, setPlatformFileName] = React.useState<string | null>(null);
@@ -222,18 +223,22 @@ const WarehouseAnalyzer: React.FC = () => {
     setIsLoading(true);
     setError(null);
     try {
-        const result = await loadAnalysisRecords();
+        // Leer colección viva `transfers` (no el snapshot `transfers_analysis`).
+        const result = await loadLiveTransfersForAnalyzer({ limitN: 5000 });
         if (result.error) {
             throw new Error(result.error);
         }
         
         if (result.data) {
-            // No need to map manually here, processData handles column detection
-            processData(result.data);
+            processData(result.data as ExcelDataRow[]);
             setDataCount(result.data.length);
-            setMainFileName("Base de Datos (Análisis Raw)");
+            setMainFileName("Transferencias en vivo (DB)");
             void refreshReceivedInWarehouseKeys();
             void refreshCollectedOnRouteKeys();
+            toast({
+              title: 'Datos actualizados',
+              description: `${result.liveCount ?? result.data.length} transferencias cargadas desde la colección viva.`,
+            });
         }
     } catch (err: any) {
         setError(`Error al cargar datos desde la base de datos: ${err.message}`);
@@ -252,7 +257,7 @@ const WarehouseAnalyzer: React.FC = () => {
     try {
         const result = await syncAnalysisRecords(baseData);
         if (result.success) {
-            toast({ title: "Sincronización Exitosa", description: `Se han actualizado ${result.count} registros en la base de datos.` });
+            toast({ title: "Sincronización Exitosa", description: `Se han actualizado ${result.count} registros en transfers_analysis (snapshot del analizador).` });
         } else {
             throw new Error(result.error);
         }
@@ -823,7 +828,7 @@ const WarehouseAnalyzer: React.FC = () => {
     selectedWarehouse,
     startDate,
     endDate,
-    documentNumberFilter,
+    deferredDocumentNumberFilter,
     routeData,
     applyUnresolvedPlatformStatus,
     receivedInWarehouseKeys,
@@ -888,8 +893,11 @@ const WarehouseAnalyzer: React.FC = () => {
                     <Database className="w-6 h-6 text-blue-600" />
                 </div>
                 <div>
-                    <h3 className="font-semibold text-slate-900">Origen de Datos: Base de Datos (Transferencias)</h3>
-                    <p className="text-sm text-slate-500">Se están analizando {dataCount} registros. Marca y Grupo incluidos.</p>
+                    <h3 className="font-semibold text-slate-900">Origen de Datos: Transferencias en vivo</h3>
+                    <p className="text-sm text-slate-500">
+                      Se están analizando {dataCount} registros de la colección <strong>transfers</strong> (máx. 5000 recientes).
+                      Marca y Grupo incluidos.
+                    </p>
                 </div>
             </div>
             
