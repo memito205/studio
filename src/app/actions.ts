@@ -3980,57 +3980,6 @@ export async function syncAnalysisRecords(rawJson: any[]): Promise<{ success: bo
     }
 }
 
-/** Mapea transferencias vivas (`transfers`) al formato del Analizador de Bodega. */
-function mapTransferToAnalyzerRow(t: TransferEntry): Record<string, unknown> {
-    const fecha =
-        t.fecha instanceof Date ? t.fecha : t.fecha ? new Date(t.fecha as any) : null;
-    return {
-        'Numero TF': t.numeroTF,
-        Fecha: fecha,
-        'Bodega Origen': t.bodegaOrigen,
-        'Bodega Destino': t.bodegaDestino,
-        Cantidad: t.cantidad ?? 1,
-        Marca: t.marca || '',
-        Grupo: t.grupo || '',
-        ESTADO: t.status || '',
-        'Codigo Alterno': t.codigoAlterno || '',
-        numeroTF: t.numeroTF,
-        marca: t.marca || '',
-        grupo: t.grupo || '',
-        bodegaOrigen: t.bodegaOrigen,
-        bodegaDestino: t.bodegaDestino,
-        cantidad: t.cantidad ?? 1,
-        codigoAlterno: t.codigoAlterno || undefined,
-        status: t.status,
-        id: t.id,
-    };
-}
-
-/**
- * Carga transferencias en vivo para el Analizador (colección `transfers`).
- * Evita el snapshot congelado `transfers_analysis`.
- */
-export async function loadLiveTransfersForAnalyzer(options?: {
-    limitN?: number;
-}): Promise<{ data?: any[]; liveCount?: number; error?: string }> {
-    const limitN = Math.min(Math.max(options?.limitN ?? 5000, 1), 10000);
-    try {
-        const snap = await getDocs(
-            query(collection(firestore, 'transfers'), orderBy('fecha', 'desc'), limit(limitN))
-        );
-        const data = snap.docs.map((d) =>
-            mapTransferToAnalyzerRow({
-                id: d.id,
-                ...convertTimestampsToDates(d.data()),
-            } as TransferEntry)
-        );
-        return { data, liveCount: data.length };
-    } catch (error: any) {
-        console.error('Error loading live transfers for analyzer:', error);
-        return { error: error.message };
-    }
-}
-
 export async function loadAnalysisRecords(): Promise<{ data?: any[]; error?: string }> {
     try {
         const analysisCollection = collection(firestore, 'transfers_analysis');
