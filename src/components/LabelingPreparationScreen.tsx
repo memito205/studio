@@ -148,13 +148,13 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
     setLoadingOperators(true);
     setLoadingVendors(true);
     const [tasksResult, usersResult, vendorsResult] = await Promise.all([
-      loadLabelingOperations(),
+      loadLabelingOperations({ receptionOperationId: operation.id, limitN: 200 }),
       getAllUserProfiles(),
       getExternalVendors(),
     ]);
 
     if (tasksResult.data) {
-      setExistingTasks(tasksResult.data.filter((task) => task.receptionOperationId === operation.id));
+      setExistingTasks(tasksResult.data);
     }
 
     if (usersResult) {

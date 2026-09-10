@@ -1786,17 +1786,48 @@ export async function bulkCreateLabelingTasks(
 }
 
 
-export async function loadLabelingOperations(): Promise<{ success: boolean; data?: LabelingOperation[]; error?: string }> {
+export async function loadLabelingOperations(options?: {
+  limitN?: number;
+  receptionOperationId?: string;
+}): Promise<{ success: boolean; data?: LabelingOperation[]; error?: string }> {
+    const limitN = Math.min(Math.max(options?.limitN ?? 150, 1), 500);
     try {
-        const q = query(collection(firestore, "labelingOperations"), orderBy("createdAt", "desc"));
-        const querySnapshot = await getDocs(q);
-        const operations = querySnapshot.docs.map(doc => {
-            const data = doc.data();
+        const col = collection(firestore, "labelingOperations");
+        let querySnapshot;
+        if (options?.receptionOperationId) {
+          try {
+            querySnapshot = await getDocs(
+              query(
+                col,
+                where("receptionOperationId", "==", options.receptionOperationId),
+                orderBy("createdAt", "desc"),
+                limit(limitN)
+              )
+            );
+          } catch {
+            // Sin índice compuesto: filtrar y ordenar en memoria (solo esa recepción).
+            querySnapshot = await getDocs(
+              query(col, where("receptionOperationId", "==", options.receptionOperationId), limit(limitN))
+            );
+          }
+        } else {
+          querySnapshot = await getDocs(
+            query(col, orderBy("createdAt", "desc"), limit(limitN))
+          );
+        }
+
+        const operations = querySnapshot.docs
+          .map((docSnap) => {
+            const data = docSnap.data();
             return {
-                id: doc.id,
-                ...convertTimestampsToDates(data)
+              id: docSnap.id,
+              ...convertTimestampsToDates(data),
             } as LabelingOperation;
-        });
+          })
+          .sort(
+            (a, b) =>
+              new Date(b.createdAt as any).getTime() - new Date(a.createdAt as any).getTime()
+          );
         return { success: true, data: operations };
     } catch (error: any) {
         console.error("Error loading labeling operations:", error);
@@ -2093,10 +2124,16 @@ export async function logLabelingActivity(
   }
 }
 
-export async function getLabelingActivityLog(operationId: string): Promise<{ success: boolean, data?: LabelingActivityLog[], error?: string }> {
+export async function getLabelingActivityLog(
+  operationId: string,
+  options?: { limitN?: number }
+): Promise<{ success: boolean, data?: LabelingActivityLog[], error?: string }> {
     try {
         const logCollectionRef = collection(firestore, 'labelingOperations', operationId, 'activityLog');
-        const q = query(logCollectionRef, orderBy('timestamp', 'asc'));
+        const limitN = options?.limitN;
+        const q = limitN
+          ? query(logCollectionRef, orderBy('timestamp', 'asc'), limit(limitN))
+          : query(logCollectionRef, orderBy('timestamp', 'asc'));
         const querySnapshot = await getDocs(q);
         const logs = querySnapshot.docs.map(doc => {
             return {

@@ -326,162 +326,228 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
   const { toast } = useToast();
   const { user, role } = useAuth();
   const { allPulses } = useSuitePulse();
+  const activityLogsRef = React.useRef<Map<string, LabelingActivityLog[]>>(new Map());
+  const usersLoadedRef = React.useRef(false);
+  const vendorsLoadedRef = React.useRef(false);
+  const allPulsesRef = React.useRef(allPulses);
+  allPulsesRef.current = allPulses;
 
+  const calculateProductivity = (
+    logs: LabelingActivityLog[],
+    operation: LabelingOperation,
+    allExternalPulses: OperationPulse[]
+  ): ProductivityMetrics | null => {
+    const startLog = logs.find((l) => l.type === 'START');
+    if (!startLog) return null;
 
-  const calculateProductivity = (logs: LabelingActivityLog[], operation: LabelingOperation, allExternalPulses: OperationPulse[]): ProductivityMetrics | null => {
-      const startLog = logs.find(l => l.type === 'START');
-      if (!startLog) return null;
+    const finishLog = logs.find((l) => l.type === 'FINISH');
+    const startTimeMs = new Date(startLog.timestamp).getTime();
+    const finishTime = finishLog ? new Date(finishLog.timestamp).getTime() : Date.now();
 
-      const finishLog = logs.find(l => l.type === 'FINISH');
-      const startTime = new Date(startLog.timestamp).getTime();
-      const finishTime = finishLog ? new Date(finishLog.timestamp).getTime() : Date.now();
-      
-      // 1. Collect all pause intervals
-      const relevantPulses = allExternalPulses.filter(p => p.isGlobal || p.userId === operation.assignedOperatorId);
-      const activePulseFromContext = allExternalPulses.find(p => !p.endTime && (p.isGlobal || p.userId === operation.assignedOperatorId));
-      const rawIntervals = [
-          ...logs.filter(l => l.type === 'PAUSE').map(p => {
-              const res = logs.find(l => l.type === 'RESUME' && new Date(l.timestamp).getTime() > new Date(p.timestamp).getTime());
-              return { start: new Date(p.timestamp).getTime(), end: res ? new Date(res.timestamp).getTime() : finishTime };
-          }),
-          ...relevantPulses.map((p: OperationPulse) => ({ start: new Date(p.startTime).getTime(), end: p.endTime ? new Date(p.endTime).getTime() : finishTime }))
-      ];
+    const relevantPulses = allExternalPulses.filter(
+      (p) => p.isGlobal || p.userId === operation.assignedOperatorId
+    );
+    const activePulseFromContext = allExternalPulses.find(
+      (p) => !p.endTime && (p.isGlobal || p.userId === operation.assignedOperatorId)
+    );
+    const rawIntervals = [
+      ...logs
+        .filter((l) => l.type === 'PAUSE')
+        .map((p) => {
+          const res = logs.find(
+            (l) =>
+              l.type === 'RESUME' &&
+              new Date(l.timestamp).getTime() > new Date(p.timestamp).getTime()
+          );
+          return {
+            start: new Date(p.timestamp).getTime(),
+            end: res ? new Date(res.timestamp).getTime() : finishTime,
+          };
+        }),
+      ...relevantPulses.map((p: OperationPulse) => ({
+        start: new Date(p.startTime).getTime(),
+        end: p.endTime ? new Date(p.endTime).getTime() : finishTime,
+      })),
+    ];
 
-      // Explicitly add the active pulse if it's not already in relevantPulses or if it's missing end time
-      if (activePulseFromContext && !rawIntervals.some(r => r.start === activePulseFromContext.startTime.getTime())) {
-          rawIntervals.push({
-              start: activePulseFromContext.startTime.getTime(),
-              end: finishTime
-          });
-      }
-
-      // 2. Sort and Merge Overlapping Intervals
-      rawIntervals.sort((a, b) => a.start - b.start);
-      const mergedIntervals: {start: number, end: number}[] = [];
-      
-      if (rawIntervals.length > 0) {
-          let current = { ...rawIntervals[0] };
-          for (let i = 1; i < rawIntervals.length; i++) {
-              if (rawIntervals[i].start <= current.end) {
-                  current.end = Math.max(current.end, rawIntervals[i].end);
-              } else {
-                  mergedIntervals.push(current);
-                  current = { ...rawIntervals[i] };
-              }
-          }
-          mergedIntervals.push(current);
-      }
-
-      // 3. Sum non-overlapping pause durations within the operational window
-      let totalPauseMillis = 0;
-      mergedIntervals.forEach(p => {
-          const effStart = Math.max(p.start, startTime);
-          const effEnd = Math.min(p.end, finishTime);
-          if (effEnd > effStart) {
-              totalPauseMillis += (effEnd - effStart);
-          }
+    if (
+      activePulseFromContext &&
+      !rawIntervals.some((r) => r.start === activePulseFromContext.startTime.getTime())
+    ) {
+      rawIntervals.push({
+        start: activePulseFromContext.startTime.getTime(),
+        end: finishTime,
       });
-      
-      const totalMillis = finishTime - startTime;
-      const productiveMillis = totalMillis - totalPauseMillis;
-      const productiveMinutes = productiveMillis / 60000;
-      
-      if (productiveMinutes <= 0) return { productiveTimeMinutes: 0, unitsPerHour: 0, compliance: 0 };
-      
-      // Use completedUnits for accurate calculation
-      const unitsCompleted = operation.completedUnits ?? operation.totalUnits;
-      const unitsPerHour = (unitsCompleted / productiveMinutes) * 60;
-      const standard = operation.standard_units_per_hour || 0;
-      const compliance = standard > 0 ? (unitsPerHour / standard) * 100 : 0;
-      
-      return {
-          productiveTimeMinutes: productiveMinutes,
-          unitsPerHour: unitsPerHour,
-          compliance: compliance
-      };
-  };
-
-  const fetchOperationsAndProductivity = async () => {
-    setIsLoading(true);
-    setLoadingVendors(true);
-    const [opsResult, usersResult, vendorsResult] = await Promise.all([
-      loadLabelingOperations(),
-      getAllUserProfiles(),
-      getExternalVendors()
-    ]);
-    
-    if (usersResult) {
-      setAllUsers(usersResult);
-    } else {
-       toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los perfiles de usuario.' });
     }
 
-    if (vendorsResult.success && vendorsResult.data) {
-        setExternalVendors(vendorsResult.data);
+    rawIntervals.sort((a, b) => a.start - b.start);
+    const mergedIntervals: { start: number; end: number }[] = [];
+
+    if (rawIntervals.length > 0) {
+      let current = { ...rawIntervals[0] };
+      for (let i = 1; i < rawIntervals.length; i++) {
+        if (rawIntervals[i].start <= current.end) {
+          current.end = Math.max(current.end, rawIntervals[i].end);
+        } else {
+          mergedIntervals.push(current);
+          current = { ...rawIntervals[i] };
+        }
+      }
+      mergedIntervals.push(current);
+    }
+
+    let totalPauseMillis = 0;
+    mergedIntervals.forEach((p) => {
+      const effStart = Math.max(p.start, startTimeMs);
+      const effEnd = Math.min(p.end, finishTime);
+      if (effEnd > effStart) {
+        totalPauseMillis += effEnd - effStart;
+      }
+    });
+
+    const totalMillis = finishTime - startTimeMs;
+    const productiveMillis = totalMillis - totalPauseMillis;
+    const productiveMinutes = productiveMillis / 60000;
+
+    if (productiveMinutes <= 0) return { productiveTimeMinutes: 0, unitsPerHour: 0, compliance: 0 };
+
+    const unitsCompleted = operation.completedUnits ?? operation.totalUnits;
+    const unitsPerHour = (unitsCompleted / productiveMinutes) * 60;
+    const standard = operation.standard_units_per_hour || 0;
+    const compliance = standard > 0 ? (unitsPerHour / standard) * 100 : 0;
+
+    return {
+      productiveTimeMinutes: productiveMinutes,
+      unitsPerHour: unitsPerHour,
+      compliance: compliance,
+    };
+  };
+
+  const recalculateProductivity = useCallback(
+    (ops: LabelingOperation[], pulses: OperationPulse[]) => {
+      const activeOrCompletedOps = ops.filter(
+        (op) => op.status !== 'Pendiente' && op.status !== 'Asignada'
+      );
+      const newProductivityData = new Map<string, ProductivityMetrics>();
+      for (const op of activeOrCompletedOps) {
+        const logs = activityLogsRef.current.get(op.id);
+        if (!logs?.length) continue;
+        const metrics = calculateProductivity(logs, op, pulses);
+        if (metrics) newProductivityData.set(op.id, metrics);
+      }
+      setProductivityData(newProductivityData);
+    },
+    // calculateProductivity is pure and recreated each render; keep this stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
+  const fetchOperationsAndProductivity = useCallback(async () => {
+    setIsLoading(true);
+    if (!vendorsLoadedRef.current) setLoadingVendors(true);
+
+    const usersPromise = usersLoadedRef.current
+      ? Promise.resolve(null as AppUser[] | null)
+      : getAllUserProfiles();
+    const vendorsPromise = vendorsLoadedRef.current
+      ? Promise.resolve(null as Awaited<ReturnType<typeof getExternalVendors>> | null)
+      : getExternalVendors();
+
+    const [opsResult, usersResult, vendorsResult] = await Promise.all([
+      loadLabelingOperations({ limitN: 150 }),
+      usersPromise,
+      vendorsPromise,
+    ]);
+
+    if (usersResult) {
+      setAllUsers(usersResult);
+      usersLoadedRef.current = true;
+    } else if (!usersLoadedRef.current) {
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: 'No se pudieron cargar los perfiles de usuario.',
+      });
+    }
+
+    if (vendorsResult?.success && vendorsResult.data) {
+      setExternalVendors(vendorsResult.data);
+      vendorsLoadedRef.current = true;
     }
 
     if (opsResult.success && opsResult.data) {
       const fetchedOps = opsResult.data;
       setOperations(fetchedOps);
 
-      // Real-time pulses are now provided by useSuitePulse
+      const forMetrics = fetchedOps
+        .filter((op) => op.status !== 'Pendiente' && op.status !== 'Asignada')
+        .slice(0, 40);
 
-      // Calculate productivity for ALL tasks that have been started
-      const activeOrCompletedOps = fetchedOps.filter((op: LabelingOperation) => op.status !== 'Pendiente' && op.status !== 'Asignada');
-      const newProductivityData = new Map<string, ProductivityMetrics>();
+      const logResults = await Promise.all(
+        forMetrics.map(async (op) => {
+          const logResult = await getLabelingActivityLog(op.id, { limitN: 80 });
+          return { id: op.id, logs: logResult.success && logResult.data ? logResult.data : [] };
+        })
+      );
 
-      for (const op of activeOrCompletedOps) {
-          const logResult = await getLabelingActivityLog(op.id);
-          if (logResult.success && logResult.data) {
-              const metrics = calculateProductivity(logResult.data, op, allPulses);
-              if (metrics) {
-                  newProductivityData.set(op.id, metrics);
-              }
-          }
+      const nextLogs = new Map<string, LabelingActivityLog[]>();
+      for (const row of logResults) {
+        if (row.logs.length) nextLogs.set(row.id, row.logs);
       }
-      setProductivityData(newProductivityData);
-
+      activityLogsRef.current = nextLogs;
+      recalculateProductivity(fetchedOps, allPulsesRef.current);
     } else {
       toast({ variant: 'destructive', title: 'Error', description: opsResult.error });
     }
     setIsLoading(false);
     setLoadingVendors(false);
-  };
+  }, [recalculateProductivity, toast]);
 
   const handleAdminPauseConfirm = async (reason: string, startTime: string) => {
     if (!operationToPause) return;
     setIsSubmitting(true);
     const result = await logLabelingActivity(
-        operationToPause.id,
-        operationToPause.isExternal ? operationToPause.assignedExternalVendorId! : (operationToPause.assignedOperatorId || 'system'),
-        'PAUSE',
-        reason,
-        false, // Logged by admin
-        undefined,
-        operationToPause.assignedExternalOperatorName, // Keep name if external
-        startTime
+      operationToPause.id,
+      operationToPause.isExternal
+        ? operationToPause.assignedExternalVendorId!
+        : operationToPause.assignedOperatorId || 'system',
+      'PAUSE',
+      reason,
+      false,
+      undefined,
+      operationToPause.assignedExternalOperatorName,
+      startTime
     );
-    
+
     if (result.success) {
-        toast({ title: 'Éxito', description: 'Pausa administrativa registrada correctamente.' });
-        fetchOperationsAndProductivity();
+      toast({ title: 'Éxito', description: 'Pausa administrativa registrada correctamente.' });
+      void fetchOperationsAndProductivity();
     } else {
-        toast({ variant: 'destructive', title: 'Error', description: result.error });
+      toast({ variant: 'destructive', title: 'Error', description: result.error });
     }
     setIsSubmitting(false);
     setIsAdminPauseDialogOpen(false);
-  }
+  };
 
   const handleAdminPauseClick = (op: LabelingOperation) => {
-      setOperationToPause(op);
-      setIsAdminPauseDialogOpen(true);
-  }
+    setOperationToPause(op);
+    setIsAdminPauseDialogOpen(true);
+  };
 
   useEffect(() => {
-    fetchOperationsAndProductivity();
-  }, [allPulses]);
-  
-  const handleOpenDialog = async (operation: LabelingOperation, dialog: 'assign' | 'standard' | 'log' | 'quantity') => {
+    void fetchOperationsAndProductivity();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (operations.length === 0) return;
+    recalculateProductivity(operations, allPulses);
+  }, [allPulses, operations, recalculateProductivity]);
+
+  const handleOpenDialog = async (
+    operation: LabelingOperation,
+    dialog: 'assign' | 'standard' | 'log' | 'quantity'
+  ) => {
     setSelectedOperation(operation);
     if (dialog === 'assign') setIsAssignDialogOpen(true);
     if (dialog === 'standard') setIsStandardDialogOpen(true);

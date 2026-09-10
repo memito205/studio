@@ -219,9 +219,8 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   }, [toast]);
 
   useEffect(() => {
-    if (appStep === 'wholesale' || appStep === 'suite' || appStep === 'upload') {
+    if (appStep === 'wholesale' || appStep === 'upload') {
       fetchOrders();
-      // Load operator mappings
       const fetchMappings = async () => {
         const result = await loadOperatorMappings();
         if (result.data) {
