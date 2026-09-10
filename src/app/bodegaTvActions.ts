@@ -661,8 +661,17 @@ async function buildRecepcion(
 ): Promise<BodegaTvAreaSnapshot> {
   const area = emptyArea('recepcion', 'Recepción');
   try {
-    const opsResult = await loadReceptionOperations({ limit: 400 });
+    const { getProductivitySettings } = await import('@/app/reception/actions');
+    const [opsResult, settingsResult] = await Promise.all([
+      loadReceptionOperations({ limit: 400 }),
+      getProductivitySettings(),
+    ]);
     if (!opsResult.success || !opsResult.data) return area;
+
+    const globalStandard =
+      Number(settingsResult.data?.standard_per_hour_goal) > 0
+        ? Number(settingsResult.data!.standard_per_hour_goal)
+        : 0;
 
     const todayOps = opsResult.data.operations.filter((op) => {
       if (op.status === 'in_progress' || op.status === 'paused') return true;
@@ -690,13 +699,20 @@ async function buildRecepcion(
       })
     );
 
-    const byUser = new Map<string, { units: number; first: number; last: number }>();
+    const byUser = new Map<
+      string,
+      { units: number; first: number; last: number; stdWeighted: number; stdWeight: number }
+    >();
     let totalUnits = 0;
     let fillAcc = 0;
     let fillN = 0;
 
     for (let i = 0; i < targetOps.length; i++) {
       const op = targetOps[i];
+      const opStandard =
+        Number(op.standard_units_per_hour) > 0
+          ? Number(op.standard_units_per_hour)
+          : globalStandard;
       const items = scannedBatches[i].filter((it) => isSameLocalDay(it.scanned_at, dayKey));
       const opUnits = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
       totalUnits += opUnits;
@@ -707,10 +723,21 @@ async function buildRecepcion(
       for (const it of items) {
         const uid = it.user_id || 'sin-usuario';
         const ts = new Date(it.scanned_at).getTime();
-        const prev = byUser.get(uid) || { units: 0, first: ts, last: ts };
-        prev.units += Number(it.quantity) || 0;
+        const qty = Number(it.quantity) || 0;
+        const prev = byUser.get(uid) || {
+          units: 0,
+          first: ts,
+          last: ts,
+          stdWeighted: 0,
+          stdWeight: 0,
+        };
+        prev.units += qty;
         prev.first = Math.min(prev.first, ts);
         prev.last = Math.max(prev.last, ts);
+        if (opStandard > 0 && qty > 0) {
+          prev.stdWeighted += opStandard * qty;
+          prev.stdWeight += qty;
+        }
         byUser.set(uid, prev);
       }
     }
@@ -718,10 +745,15 @@ async function buildRecepcion(
     const ranking = Array.from(byUser.entries())
       .map(([uid, v]) => {
         const hours = Math.max((v.last - v.first) / 3600000, 1 / 60);
+        const productivity = v.units / hours;
+        const standard =
+          v.stdWeight > 0 ? v.stdWeighted / v.stdWeight : globalStandard > 0 ? globalStandard : 0;
+        const compliance = standard > 0 ? (productivity / standard) * 100 : undefined;
         return {
           name: nameByUid.get(uid) || uid,
           units: v.units,
-          productivity: v.units / hours,
+          productivity,
+          compliance,
         };
       })
       .sort((a, b) => b.units - a.units || b.productivity - a.productivity);
@@ -733,7 +765,17 @@ async function buildRecepcion(
     area.units = totalUnits;
     area.operators = byUser.size;
     area.productivity = totalProdHours > 0 ? totalUnits / totalProdHours : 0;
-    area.compliance = undefined;
+    {
+      let compSum = 0;
+      let compWeight = 0;
+      for (const row of ranking) {
+        if (typeof row.compliance === 'number' && Number.isFinite(row.compliance) && row.units > 0) {
+          compSum += row.compliance * row.units;
+          compWeight += row.units;
+        }
+      }
+      area.compliance = compWeight > 0 ? compSum / compWeight : undefined;
+    }
     area.ranking = ranking;
     area.peopleKeys = [...byUser.keys()]
       .filter((uid) => uid && uid !== 'sin-usuario')

@@ -116,7 +116,7 @@ export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
         Resumen operación bodega · Hoy
       </h2>
       <p className="text-[0.85em] text-slate-500 font-semibold mb-[1em] leading-snug">
-        Recursos = personas únicas · Cumplimiento = empaque ponderado
+        Recursos = personas únicas · Cumplimiento = promedio ponderado por und
       </p>
 
       <div className="grid grid-cols-3 gap-[1.1em] mb-[1.2em] shrink-0">
@@ -149,52 +149,58 @@ export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
       <div className="grid grid-cols-4 gap-[1em] flex-1 min-h-0">
         {data.areas.map((area) => {
           const Icon = AREA_ICON[area.key];
+          const etiquetadoExtras = (area.extras || []).filter((ex) =>
+            ['Und LIVE', 'Cajas', 'Refs finalizadas'].includes(ex.label)
+          );
           return (
             <div
               key={area.key}
-              className="rounded-[1em] border-2 border-slate-700 bg-slate-900/90 px-[1.1em] py-[1.2em] flex flex-col min-h-0"
+              className="rounded-[1em] border-2 border-slate-700 bg-slate-900/90 px-[1em] py-[1em] flex flex-col min-h-0 overflow-hidden"
             >
-              <div className="flex items-center gap-[0.5em] mb-[0.85em]">
-                <Icon className={`w-[1.15em] h-[1.15em] shrink-0 ${AREA_ACCENT[area.key]}`} />
-                <span className={`text-[1.35em] font-black leading-tight ${AREA_ACCENT[area.key]}`}>
+              <div className="flex items-center gap-[0.45em] mb-[0.55em] shrink-0">
+                <Icon className={`w-[1.05em] h-[1.05em] shrink-0 ${AREA_ACCENT[area.key]}`} />
+                <span className={`text-[1.25em] font-black leading-tight ${AREA_ACCENT[area.key]}`}>
                   {area.title}
                 </span>
               </div>
-              <div className="text-[2.8em] font-black text-slate-100 mb-[0.15em] leading-none">
+              <div className="text-[2.5em] font-black text-slate-100 mb-[0.1em] leading-none shrink-0">
                 {fmt(area.units)}
               </div>
-              <div className="text-[0.9em] text-slate-400 font-semibold mb-[0.9em]">unidades hoy</div>
-              {area.key === 'etiquetado' ? (
-                <div className="mb-[0.75em] space-y-[0.25em] text-[0.95em] font-semibold text-slate-300">
-                  {(area.extras || [])
-                    .filter((ex) => ['Und LIVE', 'Cajas', 'Refs finalizadas'].includes(ex.label))
-                    .map((ex) => (
-                      <div key={ex.label} className="flex justify-between gap-[0.4em]">
-                        <span className="text-slate-500">{ex.label}</span>
-                        <span className="tabular-nums text-emerald-300">{ex.value}</span>
-                      </div>
-                    ))}
+              <div className="text-[0.8em] text-slate-400 font-semibold mb-[0.55em] shrink-0">
+                unidades hoy
+              </div>
+              {area.key === 'etiquetado' && etiquetadoExtras.length > 0 ? (
+                <div className="mb-[0.55em] flex flex-wrap gap-[0.35em] shrink-0">
+                  {etiquetadoExtras.map((ex) => (
+                    <div
+                      key={ex.label}
+                      className="rounded-md border border-slate-700 bg-slate-950/70 px-[0.45em] py-[0.2em] text-[0.78em] font-semibold leading-tight"
+                    >
+                      <span className="text-slate-500 mr-[0.3em]">{ex.label}</span>
+                      <span className="tabular-nums text-emerald-300">{ex.value}</span>
+                    </div>
+                  ))}
                 </div>
               ) : null}
-              <div className="mt-auto space-y-[0.55em] text-[1.15em]">
-                <div className="flex justify-between gap-[0.5em]">
-                  <span className="text-slate-500 flex items-center gap-[0.35em]">
-                    <Gauge className="w-[0.9em] h-[0.9em]" /> U/H
+              <div className="mt-auto space-y-[0.4em] text-[1.05em] shrink-0 pt-[0.35em]">
+                <div className="flex justify-between gap-[0.4em]">
+                  <span className="text-slate-500 flex items-center gap-[0.3em]">
+                    <Gauge className="w-[0.85em] h-[0.85em]" /> U/H
                   </span>
                   <span className="font-black tabular-nums">{fmt(area.productivity, 1)}</span>
                 </div>
-                <div className="flex justify-between gap-[0.5em]">
-                  <span className="text-slate-500 flex items-center gap-[0.35em]">
-                    <Users className="w-[0.9em] h-[0.9em]" /> Pers.
+                <div className="flex justify-between gap-[0.4em]">
+                  <span className="text-slate-500 flex items-center gap-[0.3em]">
+                    <Users className="w-[0.85em] h-[0.85em]" /> Pers.
                   </span>
                   <span className="font-black tabular-nums">{fmt(area.operators)}</span>
                 </div>
-                {typeof area.compliance === 'number' ? (
-                  <div className="flex justify-between gap-[0.5em]">
-                    <span className="text-slate-500">Cumpl.</span>
-                    <span className="font-black tabular-nums">{fmt(area.compliance, 0)}%</span>
-                  </div>
-                ) : null}
+                <div className="flex justify-between gap-[0.4em]">
+                  <span className="text-slate-500">Cumpl.</span>
+                  <span className="font-black tabular-nums text-emerald-400">
+                    {typeof area.compliance === 'number' ? `${fmt(area.compliance, 0)}%` : '—'}
+                  </span>
+                </div>
               </div>
             </div>
           );
@@ -219,6 +225,7 @@ export function BodegaAreaDetailSlide({
   const showCompliance =
     area.key === 'empaque' ||
     area.key === 'etiquetado' ||
+    area.key === 'recepcion' ||
     typeof area.compliance === 'number' ||
     rankingPage.some((r) => typeof r.compliance === 'number');
   const rankOffset = pageIndex * BODEGA_TV_PAGE_SIZE;
