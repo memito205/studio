@@ -87,10 +87,7 @@ const WarehouseAnalyzer: React.FC = () => {
     }
   }, []);
 
-  React.useEffect(() => {
-    void refreshReceivedInWarehouseKeys();
-    void refreshCollectedOnRouteKeys();
-  }, [refreshReceivedInWarehouseKeys, refreshCollectedOnRouteKeys]);
+  // Las claves TF se cargan junto con el snapshot en fetchTransfersFromDB (una sola vez).
 
   const publishPlatformStatusesIfComplete = React.useCallback(
     async (
@@ -223,19 +220,22 @@ const WarehouseAnalyzer: React.FC = () => {
     setIsLoading(true);
     setError(null);
     try {
-        // Snapshot del último Excel subido en Transferencias (`transfers_analysis`).
-        // No usar la colección viva `transfers`: incluiría TFs fuera de tránsito / históricas.
-        const result = await loadAnalysisRecords();
+        // Snapshot del último Excel (`transfers_analysis`) + claves TF en paralelo (sin duplicar).
+        const [result, receivedRes, collectedRes] = await Promise.all([
+          loadAnalysisRecords(),
+          getTfKeysReceivedInWarehouse(),
+          getTfKeysCollectedOnRoute(),
+        ]);
         if (result.error) {
             throw new Error(result.error);
         }
-        
+        if (receivedRes.keys) setReceivedInWarehouseKeys(receivedRes.keys);
+        if (collectedRes.keys) setCollectedOnRouteKeys(collectedRes.keys);
+
         if (result.data) {
             processData(result.data);
             setDataCount(result.data.length);
             setMainFileName("Base de Datos (Análisis Raw)");
-            void refreshReceivedInWarehouseKeys();
-            void refreshCollectedOnRouteKeys();
         }
     } catch (err: any) {
         setError(`Error al cargar datos desde la base de datos: ${err.message}`);
