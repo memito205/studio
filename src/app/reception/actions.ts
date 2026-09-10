@@ -2154,6 +2154,152 @@ async function enrichLabelingTaskWithPackPlan(
   }
 }
 
+/**
+ * Fase 3: convierte una tarea Pendiente (sin iniciar) a pack_units.
+ * Rechaza Asignada / En Progreso / Pausada / Completada.
+ */
+export async function convertPendingLabelingTaskToPackUnits(taskId: string): Promise<{
+  success: boolean;
+  error?: string;
+  packUnits?: number;
+}> {
+  try {
+    if (!taskId) return { success: false, error: 'ID de tarea requerido.' };
+    const { stripUndefinedDeep, packUnitsByIdToList, toLabelingPackPlan } = await import(
+      '@/lib/labelingPackPlan'
+    );
+
+    const opRef = doc(firestore, 'labelingOperations', taskId);
+    const opSnap = await getDoc(opRef);
+    if (!opSnap.exists()) return { success: false, error: 'Tarea no encontrada.' };
+
+    const op = { id: opSnap.id, ...convertTimestampsToDates(opSnap.data()) } as LabelingOperation;
+    if (op.status !== 'Pendiente') {
+      return {
+        success: false,
+        error: `Solo se pueden convertir tareas Pendiente. Estado actual: ${op.status}.`,
+      };
+    }
+    if (op.trackingMode === 'pack_units' && (op.labelingPackPlan?.length || 0) > 0) {
+      return { success: true, packUnits: op.labelingPackPlan!.length };
+    }
+
+    if (!op.receptionOperationId || !op.reference) {
+      return { success: false, error: 'La tarea no tiene recepción/referencia.' };
+    }
+
+    const safeRefId = normalizeReceptionReference(op.reference);
+    const statsRef = doc(
+      firestore,
+      'receptionOperations',
+      op.receptionOperationId,
+      'referenceStats',
+      safeRefId
+    );
+    const statsSnap = await getDoc(statsRef);
+    if (!statsSnap.exists()) {
+      return {
+        success: false,
+        error: 'No hay plan de cajas. Use “Cargar unidades de empaque a esta recepción” primero.',
+      };
+    }
+    const raw = statsSnap.data() as { packUnitsById?: Record<string, import('@/types').ReceptionPackUnitDetail> };
+    const plan = toLabelingPackPlan(packUnitsByIdToList(raw.packUnitsById));
+    if (plan.length === 0) {
+      return {
+        success: false,
+        error: 'No hay plan de cajas para esta referencia. Cargue unidades de empaque primero.',
+      };
+    }
+    const planQty = plan.reduce((s, p) => s + (Number(p.qty) || 0), 0);
+    await updateDoc(
+      opRef,
+      convertDatesToTimestamps(
+        stripUndefinedDeep({
+          trackingMode: 'pack_units',
+          labelingPackPlan: plan,
+          packPlanLoadedAt: new Date().toISOString(),
+          completedUnitsLive: 0,
+          totalUnits: planQty > 0 ? planQty : op.totalUnits,
+          updatedAt: new Date().toISOString(),
+        })
+      )
+    );
+    return { success: true, packUnits: plan.length };
+  } catch (e: any) {
+    console.error('convertPendingLabelingTaskToPackUnits:', e);
+    return { success: false, error: e?.message || 'No se pudo convertir la tarea.' };
+  }
+}
+
+/**
+ * Convierte todas las Pendiente de una recepción que aún no son pack_units.
+ * No toca Asignada / En Progreso / Pausada / Completada.
+ */
+export async function convertPendingPackUnitsForReception(receptionId: string): Promise<{
+  success: boolean;
+  converted?: number;
+  skipped?: number;
+  error?: string;
+}> {
+  try {
+    if (!receptionId) return { success: false, error: 'ID de recepción requerido.' };
+
+    const snap = await getDocs(
+      query(
+        collection(firestore, 'labelingOperations'),
+        where('receptionOperationId', '==', receptionId),
+        where('status', '==', 'Pendiente'),
+        limit(200)
+      )
+    );
+
+    let converted = 0;
+    let skipped = 0;
+    for (const d of snap.docs) {
+      const op = d.data() as LabelingOperation;
+      if (op.trackingMode === 'pack_units' && (op.labelingPackPlan?.length || 0) > 0) {
+        skipped += 1;
+        continue;
+      }
+      const res = await convertPendingLabelingTaskToPackUnits(d.id);
+      if (res.success) converted += 1;
+      else skipped += 1;
+    }
+    return { success: true, converted, skipped };
+  } catch (e: any) {
+    // Fallback sin índice compuesto status+reception
+    try {
+      const snap = await getDocs(
+        query(
+          collection(firestore, 'labelingOperations'),
+          where('receptionOperationId', '==', receptionId),
+          limit(200)
+        )
+      );
+      let converted = 0;
+      let skipped = 0;
+      for (const d of snap.docs) {
+        const op = d.data() as LabelingOperation;
+        if (op.status !== 'Pendiente') {
+          skipped += 1;
+          continue;
+        }
+        if (op.trackingMode === 'pack_units' && (op.labelingPackPlan?.length || 0) > 0) {
+          skipped += 1;
+          continue;
+        }
+        const res = await convertPendingLabelingTaskToPackUnits(d.id);
+        if (res.success) converted += 1;
+        else skipped += 1;
+      }
+      return { success: true, converted, skipped };
+    } catch (e2: any) {
+      return { success: false, error: e2?.message || e?.message || 'No se pudieron convertir pendientes.' };
+    }
+  }
+}
+
 
 export async function loadLabelingOperations(options?: {
   limitN?: number;

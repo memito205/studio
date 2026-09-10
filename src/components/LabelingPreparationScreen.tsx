@@ -9,7 +9,7 @@ import { ArrowLeft, Loader2, Package, Tag, Users } from 'lucide-react';
 import type { ReceptionOperation, AppUser, LabelingOperation, LabelingOperationStatus } from '@/types';
 import { CreateLabelingTaskDialog } from './CreateLabelingTaskDialog';
 import { AssignOperatorsDialog } from './AssignOperatorsDialog';
-import { getAllUserProfiles, loadLabelingOperations, getExternalVendors, rebuildReceptionPackSummaries, getReceptionPackSummaries } from '@/app/reception/actions';
+import { getAllUserProfiles, loadLabelingOperations, getExternalVendors, rebuildReceptionPackSummaries, getReceptionPackSummaries, convertPendingLabelingTaskToPackUnits, convertPendingPackUnitsForReception } from '@/app/reception/actions';
 import { useToast } from '@/hooks/use-toast';
 import { Badge } from './ui/badge';
 import type { ExternalVendor } from '@/types';
@@ -153,6 +153,7 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
   const [loadingVendors, setLoadingVendors] = useState(true);
   const [existingTasks, setExistingTasks] = useState<LabelingOperation[]>([]);
   const [loadingPackSummary, setLoadingPackSummary] = useState(false);
+  const [convertingPack, setConvertingPack] = useState<string | null>(null);
   /** ref normalizada → cantidad de cajas en plan */
   const [packPlanByRef, setPackPlanByRef] = useState<Record<string, number>>({});
   const { toast } = useToast();
@@ -294,8 +295,67 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
         }. Las tareas ya en proceso no se modifican.`,
       });
       await refreshPackPlanMeta();
+
+      // Fase 3: ofrecer convertir solo Pendiente (sin labor iniciada).
+      const pendingLegacy = existingTasks.filter(
+        (t) =>
+          t.status === 'Pendiente' &&
+          !(t.trackingMode === 'pack_units' && (t.labelingPackPlan?.length || 0) > 0)
+      );
+      if (pendingLegacy.length > 0) {
+        const ok = window.confirm(
+          `Hay ${pendingLegacy.length} tarea(s) Pendiente sin seguimiento por cajas. ¿Convertirlas ahora a pack_units? (No afecta Asignada/En Progreso/Pausada.)`
+        );
+        if (ok) {
+          const conv = await convertPendingPackUnitsForReception(operation.id);
+          if (conv.success) {
+            toast({
+              title: 'Pendientes convertidas',
+              description: `Convertidas: ${conv.converted || 0} · Omitidas: ${conv.skipped || 0}.`,
+            });
+            await fetchDependencies();
+          } else {
+            toast({
+              variant: 'destructive',
+              title: 'Conversión',
+              description: conv.error || 'No se pudieron convertir.',
+            });
+          }
+        }
+      }
     } finally {
       setLoadingPackSummary(false);
+    }
+  };
+
+  const handleConvertPendingRef = async (item: GroupedItem) => {
+    const pending = existingTasks.filter(
+      (t) =>
+        t.reference === item.reference &&
+        t.status === 'Pendiente' &&
+        !(t.trackingMode === 'pack_units' && (t.labelingPackPlan?.length || 0) > 0)
+    );
+    if (pending.length === 0) {
+      toast({
+        title: 'Nada que convertir',
+        description: 'No hay tareas Pendiente de esta referencia en modo legado.',
+      });
+      return;
+    }
+    setConvertingPack(item.reference);
+    try {
+      let okCount = 0;
+      for (const t of pending) {
+        const res = await convertPendingLabelingTaskToPackUnits(t.id);
+        if (res.success) okCount += 1;
+      }
+      toast({
+        title: 'Seguimiento por cajas',
+        description: `Convertidas ${okCount} de ${pending.length} tarea(s) Pendiente.`,
+      });
+      await fetchDependencies();
+    } finally {
+      setConvertingPack(null);
     }
   };
 
@@ -408,7 +468,11 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
                         <Badge variant={badgeVariantForPrepStatus(item.status)}>{item.status}</Badge>
                         {item.hasPackPlan ? (
                           <div className="text-[10px] text-emerald-700 dark:text-emerald-400">
-                            Plan cajas ({item.packUnitCount}) · nuevas tareas = seguimiento por caja
+                            {item.status === 'Disponible'
+                              ? `Plan cajas (${item.packUnitCount}) · nuevas tareas = por caja`
+                              : item.status === 'Pendiente'
+                                ? `Plan cajas (${item.packUnitCount}) · se puede activar en Pendiente`
+                                : `Plan cajas (${item.packUnitCount}) · info; labor abierta no se cambia`}
                           </div>
                         ) : (
                           <div className="text-[10px] text-muted-foreground">
@@ -425,18 +489,34 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
                         ) : null}
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button
-                          size="sm"
-                          onClick={() => handleCreateTaskClick(item)}
-                          disabled={loadingOperators || !canCreateTask(item)}
-                        >
-                          {loadingOperators && selectedReference?.reference === item.reference ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Tag className="mr-2 h-4 w-4" />
-                          )}
-                          Crear Tarea
-                        </Button>
+                        <div className="flex flex-col items-end gap-1">
+                          <Button
+                            size="sm"
+                            onClick={() => handleCreateTaskClick(item)}
+                            disabled={loadingOperators || !canCreateTask(item)}
+                          >
+                            {loadingOperators && selectedReference?.reference === item.reference ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Tag className="mr-2 h-4 w-4" />
+                            )}
+                            Crear Tarea
+                          </Button>
+                          {item.status === 'Pendiente' && item.hasPackPlan ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={convertingPack === item.reference || loadingPackSummary}
+                              onClick={() => void handleConvertPendingRef(item)}
+                            >
+                              {convertingPack === item.reference ? (
+                                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                              ) : null}
+                              Activar seguimiento por cajas
+                            </Button>
+                          ) : null}
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
