@@ -315,7 +315,7 @@ export function BodegaAreaDetailSlide({
   );
 }
 
-const REMAINDER_PAGE_SIZE = 6;
+const REMAINDER_PAGE_SIZE = 2;
 
 export function BodegaRemainderAssignmentsSlide({
   rows,
@@ -328,65 +328,90 @@ export function BodegaRemainderAssignmentsSlide({
 }) {
   return (
     <div className="w-full h-full flex flex-col min-h-0">
-      <div className="shrink-0 mb-[0.9em]">
-        <h2 className="text-[2.2em] font-black tracking-tight text-amber-300 leading-none mb-[0.35em]">
+      <div className="shrink-0 mb-[0.75em]">
+        <h2 className="text-[2.4em] font-black tracking-tight text-amber-300 leading-none mb-[0.3em]">
           Físico vs Distribución
         </h2>
-        <p className="text-[0.95em] text-slate-400 font-semibold">
-          Referencias asignadas · ubicación recepción · legalización remanente
-          {pageCount > 1 ? ` · página ${pageIndex + 1}/${pageCount}` : ''}
+        <p className="text-[1.05em] text-slate-400 font-semibold">
+          Operario · referencia · ubicación · remanente
+          {pageCount > 1 ? ` · ${pageIndex + 1}/${pageCount}` : ''}
         </p>
       </div>
 
       {rows.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center text-[1.4em] text-slate-500 font-semibold">
+        <div className="flex-1 flex items-center justify-center text-[1.8em] text-slate-500 font-semibold">
           Sin asignaciones activas
         </div>
       ) : (
-        <div className="flex-1 min-h-0 overflow-hidden flex flex-col justify-start gap-[0.55em]">
-          <div className="grid grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1.1fr)_4.5em_minmax(0,1.15fr)] gap-x-[0.75em] text-[0.8em] font-bold uppercase tracking-wider text-slate-500 px-[0.35em]">
-            <div>Operario</div>
-            <div>Referencia</div>
-            <div>Ubicación</div>
-            <div className="text-right">Rem.</div>
-            <div>Legalización</div>
-          </div>
-          {rows.map((row, idx) => (
-            <div
-              key={`${row.reference}-${row.operatorName}-${idx}`}
-              className="grid grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1.1fr)_4.5em_minmax(0,1.15fr)] gap-x-[0.75em] items-center rounded-[0.75em] border border-slate-700 bg-slate-900/90 px-[0.75em] py-[0.65em]"
-            >
-              <div className="min-w-0">
-                <div className="font-black text-[1.05em] text-slate-100 truncate">{row.operatorName}</div>
-                <div className="text-[0.75em] text-slate-500 truncate">
-                  {row.rkIdentifier || '—'} · {row.statusLabel}
-                </div>
-              </div>
-              <div className="font-bold text-[1.05em] text-amber-200 truncate">{row.reference}</div>
-              <div className="text-[0.95em] text-slate-300 truncate">{row.locationName || 'Sin ubicación'}</div>
-              <div className="text-right font-black tabular-nums text-slate-100">
-                {fmt(row.expectedRemainderQty)}
-              </div>
-              <div className="min-w-0">
-                <div
-                  className={`font-bold text-[0.95em] truncate ${
-                    row.remainderComplete
-                      ? 'text-emerald-300'
-                      : row.status === 'submitted'
-                        ? 'text-amber-300'
-                        : 'text-slate-300'
-                  }`}
-                >
-                  {row.legalizationLabel || '—'}
-                </div>
-                {row.returnedQty != null ? (
-                  <div className="text-[0.7em] text-slate-500 tabular-nums">
-                    Devuelto {fmt(row.returnedQty)}
+        <div className="flex-1 min-h-0 overflow-hidden flex flex-col justify-center gap-[1.15em]">
+          {rows.map((row, idx) => {
+            const n = pageIndex * REMAINDER_PAGE_SIZE + idx + 1;
+            return (
+              <div
+                key={`${row.reference}-${row.operatorName}-${idx}`}
+                className="rounded-[1.1em] border-2 border-slate-600 bg-slate-900/95 px-[1.25em] py-[1.2em] grid grid-cols-[3.2em_minmax(0,1.35fr)_minmax(0,1.15fr)_minmax(0,1.2fr)_minmax(7em,0.85fr)] gap-x-[1.1em] items-center"
+              >
+                <span className="w-[2.8em] h-[2.8em] rounded-full flex items-center justify-center font-black text-[1.35em] shrink-0 bg-amber-400/90 text-slate-950">
+                  {n}
+                </span>
+
+                <div className="min-w-0">
+                  <div className="text-[0.85em] uppercase tracking-wider text-slate-500 font-bold mb-[0.25em]">
+                    Operario
                   </div>
-                ) : null}
+                  <div className="text-[1.95em] font-extrabold text-slate-100 leading-[1.12] break-words whitespace-normal">
+                    {row.operatorName}
+                  </div>
+                  <div className="text-[1.05em] text-slate-400 font-semibold mt-[0.35em] truncate">
+                    {row.rkIdentifier || '—'} · {row.statusLabel}
+                  </div>
+                </div>
+
+                <div className="min-w-0">
+                  <div className="text-[0.85em] uppercase tracking-wider text-slate-500 font-bold mb-[0.25em]">
+                    Referencia
+                  </div>
+                  <div className="text-[2em] font-black text-amber-200 leading-[1.1] break-words whitespace-normal">
+                    {row.reference}
+                  </div>
+                </div>
+
+                <div className="min-w-0">
+                  <div className="text-[0.85em] uppercase tracking-wider text-slate-500 font-bold mb-[0.25em]">
+                    Ubicación
+                  </div>
+                  <div className="text-[1.85em] font-extrabold text-sky-300 leading-[1.12] break-words whitespace-normal">
+                    {row.locationName || 'Sin ubicación'}
+                  </div>
+                </div>
+
+                <div className="min-w-0 text-right">
+                  <div className="text-[0.85em] uppercase tracking-wider text-slate-500 font-bold mb-[0.25em]">
+                    Remanente
+                  </div>
+                  <div className="text-[2.6em] font-black tabular-nums text-slate-50 leading-none">
+                    {fmt(row.expectedRemainderQty)}
+                  </div>
+                  <div
+                    className={`text-[1.1em] font-bold mt-[0.45em] leading-snug ${
+                      row.remainderComplete
+                        ? 'text-emerald-300'
+                        : row.status === 'submitted'
+                          ? 'text-amber-300'
+                          : 'text-slate-400'
+                    }`}
+                  >
+                    {row.legalizationLabel || 'Pendiente'}
+                  </div>
+                  {row.returnedQty != null ? (
+                    <div className="text-[0.95em] text-slate-500 tabular-nums mt-[0.2em]">
+                      Dev. {fmt(row.returnedQty)}
+                    </div>
+                  ) : null}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
