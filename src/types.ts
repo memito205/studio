@@ -1242,6 +1242,8 @@ export interface DistributionRemainderTask {
   assignedAt: string;
   assignedBy: string;
   assignedByName?: string;
+  /** true si el operario tomó la referencia (no la asignó un supervisor). */
+  claimedBySelf?: boolean;
   submittedAt?: string;
   submittedBy?: string;
   submittedByName?: string;
@@ -1252,6 +1254,16 @@ export interface DistributionRemainderTask {
   notes?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Línea sin dueño que un operario puede tomar. */
+export interface DistributionRemainderAvailableClaim {
+  compareId: string;
+  rkIdentifier?: string;
+  reference: string;
+  remainderQty: number;
+  compareStatus: DistributionCompareOperation['status'];
+  updatedAt?: string;
 }
 
 /** Capacidad de un tipo de cajón en una tienda (medida × carga × cantidad). */

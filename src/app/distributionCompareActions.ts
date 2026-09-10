@@ -706,6 +706,156 @@ export async function listPendingValidationRemainderTasks(): Promise<{
 }
 
 /**
+ * Remanentes >0 sin tarea activa (para que el operario tome la referencia).
+ */
+export async function listAvailableRemainderClaims(limitCompares = 25): Promise<{
+  success: boolean;
+  data?: import('@/types').DistributionRemainderAvailableClaim[];
+  error?: string;
+}> {
+  try {
+    const listRes = await listDistributionCompares(Math.min(Math.max(limitCompares, 5), 40));
+    if (!listRes.success || !listRes.data) {
+      return { success: false, error: listRes.error || 'No se pudieron cargar comparaciones.' };
+    }
+    const compares = listRes.data.filter((c) => c.status !== 'archived');
+    const out: import('@/types').DistributionRemainderAvailableClaim[] = [];
+
+    await Promise.all(
+      compares.map(async (c) => {
+        const [lines, tasksSnap] = await Promise.all([
+          loadCompareLines(c.id),
+          getDocs(
+            query(collection(firestore, TASKS_COL), where('compareId', '==', c.id), limit(500))
+          ),
+        ]);
+        const taken = new Set<string>();
+        tasksSnap.forEach((d) => {
+          const t = d.data() as DistributionRemainderTask;
+          // Cualquier tarea existente bloquea "disponible" (incluye rejected → sigue con ese operario).
+          if (t.reference) taken.add(t.reference);
+        });
+        for (const line of lines) {
+          if (!(line.remainderQty > 0)) continue;
+          if (taken.has(line.reference)) continue;
+          out.push({
+            compareId: c.id,
+            rkIdentifier: c.rkIdentifier,
+            reference: line.reference,
+            remainderQty: line.remainderQty,
+            compareStatus: c.status,
+            updatedAt: c.updatedAt,
+          });
+        }
+      })
+    );
+
+    out.sort((a, b) => {
+      const rk = String(a.rkIdentifier || '').localeCompare(String(b.rkIdentifier || ''), 'es');
+      if (rk !== 0) return rk;
+      return a.reference.localeCompare(b.reference, 'es');
+    });
+    return { success: true, data: out };
+  } catch (e: any) {
+    console.error('listAvailableRemainderClaims:', e);
+    return { success: false, error: e?.message || 'No se pudieron cargar disponibles.' };
+  }
+}
+
+/**
+ * Tablero supervisor/admin: quién tiene cada referencia y si ya validó el remanente.
+ */
+export async function listRemainderAssignmentBoard(limitN = 300): Promise<{
+  success: boolean;
+  data?: DistributionRemainderTask[];
+  error?: string;
+}> {
+  try {
+    const snap = await getDocs(query(collection(firestore, TASKS_COL), limit(Math.min(limitN, 500))));
+    const data = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() } as DistributionRemainderTask))
+      .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    return { success: true, data };
+  } catch (e: any) {
+    return { success: false, error: e?.message || 'No se pudo cargar el tablero.' };
+  }
+}
+
+/**
+ * Operario toma una referencia sin asignar (self-claim).
+ * No roba tareas ya asignadas a otro.
+ */
+export async function claimDistributionRemainder(input: {
+  compareId: string;
+  reference: string;
+  operatorId: string;
+  operatorName?: string;
+}): Promise<{ success: boolean; taskId?: string; error?: string }> {
+  try {
+    if (!input.compareId || !input.reference || !input.operatorId) {
+      return { success: false, error: 'Faltan datos para tomar la referencia.' };
+    }
+
+    const compareSnap = await getDoc(doc(firestore, COL, input.compareId));
+    if (!compareSnap.exists()) return { success: false, error: 'Comparación no encontrada.' };
+    const compare = { id: compareSnap.id, ...compareSnap.data() } as DistributionCompareOperation;
+    if (compare.status === 'archived') {
+      return { success: false, error: 'La comparación está archivada.' };
+    }
+
+    const lines = await loadCompareLines(input.compareId);
+    const line = lines.find((l) => l.reference === input.reference);
+    if (!line || !(line.remainderQty > 0)) {
+      return { success: false, error: 'No hay remanente disponible para esa referencia.' };
+    }
+
+    const existingSnap = await getDocs(
+      query(
+        collection(firestore, TASKS_COL),
+        where('compareId', '==', input.compareId),
+        where('reference', '==', input.reference),
+        limit(5)
+      )
+    );
+    if (!existingSnap.empty) {
+      const existing = existingSnap.docs[0].data() as DistributionRemainderTask;
+      if (existing.assignedOperatorId === input.operatorId) {
+        return { success: true, taskId: existingSnap.docs[0].id };
+      }
+      return {
+        success: false,
+        error: `Ya está asignada a ${existing.assignedOperatorName || 'otro operario'}.`,
+      };
+    }
+
+    const now = new Date().toISOString();
+    const ref = doc(collection(firestore, TASKS_COL));
+    const payload: DistributionRemainderTask = stripUndefinedDeep({
+      id: ref.id,
+      compareId: input.compareId,
+      rkIdentifier: compare.rkIdentifier,
+      reference: input.reference,
+      expectedRemainderQty: line.remainderQty,
+      status: 'assigned',
+      assignedOperatorId: input.operatorId,
+      assignedOperatorName: input.operatorName || input.operatorId,
+      assignedAt: now,
+      assignedBy: input.operatorId,
+      assignedByName: input.operatorName || input.operatorId,
+      claimedBySelf: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await setDoc(ref, payload);
+    await refreshCompareWorkflowStatus(input.compareId);
+    return { success: true, taskId: ref.id };
+  } catch (e: any) {
+    console.error('claimDistributionRemainder:', e);
+    return { success: false, error: e?.message || 'No se pudo tomar la referencia.' };
+  }
+}
+
+/**
  * Asigna remanentes. Cada referencia puede ir a un operario distinto.
  * Acepta `assignments: [{ reference, operatorId, operatorName }]`
  * o el modo legado references[] + un solo operatorId.
@@ -781,6 +931,7 @@ export async function assignDistributionRemainders(input: {
           assignedAt: now,
           assignedBy: input.assignedBy,
           assignedByName: input.assignedByName || null,
+          claimedBySelf: false,
           returnedQty: null,
           submittedAt: null,
           submittedBy: null,
@@ -806,6 +957,7 @@ export async function assignDistributionRemainders(input: {
           assignedAt: now,
           assignedBy: input.assignedBy,
           assignedByName: input.assignedByName,
+          claimedBySelf: false,
           createdAt: now,
           updatedAt: now,
         };

@@ -38,12 +38,15 @@ import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import {
   assignDistributionRemainders,
+  claimDistributionRemainder,
   createDistributionCompare,
   deleteDistributionCompare,
   getDistributionCompare,
   listAssignableOperatorsForRemainders,
+  listAvailableRemainderClaims,
   listMyRemainderTasks,
   listPendingValidationRemainderTasks,
+  listRemainderAssignmentBoard,
   listRemainderTasksByCompare,
   rejectRemainderTask,
   submitRemainderReturn,
@@ -52,7 +55,11 @@ import {
   type DistributionPlanRowInput,
   type DistributionStockRowInput,
 } from '@/app/distributionCompareActions';
-import type { DistributionCompareOperation, DistributionRemainderTask } from '@/types';
+import type {
+  DistributionCompareOperation,
+  DistributionRemainderAvailableClaim,
+  DistributionRemainderTask,
+} from '@/types';
 import { parseExcelFile } from '@/components/distributor-module/services/parser';
 import {
   fetchDistributionCompareSummariesClient,
@@ -117,7 +124,9 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const { toast } = useToast();
   const isManager = role === 'admin' || role === 'supervisor';
 
-  const [tab, setTab] = useState<'compares' | 'myTasks' | 'pendingValidation'>('compares');
+  const [tab, setTab] = useState<
+    'compares' | 'myTasks' | 'available' | 'pendingValidation' | 'assignments'
+  >('compares');
   const [view, setView] = useState<'list' | 'new' | 'detail'>('list');
   const [loading, setLoading] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
@@ -126,10 +135,13 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const [selected, setSelected] = useState<DistributionCompareOperation | null>(null);
   const [tasks, setTasks] = useState<DistributionRemainderTask[]>([]);
   const [myTasks, setMyTasks] = useState<DistributionRemainderTask[]>([]);
+  const [availableClaims, setAvailableClaims] = useState<DistributionRemainderAvailableClaim[]>([]);
+  const [assignmentBoard, setAssignmentBoard] = useState<DistributionRemainderTask[]>([]);
   const [pendingTasks, setPendingTasks] = useState<DistributionRemainderTask[]>([]);
   const [operators, setOperators] = useState<
     Array<{ uid: string; displayName: string; role: string }>
   >([]);
+  const [claimingKey, setClaimingKey] = useState<string | null>(null);
 
   const [receptions, setReceptions] = useState<
     Array<{
@@ -217,11 +229,21 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
           if (gen === loadGenRef.current && res.success) setMyTasks(res.data || []);
         })
         .catch(() => undefined);
+      void listAvailableRemainderClaims(25)
+        .then((res) => {
+          if (gen === loadGenRef.current && res.success) setAvailableClaims(res.data || []);
+        })
+        .catch(() => undefined);
     }
     if (isManagerRef.current) {
       void listPendingValidationRemainderTasks()
         .then((res) => {
           if (gen === loadGenRef.current && res.success) setPendingTasks(res.data || []);
+        })
+        .catch(() => undefined);
+      void listRemainderAssignmentBoard(300)
+        .then((res) => {
+          if (gen === loadGenRef.current && res.success) setAssignmentBoard(res.data || []);
         })
         .catch(() => undefined);
     }
@@ -541,6 +563,27 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     await reloadList();
   };
 
+  const handleClaim = async (compareId: string, reference: string) => {
+    if (!user?.uid) return;
+    const key = `${compareId}:${reference}`;
+    setClaimingKey(key);
+    const res = await claimDistributionRemainder({
+      compareId,
+      reference,
+      operatorId: user.uid,
+      operatorName: user.displayName || user.email || user.uid,
+    });
+    setClaimingKey(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Tomar referencia', description: res.error });
+      return;
+    }
+    toast({ title: 'Referencia tomada', description: `${reference} quedó en sus remanentes.` });
+    if (selected?.id === compareId) await loadDetailTasks(compareId);
+    await reloadList();
+    setTab('myTasks');
+  };
+
   /** Supervisor confirma en bodega lo entregado, sin asignar a operario. */
   const handleSupervisorDirectConfirm = async () => {
     if (!selected || !user?.uid) return;
@@ -726,15 +769,33 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
           >
             Mis remanentes ({myTasks.length})
           </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={tab === 'available' ? 'default' : 'outline'}
+            onClick={() => setTab('available')}
+          >
+            Disponibles ({availableClaims.length})
+          </Button>
           {isManager ? (
-            <Button
-              type="button"
-              size="sm"
-              variant={tab === 'pendingValidation' ? 'default' : 'outline'}
-              onClick={() => setTab('pendingValidation')}
-            >
-              Por validar ({pendingTasks.length})
-            </Button>
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant={tab === 'assignments' ? 'default' : 'outline'}
+                onClick={() => setTab('assignments')}
+              >
+                Asignaciones ({assignmentBoard.length})
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={tab === 'pendingValidation' ? 'default' : 'outline'}
+                onClick={() => setTab('pendingValidation')}
+              >
+                Por validar ({pendingTasks.length})
+              </Button>
+            </>
           ) : null}
         </div>
       ) : null}
@@ -844,12 +905,15 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
           <CardHeader>
             <CardTitle>Mis remanentes asignados</CardTitle>
             <CardDescription>
-              Registre la cantidad devuelta a bodega. El supervisor validará que coincida.
+              Referencias que le asignó un supervisor o que usted tomó. Registre la devolución a bodega.
             </CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto">
             {myTasks.length === 0 ? (
-              <p className="text-center text-muted-foreground py-8">No tiene tareas pendientes.</p>
+              <p className="text-center text-muted-foreground py-8">
+                No tiene tareas pendientes. Revise la pestaña <strong>Disponibles</strong> para tomar una
+                referencia.
+              </p>
             ) : (
               <Table>
                 <TableHeader>
@@ -859,6 +923,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                     <TableHead className="text-right">Esperado</TableHead>
                     <TableHead>Devuelto</TableHead>
                     <TableHead>Estado</TableHead>
+                    <TableHead>Origen</TableHead>
                     <TableHead />
                   </TableRow>
                 </TableHeader>
@@ -892,6 +957,9 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                       <TableCell>
                         <Badge variant="outline">{taskStatusLabel(task.status)}</Badge>
                       </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {task.claimedBySelf ? 'Tomada por usted' : 'Asignada'}
+                      </TableCell>
                       <TableCell className="text-right">
                         {task.status === 'assigned' || task.status === 'rejected' ? (
                           <Button
@@ -909,6 +977,133 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                         ) : (
                           <span className="text-xs text-muted-foreground">En revisión</span>
                         )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {view === 'list' && tab === 'available' ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Referencias disponibles</CardTitle>
+            <CardDescription>
+              Remanentes sin asignar. Puede tomar una referencia y luego registrarla en Mis remanentes.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            {availableClaims.length === 0 ? (
+              <p className="text-center text-muted-foreground py-8">
+                No hay referencias sin asignar por ahora.
+              </p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>RK</TableHead>
+                    <TableHead>Referencia</TableHead>
+                    <TableHead className="text-right">Remanente</TableHead>
+                    <TableHead>Comparación</TableHead>
+                    <TableHead />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {availableClaims.map((row) => {
+                    const key = `${row.compareId}:${row.reference}`;
+                    return (
+                      <TableRow key={key}>
+                        <TableCell className="text-sm">{row.rkIdentifier || '—'}</TableCell>
+                        <TableCell className="font-medium">{row.reference}</TableCell>
+                        <TableCell className="text-right tabular-nums text-amber-600">
+                          {fmt(row.remainderQty)}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {compareStatusLabel(row.compareStatus)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={claimingKey === key}
+                            onClick={() => void handleClaim(row.compareId, row.reference)}
+                          >
+                            {claimingKey === key ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              'Tomar'
+                            )}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {view === 'list' && tab === 'assignments' && isManager ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Quién tiene cada referencia</CardTitle>
+            <CardDescription>
+              Tablero de asignaciones: operario, si tomó/asignaron, devolución y si ya se validó el remanente.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            {assignmentBoard.length === 0 ? (
+              <p className="text-center text-muted-foreground py-8">Aún no hay asignaciones.</p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>RK</TableHead>
+                    <TableHead>Referencia</TableHead>
+                    <TableHead>Operario</TableHead>
+                    <TableHead className="text-right">Esperado</TableHead>
+                    <TableHead className="text-right">Devuelto</TableHead>
+                    <TableHead>Estado</TableHead>
+                    <TableHead>Validado</TableHead>
+                    <TableHead>Origen</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {assignmentBoard.map((task) => (
+                    <TableRow key={task.id}>
+                      <TableCell className="text-sm">{task.rkIdentifier || '—'}</TableCell>
+                      <TableCell className="font-medium">{task.reference}</TableCell>
+                      <TableCell className="text-sm">
+                        {task.assignedOperatorName || task.assignedOperatorId}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {fmt(task.expectedRemainderQty)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {typeof task.returnedQty === 'number' ? fmt(task.returnedQty) : '—'}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{taskStatusLabel(task.status)}</Badge>
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {task.status === 'validated' ? (
+                          <span className="text-emerald-700">
+                            Sí
+                            {task.validatedByName ? ` · ${task.validatedByName}` : ''}
+                          </span>
+                        ) : task.status === 'submitted' ? (
+                          <span className="text-amber-700">Pendiente</span>
+                        ) : (
+                          <span className="text-muted-foreground">No</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {task.claimedBySelf ? 'Auto' : 'Supervisor'}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -1337,6 +1532,23 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                                       />
                                     ) : null}
                                   </div>
+                                ) : !isManager && selected ? (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={
+                                      claimingKey === `${selected.id}:${line.reference}` ||
+                                      selected.status === 'archived'
+                                    }
+                                    onClick={() => void handleClaim(selected.id, line.reference)}
+                                  >
+                                    {claimingKey === `${selected.id}:${line.reference}` ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      'Tomar'
+                                    )}
+                                  </Button>
                                 ) : (
                                   <span className="text-muted-foreground">Sin asignar</span>
                                 )}
@@ -1349,9 +1561,15 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                               <Badge variant="outline">{taskStatusLabel(task.status)}</Badge>
                               <div className="text-xs text-muted-foreground">
                                 {task.assignedOperatorName || task.assignedOperatorId}
+                                {task.claimedBySelf ? ' · auto' : ''}
                                 {typeof task.returnedQty === 'number'
                                   ? ` · devuelto ${fmt(task.returnedQty)}/${fmt(task.expectedRemainderQty)}`
                                   : ''}
+                                {task.status === 'validated'
+                                  ? ` · validado${task.validatedByName ? ` (${task.validatedByName})` : ''}`
+                                  : task.status === 'submitted'
+                                    ? ' · pendiente validar'
+                                    : ''}
                               </div>
                               {isManager && task.status === 'submitted' ? (
                                 <div className="flex flex-wrap gap-2 pt-1">
