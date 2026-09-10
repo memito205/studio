@@ -3,11 +3,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
-import { AlertTriangle, Loader2, RefreshCw, Save } from 'lucide-react';
+import { AlertTriangle, Loader2, RefreshCw, Save, Trash2 } from 'lucide-react';
 import { getEtiquetadoDayBreakdown } from '@/app/bodegaTvActions';
 import {
   correctLabelingActivityLogTimestamp,
   correctLabelingActivityLogUnits,
+  deleteLabelingActivityLog,
+  purgeDuplicateFinishLogsForOperations,
 } from '@/app/reception/actions';
 import type { EtiquetadoContributionRow, EtiquetadoDayBreakdown } from '@/lib/bodegaTvTypes';
 import { useToast } from '@/hooks/use-toast';
@@ -57,6 +59,7 @@ export const EtiquetadoLiveAuditPanel: React.FC<Props> = ({ day }) => {
   const [data, setData] = useState<EtiquetadoDayBreakdown | null>(null);
   const [loading, setLoading] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [purging, setPurging] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
 
   const load = useCallback(async () => {
@@ -86,6 +89,59 @@ export const EtiquetadoLiveAuditPanel: React.FC<Props> = ({ day }) => {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const purgeDuplicates = async () => {
+    if (!data) return;
+    const opIds = [
+      ...new Set(
+        data.contributions
+          .filter((r) => r.source === 'finish' && r.excluded)
+          .map((r) => r.operationId)
+      ),
+    ];
+    if (opIds.length === 0) {
+      toast({ title: 'No hay FINISH duplicados para limpiar' });
+      return;
+    }
+    setPurging(true);
+    try {
+      const r = await purgeDuplicateFinishLogsForOperations(opIds);
+      if (!r.success) {
+        toast({ variant: 'destructive', title: 'Error al limpiar', description: r.error });
+        return;
+      }
+      toast({
+        title: 'Duplicados eliminados',
+        description: `Se borraron ${r.deleted || 0} FINISH extra. Queda 1 por tarea; el total ya no los duplica. Si bajaste und a la mitad, vuelve a poner el valor real en el FINISH que quedó.`,
+      });
+      await load();
+    } finally {
+      setPurging(false);
+    }
+  };
+
+  const deleteRow = async (row: EtiquetadoContributionRow) => {
+    if (!row.logId) {
+      toast({
+        variant: 'destructive',
+        title: 'Sin ID de log',
+        description: 'No se puede borrar este registro.',
+      });
+      return;
+    }
+    setSavingId(row.id);
+    try {
+      const r = await deleteLabelingActivityLog(row.operationId, row.logId);
+      if (!r.success) {
+        toast({ variant: 'destructive', title: 'Error al borrar', description: r.error });
+        return;
+      }
+      toast({ title: 'Log borrado', description: 'Ya no suma al total.' });
+      await load();
+    } finally {
+      setSavingId(null);
+    }
+  };
 
   const saveRow = async (row: EtiquetadoContributionRow) => {
     if (!row.logId) {
@@ -159,14 +215,31 @@ export const EtiquetadoLiveAuditPanel: React.FC<Props> = ({ day }) => {
               cada caja LIVE del día. Si una fecha está mal, corrígela aquí.
             </CardDescription>
           </div>
-          <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-            {loading ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="mr-2 h-4 w-4" />
-            )}
-            Recargar
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {(data?.omittedFinishDuplicates || 0) > 0 ? (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => void purgeDuplicates()}
+                disabled={loading || purging}
+              >
+                {purging ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="mr-2 h-4 w-4" />
+                )}
+                Eliminar duplicados
+              </Button>
+            ) : null}
+            <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+              {loading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-2 h-4 w-4" />
+              )}
+              Recargar
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4 pt-4">
@@ -292,21 +365,41 @@ export const EtiquetadoLiveAuditPanel: React.FC<Props> = ({ day }) => {
                           </div>
                         </TableCell>
                         <TableCell>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            disabled={!row.logId || savingId === row.id}
-                            onClick={() => void saveRow(row)}
-                          >
-                            {savingId === row.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
+                          <div className="flex flex-col gap-1">
+                            {!row.excluded ? (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                disabled={!row.logId || savingId === row.id}
+                                onClick={() => void saveRow(row)}
+                              >
+                                {savingId === row.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Save className="mr-1 h-3.5 w-3.5" />
+                                    Guardar
+                                  </>
+                                )}
+                              </Button>
                             ) : (
-                              <>
-                                <Save className="mr-1 h-3.5 w-3.5" />
-                                Guardar
-                              </>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                disabled={!row.logId || savingId === row.id}
+                                onClick={() => void deleteRow(row)}
+                              >
+                                {savingId === row.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Trash2 className="mr-1 h-3.5 w-3.5" />
+                                    Borrar
+                                  </>
+                                )}
+                              </Button>
                             )}
-                          </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     );
@@ -322,8 +415,10 @@ export const EtiquetadoLiveAuditPanel: React.FC<Props> = ({ day }) => {
               </Table>
             </div>
             <p className="text-xs text-muted-foreground">
-              Mover la fecha a otro día saca esas und del total de hoy en Bodega Live. Cambiar und
-              corrige el log (y en FINISH completada también la tarea).
+              El total solo cuenta un FINISH por tarea. Si ves duplicados, usa{' '}
+              <strong>Eliminar duplicados</strong> (borra los extras en Firestore). Corregir und solo
+              cambia ese log — ya no reescribe los demás. Si pusiste la mitad como parche, restaura el
+              valor real en el FINISH que quede.
             </p>
           </>
         ) : (

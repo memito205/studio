@@ -2544,7 +2544,8 @@ export async function correctLabelingTaskQuantity(
 
     await updateDoc(opRef, convertDatesToTimestamps(updates));
 
-    // Sincronizar logs FINISH para dashboards históricos
+    // Sincronizar SOLO el FINISH canónico (más reciente). Nunca reescribir todos:
+    // eso hacía que un duplicado “se moviera” junto con el bueno.
     if (op.status === 'Completada' || updates.completedUnits != null) {
       const unitsForLog = Number(updates.completedUnits ?? oldCompleted ?? qty);
       const logSnap = await getDocs(
@@ -2554,8 +2555,13 @@ export async function correctLabelingTaskQuantity(
           limit(20)
         )
       );
-      for (const logDoc of logSnap.docs) {
-        await updateDoc(logDoc.ref, { completedUnits: unitsForLog });
+      if (!logSnap.empty) {
+        const sorted = [...logSnap.docs].sort((a, b) => {
+          const ta = new Date(String((a.data() as LabelingActivityLog).timestamp || 0)).getTime();
+          const tb = new Date(String((b.data() as LabelingActivityLog).timestamp || 0)).getTime();
+          return tb - ta;
+        });
+        await updateDoc(sorted[0].ref, { completedUnits: unitsForLog });
       }
     }
 
@@ -2609,7 +2615,7 @@ export async function correctLabelingActivityLogTimestamp(
 
 /**
  * Corrige las unidades de un log FINISH o UNIT_COMPLETE (sin reescalar tallas).
- * Para FINISH en tarea Completada también alinea completedUnits de la operación.
+ * Solo toca ESE log. Si hay otros FINISH duplicados, no los reescribe.
  */
 export async function correctLabelingActivityLogUnits(
   operationId: string,
@@ -2661,6 +2667,70 @@ export async function correctLabelingActivityLogUnits(
   }
 }
 
+/** Borra un log de actividad concreto (p. ej. FINISH duplicado). */
+export async function deleteLabelingActivityLog(
+  operationId: string,
+  logId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!operationId || !logId) {
+      return { success: false, error: 'Tarea o log inválido.' };
+    }
+    const logRef = doc(firestore, 'labelingOperations', operationId, 'activityLog', logId);
+    const logSnap = await getDoc(logRef);
+    if (!logSnap.exists()) {
+      return { success: false, error: 'El registro de actividad no existe.' };
+    }
+    await deleteDoc(logRef);
+    await updateDoc(doc(firestore, 'labelingOperations', operationId), {
+      updatedAt: Timestamp.now(),
+    });
+    return { success: true };
+  } catch (error: any) {
+    console.error('deleteLabelingActivityLog:', error);
+    return { success: false, error: error?.message || 'No se pudo borrar el log.' };
+  }
+}
+
+/**
+ * Deja un solo FINISH por tarea (el más reciente) y borra el resto.
+ * Corrige inflación histórica por dobles clics / admin + finishSession.
+ */
+export async function purgeDuplicateFinishLogsForOperations(
+  operationIds: string[]
+): Promise<{ success: boolean; deleted?: number; error?: string }> {
+  try {
+    const uniqueIds = [...new Set(operationIds.filter(Boolean))];
+    let deleted = 0;
+    for (const operationId of uniqueIds) {
+      const logSnap = await getDocs(
+        query(
+          collection(firestore, 'labelingOperations', operationId, 'activityLog'),
+          where('type', '==', 'FINISH'),
+          limit(50)
+        )
+      );
+      if (logSnap.size <= 1) continue;
+      const sorted = [...logSnap.docs].sort((a, b) => {
+        const ta = new Date(String((a.data() as LabelingActivityLog).timestamp || 0)).getTime();
+        const tb = new Date(String((b.data() as LabelingActivityLog).timestamp || 0)).getTime();
+        return tb - ta;
+      });
+      for (const d of sorted.slice(1)) {
+        await deleteDoc(d.ref);
+        deleted += 1;
+      }
+      await updateDoc(doc(firestore, 'labelingOperations', operationId), {
+        updatedAt: Timestamp.now(),
+      });
+    }
+    return { success: true, deleted };
+  } catch (error: any) {
+    console.error('purgeDuplicateFinishLogsForOperations:', error);
+    return { success: false, error: error?.message || 'No se pudieron limpiar duplicados.' };
+  }
+}
+
 export async function getExpectedItemsForLabeling(receptionId: string): Promise<{ success: boolean; data?: ReceptionExpectedItem[]; error?: string; }> {
     try {
         const receptionSnap = await getDoc(doc(firestore, 'receptionOperations', receptionId));
@@ -2706,6 +2776,24 @@ export async function logLabelingActivity(
             
             if (operator.pin !== providedPin) {
                 return { success: false, error: "PIN de operario incorrecto. Acción rechazada." };
+            }
+        }
+
+        // Nunca crear un segundo FINISH: si ya existe, solo alinear estado.
+        if (type === 'FINISH') {
+            const existingFinish = await getDocs(
+                query(
+                    collection(firestore, 'labelingOperations', operationId, 'activityLog'),
+                    where('type', '==', 'FINISH'),
+                    limit(5)
+                )
+            );
+            if (!existingFinish.empty) {
+                await updateDoc(doc(firestore, 'labelingOperations', operationId), {
+                    status: 'Completada',
+                    updatedAt: Timestamp.now(),
+                });
+                return { success: true };
             }
         }
 
@@ -2791,6 +2879,26 @@ export async function finishLabelingTaskSession(
     let residualCreated = false;
     let residualBoxes = 0;
 
+    // Idempotencia: si ya hay FINISH, no crear otro (evita doble conteo por doble clic / admin).
+    const existingFinishSnap = await getDocs(
+      query(
+        collection(firestore, 'labelingOperations', operationId, 'activityLog'),
+        where('type', '==', 'FINISH'),
+        limit(20)
+      )
+    );
+    const opPre = await getDoc(doc(firestore, 'labelingOperations', operationId));
+    if (!opPre.exists()) {
+      return { success: false, error: 'La tarea de etiquetado no fue encontrada.' };
+    }
+    const opPreData = convertTimestampsToDates(opPre.data()) as LabelingOperation;
+    if (opPreData.status === 'Completada' || !existingFinishSnap.empty) {
+      if (existingFinishSnap.size > 1) {
+        await purgeDuplicateFinishLogsForOperations([operationId]);
+      }
+      return { success: true, residualCreated: false, residualBoxes: 0 };
+    }
+
     await runTransaction(firestore, async (transaction) => {
       const { stripUndefinedDeep, summarizePackPlanProgress } = await import('@/lib/labelingPackPlan');
       const operationRef = doc(firestore, 'labelingOperations', operationId);
@@ -2803,6 +2911,10 @@ export async function finishLabelingTaskSession(
         id: operationDoc.id,
         ...convertTimestampsToDates(operationDoc.data()),
       } as LabelingOperation;
+
+      if (operationData.status === 'Completada') {
+        return;
+      }
 
       // PIN validation for external workers
       if (isExternal) {
@@ -2860,7 +2972,7 @@ export async function finishLabelingTaskSession(
         )
       );
       
-      // Log the FINISH event
+      // Log the FINISH event (solo si aún no existía al inicio)
       const logCollectionRef = collection(firestore, 'labelingOperations', operationId, 'activityLog');
       const newLogDocRef = doc(logCollectionRef);
       const logEntry: Omit<LabelingActivityLog, 'id'> = {
@@ -2923,6 +3035,8 @@ export async function finishLabelingTaskSession(
       }
     });
 
+    // Por si hubo carrera: dejar un solo FINISH.
+    await purgeDuplicateFinishLogsForOperations([operationId]);
     return { success: true, residualCreated, residualBoxes };
   } catch (error: any) {
     console.error("Error finishing labeling task session:", error);
