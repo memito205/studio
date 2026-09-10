@@ -1,6 +1,21 @@
 import type { LabelingPackUnit, ReceptionPackUnitDetail, ScannedItem } from '@/types';
 import { normalizeReceptionReference } from '@/lib/receptionReference';
 
+/** Firestore no acepta `undefined` en writes. */
+export function stripUndefinedDeep<T>(value: T): T {
+  if (value === undefined) return value;
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    return value.map((v) => stripUndefinedDeep(v)).filter((v) => v !== undefined) as T;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (v === undefined) continue;
+    out[k] = stripUndefinedDeep(v);
+  }
+  return out as T;
+}
+
 /** Convierte el mapa packUnitsById de stats a lista ordenada por # caja. */
 export function packUnitsByIdToList(
   packUnitsById: Record<string, ReceptionPackUnitDetail> | undefined | null
@@ -15,14 +30,16 @@ export function toLabelingPackPlan(
 ): LabelingPackUnit[] {
   return details
     .filter((d) => d.qty > 0)
-    .map((d) => ({
-      packingUnitId: d.packingUnitId,
-      unitNumber: d.unitNumber,
-      qty: d.qty,
-      locationId: d.locationId,
-      locationName: d.locationName,
-      confirmed: false,
-    }));
+    .map((d) =>
+      stripUndefinedDeep({
+        packingUnitId: d.packingUnitId,
+        unitNumber: d.unitNumber,
+        qty: d.qty,
+        locationId: d.locationId,
+        locationName: d.locationName,
+        confirmed: false,
+      })
+    );
 }
 
 type UnitMeta = {
@@ -55,9 +72,9 @@ export function aggregatePackUnitsByReference(
     const qty = Number(item.quantity) || 1;
     if (!byRef.has(ref)) byRef.set(ref, new Map());
     const unitMap = byRef.get(ref)!;
-    const prev = unitMap.get(unitId) || { qty: 0, locationId: undefined };
+    const prev = unitMap.get(unitId) || { qty: 0 };
     prev.qty += qty;
-    if (!prev.locationId && item.location_id) prev.locationId = item.location_id;
+    if (!prev.locationId && item.location_id) prev.locationId = String(item.location_id);
     unitMap.set(unitId, prev);
   }
 
@@ -66,17 +83,21 @@ export function aggregatePackUnitsByReference(
     const packUnitsById: Record<string, ReceptionPackUnitDetail> = {};
     for (const [packingUnitId, acc] of unitMap.entries()) {
       const meta = unitMetaById.get(packingUnitId);
-      const locationId = acc.locationId;
-      packUnitsById[packingUnitId] = {
+      const locationId = acc.locationId ? String(acc.locationId) : undefined;
+      const locationName =
+        locationId && locationNameById?.get(locationId)
+          ? locationNameById.get(locationId)
+          : undefined;
+      packUnitsById[packingUnitId] = stripUndefinedDeep({
         packingUnitId,
         unitNumber: meta?.unitNumber ?? 0,
         qty: acc.qty,
         locationId,
-        locationName: locationId ? locationNameById?.get(locationId) : undefined,
+        locationName,
         status: meta?.status || 'open',
-        closedAt: meta?.closedAt,
+        closedAt: meta?.closedAt || undefined,
         updatedAt: now,
-      };
+      });
     }
     out.set(ref, packUnitsById);
   }
