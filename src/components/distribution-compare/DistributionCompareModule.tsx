@@ -1568,12 +1568,18 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                               <div className="text-xs text-muted-foreground">
                                 {task.assignedOperatorName || task.assignedOperatorId}
                                 {task.claimedBySelf ? ' · auto' : ''}
-                                {task.locationName ? ` · ${task.locationName}` : ''}
+                                {task.locationName
+                                  ? ` · ${task.locationName}`
+                                  : ' · sin ubicación recepción'}
                                 {typeof task.returnedQty === 'number'
-                                  ? ` · devuelto ${fmt(task.returnedQty)}/${fmt(task.expectedRemainderQty)}`
+                                  ? ` · devuelto ${fmt(task.returnedQty)}/${fmt(task.expectedRemainderQty)}${
+                                      task.returnedQty >= (Number(task.expectedRemainderQty) || 0)
+                                        ? ' · remanente completo'
+                                        : ' · remanente parcial'
+                                    }`
                                   : task.expectedRemainderQty === 0
                                     ? ' · esperado 0'
-                                    : ''}
+                                    : ' · pendiente legalizar'}
                                 {task.status === 'validated'
                                   ? ` · validado${task.validatedByName ? ` (${task.validatedByName})` : ''}`
                                   : task.status === 'submitted'

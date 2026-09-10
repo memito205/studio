@@ -330,10 +330,10 @@ export function BodegaRemainderAssignmentsSlide({
     <div className="w-full h-full flex flex-col min-h-0">
       <div className="shrink-0 mb-[0.9em]">
         <h2 className="text-[2.2em] font-black tracking-tight text-amber-300 leading-none mb-[0.35em]">
-          Referencias asignadas
+          Físico vs Distribución
         </h2>
         <p className="text-[0.95em] text-slate-400 font-semibold">
-          Físico vs Distribución · operario · ref · ubicación
+          Referencias asignadas · ubicación recepción · legalización remanente
           {pageCount > 1 ? ` · página ${pageIndex + 1}/${pageCount}` : ''}
         </p>
       </div>
@@ -344,16 +344,17 @@ export function BodegaRemainderAssignmentsSlide({
         </div>
       ) : (
         <div className="flex-1 min-h-0 overflow-hidden flex flex-col justify-start gap-[0.55em]">
-          <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.1fr)_minmax(0,1.2fr)_5.5em] gap-x-[0.9em] text-[0.85em] font-bold uppercase tracking-wider text-slate-500 px-[0.35em]">
+          <div className="grid grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1.1fr)_4.5em_minmax(0,1.15fr)] gap-x-[0.75em] text-[0.8em] font-bold uppercase tracking-wider text-slate-500 px-[0.35em]">
             <div>Operario</div>
             <div>Referencia</div>
             <div>Ubicación</div>
             <div className="text-right">Rem.</div>
+            <div>Legalización</div>
           </div>
           {rows.map((row, idx) => (
             <div
               key={`${row.reference}-${row.operatorName}-${idx}`}
-              className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.1fr)_minmax(0,1.2fr)_5.5em] gap-x-[0.9em] items-center rounded-[0.75em] border border-slate-700 bg-slate-900/90 px-[0.75em] py-[0.65em]"
+              className="grid grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1.1fr)_4.5em_minmax(0,1.15fr)] gap-x-[0.75em] items-center rounded-[0.75em] border border-slate-700 bg-slate-900/90 px-[0.75em] py-[0.65em]"
             >
               <div className="min-w-0">
                 <div className="font-black text-[1.05em] text-slate-100 truncate">{row.operatorName}</div>
@@ -365,6 +366,24 @@ export function BodegaRemainderAssignmentsSlide({
               <div className="text-[0.95em] text-slate-300 truncate">{row.locationName || 'Sin ubicación'}</div>
               <div className="text-right font-black tabular-nums text-slate-100">
                 {fmt(row.expectedRemainderQty)}
+              </div>
+              <div className="min-w-0">
+                <div
+                  className={`font-bold text-[0.95em] truncate ${
+                    row.remainderComplete
+                      ? 'text-emerald-300'
+                      : row.status === 'submitted'
+                        ? 'text-amber-300'
+                        : 'text-slate-300'
+                  }`}
+                >
+                  {row.legalizationLabel || '—'}
+                </div>
+                {row.returnedQty != null ? (
+                  <div className="text-[0.7em] text-slate-500 tabular-nums">
+                    Devuelto {fmt(row.returnedQty)}
+                  </div>
+                ) : null}
               </div>
             </div>
           ))}

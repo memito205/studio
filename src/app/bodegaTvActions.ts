@@ -9,7 +9,7 @@ import {
   getScannedItemsByReception,
   loadReceptionOperations,
 } from '@/app/reception/actions';
-import { listRemainderAssignmentBoard } from '@/app/distributionCompareActions';
+import { listRemainderAssignmentBoard, resolveReceptionLocationForReference } from '@/app/distributionCompareActions';
 import type {
   BodegaTvAreaKey,
   BodegaTvAreaSnapshot,
@@ -696,6 +696,53 @@ function remainderStatusLabel(status: string): string {
   }
 }
 
+function remainderLegalization(task: {
+  status: string;
+  expectedRemainderQty: number;
+  returnedQty?: number;
+}): { remainderComplete: boolean; legalizationLabel: string; returnedQty?: number } {
+  const expected = Number(task.expectedRemainderQty) || 0;
+  const hasReturn = task.returnedQty != null && Number.isFinite(Number(task.returnedQty));
+  const returned = hasReturn ? Number(task.returnedQty) : undefined;
+
+  if (task.status === 'validated') {
+    const complete = returned == null ? true : returned >= expected;
+    return {
+      returnedQty: returned,
+      remainderComplete: complete,
+      legalizationLabel:
+        returned == null
+          ? 'Legalizado'
+          : complete
+            ? `Completo ${returned}/${expected}`
+            : `Parcial ${returned}/${expected}`,
+    };
+  }
+  if (task.status === 'submitted' && returned != null) {
+    const complete = returned >= expected;
+    return {
+      returnedQty: returned,
+      remainderComplete: complete,
+      legalizationLabel: complete
+        ? `Enviado completo ${returned}/${expected}`
+        : `Enviado parcial ${returned}/${expected}`,
+    };
+  }
+  if (task.status === 'rejected') {
+    return {
+      returnedQty: returned,
+      remainderComplete: false,
+      legalizationLabel:
+        returned != null ? `Rechazado ${returned}/${expected}` : 'Rechazado',
+    };
+  }
+  return {
+    returnedQty: returned,
+    remainderComplete: false,
+    legalizationLabel: expected === 0 ? 'Pendiente (esp. 0)' : 'Pendiente',
+  };
+}
+
 async function buildRemainderAssignments(
   dayKey: string
 ): Promise<BodegaTvRemainderAssignmentRow[]> {
@@ -703,27 +750,59 @@ async function buildRemainderAssignments(
     const res = await listRemainderAssignmentBoard(250);
     if (!res.success || !res.data) return [];
 
-    const rows: BodegaTvRemainderAssignmentRow[] = [];
-    for (const t of res.data) {
+    const candidates = res.data.filter((t) => {
       const touchedToday =
         isSameLocalDay(t.assignedAt, dayKey) ||
         isSameLocalDay(t.submittedAt, dayKey) ||
         isSameLocalDay(t.validatedAt, dayKey) ||
         isSameLocalDay(t.updatedAt, dayKey);
 
-      const show =
+      return (
         t.status === 'assigned' ||
         t.status === 'submitted' ||
         t.status === 'rejected' ||
-        (t.status === 'validated' && touchedToday);
-      if (!show) continue;
+        (t.status === 'validated' && touchedToday)
+      );
+    });
 
+    // Backfill ubicación desde recepción cuando la tarea no la tiene guardada.
+    const needLoc = candidates.filter((t) => !String(t.locationName || '').trim()).slice(0, 25);
+    const locByTaskId = new Map<string, string>();
+    await Promise.all(
+      needLoc.map(async (t) => {
+        const loc = await resolveReceptionLocationForReference(
+          t.receptionOperationId,
+          t.reference
+        );
+        if (!loc.locationName) return;
+        locByTaskId.set(t.id, loc.locationName);
+        // Persistir para que Físico vs Distribución y el TV no queden en "Sin ubicación".
+        try {
+          const { doc, updateDoc } = await import('firebase/firestore');
+          const { firestore } = await import('@/services/firebase');
+          await updateDoc(doc(firestore, 'distributionRemainderTasks', t.id), {
+            locationName: loc.locationName,
+            ...(loc.locationId ? { locationId: loc.locationId } : {}),
+            updatedAt: new Date().toISOString(),
+          });
+        } catch {
+          /* no bloquear el TV si falla el persist */
+        }
+      })
+    );
+
+    const rows: BodegaTvRemainderAssignmentRow[] = [];
+    for (const t of candidates) {
+      const legal = remainderLegalization(t);
       rows.push({
         operatorName: t.assignedOperatorName || t.assignedOperatorId || '—',
         reference: t.reference,
         rkIdentifier: t.rkIdentifier,
-        locationName: t.locationName || undefined,
+        locationName: t.locationName || locByTaskId.get(t.id) || undefined,
         expectedRemainderQty: Number(t.expectedRemainderQty) || 0,
+        returnedQty: legal.returnedQty,
+        remainderComplete: legal.remainderComplete,
+        legalizationLabel: legal.legalizationLabel,
         status: t.status,
         statusLabel: remainderStatusLabel(t.status),
       });

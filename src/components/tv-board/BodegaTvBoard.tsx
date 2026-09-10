@@ -14,7 +14,7 @@ import {
   REMAINDER_PAGE_SIZE,
 } from './bodega/BodegaTvSlides';
 
-const SLIDE_DURATION_MS = 5000;
+const SLIDE_DURATION_MS = 7000;
 const DATA_SYNC_INTERVAL = 45 * 1000;
 
 export default function BodegaTvBoard() {
@@ -53,6 +53,28 @@ export default function BodegaTvBoard() {
     if (!data) return [] as React.ReactNode[];
     const nodes: React.ReactNode[] = [<BodegaOverviewSlide key="overview" data={data} />];
 
+    // Físico vs Distribución justo después del resumen (siempre en rotación, aunque esté vacío).
+    const assignments = data.remainderAssignments || [];
+    const remainderPages =
+      assignments.length === 0 ? 1 : Math.max(1, Math.ceil(assignments.length / REMAINDER_PAGE_SIZE));
+    for (let pageIndex = 0; pageIndex < remainderPages; pageIndex++) {
+      const pageRows =
+        assignments.length === 0
+          ? []
+          : assignments.slice(
+              pageIndex * REMAINDER_PAGE_SIZE,
+              pageIndex * REMAINDER_PAGE_SIZE + REMAINDER_PAGE_SIZE
+            );
+      nodes.push(
+        <BodegaRemainderAssignmentsSlide
+          key={`remainder-p${pageIndex}`}
+          rows={pageRows}
+          pageIndex={pageIndex}
+          pageCount={remainderPages}
+        />
+      );
+    }
+
     for (const area of data.areas) {
       const ranking = area.ranking || [];
       const pageCount = Math.max(1, Math.ceil(ranking.length / BODEGA_TV_PAGE_SIZE));
@@ -73,25 +95,6 @@ export default function BodegaTvBoard() {
       }
     }
 
-    const assignments = data.remainderAssignments || [];
-    if (assignments.length > 0) {
-      const pageCount = Math.max(1, Math.ceil(assignments.length / REMAINDER_PAGE_SIZE));
-      for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
-        const pageRows = assignments.slice(
-          pageIndex * REMAINDER_PAGE_SIZE,
-          pageIndex * REMAINDER_PAGE_SIZE + REMAINDER_PAGE_SIZE
-        );
-        nodes.push(
-          <BodegaRemainderAssignmentsSlide
-            key={`remainder-p${pageIndex}`}
-            rows={pageRows}
-            pageIndex={pageIndex}
-            pageCount={pageCount}
-          />
-        );
-      }
-    }
-
     return nodes;
   }, [data]);
 
@@ -103,9 +106,13 @@ export default function BodegaTvBoard() {
     return () => clearInterval(id);
   }, [slides.length]);
 
+  // No reiniciar al slide 0 en cada sync (eso hacía que Físico vs Distribución casi no se viera).
   useEffect(() => {
-    setCurrentSlideIndex(0);
-  }, [data?.generatedAt]);
+    setCurrentSlideIndex((prev) => {
+      if (slides.length === 0) return 0;
+      return prev >= slides.length ? 0 : prev;
+    });
+  }, [slides.length]);
 
   return (
     <div
@@ -180,7 +187,7 @@ export default function BodegaTvBoard() {
           ))}
         </div>
         <div className="text-[0.7em] font-bold uppercase tracking-widest text-slate-500">
-          Slide {slides.length ? currentSlideIndex + 1 : 0} / {slides.length} · 5s · sync 45s
+          Slide {slides.length ? currentSlideIndex + 1 : 0} / {slides.length} · 7s · sync 45s
         </div>
       </footer>
     </div>

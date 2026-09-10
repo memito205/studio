@@ -32,6 +32,12 @@ export type BodegaTvRemainderAssignmentRow = {
   rkIdentifier?: string;
   locationName?: string;
   expectedRemainderQty: number;
+  /** Cantidad declarada / legalizada por el operario. */
+  returnedQty?: number;
+  /** true si devolvió el remanente completo (o esperado 0 confirmado). */
+  remainderComplete?: boolean;
+  /** Texto corto para TV: Completo / Parcial x/y / Pendiente. */
+  legalizationLabel?: string;
   status: string;
   statusLabel: string;
 };

@@ -615,8 +615,9 @@ function isAssignableRemainderQty(qty: number): boolean {
 
 /**
  * Ubicación predominante de la ref en reception referenceStats.packUnitsById.
+ * Fallback: escaneos de la recepción (location_id) para esa referencia.
  */
-async function resolveReceptionLocationForReference(
+export async function resolveReceptionLocationForReference(
   receptionOperationId: string | undefined,
   reference: string
 ): Promise<{ locationId?: string; locationName?: string }> {
@@ -626,30 +627,59 @@ async function resolveReceptionLocationForReference(
     const statsSnap = await getDoc(
       doc(firestore, RECEPTION_COL, receptionOperationId, 'referenceStats', safeRef)
     );
-    if (!statsSnap.exists()) return {};
-    const packUnitsById = (statsSnap.data() as {
-      packUnitsById?: Record<string, { locationId?: string; locationName?: string }>;
-    }).packUnitsById;
-    if (!packUnitsById || typeof packUnitsById !== 'object') return {};
-
-    const counts = new Map<string, { n: number; locationId?: string; locationName?: string }>();
-    for (const u of Object.values(packUnitsById)) {
-      const label = String(u.locationName || u.locationId || '').trim();
-      if (!label) continue;
-      const prev = counts.get(label) || {
-        n: 0,
-        locationId: u.locationId,
-        locationName: u.locationName || u.locationId,
-      };
-      prev.n += 1;
-      counts.set(label, prev);
+    if (statsSnap.exists()) {
+      const packUnitsById = (statsSnap.data() as {
+        packUnitsById?: Record<string, { locationId?: string; locationName?: string }>;
+      }).packUnitsById;
+      if (packUnitsById && typeof packUnitsById === 'object') {
+        const counts = new Map<string, { n: number; locationId?: string; locationName?: string }>();
+        for (const u of Object.values(packUnitsById)) {
+          const label = String(u.locationName || u.locationId || '').trim();
+          if (!label) continue;
+          const prev = counts.get(label) || {
+            n: 0,
+            locationId: u.locationId,
+            locationName: u.locationName || u.locationId,
+          };
+          prev.n += 1;
+          counts.set(label, prev);
+        }
+        const best = [...counts.values()].sort((a, b) => b.n - a.n)[0];
+        if (best?.locationName || best?.locationId) {
+          return {
+            locationId: best.locationId,
+            locationName: best.locationName,
+          };
+        }
+      }
     }
-    const best = [...counts.values()].sort((a, b) => b.n - a.n)[0];
-    if (!best) return {};
-    return {
-      locationId: best.locationId,
-      locationName: best.locationName,
-    };
+
+    // Fallback: ubicación desde escaneos de mercancía de esa recepción + ref.
+    const itemsSnap = await getDocs(
+      query(
+        collection(firestore, 'scannedItems'),
+        where('reception_id', '==', receptionOperationId),
+        limit(400)
+      )
+    );
+    if (itemsSnap.empty) return {};
+
+    const locCounts = new Map<string, number>();
+    for (const d of itemsSnap.docs) {
+      const item = d.data() as { reference?: string; location_id?: string };
+      if (normalizeReceptionReference(String(item.reference || '')) !== safeRef) continue;
+      const locId = String(item.location_id || '').trim();
+      if (!locId) continue;
+      locCounts.set(locId, (locCounts.get(locId) || 0) + 1);
+    }
+    const topLoc = [...locCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    if (!topLoc) return {};
+
+    const locSnap = await getDoc(doc(firestore, 'locations', topLoc));
+    const locationName = locSnap.exists()
+      ? String((locSnap.data() as { name?: string }).name || topLoc)
+      : topLoc;
+    return { locationId: topLoc, locationName };
   } catch {
     return {};
   }
@@ -807,13 +837,26 @@ export async function listRemainderAssignmentBoard(limitN = 300): Promise<{
   error?: string;
 }> {
   try {
-    const snap = await getDocs(query(collection(firestore, TASKS_COL), limit(Math.min(limitN, 500))));
-    const data = snap.docs
-      .map((d) => ({ id: d.id, ...d.data() } as DistributionRemainderTask))
-      .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    const snap = await getDocs(
+      query(
+        collection(firestore, TASKS_COL),
+        orderBy('updatedAt', 'desc'),
+        limit(Math.min(limitN, 500))
+      )
+    );
+    const data = snap.docs.map((d) => ({ id: d.id, ...d.data() } as DistributionRemainderTask));
     return { success: true, data };
   } catch (e: any) {
-    return { success: false, error: e?.message || 'No se pudo cargar el tablero.' };
+    // Fallback sin índice compuesto / orderBy si falla.
+    try {
+      const snap = await getDocs(query(collection(firestore, TASKS_COL), limit(Math.min(limitN, 500))));
+      const data = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() } as DistributionRemainderTask))
+        .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+      return { success: true, data };
+    } catch (e2: any) {
+      return { success: false, error: e2?.message || e?.message || 'No se pudo cargar el tablero.' };
+    }
   }
 }
 
