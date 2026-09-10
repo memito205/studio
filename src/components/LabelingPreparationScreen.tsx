@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ArrowLeft, Loader2, Tag, Users } from 'lucide-react';
-import type { ReceptionOperation, ReceptionExpectedItem, AppUser, LabelingOperation } from '@/types';
+import type { ReceptionOperation, AppUser, LabelingOperation, LabelingOperationStatus } from '@/types';
 import { CreateLabelingTaskDialog } from './CreateLabelingTaskDialog';
 import { AssignOperatorsDialog } from './AssignOperatorsDialog';
 import { getAllUserProfiles, loadLabelingOperations, getExternalVendors } from '@/app/reception/actions';
@@ -19,15 +19,121 @@ interface LabelingPreparationScreenProps {
   onReturn: () => void;
 }
 
+/** Estado agregado de la referencia según sus tareas de etiquetado. */
+export type PrepReferenceStatus =
+  | 'Disponible'
+  | 'Pendiente'
+  | 'Asignada'
+  | 'En Progreso'
+  | 'Pausada'
+  | 'Completada'
+  | 'Parcial';
+
 export interface GroupedItem {
   reference: string;
   item: string;
   totalQuantity: number;
   sizes: { [size: string]: number };
-  status: 'Disponible' | 'Asignada';
+  status: PrepReferenceStatus;
+  /** Unidades aún no cubiertas por tareas activas + completadas. */
+  remainingUnits: number;
+  /** Hay tarea residual (parentTaskId) pendiente de reasignar en Etiquetado. */
+  hasResidual: boolean;
+  openTaskCount: number;
 }
 
-export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps> = ({ operation, onReturn }) => {
+function badgeVariantForPrepStatus(
+  status: PrepReferenceStatus
+): 'secondary' | 'default' | 'outline' | 'destructive' | 'success' | 'warning' {
+  switch (status) {
+    case 'Disponible':
+      return 'secondary';
+    case 'Pendiente':
+      return 'warning';
+    case 'Asignada':
+      return 'default';
+    case 'En Progreso':
+      return 'default';
+    case 'Pausada':
+      return 'outline';
+    case 'Completada':
+      return 'success';
+    case 'Parcial':
+      return 'warning';
+    default:
+      return 'secondary';
+  }
+}
+
+function deriveReferenceStatus(
+  totalQuantity: number,
+  tasks: LabelingOperation[]
+): Pick<GroupedItem, 'status' | 'remainingUnits' | 'hasResidual' | 'openTaskCount'> {
+  if (!tasks.length) {
+    return {
+      status: 'Disponible',
+      remainingUnits: totalQuantity,
+      hasResidual: false,
+      openTaskCount: 0,
+    };
+  }
+
+  const openStatuses: LabelingOperationStatus[] = [
+    'Pendiente',
+    'Asignada',
+    'En Progreso',
+    'Pausada',
+  ];
+  const openTasks = tasks.filter((t) => openStatuses.includes(t.status));
+  const completedTasks = tasks.filter((t) => t.status === 'Completada');
+
+  const doneUnits = completedTasks.reduce(
+    (s, t) => s + (Number(t.completedUnits) || Number(t.totalUnits) || 0),
+    0
+  );
+  const openUnits = openTasks.reduce((s, t) => s + (Number(t.totalUnits) || 0), 0);
+  const covered = doneUnits + openUnits;
+  const remainingUnits = Math.max(0, totalQuantity - covered);
+  const hasResidual = tasks.some(
+    (t) => Boolean(t.parentTaskId) && t.status !== 'Completada'
+  );
+
+  // Prioridad del estado “vivo” de la referencia.
+  if (openTasks.some((t) => t.status === 'En Progreso')) {
+    return { status: 'En Progreso', remainingUnits, hasResidual, openTaskCount: openTasks.length };
+  }
+  if (openTasks.some((t) => t.status === 'Pausada')) {
+    return { status: 'Pausada', remainingUnits, hasResidual, openTaskCount: openTasks.length };
+  }
+  if (openTasks.some((t) => t.status === 'Asignada')) {
+    return { status: 'Asignada', remainingUnits, hasResidual, openTaskCount: openTasks.length };
+  }
+  if (openTasks.some((t) => t.status === 'Pendiente')) {
+    // Residual u otra tarea sin operario: reasignar en módulo Etiquetado.
+    return { status: 'Pendiente', remainingUnits, hasResidual, openTaskCount: openTasks.length };
+  }
+
+  // Solo completadas.
+  if (remainingUnits > 0) {
+    return {
+      status: 'Parcial',
+      remainingUnits,
+      hasResidual,
+      openTaskCount: 0,
+    };
+  }
+  return {
+    status: 'Completada',
+    remainingUnits: 0,
+    hasResidual: false,
+    openTaskCount: 0,
+  };
+}
+
+export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps> = ({
+  operation,
+  onReturn,
+}) => {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isAssignDialogOpen, setIsAssignDialogOpen] = useState(false);
   const [selectedReference, setSelectedReference] = useState<GroupedItem | null>(null);
@@ -44,23 +150,23 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
     const [tasksResult, usersResult, vendorsResult] = await Promise.all([
       loadLabelingOperations(),
       getAllUserProfiles(),
-      getExternalVendors()
+      getExternalVendors(),
     ]);
-    
-    if(tasksResult.data) {
-        setExistingTasks(tasksResult.data.filter(task => task.receptionOperationId === operation.id));
+
+    if (tasksResult.data) {
+      setExistingTasks(tasksResult.data.filter((task) => task.receptionOperationId === operation.id));
     }
 
-    if(usersResult) {
-        setOperators(usersResult);
+    if (usersResult) {
+      setOperators(usersResult);
     } else {
-        toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los operarios.' });
+      toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los operarios.' });
     }
 
     if (vendorsResult.success && vendorsResult.data) {
-        setExternalVendors(vendorsResult.data);
+      setExternalVendors(vendorsResult.data);
     }
-    
+
     setLoadingVendors(false);
     setLoadingOperators(false);
   }, [operation.id, toast]);
@@ -69,10 +175,9 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
     fetchDependencies();
   }, [fetchDependencies]);
 
-
   const groupedItems = useMemo((): GroupedItem[] => {
-    const map = new Map<string, Omit<GroupedItem, 'status'>>();
-    (operation.expectedItems || []).forEach(item => {
+    const map = new Map<string, Omit<GroupedItem, 'status' | 'remainingUnits' | 'hasResidual' | 'openTaskCount'>>();
+    (operation.expectedItems || []).forEach((item) => {
       const refKey = item.reference;
       if (!map.has(refKey)) {
         map.set(refKey, {
@@ -87,22 +192,42 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
       grouped.sizes[item.size] = (grouped.sizes[item.size] || 0) + item.expected_quantity;
     });
 
-    const assignedReferences = new Set(existingTasks.map(task => task.reference));
+    const tasksByRef = new Map<string, LabelingOperation[]>();
+    for (const task of existingTasks) {
+      const list = tasksByRef.get(task.reference) || [];
+      list.push(task);
+      tasksByRef.set(task.reference, list);
+    }
 
-    return Array.from(map.values()).map(item => ({
-        ...item,
-        status: assignedReferences.has(item.reference) ? 'Asignada' : 'Disponible'
-    }));
+    return Array.from(map.values()).map((item) => {
+      const derived = deriveReferenceStatus(item.totalQuantity, tasksByRef.get(item.reference) || []);
+      return { ...item, ...derived };
+    });
   }, [operation.expectedItems, existingTasks]);
 
+  const canCreateTask = (item: GroupedItem) => {
+    // Solo crear desde prep si no hay trabajo abierto y aún falta cantidad
+    // (Disponible o Completada/Parcial sin residual pendiente).
+    if (item.openTaskCount > 0) return false;
+    if (item.status === 'Completada') return false;
+    if (item.status === 'Pendiente' || item.hasResidual) return false;
+    return item.status === 'Disponible' || (item.status === 'Parcial' && item.remainingUnits > 0);
+  };
+
   const handleCreateTaskClick = async (item: GroupedItem) => {
-    if (item.status === 'Asignada') {
-        toast({
-            variant: "default",
-            title: "Referencia ya asignada",
-            description: "Esta referencia ya tiene una tarea de etiquetado creada.",
-        });
-        return;
+    if (!canCreateTask(item)) {
+      const msg =
+        item.status === 'Pendiente' || item.hasResidual
+          ? 'Hay un remanente Pendiente. Reasigne la tarea residual en el módulo Etiquetado (⋯ → Reasignar Operario).'
+          : item.status === 'Completada'
+            ? 'Esta referencia ya está completamente etiquetada.'
+            : `Esta referencia está en estado “${item.status}”. Gestione la tarea en el módulo Etiquetado.`;
+      toast({
+        variant: 'default',
+        title: 'No se puede crear otra tarea aquí',
+        description: msg,
+      });
+      return;
     }
     setSelectedReference(item);
     setIsCreateDialogOpen(true);
@@ -117,7 +242,7 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
   };
 
   const availableItemsForBulkAssign = useMemo(() => {
-      return groupedItems.filter(item => item.status === 'Disponible');
+    return groupedItems.filter((item) => canCreateTask(item) && item.status === 'Disponible');
   }, [groupedItems]);
 
   return (
@@ -145,75 +270,102 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
         operationId={operation.id}
         rkIdentifier={operation.rk_identifier}
         supplier={operation.supplier}
-        onAssign={() => {}} // Not used for bulk
+        onAssign={() => {}}
       />
       <Card>
         <CardHeader className="flex flex-row justify-between items-center">
           <div>
             <CardTitle>Preparar Tareas de Etiquetado</CardTitle>
-            <CardDescription>RK: {operation.rk_identifier} - {operation.supplier}</CardDescription>
+            <CardDescription>
+              RK: {operation.rk_identifier} - {operation.supplier}
+            </CardDescription>
           </div>
           <div className="flex gap-2">
-            <Button onClick={() => setIsAssignDialogOpen(true)} disabled={loadingOperators || availableItemsForBulkAssign.length === 0}>
-                <Users className="mr-2 h-4 w-4" /> Asignar Tareas en Lote
+            <Button
+              onClick={() => setIsAssignDialogOpen(true)}
+              disabled={loadingOperators || availableItemsForBulkAssign.length === 0}
+            >
+              <Users className="mr-2 h-4 w-4" /> Asignar Tareas en Lote
             </Button>
             <Button onClick={onReturn} variant="outline">
-                <ArrowLeft className="mr-2 h-4 w-4" />
-                Volver a Operaciones
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Volver a Operaciones
             </Button>
           </div>
         </CardHeader>
         <CardContent>
           <p className="mb-4 text-sm text-muted-foreground">
-            A continuación se muestra un resumen de las referencias en esta operación. Haga clic en "Crear Tarea" para una asignación individual o use la opción de lote.
+            El estado refleja las tareas reales de etiquetado. Si un operario finaliza solo una parte, el
+            remanente queda como tarea <strong>Pendiente</strong> en el módulo{' '}
+            <strong>Etiquetado</strong> (no aquí): filtre por la referencia y use ⋯ → Reasignar Operario.
           </p>
           <div className="border rounded-md">
             {loadingOperators ? (
-                 <div className="flex justify-center items-center h-64"><Loader2 className="h-8 w-8 animate-spin" /></div>
+              <div className="flex justify-center items-center h-64">
+                <Loader2 className="h-8 w-8 animate-spin" />
+              </div>
             ) : (
-                <Table>
+              <Table>
                 <TableHeader>
-                    <TableRow>
+                  <TableRow>
                     <TableHead>Referencia</TableHead>
                     <TableHead>Ítem</TableHead>
                     <TableHead>Tallas y Cantidades</TableHead>
                     <TableHead className="text-right">Cantidad Total</TableHead>
                     <TableHead className="text-center">Estado</TableHead>
                     <TableHead className="text-right">Acciones</TableHead>
-                    </TableRow>
+                  </TableRow>
                 </TableHeader>
                 <TableBody>
-                    {groupedItems.map((item) => (
+                  {groupedItems.map((item) => (
                     <TableRow key={item.reference}>
-                        <TableCell className="font-medium">{item.reference}</TableCell>
-                        <TableCell>{item.item}</TableCell>
-                        <TableCell>
+                      <TableCell className="font-medium">{item.reference}</TableCell>
+                      <TableCell>{item.item}</TableCell>
+                      <TableCell>
                         <div className="flex flex-wrap gap-x-4 gap-y-1">
-                            {Object.entries(item.sizes).map(([size, qty]) => (
+                          {Object.entries(item.sizes).map(([size, qty]) => (
                             <span key={size} className="text-xs text-muted-foreground">
-                                {size}: <span className="font-semibold text-foreground">{qty}</span>
+                              {size}: <span className="font-semibold text-foreground">{qty}</span>
                             </span>
-                            ))}
+                          ))}
                         </div>
-                        </TableCell>
-                        <TableCell className="text-right font-bold">{item.totalQuantity}</TableCell>
-                        <TableCell className="text-center">
-                            <Badge variant={item.status === 'Disponible' ? 'secondary' : 'default'}>{item.status}</Badge>
-                        </TableCell>
-                        <TableCell className="text-right">
-                        <Button size="sm" onClick={() => handleCreateTaskClick(item)} disabled={loadingOperators || item.status === 'Asignada'}>
-                            {loadingOperators && selectedReference?.reference === item.reference ? <Loader2 className="h-4 w-4 animate-spin" /> : <Tag className="mr-2 h-4 w-4" />}
-                            Crear Tarea
+                      </TableCell>
+                      <TableCell className="text-right font-bold">{item.totalQuantity}</TableCell>
+                      <TableCell className="text-center space-y-1">
+                        <Badge variant={badgeVariantForPrepStatus(item.status)}>{item.status}</Badge>
+                        {item.hasResidual ? (
+                          <div className="text-[10px] text-muted-foreground">Remanente en Etiquetado</div>
+                        ) : null}
+                        {item.status === 'Parcial' && item.remainingUnits > 0 ? (
+                          <div className="text-[10px] text-muted-foreground">
+                            Faltan {item.remainingUnits.toLocaleString()} und
+                          </div>
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          size="sm"
+                          onClick={() => handleCreateTaskClick(item)}
+                          disabled={loadingOperators || !canCreateTask(item)}
+                        >
+                          {loadingOperators && selectedReference?.reference === item.reference ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Tag className="mr-2 h-4 w-4" />
+                          )}
+                          Crear Tarea
                         </Button>
-                        </TableCell>
+                      </TableCell>
                     </TableRow>
-                    ))}
+                  ))}
                 </TableBody>
-                </Table>
+              </Table>
             )}
-             {groupedItems.length === 0 && !loadingOperators && (
-                <p className="text-center py-8 text-muted-foreground">Esta operación no tiene ítems esperados definidos.</p>
-             )}
+            {groupedItems.length === 0 && !loadingOperators && (
+              <p className="text-center py-8 text-muted-foreground">
+                Esta operación no tiene ítems esperados definidos.
+              </p>
+            )}
           </div>
         </CardContent>
       </Card>

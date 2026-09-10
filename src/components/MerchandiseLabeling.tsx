@@ -217,7 +217,14 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ operations, productivit
                             </TableCell>
                             <TableCell className="text-xs uppercase font-semibold">{displayOperator}</TableCell>
                             <TableCell>
-                                <Badge variant={getStatusVariant(op.status)}>{op.status}</Badge>
+                                <div className="flex flex-col items-start gap-1">
+                                  <Badge variant={getStatusVariant(op.status)}>{op.status}</Badge>
+                                  {op.parentTaskId ? (
+                                    <span className="text-[10px] text-muted-foreground uppercase tracking-wide">
+                                      Remanente
+                                    </span>
+                                  ) : null}
+                                </div>
                             </TableCell>
                             <TableCell>
                                 {op.status === 'Completada' ? `${op.completedUnits || 0} / ${op.totalUnits}` : op.totalUnits.toLocaleString()}
