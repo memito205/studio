@@ -3189,17 +3189,36 @@ export async function getLabelingHistoricalData(dateRange?: { from: Date; to?: D
     try {
         const fromDate = dateRange?.from ? startOfDay(dateRange.from) : startOfDay(new Date());
         const toDate = dateRange?.to ? endOfDay(dateRange.to) : endOfDay(fromDate);
+        const fromMs = fromDate.getTime();
+        const toMs = toDate.getTime();
+        const nowMs = Date.now();
+        const rangeEndMs = Math.min(toMs, nowMs);
 
-        // 1. Fetch all labeling operations
-        const opsResult = await loadLabelingOperations();
+        const inRange = (value: Date | string | number | null | undefined) => {
+            if (value == null) return false;
+            const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();
+            return Number.isFinite(ms) && ms >= fromMs && ms <= toMs;
+        };
+
+        const clipMinutes = (startMs: number, endMs: number) => {
+            const s = Math.max(startMs, fromMs);
+            const e = Math.min(endMs, rangeEndMs);
+            return e > s ? (e - s) / 60000 : 0;
+        };
+
+        // 1. Fetch labeling operations (bounded list)
+        const opsResult = await loadLabelingOperations({ limitN: 300 });
         if (!opsResult.success || !opsResult.data) throw new Error(opsResult.error || "Failed to load operations");
 
-        // Filter operations that were created OR updated within the range
-        const filteredOps = opsResult.data.filter(op => {
+        // Candidatas: creadas/actualizadas en rango, o aún abiertas (pueden tener progreso del día).
+        const filteredOps = opsResult.data.filter((op) => {
             const created = new Date(op.createdAt);
             const updated = new Date(op.updatedAt);
-            return isWithinInterval(created, { start: fromDate, end: toDate }) || 
-                   isWithinInterval(updated, { start: fromDate, end: toDate });
+            const touchedInRange =
+                isWithinInterval(created, { start: fromDate, end: toDate }) ||
+                isWithinInterval(updated, { start: fromDate, end: toDate });
+            const stillOpen = op.status === 'En Progreso' || op.status === 'Pausada' || op.status === 'Asignada';
+            return touchedInRange || stillOpen;
         });
 
         const logs: LabelingActivityLog[] = [];
@@ -3207,66 +3226,88 @@ export async function getLabelingHistoricalData(dateRange?: { from: Date; to?: D
         const hourlyMap = new Map<string, number>();
         const pauseReasonMap = new Map<string, { count: number; totalMinutes: number }>();
 
-        // 2. Fetch logs for each filtered operation
+        // 2. Fetch logs for each candidate operation
         for (const op of filteredOps) {
-            const logResult = await getLabelingActivityLog(op.id);
+            const logResult = await getLabelingActivityLog(op.id, { limitN: 200 });
             if (logResult.success && logResult.data) {
                 logs.push(...logResult.data);
             }
         }
 
-        // 3. Process metrics
+        // 3. Process metrics — SOLO eventos / tramos dentro del rango de fechas
         let totalUnits = 0;
         let internalUnits = 0;
         let externalUnits = 0;
         let totalActiveMinutes = 0;
 
-        // Group logs by operator to calculate performance
         const logsByOperator = new Map<string, LabelingActivityLog[]>();
-        logs.forEach(log => {
+        logs.forEach((log) => {
             const key = log.isExternal ? log.externalOperatorName || log.operatorId : log.operatorId;
             if (!logsByOperator.has(key)) logsByOperator.set(key, []);
             logsByOperator.get(key)!.push(log);
         });
 
         for (const [opId, opLogs] of logsByOperator.entries()) {
-            const sortedLogs = opLogs.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+            const sortedLogs = opLogs.sort(
+                (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+            );
             let opActiveMinutes = 0;
             let opUnits = 0;
             let opPauses = 0;
             let lastStart: Date | null = null;
             let isExt = false;
-            let extName = "";
+            let extName = '';
+            let lastActivityInRange = '';
 
-            sortedLogs.forEach(log => {
+            sortedLogs.forEach((log) => {
                 const ts = new Date(log.timestamp);
+                const tsMs = ts.getTime();
                 if (log.isExternal) isExt = true;
                 if (log.externalOperatorName) extName = log.externalOperatorName;
+                if (inRange(ts)) lastActivityInRange = log.timestamp;
 
                 if (log.type === 'START' || log.type === 'RESUME') {
                     lastStart = ts;
                 } else if ((log.type === 'PAUSE' || log.type === 'FINISH') && lastStart) {
-                    const diff = (ts.getTime() - lastStart.getTime()) / 60000;
+                    const diff = clipMinutes(lastStart.getTime(), tsMs);
                     opActiveMinutes += diff;
-                    lastStart = null;
-                    if (log.type === 'PAUSE') {
+                    if (log.type === 'PAUSE' && diff > 0) {
                         opPauses++;
-                        const reason = log.pauseReason || "No especificado";
+                        const reason = log.pauseReason || 'No especificado';
                         const current = pauseReasonMap.get(reason) || { count: 0, totalMinutes: 0 };
-                        pauseReasonMap.set(reason, { count: current.count + 1, totalMinutes: current.totalMinutes + diff });
+                        pauseReasonMap.set(reason, {
+                            count: current.count + 1,
+                            totalMinutes: current.totalMinutes + diff,
+                        });
                     }
+                    lastStart = null;
                 }
-                
-                if (log.type === 'FINISH') {
-                    const unitsFromLog = Number(log.completedUnits) || 0;
-                    if (unitsFromLog > 0) {
-                        opUnits += unitsFromLog;
-                    } else {
+
+                // Solo unidades de FINISH ocurridos DENTRO del rango (evita arrastrar días previos).
+                if (log.type === 'FINISH' && inRange(ts)) {
+                    let unitsFromLog = Number(log.completedUnits) || 0;
+                    if (unitsFromLog <= 0) {
                         const opForUnits = filteredOps.find((o) => o.id === log.labelingOperationId);
-                        opUnits += Number(opForUnits?.completedUnits ?? opForUnits?.totalUnits) || 0;
+                        // Solo fallback si la tarea quedó Completada; nunca usar totalUnits de Pausada/En Progreso.
+                        if (opForUnits?.status === 'Completada') {
+                            unitsFromLog = Number(opForUnits.completedUnits) || 0;
+                        }
                     }
+                    opUnits += unitsFromLog;
+                    const hour = ts.getHours().toString().padStart(2, '0') + ':00';
+                    hourlyMap.set(hour, (hourlyMap.get(hour) || 0) + unitsFromLog);
                 }
             });
+
+            // Sesión aún abierta: solo el tramo que cae dentro del día.
+            if (lastStart) {
+                opActiveMinutes += clipMinutes(lastStart.getTime(), rangeEndMs);
+            }
+
+            // Sin actividad ni unidades en el rango → no aparece en el ranking del día.
+            if (opUnits <= 0 && opActiveMinutes <= 0.5) {
+                continue;
+            }
 
             const performance: LabelingEmployeePerformance = {
                 id: opId,
@@ -3275,25 +3316,18 @@ export async function getLabelingHistoricalData(dateRange?: { from: Date; to?: D
                 totalUnits: opUnits,
                 activeMinutes: Math.round(opActiveMinutes),
                 pausesCount: opPauses,
-                efficiency: opActiveMinutes > 0 ? (opUnits / (opActiveMinutes / 60)) : 0,
-                lastActivity: sortedLogs[sortedLogs.length - 1]?.timestamp || new Date().toISOString()
+                efficiency: opActiveMinutes > 0 ? opUnits / (opActiveMinutes / 60) : 0,
+                lastActivity:
+                    lastActivityInRange ||
+                    sortedLogs[sortedLogs.length - 1]?.timestamp ||
+                    new Date().toISOString(),
             };
             employeeMap.set(opId, performance);
-            
+
             totalUnits += opUnits;
             if (isExt) externalUnits += opUnits;
             else internalUnits += opUnits;
             totalActiveMinutes += opActiveMinutes;
-
-            sortedLogs.filter(l => l.type === 'FINISH').forEach(l => {
-                const hour = new Date(l.timestamp).getHours().toString().padStart(2, '0') + ':00';
-                let finishUnits = Number(l.completedUnits) || 0;
-                if (finishUnits <= 0) {
-                    const opForUnits = filteredOps.find((o) => o.id === l.labelingOperationId);
-                    finishUnits = Number(opForUnits?.completedUnits ?? opForUnits?.totalUnits) || 0;
-                }
-                hourlyMap.set(hour, (hourlyMap.get(hour) || 0) + finishUnits);
-            });
         }
 
         const dashboardData: LabelingDashboardData = {
@@ -3304,12 +3338,17 @@ export async function getLabelingHistoricalData(dateRange?: { from: Date; to?: D
                 internalUnits,
                 externalUnits,
                 totalActiveMinutes: Math.round(totalActiveMinutes),
-                efficiency: totalActiveMinutes > 0 ? (totalUnits / (totalActiveMinutes / 60)) : 0,
-                conversionRate: totalActiveMinutes > 0 ? (totalUnits / (totalActiveMinutes / 60)) : 0
+                efficiency: totalActiveMinutes > 0 ? totalUnits / (totalActiveMinutes / 60) : 0,
+                conversionRate: totalActiveMinutes > 0 ? totalUnits / (totalActiveMinutes / 60) : 0,
             },
             employeePerformance: Array.from(employeeMap.values()),
-            hourlyData: Array.from(hourlyMap.entries()).map(([hour, units]) => ({ hour, units })).sort((a,b) => a.hour.localeCompare(b.hour)),
-            pauseReasons: Array.from(pauseReasonMap.entries()).map(([reason, stats]) => ({ reason, ...stats }))
+            hourlyData: Array.from(hourlyMap.entries())
+                .map(([hour, units]) => ({ hour, units }))
+                .sort((a, b) => a.hour.localeCompare(b.hour)),
+            pauseReasons: Array.from(pauseReasonMap.entries()).map(([reason, stats]) => ({
+                reason,
+                ...stats,
+            })),
         };
 
         return { success: true, data: dashboardData };

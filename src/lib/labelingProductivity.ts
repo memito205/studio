@@ -8,12 +8,14 @@ export type LabelingProductivityMetrics = {
 
 /**
  * Tiempo productivo desde START hasta FINISH (o ahora), restando pausas de la tarea y pulses.
+ * Opcional: acotar a una ventana (p. ej. solo el día en curso para Bodega Live).
  */
 export function computeLabelingProductiveMinutes(
   logs: LabelingActivityLog[],
   operation: LabelingOperation,
   allExternalPulses: OperationPulse[] = [],
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  window?: { fromMs?: number; toMs?: number }
 ): number | null {
   const startLog = logs.find((l) => l.type === 'START');
   if (!startLog) return null;
@@ -21,6 +23,11 @@ export function computeLabelingProductiveMinutes(
   const finishLog = logs.find((l) => l.type === 'FINISH');
   const startTimeMs = new Date(startLog.timestamp).getTime();
   const finishTime = finishLog ? new Date(finishLog.timestamp).getTime() : nowMs;
+  const windowFrom = window?.fromMs ?? Number.NEGATIVE_INFINITY;
+  const windowTo = window?.toMs ?? finishTime;
+  const effectiveStart = Math.max(startTimeMs, windowFrom);
+  const effectiveEnd = Math.min(finishTime, windowTo, nowMs);
+  if (!(effectiveEnd > effectiveStart)) return 0;
 
   const relevantPulses = allExternalPulses.filter(
     (p) => p.isGlobal || p.userId === operation.assignedOperatorId
@@ -77,14 +84,14 @@ export function computeLabelingProductiveMinutes(
 
   let totalPauseMillis = 0;
   mergedIntervals.forEach((p) => {
-    const effStart = Math.max(p.start, startTimeMs);
-    const effEnd = Math.min(p.end, finishTime);
+    const effStart = Math.max(p.start, effectiveStart);
+    const effEnd = Math.min(p.end, effectiveEnd);
     if (effEnd > effStart) {
       totalPauseMillis += effEnd - effStart;
     }
   });
 
-  const totalMillis = finishTime - startTimeMs;
+  const totalMillis = effectiveEnd - effectiveStart;
   return (totalMillis - totalPauseMillis) / 60000;
 }
 
@@ -103,20 +110,30 @@ export function computeLabelingProductivity(
   logs: LabelingActivityLog[],
   operation: LabelingOperation,
   allExternalPulses: OperationPulse[] = [],
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  options?: {
+    fromMs?: number;
+    toMs?: number;
+    /** Si se pasa, usa estas und en vez de labelingUnitsForProductivity (p. ej. solo UNIT_COMPLETE del día). */
+    unitsOverride?: number;
+  }
 ): LabelingProductivityMetrics | null {
   const productiveMinutes = computeLabelingProductiveMinutes(
     logs,
     operation,
     allExternalPulses,
-    nowMs
+    nowMs,
+    options ? { fromMs: options.fromMs, toMs: options.toMs } : undefined
   );
   if (productiveMinutes == null) return null;
   if (productiveMinutes <= 0) {
     return { productiveTimeMinutes: 0, unitsPerHour: 0, compliance: 0 };
   }
 
-  const unitsCompleted = labelingUnitsForProductivity(operation);
+  const unitsCompleted =
+    options?.unitsOverride != null
+      ? options.unitsOverride
+      : labelingUnitsForProductivity(operation);
   const unitsPerHour = (unitsCompleted / productiveMinutes) * 60;
   const standard = operation.standard_units_per_hour || 0;
   const compliance = standard > 0 ? (unitsPerHour / standard) * 100 : 0;

@@ -204,35 +204,51 @@ async function buildEtiquetado(
   const area = emptyArea('etiquetado', 'Etiquetado');
   try {
     const { summarizePackPlanProgress } = await import('@/lib/labelingPackPlan');
-    const {
-      labelingUnitsForProductivity,
-      computeLabelingProductivity,
-    } = await import('@/lib/labelingProductivity');
+    const { computeLabelingProductivity } = await import('@/lib/labelingProductivity');
 
     const day = new Date(`${dayKey}T12:00:00`);
     const result = await getLabelingHistoricalData({ from: day, to: day });
     if (!result.success || !result.data) return area;
 
     const { summary, employeePerformance, operations, logs } = result.data;
+    const dayFromMs = new Date(`${dayKey}T00:00:00`).getTime();
+    const dayToMs = new Date(`${dayKey}T23:59:59.999`).getTime();
 
-    // Base histórica: solo FINISH (completadas).
+    // Base histórica: solo FINISH del día (ya filtrado en getLabelingHistoricalData).
     const finishUnits = summary.totalUnits || 0;
 
-    // LIVE: tareas pack_units abiertas hoy (En Progreso / Pausada).
+    // LIVE: pack_units abiertas CON actividad de hoy (no arrastrar pausadas de ayer).
     const activeOps = (operations || []).filter(
       (op) => op.status === 'En Progreso' || op.status === 'Pausada'
     );
-    const packActive = activeOps.filter(
-      (op) => op.trackingMode === 'pack_units' && (op.labelingPackPlan?.length || 0) > 0
-    );
+    const packActive = activeOps.filter((op) => {
+      if (op.trackingMode !== 'pack_units' || !(op.labelingPackPlan?.length || 0)) return false;
+      const opLogs = (logs || []).filter((l) => l.labelingOperationId === op.id);
+      return opLogs.some(
+        (l) =>
+          isSameLocalDay(l.timestamp, dayKey) &&
+          (l.type === 'START' ||
+            l.type === 'RESUME' ||
+            l.type === 'UNIT_COMPLETE' ||
+            l.type === 'PAUSE')
+      );
+    });
 
     let liveUnits = 0;
     let confirmedBoxes = 0;
     let totalBoxes = 0;
     for (const op of packActive) {
-      liveUnits += Number(op.completedUnitsLive) || 0;
+      const opLogs = (logs || []).filter((l) => l.labelingOperationId === op.id);
+      const unitsToday = opLogs
+        .filter((l) => l.type === 'UNIT_COMPLETE' && isSameLocalDay(l.timestamp, dayKey))
+        .reduce((s, l) => s + (Number(l.qty ?? l.completedUnits) || 0), 0);
+      liveUnits += unitsToday;
       const prog = summarizePackPlanProgress(op.labelingPackPlan);
-      confirmedBoxes += prog.confirmedBoxes;
+      // Cajas confirmadas hoy (aprox. por UNIT_COMPLETE del día).
+      const boxesToday = opLogs.filter(
+        (l) => l.type === 'UNIT_COMPLETE' && isSameLocalDay(l.timestamp, dayKey)
+      ).length;
+      confirmedBoxes += boxesToday;
       totalBoxes += prog.totalBoxes;
     }
 
@@ -278,8 +294,15 @@ async function buildEtiquetado(
       if (!key) continue;
 
       const opLogs = (logs || []).filter((l) => l.labelingOperationId === op.id);
-      const metrics = computeLabelingProductivity(opLogs, op, []);
-      const units = labelingUnitsForProductivity(op);
+      const unitsToday = opLogs
+        .filter((l) => l.type === 'UNIT_COMPLETE' && isSameLocalDay(l.timestamp, dayKey))
+        .reduce((s, l) => s + (Number(l.qty ?? l.completedUnits) || 0), 0);
+      const metrics = computeLabelingProductivity(opLogs, op, [], Date.now(), {
+        fromMs: dayFromMs,
+        toMs: dayToMs,
+        unitsOverride: unitsToday,
+      });
+      const units = unitsToday;
       const minutes = metrics?.productiveTimeMinutes || 0;
       liveProductiveMinutes += minutes;
 
