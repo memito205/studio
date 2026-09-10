@@ -204,13 +204,16 @@ async function buildEtiquetado(
   const area = emptyArea('etiquetado', 'Etiquetado');
   try {
     const { summarizePackPlanProgress } = await import('@/lib/labelingPackPlan');
-    const { labelingUnitsForProductivity } = await import('@/lib/labelingProductivity');
+    const {
+      labelingUnitsForProductivity,
+      computeLabelingProductivity,
+    } = await import('@/lib/labelingProductivity');
 
     const day = new Date(`${dayKey}T12:00:00`);
     const result = await getLabelingHistoricalData({ from: day, to: day });
     if (!result.success || !result.data) return area;
 
-    const { summary, employeePerformance, operations } = result.data;
+    const { summary, employeePerformance, operations, logs } = result.data;
 
     // Base histórica: solo FINISH (completadas).
     const finishUnits = summary.totalUnits || 0;
@@ -257,64 +260,119 @@ async function buildEtiquetado(
         .map((op) => `${op.receptionOperationId || ''}|${op.reference}`)
     );
 
-    // Headline: finalizadas + progreso live (sin doble contar Completada).
-    area.units = finishUnits + liveUnits;
-    area.operators = employeePerformance.length;
-    const activeMinutes = summary.totalActiveMinutes || 0;
-    area.productivity =
-      activeMinutes > 0 ? area.units / (activeMinutes / 60) : summary.conversionRate || summary.efficiency || 0;
+    // Métricas LIVE por operario (u/h y cumplimiento con reloj desde START − pausas).
+    type LiveAgg = {
+      units: number;
+      minutes: number;
+      standard: number;
+      displayName: string;
+      isExt: boolean;
+    };
+    const liveAggByKey = new Map<string, LiveAgg>();
+    let liveProductiveMinutes = 0;
 
-    // Ranking: sumar und LIVE a operarios con tarea pack activa.
-    const liveByOperator = new Map<string, number>();
     for (const op of packActive) {
       const key = op.isExternal
         ? op.assignedExternalOperatorName || op.assignedExternalVendorId || ''
         : op.assignedOperatorId || '';
       if (!key) continue;
-      liveByOperator.set(key, (liveByOperator.get(key) || 0) + labelingUnitsForProductivity(op));
-    }
 
-    area.ranking = [...employeePerformance]
-      .map((e) => {
-        const liveAdd = liveByOperator.get(e.id) || liveByOperator.get(e.name) || 0;
-        const units = (e.totalUnits || 0) + liveAdd;
-        const minutes = e.activeMinutes || 0;
-        const productivity = minutes > 0 ? units / (minutes / 60) : e.efficiency;
-        const resolved =
-          e.type === 'Interno' ? nameByUid.get(e.id) || nameByUid.get(e.name) || e.name : e.name;
-        return {
-          name: resolved,
-          units,
-          productivity,
-          meta: e.type,
-        };
-      })
-      .sort((a, b) => b.productivity - a.productivity || b.units - a.units);
+      const opLogs = (logs || []).filter((l) => l.labelingOperationId === op.id);
+      const metrics = computeLabelingProductivity(opLogs, op, []);
+      const units = labelingUnitsForProductivity(op);
+      const minutes = metrics?.productiveTimeMinutes || 0;
+      liveProductiveMinutes += minutes;
 
-    // Operarios solo en LIVE (aún sin FINISH en el día) → aparecer en ranking.
-    for (const op of packActive) {
-      const key = op.isExternal
-        ? op.assignedExternalOperatorName || op.assignedExternalVendorId || ''
-        : op.assignedOperatorId || '';
-      if (!key) continue;
       const displayName = op.isExternal
         ? op.assignedExternalOperatorName || key
         : nameByUid.get(key) || key;
-      const already = area.ranking.some(
-        (r) => r.name === displayName || r.name === key
-      );
-      if (already) continue;
-      const units = labelingUnitsForProductivity(op);
-      if (units <= 0) continue;
-      area.ranking.push({
-        name: displayName,
-        units,
-        productivity: 0,
-        meta: op.isExternal ? 'Externo' : 'Interno',
-      });
-      area.operators = Math.max(area.operators, area.ranking.length);
+
+      const prev = liveAggByKey.get(key) || {
+        units: 0,
+        minutes: 0,
+        standard: 0,
+        displayName,
+        isExt: Boolean(op.isExternal),
+      };
+      const prevUnits = prev.units;
+      prev.units += units;
+      prev.minutes += minutes;
+      const std = Number(op.standard_units_per_hour) || 0;
+      if (std > 0 && units > 0) {
+        prev.standard = (prev.standard * prevUnits + std * units) / Math.max(prev.units, 1);
+      } else if (std > 0 && prev.standard <= 0) {
+        prev.standard = std;
+      }
+      liveAggByKey.set(key, prev);
     }
-    area.ranking.sort((a, b) => b.productivity - a.productivity || b.units - a.units);
+
+    // Headline: finalizadas + progreso live (sin doble contar Completada).
+    area.units = finishUnits + liveUnits;
+    const activeMinutes = (summary.totalActiveMinutes || 0) + liveProductiveMinutes;
+    area.productivity =
+      activeMinutes > 0
+        ? area.units / (activeMinutes / 60)
+        : summary.conversionRate || summary.efficiency || 0;
+
+    const rankingByKey = new Map<
+      string,
+      { name: string; units: number; productivity: number; compliance?: number; meta?: string }
+    >();
+
+    for (const e of employeePerformance) {
+      const live = liveAggByKey.get(e.id) || liveAggByKey.get(e.name);
+      const liveUnitsAdd = live?.units || 0;
+      const liveMinutesAdd = live?.minutes || 0;
+      const units = (e.totalUnits || 0) + liveUnitsAdd;
+      const minutes = (e.activeMinutes || 0) + liveMinutesAdd;
+      const productivity = minutes > 0 ? units / (minutes / 60) : e.efficiency || 0;
+      const standard = live?.standard || 0;
+      const compliance = standard > 0 ? (productivity / standard) * 100 : undefined;
+      const resolved =
+        e.type === 'Interno' ? nameByUid.get(e.id) || nameByUid.get(e.name) || e.name : e.name;
+      rankingByKey.set(e.id || e.name, {
+        name: resolved,
+        units,
+        productivity,
+        compliance,
+        meta: e.type,
+      });
+      if (live) {
+        liveAggByKey.delete(e.id);
+        liveAggByKey.delete(e.name);
+      }
+    }
+
+    // Operarios solo LIVE (sin FINISH aún).
+    for (const [key, live] of liveAggByKey.entries()) {
+      if (live.units <= 0 && live.minutes <= 0) continue;
+      const productivity = live.minutes > 0 ? live.units / (live.minutes / 60) : 0;
+      const compliance =
+        live.standard > 0 && productivity > 0 ? (productivity / live.standard) * 100 : undefined;
+      rankingByKey.set(key, {
+        name: live.displayName,
+        units: live.units,
+        productivity,
+        compliance,
+        meta: live.isExt ? 'Externo' : 'Interno',
+      });
+    }
+
+    area.ranking = [...rankingByKey.values()].sort(
+      (a, b) => b.productivity - a.productivity || b.units - a.units
+    );
+    area.operators = area.ranking.length;
+
+    // Cumplimiento de área ponderado por und (solo filas con estándar).
+    let compSum = 0;
+    let compWeight = 0;
+    for (const row of area.ranking) {
+      if (typeof row.compliance === 'number' && Number.isFinite(row.compliance) && row.units > 0) {
+        compSum += row.compliance * row.units;
+        compWeight += row.units;
+      }
+    }
+    if (compWeight > 0) area.compliance = compSum / compWeight;
 
     area.peopleKeys = employeePerformance.map((e) => {
       if (e.type === 'Interno' && e.id) return personKeyFromUid(e.id);
@@ -333,7 +391,7 @@ async function buildEtiquetado(
       { label: 'Externo', value: String(summary.externalUnits || 0) },
       {
         label: 'Horas prod.',
-        value: `${((summary.totalActiveMinutes || 0) / 60).toFixed(1)} h`,
+        value: `${(activeMinutes / 60).toFixed(1)} h`,
       },
       {
         label: 'Und LIVE',

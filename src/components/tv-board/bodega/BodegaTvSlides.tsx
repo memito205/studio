@@ -216,7 +216,11 @@ export function BodegaAreaDetailSlide({
   pageCount: number;
 }) {
   const Icon = AREA_ICON[area.key];
-  const showCompliance = area.key === 'empaque';
+  const showCompliance =
+    area.key === 'empaque' ||
+    area.key === 'etiquetado' ||
+    typeof area.compliance === 'number' ||
+    rankingPage.some((r) => typeof r.compliance === 'number');
   const rankOffset = pageIndex * BODEGA_TV_PAGE_SIZE;
   const tvExtras = (area.extras || []).filter((ex) =>
     [
