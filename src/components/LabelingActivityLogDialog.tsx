@@ -26,6 +26,10 @@ const getActivityText = (log: LabelingActivityLog): string => {
         case 'PAUSE': return `Pausa (${log.pauseReason || 'Sin motivo'})`;
         case 'RESUME': return 'Reanudación de Tarea';
         case 'FINISH': return 'Finalización de Tarea';
+        case 'UNIT_COMPLETE':
+          return `Caja #${log.unitNumber ?? '?'} confirmada (${log.qty ?? log.completedUnits ?? 0} und${
+            log.locationName ? ` · ${log.locationName}` : ''
+          })`;
         default: return log.type;
     }
 }

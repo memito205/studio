@@ -1979,7 +1979,7 @@ export interface LabelingOperation {
   completedUnitsLive?: number;
 }
 
-export type LabelingActivityType = 'START' | 'PAUSE' | 'RESUME' | 'FINISH';
+export type LabelingActivityType = 'START' | 'PAUSE' | 'RESUME' | 'FINISH' | 'UNIT_COMPLETE';
 
 export interface LabelingActivityLog {
   id?: string; // Firestore document ID
@@ -1991,6 +1991,11 @@ export interface LabelingActivityLog {
   isExternal?: boolean; // New: Flag
   externalOperatorName?: string; // New: Name of the individual operator
   completedUnits?: number; // Optional: used in some log entries for incremental updates
+  /** UNIT_COMPLETE: caja confirmada */
+  packingUnitId?: string;
+  unitNumber?: number;
+  qty?: number;
+  locationName?: string;
 }
 
 export interface LabelingSummaryKPIs {

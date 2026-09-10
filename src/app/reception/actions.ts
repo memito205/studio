@@ -2747,6 +2747,135 @@ export async function finishLabelingTaskSession(
   }
 }
 
+/**
+ * Fase 4: confirma una caja del plan (solo tareas pack_units en En Progreso).
+ * No cambia el estado de la tarea; incrementa completedUnitsLive y registra UNIT_COMPLETE.
+ * Las pausas siguen vía logLabelingActivity (PAUSE/RESUME).
+ */
+export async function confirmLabelingPackUnit(
+  operationId: string,
+  packingUnitId: string,
+  isExternal: boolean = false,
+  providedPin?: string,
+  externalOperatorName?: string
+): Promise<{
+  success: boolean;
+  error?: string;
+  completedUnitsLive?: number;
+  confirmedBoxes?: number;
+  totalBoxes?: number;
+}> {
+  try {
+    if (!operationId || !packingUnitId) {
+      return { success: false, error: 'Tarea y caja requeridas.' };
+    }
+
+    const { stripUndefinedDeep } = await import('@/lib/labelingPackPlan');
+
+    let completedUnitsLive = 0;
+    let confirmedBoxes = 0;
+    let totalBoxes = 0;
+
+    await runTransaction(firestore, async (transaction) => {
+      const operationRef = doc(firestore, 'labelingOperations', operationId);
+      const operationDoc = await transaction.get(operationRef);
+      if (!operationDoc.exists()) {
+        throw new Error('La tarea de etiquetado no fue encontrada.');
+      }
+
+      const operationData = {
+        id: operationDoc.id,
+        ...convertTimestampsToDates(operationDoc.data()),
+      } as LabelingOperation;
+
+      if (operationData.trackingMode !== 'pack_units') {
+        throw new Error('Esta tarea no usa seguimiento por cajas (modo legado).');
+      }
+      if (operationData.status !== 'En Progreso') {
+        throw new Error(
+          operationData.status === 'Pausada'
+            ? 'Reanude la tarea antes de confirmar cajas.'
+            : `Solo se confirman cajas en En Progreso. Estado: ${operationData.status}.`
+        );
+      }
+
+      if (isExternal) {
+        if (!providedPin || !externalOperatorName) {
+          throw new Error('Validación de PIN requerida para confirmar caja.');
+        }
+        const vendorRef = doc(firestore, 'externalVendors', operationData.assignedExternalVendorId!);
+        const vendorSnap = await transaction.get(vendorRef);
+        if (!vendorSnap.exists()) throw new Error('Proveedor no encontrado.');
+        const vendorData = vendorSnap.data();
+        const operator = (vendorData.operators as any[] || []).find(
+          (o) => o.name === externalOperatorName
+        );
+        if (!operator || operator.pin !== providedPin) {
+          throw new Error('PIN de operario incorrecto.');
+        }
+      }
+
+      const plan = Array.isArray(operationData.labelingPackPlan)
+        ? [...operationData.labelingPackPlan]
+        : [];
+      totalBoxes = plan.length;
+      const idx = plan.findIndex((u) => u.packingUnitId === packingUnitId);
+      if (idx < 0) throw new Error('Caja no encontrada en el plan de esta tarea.');
+      const unit = plan[idx];
+      if (unit.confirmed) throw new Error('Esta caja ya fue confirmada.');
+
+      const nowIso = new Date().toISOString();
+      plan[idx] = stripUndefinedDeep({
+        ...unit,
+        confirmed: true,
+        confirmedAt: nowIso,
+      });
+
+      completedUnitsLive = plan
+        .filter((u) => u.confirmed)
+        .reduce((s, u) => s + (Number(u.qty) || 0), 0);
+      confirmedBoxes = plan.filter((u) => u.confirmed).length;
+
+      const operatorId = isExternal
+        ? operationData.assignedExternalVendorId!
+        : operationData.assignedOperatorId || 'system';
+
+      const logCollectionRef = collection(firestore, 'labelingOperations', operationId, 'activityLog');
+      const newLogDocRef = doc(logCollectionRef);
+      const logEntry: Omit<LabelingActivityLog, 'id'> = stripUndefinedDeep({
+        labelingOperationId: operationId,
+        operatorId,
+        type: 'UNIT_COMPLETE' as const,
+        timestamp: nowIso,
+        completedUnits: Number(unit.qty) || 0,
+        packingUnitId: unit.packingUnitId,
+        unitNumber: unit.unitNumber,
+        qty: Number(unit.qty) || 0,
+        locationName: unit.locationName,
+        isExternal: !!isExternal,
+        ...(externalOperatorName ? { externalOperatorName } : {}),
+      });
+      transaction.set(newLogDocRef, convertDatesToTimestamps(logEntry));
+
+      transaction.update(
+        operationRef,
+        convertDatesToTimestamps(
+          stripUndefinedDeep({
+            labelingPackPlan: plan,
+            completedUnitsLive,
+            updatedAt: nowIso,
+          })
+        )
+      );
+    });
+
+    return { success: true, completedUnitsLive, confirmedBoxes, totalBoxes };
+  } catch (error: any) {
+    console.error('confirmLabelingPackUnit:', error);
+    return { success: false, error: error?.message || 'No se pudo confirmar la caja.' };
+  }
+}
+
 export async function getTraceabilityForReference(reference: string): Promise<{ success: boolean; data?: any[]; error?: string; }> {
     try {
         const trimmedReference = reference.trim();

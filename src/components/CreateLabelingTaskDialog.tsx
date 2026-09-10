@@ -123,7 +123,7 @@ export const CreateLabelingTaskDialog: React.FC<CreateLabelingTaskDialogProps> =
         title: 'Tarea creada',
         description:
           result.trackingMode === 'pack_units'
-            ? 'Modo seguimiento por cajas (productividad en vivo en Fase 4).'
+            ? 'Modo seguimiento por cajas (confirmar caja + u/h en vivo).'
             : 'Modo legado (Finalizar con cantidad), sin plan de cajas.',
       });
     } else {

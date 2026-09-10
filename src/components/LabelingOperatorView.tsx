@@ -1,20 +1,28 @@
 /** @jsxImportSource react */
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Play, Pause, Check, RotateCcw, Loader2, Lock } from 'lucide-react';
+import { Play, Pause, Check, RotateCcw, Loader2, Lock, Package } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { logLabelingActivity, finishLabelingTaskSession, getLabelingOperationsForExternal } from '@/app/reception/actions';
+import {
+  logLabelingActivity,
+  finishLabelingTaskSession,
+  getLabelingOperationsForExternal,
+  confirmLabelingPackUnit,
+  getLabelingActivityLog,
+} from '@/app/reception/actions';
 import { useAuth } from '@/hooks/use-auth-context';
-import type { LabelingOperation, LabelingOperationStatus, ExternalVendor } from '@/types';
+import type { LabelingOperation, LabelingOperationStatus, LabelingActivityLog, ExternalVendor } from '@/types';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { FinishWorkDialog } from './FinishWorkDialog';
+import { computeLabelingProductivity } from '@/lib/labelingProductivity';
+import { ScrollArea } from './ui/scroll-area';
 
 
 interface ValidatedActionDialogProps {
@@ -173,13 +181,101 @@ const getStatusVariant = (status: LabelingOperationStatus) => {
     }
 };
 
+const PackUnitsPanel: React.FC<{
+  operation: LabelingOperation;
+  isSubmitting: boolean;
+  confirmingUnitId: string | null;
+  liveUh: number | null;
+  onConfirmUnit: (packingUnitId: string) => void;
+}> = ({ operation, isSubmitting, confirmingUnitId, liveUh, onConfirmUnit }) => {
+  const plan = useMemo(
+    () =>
+      [...(operation.labelingPackPlan || [])].sort(
+        (a, b) => (a.unitNumber || 0) - (b.unitNumber || 0)
+      ),
+    [operation.labelingPackPlan]
+  );
+  const confirmed = plan.filter((u) => u.confirmed).length;
+  const liveUnits = operation.completedUnitsLive ?? plan.filter((u) => u.confirmed).reduce((s, u) => s + (u.qty || 0), 0);
+  const canConfirm = operation.status === 'En Progreso';
+
+  return (
+    <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2 text-sm">
+        <span className="font-medium flex items-center gap-1">
+          <Package className="h-4 w-4" />
+          Cajas {confirmed}/{plan.length}
+        </span>
+        <span className="text-muted-foreground">
+          {liveUnits.toLocaleString()} / {operation.totalUnits.toLocaleString()} und
+        </span>
+      </div>
+      {liveUh != null && operation.status !== 'Asignada' && operation.status !== 'Pendiente' ? (
+        <p className="text-xs">
+          Productividad en vivo:{' '}
+          <span className="font-semibold">{liveUh.toFixed(1)} u/h</span>
+          {operation.standard_units_per_hour
+            ? ` · estándar ${operation.standard_units_per_hour}`
+            : null}
+        </p>
+      ) : null}
+      {!canConfirm && operation.status === 'Pausada' ? (
+        <p className="text-[11px] text-amber-700">Reanude para confirmar cajas. El reloj productivo está en pausa.</p>
+      ) : null}
+      <ScrollArea className="max-h-40">
+        <ul className="space-y-1.5 pr-2">
+          {plan.map((unit) => (
+            <li
+              key={unit.packingUnitId}
+              className="flex items-center justify-between gap-2 text-xs rounded border bg-background px-2 py-1.5"
+            >
+              <div className="min-w-0">
+                <div className="font-medium truncate">
+                  Caja #{unit.unitNumber} · {unit.qty} und
+                </div>
+                <div className="text-muted-foreground truncate">
+                  {unit.locationName || unit.locationId || 'Sin ubicación'}
+                </div>
+              </div>
+              {unit.confirmed ? (
+                <Badge variant="success" className="shrink-0">OK</Badge>
+              ) : (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 shrink-0"
+                  disabled={!canConfirm || isSubmitting || confirmingUnitId === unit.packingUnitId}
+                  onClick={() => onConfirmUnit(unit.packingUnitId)}
+                >
+                  {confirmingUnitId === unit.packingUnitId ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    'Confirmar'
+                  )}
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      </ScrollArea>
+    </div>
+  );
+};
+
 const OperatorTaskCard: React.FC<{ 
     operation: LabelingOperation; 
     onAction: (opId: string, action: 'START' | 'PAUSE' | 'RESUME' | 'FINISH', reason?: string) => void;
     onOpenFinishDialog: (operation: LabelingOperation) => void;
+    onConfirmPackUnit: (operation: LabelingOperation, packingUnitId: string) => void;
+    confirmingUnitId: string | null;
+    liveUh: number | null;
     isSubmitting: boolean; 
-}> = ({ operation, onAction, onOpenFinishDialog, isSubmitting }) => {
-    
+}> = ({ operation, onAction, onOpenFinishDialog, onConfirmPackUnit, confirmingUnitId, liveUh, isSubmitting }) => {
+    const isPackMode =
+      operation.trackingMode === 'pack_units' &&
+      (operation.labelingPackPlan?.length || 0) > 0;
+
     return (
         <Card className="flex flex-col">
             <CardHeader>
@@ -188,10 +284,15 @@ const OperatorTaskCard: React.FC<{
                         <CardTitle>{operation.reference}</CardTitle>
                         <CardDescription>RK: {operation.rk_identifier} - {operation.supplier}</CardDescription>
                     </div>
-                    <Badge variant={getStatusVariant(operation.status)}>{operation.status}</Badge>
+                    <div className="flex flex-col items-end gap-1">
+                      <Badge variant={getStatusVariant(operation.status)}>{operation.status}</Badge>
+                      {isPackMode ? (
+                        <span className="text-[10px] text-emerald-700">Por cajas</span>
+                      ) : null}
+                    </div>
                 </div>
             </CardHeader>
-            <CardContent className="flex-grow space-y-2">
+            <CardContent className="flex-grow space-y-3">
                 <p><strong>Cantidad Total:</strong> {operation.totalUnits.toLocaleString()} unidades</p>
                 <p className="text-sm text-muted-foreground">
                     Desglose: {Object.entries(operation.sizes).map(([s, q]) => `${s}: ${q}`).join(', ')}
@@ -199,6 +300,15 @@ const OperatorTaskCard: React.FC<{
                 <p className="text-sm text-muted-foreground">
                     Estándar: {operation.standard_units_per_hour || 'N/A'} u/h
                 </p>
+                {isPackMode ? (
+                  <PackUnitsPanel
+                    operation={operation}
+                    isSubmitting={isSubmitting}
+                    confirmingUnitId={confirmingUnitId}
+                    liveUh={liveUh}
+                    onConfirmUnit={(packingUnitId) => onConfirmPackUnit(operation, packingUnitId)}
+                  />
+                ) : null}
             </CardContent>
             <CardFooter className="flex justify-end gap-2">
                 {operation.status === 'Asignada' && (
@@ -250,13 +360,17 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
     const [isPinDialogOpen, setIsPinDialogOpen] = useState(false);
     const [pendingAction, setPendingAction] = useState<{ 
         operationId: string, 
-        actionType: 'START' | 'PAUSE' | 'RESUME' | 'FINISH', 
+        actionType: 'START' | 'PAUSE' | 'RESUME' | 'FINISH' | 'UNIT_COMPLETE', 
         reason?: string,
-        completedUnits?: number
+        completedUnits?: number,
+        packingUnitId?: string,
     } | null>(null);
     const [actionLabel, setActionLabel] = useState('');
     const [isPauseReasonDialogOpen, setIsPauseReasonDialogOpen] = useState(false);
     const [pausePendingOpId, setPausePendingOpId] = useState<string | null>(null);
+    const [confirmingUnitId, setConfirmingUnitId] = useState<string | null>(null);
+    const [activityByOp, setActivityByOp] = useState<Record<string, LabelingActivityLog[]>>({});
+    const [tick, setTick] = useState(0);
     
     // Internal state for external portal mode
     const [externalOperations, setExternalOperations] = useState<LabelingOperation[]>([]);
@@ -272,7 +386,7 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
             toast({ variant: 'destructive', title: 'Error al cargar tareas', description: result.error });
         }
         setIsLoading(false);
-    }, [isExternalPortal, externalVendor]);
+    }, [isExternalPortal, externalVendor, toast]);
 
     React.useEffect(() => {
         if (isExternalPortal) {
@@ -282,6 +396,72 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
 
     const activeOperations = isExternalPortal ? externalOperations : (propOperations || []);
     const handleRefresh = isExternalPortal ? fetchExternalTasks : (propOnRefresh || (() => {}));
+
+    const packLiveKey = useMemo(
+      () =>
+        activeOperations
+          .filter(
+            (op) =>
+              op.trackingMode === 'pack_units' &&
+              (op.status === 'En Progreso' || op.status === 'Pausada')
+          )
+          .map((op) => `${op.id}:${op.status}:${op.completedUnitsLive ?? 0}:${op.updatedAt || ''}`)
+          .sort()
+          .join('|'),
+      [activeOperations]
+    );
+
+    // Cargar logs de tareas pack_units activas para u/h en vivo
+    React.useEffect(() => {
+      if (!packLiveKey) return;
+      let cancelled = false;
+      const packActive = activeOperations.filter(
+        (op) =>
+          op.trackingMode === 'pack_units' &&
+          (op.status === 'En Progreso' || op.status === 'Pausada')
+      );
+
+      (async () => {
+        const next: Record<string, LabelingActivityLog[]> = {};
+        await Promise.all(
+          packActive.map(async (op) => {
+            const res = await getLabelingActivityLog(op.id, { limitN: 120 });
+            if (res.success && res.data) next[op.id] = res.data;
+          })
+        );
+        if (!cancelled) {
+          setActivityByOp((prev) => ({ ...prev, ...next }));
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+      };
+      // packLiveKey captura ids/estado/progreso; activeOperations se lee al cambiar esa clave
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [packLiveKey]);
+
+    React.useEffect(() => {
+      if (!packLiveKey) return;
+      const id = window.setInterval(() => setTick((t) => t + 1), 30000);
+      return () => window.clearInterval(id);
+    }, [packLiveKey]);
+
+    const liveUhByOp = useMemo(() => {
+      void tick;
+      const map = new Map<string, number | null>();
+      for (const op of activeOperations) {
+        if (op.trackingMode !== 'pack_units') continue;
+        const logs = activityByOp[op.id];
+        if (!logs?.length) {
+          map.set(op.id, null);
+          continue;
+        }
+        const m = computeLabelingProductivity(logs, op, []);
+        map.set(op.id, m ? m.unitsPerHour : null);
+      }
+      return map;
+    }, [activeOperations, activityByOp, tick]);
 
     const initiateAction = (operationId: string, actionType: 'START' | 'PAUSE' | 'RESUME' | 'FINISH', reason?: string, completedUnits?: number) => {
         if (actionType === 'PAUSE' && !reason) {
@@ -324,10 +504,13 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
         
         if (pendingAction.actionType === 'FINISH' && pendingAction.completedUnits !== undefined) {
             performFinish(pendingAction.operationId, pendingAction.completedUnits, pin);
+        } else if (pendingAction.actionType === 'UNIT_COMPLETE' && pendingAction.packingUnitId) {
+            performConfirmPackUnit(pendingAction.operationId, pendingAction.packingUnitId, pin);
         } else {
-            handleAction(pendingAction.operationId, pendingAction.actionType, pendingAction.reason, pin);
+            handleAction(pendingAction.operationId, pendingAction.actionType as 'START' | 'PAUSE' | 'RESUME' | 'FINISH', pendingAction.reason, pin);
         }
         setIsPinDialogOpen(false);
+        setPendingAction(null);
     };
 
     const handleAction = async (operationId: string, actionType: 'START' | 'PAUSE' | 'RESUME' | 'FINISH', reason?: string, providedPin?: string) => {
@@ -391,6 +574,52 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
         setTaskToFinish(null);
     };
 
+    const handleConfirmPackUnit = (operation: LabelingOperation, packingUnitId: string) => {
+      if (isExternalPortal) {
+        const unit = operation.labelingPackPlan?.find((u) => u.packingUnitId === packingUnitId);
+        setPendingAction({
+          operationId: operation.id,
+          actionType: 'UNIT_COMPLETE',
+          packingUnitId,
+        });
+        setActionLabel(`CONFIRMAR CAJA #${unit?.unitNumber ?? ''}`);
+        setIsPinDialogOpen(true);
+        return;
+      }
+      void performConfirmPackUnit(operation.id, packingUnitId);
+    };
+
+    const performConfirmPackUnit = async (
+      operationId: string,
+      packingUnitId: string,
+      providedPin?: string
+    ) => {
+      setConfirmingUnitId(packingUnitId);
+      setIsSubmitting(true);
+      const result = await confirmLabelingPackUnit(
+        operationId,
+        packingUnitId,
+        isExternalPortal,
+        providedPin,
+        externalVendor?.operatorName
+      );
+      if (result.success) {
+        toast({
+          title: 'Caja confirmada',
+          description: `Progreso: ${result.confirmedBoxes || 0}/${result.totalBoxes || 0} cajas · ${(result.completedUnitsLive || 0).toLocaleString()} und`,
+        });
+        handleRefresh();
+        const logRes = await getLabelingActivityLog(operationId, { limitN: 120 });
+        if (logRes.success && logRes.data) {
+          setActivityByOp((prev) => ({ ...prev, [operationId]: logRes.data! }));
+        }
+      } else {
+        toast({ variant: 'destructive', title: 'No se confirmó la caja', description: result.error });
+      }
+      setIsSubmitting(false);
+      setConfirmingUnitId(null);
+    };
+
     if (isLoading) {
         return <div className="flex justify-center p-12"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>;
     }
@@ -428,6 +657,9 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
                         operation={op} 
                         onAction={initiateAction} 
                         onOpenFinishDialog={handleOpenFinishDialog}
+                        onConfirmPackUnit={handleConfirmPackUnit}
+                        confirmingUnitId={confirmingUnitId}
+                        liveUh={liveUhByOp.get(op.id) ?? null}
                         isSubmitting={isSubmitting} 
                     />
                 ))}

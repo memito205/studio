@@ -34,12 +34,17 @@ export const FinishWorkDialog: React.FC<FinishWorkDialogProps> = ({ isOpen, onOp
   
   useEffect(() => {
     if (isOpen) {
-      setCompletedUnits(task.totalUnits);
+      const live =
+        task.trackingMode === 'pack_units' && (task.completedUnitsLive ?? 0) > 0
+          ? task.completedUnitsLive!
+          : task.totalUnits;
+      setCompletedUnits(live);
     }
-  }, [isOpen, task.totalUnits]);
+  }, [isOpen, task.totalUnits, task.trackingMode, task.completedUnitsLive]);
 
   const remaining = task.totalUnits - completedUnits;
   const isPartial = remaining > 0 && completedUnits > 0;
+  const isPackMode = task.trackingMode === 'pack_units';
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
@@ -52,6 +57,12 @@ export const FinishWorkDialog: React.FC<FinishWorkDialogProps> = ({ isOpen, onOp
         </DialogHeader>
         <div className="py-4 space-y-4">
           <p>Unidades asignadas para esta tarea: <span className="font-bold">{task.totalUnits}</span></p>
+          {isPackMode && (task.completedUnitsLive ?? 0) > 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Confirmadas por caja en esta sesión: <span className="font-medium text-foreground">{task.completedUnitsLive}</span> und
+              (puede ajustar al finalizar).
+            </p>
+          ) : null}
           <div>
             <Label htmlFor="completed-units">Unidades Completadas</Label>
             <Input
