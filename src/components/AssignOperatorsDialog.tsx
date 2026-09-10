@@ -171,7 +171,14 @@ export const AssignOperatorsDialog: React.FC<AssignOperatorsDialogProps> = ({
     const result = await bulkCreateLabelingTasks(tasksToCreate);
 
     if(result.success) {
-        toast({ title: "Tareas Creadas", description: `Se han creado ${result.createdCount} tareas de etiquetado.` });
+        toast({
+          title: "Tareas Creadas",
+          description: `Se han creado ${result.createdCount} tareas.${
+            result.packUnitsCount
+              ? ` ${result.packUnitsCount} con plan de cajas (seguimiento pack_units).`
+              : ''
+          }`,
+        });
         onTasksCreated();
         onOpenChange(false);
     } else {

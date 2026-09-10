@@ -119,6 +119,13 @@ export const CreateLabelingTaskDialog: React.FC<CreateLabelingTaskDialogProps> =
     if (result.success) {
       onTaskCreated();
       onOpenChange(false);
+      toast({
+        title: 'Tarea creada',
+        description:
+          result.trackingMode === 'pack_units'
+            ? 'Modo seguimiento por cajas (productividad en vivo en Fase 4).'
+            : 'Modo legado (Finalizar con cantidad), sin plan de cajas.',
+      });
     } else {
       toast({ variant: 'destructive', title: 'Error', description: result.error });
     }

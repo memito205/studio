@@ -9,10 +9,11 @@ import { ArrowLeft, Loader2, Package, Tag, Users } from 'lucide-react';
 import type { ReceptionOperation, AppUser, LabelingOperation, LabelingOperationStatus } from '@/types';
 import { CreateLabelingTaskDialog } from './CreateLabelingTaskDialog';
 import { AssignOperatorsDialog } from './AssignOperatorsDialog';
-import { getAllUserProfiles, loadLabelingOperations, getExternalVendors, rebuildReceptionPackSummaries } from '@/app/reception/actions';
+import { getAllUserProfiles, loadLabelingOperations, getExternalVendors, rebuildReceptionPackSummaries, getReceptionPackSummaries } from '@/app/reception/actions';
 import { useToast } from '@/hooks/use-toast';
 import { Badge } from './ui/badge';
 import type { ExternalVendor } from '@/types';
+import { normalizeReceptionReference } from '@/lib/receptionReference';
 
 interface LabelingPreparationScreenProps {
   operation: ReceptionOperation;
@@ -40,6 +41,9 @@ export interface GroupedItem {
   /** Hay tarea residual (parentTaskId) pendiente de reasignar en Etiquetado. */
   hasResidual: boolean;
   openTaskCount: number;
+  /** Tiene resumen de cajas (packUnitsById) → nuevas tareas irán en modo pack_units. */
+  hasPackPlan: boolean;
+  packUnitCount: number;
 }
 
 function badgeVariantForPrepStatus(
@@ -67,14 +71,19 @@ function badgeVariantForPrepStatus(
 
 function deriveReferenceStatus(
   totalQuantity: number,
-  tasks: LabelingOperation[]
-): Pick<GroupedItem, 'status' | 'remainingUnits' | 'hasResidual' | 'openTaskCount'> {
+  tasks: LabelingOperation[],
+  packMeta?: { hasPackPlan: boolean; packUnitCount: number }
+): Pick<GroupedItem, 'status' | 'remainingUnits' | 'hasResidual' | 'openTaskCount' | 'hasPackPlan' | 'packUnitCount'> {
+  const hasPackPlan = Boolean(packMeta?.hasPackPlan);
+  const packUnitCount = packMeta?.packUnitCount || 0;
   if (!tasks.length) {
     return {
       status: 'Disponible',
       remainingUnits: totalQuantity,
       hasResidual: false,
       openTaskCount: 0,
+      hasPackPlan,
+      packUnitCount,
     };
   }
 
@@ -98,28 +107,27 @@ function deriveReferenceStatus(
     (t) => Boolean(t.parentTaskId) && t.status !== 'Completada'
   );
 
-  // Prioridad del estado “vivo” de la referencia.
   if (openTasks.some((t) => t.status === 'En Progreso')) {
-    return { status: 'En Progreso', remainingUnits, hasResidual, openTaskCount: openTasks.length };
+    return { status: 'En Progreso', remainingUnits, hasResidual, openTaskCount: openTasks.length, hasPackPlan, packUnitCount };
   }
   if (openTasks.some((t) => t.status === 'Pausada')) {
-    return { status: 'Pausada', remainingUnits, hasResidual, openTaskCount: openTasks.length };
+    return { status: 'Pausada', remainingUnits, hasResidual, openTaskCount: openTasks.length, hasPackPlan, packUnitCount };
   }
   if (openTasks.some((t) => t.status === 'Asignada')) {
-    return { status: 'Asignada', remainingUnits, hasResidual, openTaskCount: openTasks.length };
+    return { status: 'Asignada', remainingUnits, hasResidual, openTaskCount: openTasks.length, hasPackPlan, packUnitCount };
   }
   if (openTasks.some((t) => t.status === 'Pendiente')) {
-    // Residual u otra tarea sin operario: reasignar en módulo Etiquetado.
-    return { status: 'Pendiente', remainingUnits, hasResidual, openTaskCount: openTasks.length };
+    return { status: 'Pendiente', remainingUnits, hasResidual, openTaskCount: openTasks.length, hasPackPlan, packUnitCount };
   }
 
-  // Solo completadas.
   if (remainingUnits > 0) {
     return {
       status: 'Parcial',
       remainingUnits,
       hasResidual,
       openTaskCount: 0,
+      hasPackPlan,
+      packUnitCount,
     };
   }
   return {
@@ -127,6 +135,8 @@ function deriveReferenceStatus(
     remainingUnits: 0,
     hasResidual: false,
     openTaskCount: 0,
+    hasPackPlan,
+    packUnitCount,
   };
 }
 
@@ -143,7 +153,22 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
   const [loadingVendors, setLoadingVendors] = useState(true);
   const [existingTasks, setExistingTasks] = useState<LabelingOperation[]>([]);
   const [loadingPackSummary, setLoadingPackSummary] = useState(false);
+  /** ref normalizada → cantidad de cajas en plan */
+  const [packPlanByRef, setPackPlanByRef] = useState<Record<string, number>>({});
   const { toast } = useToast();
+
+  const refreshPackPlanMeta = useCallback(async () => {
+    const res = await getReceptionPackSummaries(operation.id);
+    if (!res.success || !res.data) {
+      setPackPlanByRef({});
+      return;
+    }
+    const next: Record<string, number> = {};
+    for (const [refKey, list] of Object.entries(res.data)) {
+      next[normalizeReceptionReference(refKey)] = list.length;
+    }
+    setPackPlanByRef(next);
+  }, [operation.id]);
 
   const fetchDependencies = useCallback(async () => {
     setLoadingOperators(true);
@@ -168,16 +193,18 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
       setExternalVendors(vendorsResult.data);
     }
 
+    await refreshPackPlanMeta();
+
     setLoadingVendors(false);
     setLoadingOperators(false);
-  }, [operation.id, toast]);
+  }, [operation.id, toast, refreshPackPlanMeta]);
 
   useEffect(() => {
     fetchDependencies();
   }, [fetchDependencies]);
 
   const groupedItems = useMemo((): GroupedItem[] => {
-    const map = new Map<string, Omit<GroupedItem, 'status' | 'remainingUnits' | 'hasResidual' | 'openTaskCount'>>();
+    const map = new Map<string, Omit<GroupedItem, 'status' | 'remainingUnits' | 'hasResidual' | 'openTaskCount' | 'hasPackPlan' | 'packUnitCount'>>();
     (operation.expectedItems || []).forEach((item) => {
       const refKey = item.reference;
       if (!map.has(refKey)) {
@@ -201,10 +228,15 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
     }
 
     return Array.from(map.values()).map((item) => {
-      const derived = deriveReferenceStatus(item.totalQuantity, tasksByRef.get(item.reference) || []);
+      const packKey = normalizeReceptionReference(item.reference);
+      const packUnitCount = packPlanByRef[packKey] || 0;
+      const derived = deriveReferenceStatus(item.totalQuantity, tasksByRef.get(item.reference) || [], {
+        hasPackPlan: packUnitCount > 0,
+        packUnitCount,
+      });
       return { ...item, ...derived };
     });
-  }, [operation.expectedItems, existingTasks]);
+  }, [operation.expectedItems, existingTasks, packPlanByRef]);
 
   const canCreateTask = (item: GroupedItem) => {
     // Solo crear desde prep si no hay trabajo abierto y aún falta cantidad
@@ -261,6 +293,7 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
           res.scannedItems != null ? ` · Escaneos leídos: ${res.scannedItems}` : ''
         }. Las tareas ya en proceso no se modifican.`,
       });
+      await refreshPackPlanMeta();
     } finally {
       setLoadingPackSummary(false);
     }
@@ -373,6 +406,15 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
                       <TableCell className="text-right font-bold">{item.totalQuantity}</TableCell>
                       <TableCell className="text-center space-y-1">
                         <Badge variant={badgeVariantForPrepStatus(item.status)}>{item.status}</Badge>
+                        {item.hasPackPlan ? (
+                          <div className="text-[10px] text-emerald-700 dark:text-emerald-400">
+                            Plan cajas ({item.packUnitCount}) · nuevas tareas = seguimiento por caja
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-muted-foreground">
+                            Sin plan de cajas · nuevas tareas = legado
+                          </div>
+                        )}
                         {item.hasResidual ? (
                           <div className="text-[10px] text-muted-foreground">Remanente en Etiquetado</div>
                         ) : null}

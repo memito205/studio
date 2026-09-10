@@ -1978,16 +1978,21 @@ export async function getUserGoals(userId: string): Promise<{ success: boolean; 
     }
 }
 
-export async function createLabelingTask(taskData: Omit<LabelingOperation, 'id' | 'createdAt' | 'updatedAt' | 'status'>): Promise<{ success: boolean; error?: string, id?: string }> {
+export async function createLabelingTask(taskData: Omit<LabelingOperation, 'id' | 'createdAt' | 'updatedAt' | 'status'>): Promise<{ success: boolean; error?: string, id?: string; trackingMode?: LabelingOperation['trackingMode'] }> {
   try {
+    const { stripUndefinedDeep } = await import('@/lib/labelingPackPlan');
+    const enriched = await enrichLabelingTaskWithPackPlan(taskData);
     const newTask: Omit<LabelingOperation, 'id'> = {
-      ...taskData,
-      status: (taskData.assignedOperatorId || taskData.assignedExternalVendorId) ? 'Asignada' : 'Pendiente',
+      ...enriched,
+      status: (enriched.assignedOperatorId || enriched.assignedExternalVendorId) ? 'Asignada' : 'Pendiente',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    const docRef = await addDoc(collection(firestore, 'labelingOperations'), convertDatesToTimestamps(newTask));
-    return { success: true, id: docRef.id };
+    const docRef = await addDoc(
+      collection(firestore, 'labelingOperations'),
+      convertDatesToTimestamps(stripUndefinedDeep(newTask))
+    );
+    return { success: true, id: docRef.id, trackingMode: enriched.trackingMode };
   } catch (error: any) {
     console.error("Error creating labeling task:", error);
     return { success: false, error: `Failed to create labeling task: ${error.message}` };
@@ -1996,7 +2001,7 @@ export async function createLabelingTask(taskData: Omit<LabelingOperation, 'id' 
 
 export async function bulkCreateLabelingTasks(
     tasks: Omit<LabelingOperation, 'id' | 'createdAt' | 'updatedAt' | 'status'>[]
-): Promise<{ success: boolean; error?: string; createdCount?: number }> {
+): Promise<{ success: boolean; error?: string; createdCount?: number; packUnitsCount?: number }> {
     const labelingOpsCollection = collection(firestore, 'labelingOperations');
     const CHUNK_SIZE = 450;
 
@@ -2004,30 +2009,149 @@ export async function bulkCreateLabelingTasks(
         if (tasks.length === 0) {
             return { success: false, error: 'No tasks provided to create.' };
         }
+
+        const { stripUndefinedDeep } = await import('@/lib/labelingPackPlan');
+        // Una sola lectura de stats por recepción (evita N lecturas en lote).
+        const receptionId = tasks[0]?.receptionOperationId;
+        const packByRef =
+          receptionId && tasks.every((t) => t.receptionOperationId === receptionId)
+            ? await loadReceptionPackPlansMap(receptionId)
+            : null;
+
+        let packUnitsCount = 0;
+        const enrichedTasks: Omit<LabelingOperation, 'id'>[] = [];
+        for (const taskData of tasks) {
+          let enriched: Omit<LabelingOperation, 'id' | 'createdAt' | 'updatedAt' | 'status'> &
+            Partial<Pick<LabelingOperation, 'trackingMode' | 'labelingPackPlan' | 'packPlanLoadedAt' | 'completedUnitsLive'>>;
+          if (packByRef) {
+            const refKey = normalizeReceptionReference(taskData.reference);
+            const plan = packByRef.get(refKey) || [];
+            if (plan.length > 0) {
+              const planQty = plan.reduce((s, p) => s + (Number(p.qty) || 0), 0);
+              packUnitsCount += 1;
+              enriched = {
+                ...taskData,
+                totalUnits: planQty > 0 ? planQty : taskData.totalUnits,
+                trackingMode: 'pack_units',
+                labelingPackPlan: plan,
+                packPlanLoadedAt: new Date().toISOString(),
+                completedUnitsLive: 0,
+              };
+            } else {
+              enriched = { ...taskData, trackingMode: 'legacy_finish' };
+            }
+          } else {
+            enriched = await enrichLabelingTaskWithPackPlan(taskData);
+            if (enriched.trackingMode === 'pack_units') packUnitsCount += 1;
+          }
+          enrichedTasks.push({
+            ...enriched,
+            status: (enriched.assignedOperatorId || enriched.assignedExternalVendorId) ? 'Asignada' : 'Pendiente',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+        }
         
-        for (let i = 0; i < tasks.length; i+= CHUNK_SIZE) {
-            const chunk = tasks.slice(i, i + CHUNK_SIZE);
+        for (let i = 0; i < enrichedTasks.length; i+= CHUNK_SIZE) {
+            const chunk = enrichedTasks.slice(i, i + CHUNK_SIZE);
             const batch = writeBatch(firestore);
 
-            chunk.forEach(taskData => {
-                const newDocRef = doc(labelingOpsCollection); // Automatically generate a new ID
-                const newTask: Omit<LabelingOperation, 'id'> = {
-                    ...taskData,
-                    status: (taskData.assignedOperatorId || taskData.assignedExternalVendorId) ? 'Asignada' : 'Pendiente',
-                    createdAt: new Date().toISOString(),
-                    updatedAt: new Date().toISOString(),
-                };
-                batch.set(newDocRef, convertDatesToTimestamps(newTask));
+            chunk.forEach(newTask => {
+                const newDocRef = doc(labelingOpsCollection);
+                batch.set(newDocRef, convertDatesToTimestamps(stripUndefinedDeep(newTask)));
             });
             
             await batch.commit();
         }
 
-        return { success: true, createdCount: tasks.length };
+        return { success: true, createdCount: enrichedTasks.length, packUnitsCount };
     } catch (error: any) {
         console.error("Error bulk creating labeling tasks:", error);
         return { success: false, error: `Failed to create tasks in bulk: ${error.message}` };
     }
+}
+
+/** Lee packUnitsById de todas las refs de una recepción → plan por ref normalizada. */
+async function loadReceptionPackPlansMap(
+  receptionId: string
+): Promise<Map<string, NonNullable<LabelingOperation['labelingPackPlan']>>> {
+  const { packUnitsByIdToList, toLabelingPackPlan } = await import('@/lib/labelingPackPlan');
+  const map = new Map<string, NonNullable<LabelingOperation['labelingPackPlan']>>();
+  try {
+    const statsSnap = await getDocs(
+      collection(firestore, 'receptionOperations', receptionId, 'referenceStats')
+    );
+    statsSnap.forEach((d) => {
+      const raw = d.data() as { packUnitsById?: Record<string, import('@/types').ReceptionPackUnitDetail> };
+      const list = packUnitsByIdToList(raw.packUnitsById);
+      const plan = toLabelingPackPlan(list);
+      if (plan.length > 0) {
+        map.set(normalizeReceptionReference(d.id), plan);
+        // También por reference field si difiere del id del doc
+        const refField = String((d.data() as { reference?: string }).reference || '');
+        if (refField) map.set(normalizeReceptionReference(refField), plan);
+      }
+    });
+  } catch (e) {
+    console.warn('loadReceptionPackPlansMap:', e);
+  }
+  return map;
+}
+
+/**
+ * Si hay plan de cajas en stats → pack_units; si no → legacy_finish.
+ * No altera tareas ya persistidas; solo enriquece al crear.
+ */
+async function enrichLabelingTaskWithPackPlan(
+  taskData: Omit<LabelingOperation, 'id' | 'createdAt' | 'updatedAt' | 'status'>
+): Promise<Omit<LabelingOperation, 'id' | 'createdAt' | 'updatedAt' | 'status'>> {
+  // Si el caller ya fijó modo (p.ej. legado explícito), respetar.
+  if (taskData.trackingMode === 'legacy_finish') {
+    return { ...taskData, trackingMode: 'legacy_finish' };
+  }
+  if (taskData.trackingMode === 'pack_units' && taskData.labelingPackPlan?.length) {
+    return {
+      ...taskData,
+      completedUnitsLive: taskData.completedUnitsLive ?? 0,
+    };
+  }
+
+  try {
+    if (!taskData.receptionOperationId || !taskData.reference) {
+      return { ...taskData, trackingMode: 'legacy_finish' };
+    }
+    const safeRefId = normalizeReceptionReference(taskData.reference);
+    const statsRef = doc(
+      firestore,
+      'receptionOperations',
+      taskData.receptionOperationId,
+      'referenceStats',
+      safeRefId
+    );
+    const statsSnap = await getDoc(statsRef);
+    if (!statsSnap.exists()) {
+      return { ...taskData, trackingMode: 'legacy_finish' };
+    }
+    const { packUnitsByIdToList, toLabelingPackPlan } = await import('@/lib/labelingPackPlan');
+    const raw = statsSnap.data() as { packUnitsById?: Record<string, import('@/types').ReceptionPackUnitDetail> };
+    const plan = toLabelingPackPlan(packUnitsByIdToList(raw.packUnitsById));
+    if (plan.length === 0) {
+      return { ...taskData, trackingMode: 'legacy_finish' };
+    }
+    const planQty = plan.reduce((s, p) => s + (Number(p.qty) || 0), 0);
+    return {
+      ...taskData,
+      // Totality from boxes (decisión: asignar totalidad / finalizar parcial por cajas).
+      totalUnits: planQty > 0 ? planQty : taskData.totalUnits,
+      trackingMode: 'pack_units',
+      labelingPackPlan: plan,
+      packPlanLoadedAt: new Date().toISOString(),
+      completedUnitsLive: 0,
+    };
+  } catch (e) {
+    console.warn('enrichLabelingTaskWithPackPlan fallback legacy:', e);
+    return { ...taskData, trackingMode: 'legacy_finish' };
+  }
 }
 
 
