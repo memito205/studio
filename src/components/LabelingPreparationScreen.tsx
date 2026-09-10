@@ -257,7 +257,9 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
       }
       toast({
         title: 'Unidades de empaque cargadas',
-        description: `Referencias: ${res.references || 0} · Cajas: ${res.packUnits || 0}. Las tareas ya en proceso no se modifican.`,
+        description: `Referencias: ${res.references || 0} · Cajas: ${res.packUnits || 0}${
+          res.scannedItems != null ? ` · Escaneos leídos: ${res.scannedItems}` : ''
+        }. Las tareas ya en proceso no se modifican.`,
       });
     } finally {
       setLoadingPackSummary(false);
