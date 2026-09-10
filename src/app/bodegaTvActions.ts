@@ -201,36 +201,153 @@ async function buildEtiquetado(
 ): Promise<BodegaTvAreaSnapshot> {
   const area = emptyArea('etiquetado', 'Etiquetado');
   try {
+    const { summarizePackPlanProgress } = await import('@/lib/labelingPackPlan');
+    const { labelingUnitsForProductivity } = await import('@/lib/labelingProductivity');
+
     const day = new Date(`${dayKey}T12:00:00`);
     const result = await getLabelingHistoricalData({ from: day, to: day });
     if (!result.success || !result.data) return area;
 
-    const { summary, employeePerformance } = result.data;
-    area.units = summary.totalUnits || 0;
+    const { summary, employeePerformance, operations } = result.data;
+
+    // Base histórica: solo FINISH (completadas).
+    const finishUnits = summary.totalUnits || 0;
+
+    // LIVE: tareas pack_units abiertas hoy (En Progreso / Pausada).
+    const activeOps = (operations || []).filter(
+      (op) => op.status === 'En Progreso' || op.status === 'Pausada'
+    );
+    const packActive = activeOps.filter(
+      (op) => op.trackingMode === 'pack_units' && (op.labelingPackPlan?.length || 0) > 0
+    );
+
+    let liveUnits = 0;
+    let confirmedBoxes = 0;
+    let totalBoxes = 0;
+    for (const op of packActive) {
+      liveUnits += Number(op.completedUnitsLive) || 0;
+      const prog = summarizePackPlanProgress(op.labelingPackPlan);
+      confirmedBoxes += prog.confirmedBoxes;
+      totalBoxes += prog.totalBoxes;
+    }
+
+    // Refs finalizadas hoy sin seguimiento por caja (legacy_finish / sin trackingMode).
+    const legacyRefsDone = new Set(
+      (operations || [])
+        .filter(
+          (op) =>
+            op.status === 'Completada' &&
+            op.trackingMode !== 'pack_units' &&
+            (isSameLocalDay(op.updatedAt, dayKey) || isSameLocalDay(op.createdAt, dayKey))
+        )
+        .map((op) => `${op.receptionOperationId || ''}|${op.reference}`)
+    );
+
+    // Refs finalizadas pack_units (sesión cerrada hoy).
+    const packRefsDone = new Set(
+      (operations || [])
+        .filter(
+          (op) =>
+            op.status === 'Completada' &&
+            op.trackingMode === 'pack_units' &&
+            (isSameLocalDay(op.updatedAt, dayKey) || isSameLocalDay(op.createdAt, dayKey))
+        )
+        .map((op) => `${op.receptionOperationId || ''}|${op.reference}`)
+    );
+
+    // Headline: finalizadas + progreso live (sin doble contar Completada).
+    area.units = finishUnits + liveUnits;
     area.operators = employeePerformance.length;
-    area.productivity = summary.conversionRate || summary.efficiency || 0;
+    const activeMinutes = summary.totalActiveMinutes || 0;
+    area.productivity =
+      activeMinutes > 0 ? area.units / (activeMinutes / 60) : summary.conversionRate || summary.efficiency || 0;
+
+    // Ranking: sumar und LIVE a operarios con tarea pack activa.
+    const liveByOperator = new Map<string, number>();
+    for (const op of packActive) {
+      const key = op.isExternal
+        ? op.assignedExternalOperatorName || op.assignedExternalVendorId || ''
+        : op.assignedOperatorId || '';
+      if (!key) continue;
+      liveByOperator.set(key, (liveByOperator.get(key) || 0) + labelingUnitsForProductivity(op));
+    }
+
     area.ranking = [...employeePerformance]
-      .sort((a, b) => b.efficiency - a.efficiency || b.totalUnits - a.totalUnits)
       .map((e) => {
+        const liveAdd = liveByOperator.get(e.id) || liveByOperator.get(e.name) || 0;
+        const units = (e.totalUnits || 0) + liveAdd;
+        const minutes = e.activeMinutes || 0;
+        const productivity = minutes > 0 ? units / (minutes / 60) : e.efficiency;
         const resolved =
           e.type === 'Interno' ? nameByUid.get(e.id) || nameByUid.get(e.name) || e.name : e.name;
         return {
           name: resolved,
-          units: e.totalUnits,
-          productivity: e.efficiency,
+          units,
+          productivity,
           meta: e.type,
         };
+      })
+      .sort((a, b) => b.productivity - a.productivity || b.units - a.units);
+
+    // Operarios solo en LIVE (aún sin FINISH en el día) → aparecer en ranking.
+    for (const op of packActive) {
+      const key = op.isExternal
+        ? op.assignedExternalOperatorName || op.assignedExternalVendorId || ''
+        : op.assignedOperatorId || '';
+      if (!key) continue;
+      const displayName = op.isExternal
+        ? op.assignedExternalOperatorName || key
+        : nameByUid.get(key) || key;
+      const already = area.ranking.some(
+        (r) => r.name === displayName || r.name === key
+      );
+      if (already) continue;
+      const units = labelingUnitsForProductivity(op);
+      if (units <= 0) continue;
+      area.ranking.push({
+        name: displayName,
+        units,
+        productivity: 0,
+        meta: op.isExternal ? 'Externo' : 'Interno',
       });
+      area.operators = Math.max(area.operators, area.ranking.length);
+    }
+    area.ranking.sort((a, b) => b.productivity - a.productivity || b.units - a.units);
+
     area.peopleKeys = employeePerformance.map((e) => {
       if (e.type === 'Interno' && e.id) return personKeyFromUid(e.id);
       return personKeyFromName(e.name || e.id, uidByNormName);
     });
+    for (const op of packActive) {
+      if (!op.isExternal && op.assignedOperatorId) {
+        area.peopleKeys.push(personKeyFromUid(op.assignedOperatorId));
+      } else if (op.assignedExternalOperatorName) {
+        area.peopleKeys.push(personKeyFromName(op.assignedExternalOperatorName, uidByNormName));
+      }
+    }
+
     area.extras = [
       { label: 'Interno', value: String(summary.internalUnits || 0) },
       { label: 'Externo', value: String(summary.externalUnits || 0) },
       {
         label: 'Horas prod.',
         value: `${((summary.totalActiveMinutes || 0) / 60).toFixed(1)} h`,
+      },
+      {
+        label: 'Und LIVE',
+        value: String(liveUnits),
+      },
+      {
+        label: 'Cajas',
+        value: totalBoxes > 0 ? `${confirmedBoxes}/${totalBoxes}` : '—',
+      },
+      {
+        label: 'Refs finalizadas',
+        value: String(legacyRefsDone.size + packRefsDone.size),
+      },
+      {
+        label: 'Refs legacy',
+        value: String(legacyRefsDone.size),
       },
     ];
   } catch (e) {

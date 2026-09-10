@@ -164,6 +164,18 @@ export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
                 {fmt(area.units)}
               </div>
               <div className="text-[0.9em] text-slate-400 font-semibold mb-[0.9em]">unidades hoy</div>
+              {area.key === 'etiquetado' ? (
+                <div className="mb-[0.75em] space-y-[0.25em] text-[0.95em] font-semibold text-slate-300">
+                  {(area.extras || [])
+                    .filter((ex) => ['Und LIVE', 'Cajas', 'Refs finalizadas'].includes(ex.label))
+                    .map((ex) => (
+                      <div key={ex.label} className="flex justify-between gap-[0.4em]">
+                        <span className="text-slate-500">{ex.label}</span>
+                        <span className="tabular-nums text-emerald-300">{ex.value}</span>
+                      </div>
+                    ))}
+                </div>
+              ) : null}
               <div className="mt-auto space-y-[0.55em] text-[1.15em]">
                 <div className="flex justify-between gap-[0.5em]">
                   <span className="text-slate-500 flex items-center gap-[0.35em]">
@@ -207,9 +219,20 @@ export function BodegaAreaDetailSlide({
   const showCompliance = area.key === 'empaque';
   const rankOffset = pageIndex * BODEGA_TV_PAGE_SIZE;
   const tvExtras = (area.extras || []).filter((ex) =>
-    ['Personas', 'Grupos', 'Jornada', 'Pausas', 'Horas', 'Horas prod.', 'Interno', 'Externo'].includes(
-      ex.label
-    )
+    [
+      'Personas',
+      'Grupos',
+      'Jornada',
+      'Pausas',
+      'Horas',
+      'Horas prod.',
+      'Interno',
+      'Externo',
+      'Und LIVE',
+      'Cajas',
+      'Refs finalizadas',
+      'Refs legacy',
+    ].includes(ex.label)
   );
 
   return (
