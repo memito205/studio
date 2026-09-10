@@ -237,6 +237,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ operations, productivit
                                           : ''
                                       }`
                                     : op.totalUnits.toLocaleString()}
+                                {op.trackingMode === 'pack_units' &&
+                                (op.status === 'En Progreso' || op.status === 'Pausada') ? (
+                                  <div className="text-[10px] text-emerald-700">LIVE</div>
+                                ) : null}
                             </TableCell>
                             <TableCell>{op.standard_units_per_hour || 'N/A'}</TableCell>
                             <TableCell>{metrics ? `${metrics.productiveTimeMinutes.toFixed(0)} min` : '-'}</TableCell>
@@ -470,6 +474,30 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     recalculateProductivity(operations, allPulses);
   }, [allPulses, operations, recalculateProductivity]);
 
+  // KPIs live: refrescar tareas pack_units activas cada 30s
+  useEffect(() => {
+    const hasLivePack = operations.some(
+      (op) =>
+        op.trackingMode === 'pack_units' &&
+        (op.status === 'En Progreso' || op.status === 'Pausada')
+    );
+    if (!hasLivePack) return;
+    const id = window.setInterval(() => {
+      void fetchOperationsAndProductivity();
+    }, 30000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    operations
+      .filter(
+        (op) =>
+          op.trackingMode === 'pack_units' &&
+          (op.status === 'En Progreso' || op.status === 'Pausada')
+      )
+      .map((op) => op.id)
+      .join(','),
+  ]);
+
   const handleOpenDialog = async (
     operation: LabelingOperation,
     dialog: 'assign' | 'standard' | 'log' | 'quantity'
@@ -618,7 +646,11 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
             taskToFinish.assignedExternalOperatorName
         );
         if (result.success) {
-            toast({ title: 'Tarea Finalizada', description: `Se ha registrado el trabajo.` });
+            const residualNote =
+              result.residualCreated && result.residualBoxes
+                ? ` Remanente: ${result.residualBoxes} cajas → Pendiente.`
+                : '';
+            toast({ title: 'Tarea Finalizada', description: `Se ha registrado el trabajo.${residualNote}` });
             fetchOperationsAndProductivity();
         } else {
             toast({ variant: 'destructive', title: 'Error al Finalizar', description: result.error });

@@ -22,7 +22,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { FinishWorkDialog } from './FinishWorkDialog';
 import { computeLabelingProductivity } from '@/lib/labelingProductivity';
-import { ScrollArea } from './ui/scroll-area';
+import { summarizePackPlanProgress } from '@/lib/labelingPackPlan';
 
 
 interface ValidatedActionDialogProps {
@@ -184,10 +184,15 @@ const getStatusVariant = (status: LabelingOperationStatus) => {
 const PackUnitsPanel: React.FC<{
   operation: LabelingOperation;
   isSubmitting: boolean;
-  confirmingUnitId: string | null;
+  isConfirming: boolean;
   liveUh: number | null;
-  onConfirmUnit: (packingUnitId: string) => void;
-}> = ({ operation, isSubmitting, confirmingUnitId, liveUh, onConfirmUnit }) => {
+  onConfirmByEntry: (unitNumber: number, locationHint?: string) => void;
+}> = ({ operation, isSubmitting, isConfirming, liveUh, onConfirmByEntry }) => {
+  const [boxNumber, setBoxNumber] = useState('');
+  const [locationHint, setLocationHint] = useState('');
+  const [showLocation, setShowLocation] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+
   const plan = useMemo(
     () =>
       [...(operation.labelingPackPlan || [])].sort(
@@ -195,19 +200,54 @@ const PackUnitsPanel: React.FC<{
       ),
     [operation.labelingPackPlan]
   );
-  const confirmed = plan.filter((u) => u.confirmed).length;
-  const liveUnits = operation.completedUnitsLive ?? plan.filter((u) => u.confirmed).reduce((s, u) => s + (u.qty || 0), 0);
+  const progress = useMemo(() => summarizePackPlanProgress(plan), [plan]);
   const canConfirm = operation.status === 'En Progreso';
+
+  const locationOptions = useMemo(() => {
+    const n = Number(boxNumber);
+    if (!Number.isFinite(n) || n <= 0) return [];
+    return plan
+      .filter((u) => Number(u.unitNumber) === n && !u.confirmed)
+      .map((u) => u.locationName || u.locationId || '')
+      .filter(Boolean);
+  }, [boxNumber, plan]);
+
+  useEffect(() => {
+    setShowLocation(locationOptions.length > 1);
+    if (locationOptions.length <= 1) setLocationHint('');
+  }, [locationOptions.length]);
+
+  useEffect(() => {
+    setBoxNumber('');
+    setLocationHint('');
+    setLocalError(null);
+  }, [progress.confirmedBoxes]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setLocalError(null);
+    const n = Number(boxNumber);
+    if (!Number.isFinite(n) || n <= 0) {
+      setLocalError('Ingrese el número de caja.');
+      return;
+    }
+    if (locationOptions.length > 1 && !locationHint.trim()) {
+      setLocalError('Hay varias cajas con ese #. Elija la ubicación.');
+      setShowLocation(true);
+      return;
+    }
+    onConfirmByEntry(n, locationHint.trim() || undefined);
+  };
 
   return (
     <div className="rounded-md border bg-muted/30 p-3 space-y-2">
       <div className="flex items-center justify-between gap-2 text-sm">
         <span className="font-medium flex items-center gap-1">
           <Package className="h-4 w-4" />
-          Cajas {confirmed}/{plan.length}
+          Cajas {progress.confirmedBoxes}/{progress.totalBoxes}
         </span>
         <span className="text-muted-foreground">
-          {liveUnits.toLocaleString()} / {operation.totalUnits.toLocaleString()} und
+          {progress.confirmedUnits.toLocaleString()} / {operation.totalUnits.toLocaleString()} und
         </span>
       </div>
       {liveUh != null && operation.status !== 'Asignada' && operation.status !== 'Pendiente' ? (
@@ -222,43 +262,64 @@ const PackUnitsPanel: React.FC<{
       {!canConfirm && operation.status === 'Pausada' ? (
         <p className="text-[11px] text-amber-700">Reanude para confirmar cajas. El reloj productivo está en pausa.</p>
       ) : null}
-      <ScrollArea className="max-h-40">
-        <ul className="space-y-1.5 pr-2">
-          {plan.map((unit) => (
-            <li
-              key={unit.packingUnitId}
-              className="flex items-center justify-between gap-2 text-xs rounded border bg-background px-2 py-1.5"
-            >
-              <div className="min-w-0">
-                <div className="font-medium truncate">
-                  Caja #{unit.unitNumber} · {unit.qty} und
-                </div>
-                <div className="text-muted-foreground truncate">
-                  {unit.locationName || unit.locationId || 'Sin ubicación'}
-                </div>
-              </div>
-              {unit.confirmed ? (
-                <Badge variant="success" className="shrink-0">OK</Badge>
-              ) : (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7 shrink-0"
-                  disabled={!canConfirm || isSubmitting || confirmingUnitId === unit.packingUnitId}
-                  onClick={() => onConfirmUnit(unit.packingUnitId)}
-                >
-                  {confirmingUnitId === unit.packingUnitId ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    'Confirmar'
-                  )}
-                </Button>
-              )}
-            </li>
-          ))}
-        </ul>
-      </ScrollArea>
+
+      {canConfirm ? (
+        <form onSubmit={handleSubmit} className="space-y-2 pt-1">
+          <p className="text-[11px] text-muted-foreground">
+            Digite el # de caja (y ubicación solo si hay más de una con el mismo #).
+          </p>
+          <div className="flex gap-2">
+            <Input
+              type="number"
+              inputMode="numeric"
+              placeholder="# caja"
+              className="h-9"
+              value={boxNumber}
+              onChange={(e) => {
+                setBoxNumber(e.target.value);
+                setLocalError(null);
+              }}
+              disabled={isSubmitting || isConfirming}
+              min={1}
+            />
+            <Button type="submit" size="sm" className="h-9 shrink-0" disabled={isSubmitting || isConfirming || !boxNumber}>
+              {isConfirming ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Confirmar'}
+            </Button>
+          </div>
+          {showLocation || locationOptions.length > 1 ? (
+            <div className="space-y-1">
+              <Label className="text-[11px]">Ubicación</Label>
+              <Select value={locationHint || undefined} onValueChange={setLocationHint}>
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="Seleccione ubicación..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {locationOptions.map((loc) => (
+                    <SelectItem key={loc} value={loc}>{loc}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+          {localError ? <p className="text-[11px] text-destructive">{localError}</p> : null}
+        </form>
+      ) : null}
+
+      {progress.confirmedBoxes > 0 ? (
+        <div className="text-[11px] text-muted-foreground">
+          Últimas OK:{' '}
+          {plan
+            .filter((u) => u.confirmed)
+            .slice(-4)
+            .map((u) => `#${u.unitNumber}`)
+            .join(', ')}
+          {progress.pendingBoxes > 0 ? ` · pendientes ${progress.pendingBoxes}` : ' · todas confirmadas'}
+        </div>
+      ) : (
+        <div className="text-[11px] text-muted-foreground">
+          {progress.pendingBoxes} cajas pendientes · no se muestra lista clicable
+        </div>
+      )}
     </div>
   );
 };
@@ -267,11 +328,11 @@ const OperatorTaskCard: React.FC<{
     operation: LabelingOperation; 
     onAction: (opId: string, action: 'START' | 'PAUSE' | 'RESUME' | 'FINISH', reason?: string) => void;
     onOpenFinishDialog: (operation: LabelingOperation) => void;
-    onConfirmPackUnit: (operation: LabelingOperation, packingUnitId: string) => void;
-    confirmingUnitId: string | null;
+    onConfirmPackEntry: (operation: LabelingOperation, unitNumber: number, locationHint?: string) => void;
+    isConfirming: boolean;
     liveUh: number | null;
     isSubmitting: boolean; 
-}> = ({ operation, onAction, onOpenFinishDialog, onConfirmPackUnit, confirmingUnitId, liveUh, isSubmitting }) => {
+}> = ({ operation, onAction, onOpenFinishDialog, onConfirmPackEntry, isConfirming, liveUh, isSubmitting }) => {
     const isPackMode =
       operation.trackingMode === 'pack_units' &&
       (operation.labelingPackPlan?.length || 0) > 0;
@@ -304,9 +365,11 @@ const OperatorTaskCard: React.FC<{
                   <PackUnitsPanel
                     operation={operation}
                     isSubmitting={isSubmitting}
-                    confirmingUnitId={confirmingUnitId}
+                    isConfirming={isConfirming}
                     liveUh={liveUh}
-                    onConfirmUnit={(packingUnitId) => onConfirmPackUnit(operation, packingUnitId)}
+                    onConfirmByEntry={(unitNumber, locationHint) =>
+                      onConfirmPackEntry(operation, unitNumber, locationHint)
+                    }
                   />
                 ) : null}
             </CardContent>
@@ -363,12 +426,13 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
         actionType: 'START' | 'PAUSE' | 'RESUME' | 'FINISH' | 'UNIT_COMPLETE', 
         reason?: string,
         completedUnits?: number,
-        packingUnitId?: string,
+        unitNumber?: number,
+        locationHint?: string,
     } | null>(null);
     const [actionLabel, setActionLabel] = useState('');
     const [isPauseReasonDialogOpen, setIsPauseReasonDialogOpen] = useState(false);
     const [pausePendingOpId, setPausePendingOpId] = useState<string | null>(null);
-    const [confirmingUnitId, setConfirmingUnitId] = useState<string | null>(null);
+    const [isConfirmingPack, setIsConfirmingPack] = useState(false);
     const [activityByOp, setActivityByOp] = useState<Record<string, LabelingActivityLog[]>>({});
     const [tick, setTick] = useState(0);
     
@@ -504,8 +568,13 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
         
         if (pendingAction.actionType === 'FINISH' && pendingAction.completedUnits !== undefined) {
             performFinish(pendingAction.operationId, pendingAction.completedUnits, pin);
-        } else if (pendingAction.actionType === 'UNIT_COMPLETE' && pendingAction.packingUnitId) {
-            performConfirmPackUnit(pendingAction.operationId, pendingAction.packingUnitId, pin);
+        } else if (pendingAction.actionType === 'UNIT_COMPLETE' && pendingAction.unitNumber != null) {
+            performConfirmPackEntry(
+              pendingAction.operationId,
+              pendingAction.unitNumber,
+              pendingAction.locationHint,
+              pin
+            );
         } else {
             handleAction(pendingAction.operationId, pendingAction.actionType as 'START' | 'PAUSE' | 'RESUME' | 'FINISH', pendingAction.reason, pin);
         }
@@ -564,7 +633,11 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
             externalVendor?.operatorName
         );
         if (result.success) {
-            toast({ title: 'Tarea Finalizada', description: `Se ha registrado el trabajo.` });
+            const residualNote =
+              result.residualCreated && result.residualBoxes
+                ? ` Remanente: ${result.residualBoxes} cajas → Pendiente.`
+                : '';
+            toast({ title: 'Tarea Finalizada', description: `Se ha registrado el trabajo.${residualNote}` });
             handleRefresh();
         } else {
             toast({ variant: 'destructive', title: 'Error al Finalizar', description: result.error });
@@ -574,31 +647,36 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
         setTaskToFinish(null);
     };
 
-    const handleConfirmPackUnit = (operation: LabelingOperation, packingUnitId: string) => {
+    const handleConfirmPackEntry = (
+      operation: LabelingOperation,
+      unitNumber: number,
+      locationHint?: string
+    ) => {
       if (isExternalPortal) {
-        const unit = operation.labelingPackPlan?.find((u) => u.packingUnitId === packingUnitId);
         setPendingAction({
           operationId: operation.id,
           actionType: 'UNIT_COMPLETE',
-          packingUnitId,
+          unitNumber,
+          locationHint,
         });
-        setActionLabel(`CONFIRMAR CAJA #${unit?.unitNumber ?? ''}`);
+        setActionLabel(`CONFIRMAR CAJA #${unitNumber}`);
         setIsPinDialogOpen(true);
         return;
       }
-      void performConfirmPackUnit(operation.id, packingUnitId);
+      void performConfirmPackEntry(operation.id, unitNumber, locationHint);
     };
 
-    const performConfirmPackUnit = async (
+    const performConfirmPackEntry = async (
       operationId: string,
-      packingUnitId: string,
+      unitNumber: number,
+      locationHint?: string,
       providedPin?: string
     ) => {
-      setConfirmingUnitId(packingUnitId);
+      setIsConfirmingPack(true);
       setIsSubmitting(true);
       const result = await confirmLabelingPackUnit(
         operationId,
-        packingUnitId,
+        { unitNumber, locationHint },
         isExternalPortal,
         providedPin,
         externalVendor?.operatorName
@@ -614,10 +692,14 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
           setActivityByOp((prev) => ({ ...prev, [operationId]: logRes.data! }));
         }
       } else {
-        toast({ variant: 'destructive', title: 'No se confirmó la caja', description: result.error });
+        toast({
+          variant: 'destructive',
+          title: result.needsLocation ? 'Indique ubicación' : 'No se confirmó la caja',
+          description: result.error,
+        });
       }
       setIsSubmitting(false);
-      setConfirmingUnitId(null);
+      setIsConfirmingPack(false);
     };
 
     if (isLoading) {
@@ -657,8 +739,8 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
                         operation={op} 
                         onAction={initiateAction} 
                         onOpenFinishDialog={handleOpenFinishDialog}
-                        onConfirmPackUnit={handleConfirmPackUnit}
-                        confirmingUnitId={confirmingUnitId}
+                        onConfirmPackEntry={handleConfirmPackEntry}
+                        isConfirming={isConfirmingPack}
                         liveUh={liveUhByOp.get(op.id) ?? null}
                         isSubmitting={isSubmitting} 
                     />

@@ -2669,16 +2669,23 @@ export async function finishLabelingTaskSession(
   isExternal: boolean = false,
   providedPin?: string,
   externalOperatorName?: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; residualCreated?: boolean; residualBoxes?: number }> {
   try {
+    let residualCreated = false;
+    let residualBoxes = 0;
+
     await runTransaction(firestore, async (transaction) => {
+      const { stripUndefinedDeep, summarizePackPlanProgress } = await import('@/lib/labelingPackPlan');
       const operationRef = doc(firestore, 'labelingOperations', operationId);
       const operationDoc = await transaction.get(operationRef);
       if (!operationDoc.exists()) {
         throw new Error("La tarea de etiquetado no fue encontrada.");
       }
 
-      const operationData = operationDoc.data() as LabelingOperation;
+      const operationData = {
+        id: operationDoc.id,
+        ...convertTimestampsToDates(operationDoc.data()),
+      } as LabelingOperation;
 
       // PIN validation for external workers
       if (isExternal) {
@@ -2696,16 +2703,45 @@ export async function finishLabelingTaskSession(
           }
       }
 
-      if (completedUnits > operationData.totalUnits) {
+      const isPackMode =
+        operationData.trackingMode === 'pack_units' &&
+        (operationData.labelingPackPlan?.length || 0) > 0;
+
+      let finalCompletedUnits = completedUnits;
+      let residualPlan: import('@/types').LabelingPackUnit[] | undefined;
+
+      if (isPackMode) {
+        const progress = summarizePackPlanProgress(operationData.labelingPackPlan);
+        if (progress.confirmedBoxes === 0) {
+          throw new Error('Confirme al menos una caja antes de finalizar, o pause la tarea.');
+        }
+        finalCompletedUnits = progress.confirmedUnits;
+        if (progress.pendingBoxes > 0) {
+          residualPlan = progress.pending.map((u) =>
+            stripUndefinedDeep({
+              ...u,
+              confirmed: false,
+              confirmedAt: undefined,
+            })
+          );
+          residualBoxes = residualPlan.length;
+        }
+      } else if (completedUnits > operationData.totalUnits) {
         throw new Error("La cantidad completada no puede ser mayor a la cantidad total de la tarea.");
       }
 
       // 1. Update the current task
-      transaction.update(operationRef, {
-        status: 'Completada',
-        completedUnits: completedUnits,
-        updatedAt: Timestamp.now(),
-      });
+      transaction.update(
+        operationRef,
+        convertDatesToTimestamps(
+          stripUndefinedDeep({
+            status: 'Completada',
+            completedUnits: finalCompletedUnits,
+            ...(isPackMode ? { completedUnitsLive: finalCompletedUnits } : {}),
+            updatedAt: new Date().toISOString(),
+          })
+        )
+      );
       
       // Log the FINISH event
       const logCollectionRef = collection(firestore, 'labelingOperations', operationId, 'activityLog');
@@ -2715,32 +2751,62 @@ export async function finishLabelingTaskSession(
           operatorId: isExternal ? operationData.assignedExternalVendorId! : (operationData.assignedOperatorId || 'system'),
           type: 'FINISH',
           timestamp: new Date().toISOString(),
-          completedUnits: completedUnits,
+          completedUnits: finalCompletedUnits,
           isExternal: !!isExternal,
           ...(externalOperatorName && { externalOperatorName })
       };
       transaction.set(newLogDocRef, convertDatesToTimestamps(logEntry));
 
 
-      // 2. Create a residual task if needed
-      const remainingUnits = operationData.totalUnits - completedUnits;
-      if (remainingUnits > 0) {
+      // 2. Residual task
+      if (isPackMode && residualPlan && residualPlan.length > 0) {
+        const pendingUnits = residualPlan.reduce((s, u) => s + (Number(u.qty) || 0), 0);
         const newDocRef = doc(collection(firestore, 'labelingOperations'));
-        const residualTask: Omit<LabelingOperation, 'id'> = {
-          ...operationData,
-          totalUnits: remainingUnits,
-          completedUnits: 0,
-          status: 'Pendiente',
-          assignedOperatorId: '', // Unassign it
+        const residualTask = stripUndefinedDeep({
+          receptionOperationId: operationData.receptionOperationId,
+          rk_identifier: operationData.rk_identifier,
+          supplier: operationData.supplier,
+          reference: operationData.reference,
+          sizes: operationData.sizes,
+          totalUnits: pendingUnits,
+          status: 'Pendiente' as const,
+          assignedOperatorId: '',
+          assignedExternalVendorId: undefined,
+          assignedExternalOperatorName: undefined,
+          isExternal: false,
+          standard_units_per_hour: operationData.standard_units_per_hour,
           parentTaskId: operationId,
+          completedUnits: 0,
+          trackingMode: 'pack_units' as const,
+          labelingPackPlan: residualPlan,
+          packPlanLoadedAt: new Date().toISOString(),
+          completedUnitsLive: 0,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
-        };
+        });
         transaction.set(newDocRef, convertDatesToTimestamps(residualTask));
+        residualCreated = true;
+      } else if (!isPackMode) {
+        const remainingUnits = operationData.totalUnits - finalCompletedUnits;
+        if (remainingUnits > 0) {
+          const newDocRef = doc(collection(firestore, 'labelingOperations'));
+          const residualTask: Omit<LabelingOperation, 'id'> = {
+            ...operationData,
+            totalUnits: remainingUnits,
+            completedUnits: 0,
+            status: 'Pendiente',
+            assignedOperatorId: '',
+            parentTaskId: operationId,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          transaction.set(newDocRef, convertDatesToTimestamps(residualTask));
+          residualCreated = true;
+        }
       }
     });
 
-    return { success: true };
+    return { success: true, residualCreated, residualBoxes };
   } catch (error: any) {
     console.error("Error finishing labeling task session:", error);
     return { success: false, error: error.message };
@@ -2748,13 +2814,18 @@ export async function finishLabelingTaskSession(
 }
 
 /**
- * Fase 4: confirma una caja del plan (solo tareas pack_units en En Progreso).
- * No cambia el estado de la tarea; incrementa completedUnitsLive y registra UNIT_COMPLETE.
- * Las pausas siguen vía logLabelingActivity (PAUSE/RESUME).
+ * Confirma una caja del plan (pack_units, En Progreso).
+ * UX C: preferir unitNumber (+ locationHint si hay ambigüedad); packingUnitId sigue válido.
  */
 export async function confirmLabelingPackUnit(
   operationId: string,
-  packingUnitId: string,
+  packingUnitIdOrLookup:
+    | string
+    | {
+        packingUnitId?: string;
+        unitNumber?: number;
+        locationHint?: string;
+      },
   isExternal: boolean = false,
   providedPin?: string,
   externalOperatorName?: string
@@ -2764,13 +2835,20 @@ export async function confirmLabelingPackUnit(
   completedUnitsLive?: number;
   confirmedBoxes?: number;
   totalBoxes?: number;
+  needsLocation?: boolean;
+  candidateLocations?: string[];
 }> {
   try {
-    if (!operationId || !packingUnitId) {
-      return { success: false, error: 'Tarea y caja requeridas.' };
+    if (!operationId) {
+      return { success: false, error: 'Tarea requerida.' };
     }
 
-    const { stripUndefinedDeep } = await import('@/lib/labelingPackPlan');
+    const lookup =
+      typeof packingUnitIdOrLookup === 'string'
+        ? { packingUnitId: packingUnitIdOrLookup }
+        : packingUnitIdOrLookup || {};
+
+    const { stripUndefinedDeep, resolvePackUnitFromPlan } = await import('@/lib/labelingPackPlan');
 
     let completedUnitsLive = 0;
     let confirmedBoxes = 0;
@@ -2819,11 +2897,21 @@ export async function confirmLabelingPackUnit(
         ? [...operationData.labelingPackPlan]
         : [];
       totalBoxes = plan.length;
-      const idx = plan.findIndex((u) => u.packingUnitId === packingUnitId);
-      if (idx < 0) throw new Error('Caja no encontrada en el plan de esta tarea.');
-      const unit = plan[idx];
-      if (unit.confirmed) throw new Error('Esta caja ya fue confirmada.');
 
+      const resolved = resolvePackUnitFromPlan(plan, lookup);
+      if (!resolved.ok) {
+        const err = new Error(resolved.error) as Error & {
+          needsLocation?: boolean;
+          candidateLocations?: string[];
+        };
+        err.needsLocation = resolved.needsLocation;
+        err.candidateLocations = (resolved.candidates || [])
+          .map((c) => c.locationName || c.locationId || '')
+          .filter(Boolean);
+        throw err;
+      }
+
+      const { unit, index: idx } = resolved;
       const nowIso = new Date().toISOString();
       plan[idx] = stripUndefinedDeep({
         ...unit,
@@ -2872,7 +2960,12 @@ export async function confirmLabelingPackUnit(
     return { success: true, completedUnitsLive, confirmedBoxes, totalBoxes };
   } catch (error: any) {
     console.error('confirmLabelingPackUnit:', error);
-    return { success: false, error: error?.message || 'No se pudo confirmar la caja.' };
+    return {
+      success: false,
+      error: error?.message || 'No se pudo confirmar la caja.',
+      needsLocation: Boolean(error?.needsLocation),
+      candidateLocations: error?.candidateLocations,
+    };
   }
 }
 

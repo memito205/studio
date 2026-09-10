@@ -42,6 +42,112 @@ export function toLabelingPackPlan(
     );
 }
 
+export type ConfirmPackUnitLookup = {
+  packingUnitId?: string;
+  unitNumber?: number;
+  /** Coincide con locationName o locationId (parcial, case-insensitive). */
+  locationHint?: string;
+};
+
+function normLoc(s?: string | null): string {
+  return String(s || '')
+    .trim()
+    .toLowerCase();
+}
+
+function locationMatches(unit: LabelingPackUnit, hint: string): boolean {
+  const h = normLoc(hint);
+  if (!h) return true;
+  const name = normLoc(unit.locationName);
+  const id = normLoc(unit.locationId);
+  return (name && (name === h || name.includes(h))) || (id && (id === h || id.includes(h)));
+}
+
+/**
+ * Resuelve una caja del plan para confirmación (UX C: digitar #; ubicación si hay ambigüedad).
+ */
+export function resolvePackUnitFromPlan(
+  plan: LabelingPackUnit[],
+  input: ConfirmPackUnitLookup
+):
+  | { ok: true; unit: LabelingPackUnit; index: number }
+  | { ok: false; error: string; needsLocation?: boolean; candidates?: LabelingPackUnit[] } {
+  if (!plan.length) {
+    return { ok: false, error: 'Esta tarea no tiene plan de cajas.' };
+  }
+
+  if (input.packingUnitId) {
+    const index = plan.findIndex((u) => u.packingUnitId === input.packingUnitId);
+    if (index < 0) return { ok: false, error: 'Caja no encontrada en el plan.' };
+    const unit = plan[index];
+    if (unit.confirmed) return { ok: false, error: 'Esta caja ya fue confirmada.' };
+    return { ok: true, unit, index };
+  }
+
+  const unitNumber = Number(input.unitNumber);
+  if (!Number.isFinite(unitNumber) || unitNumber <= 0) {
+    return { ok: false, error: 'Ingrese el número de caja.' };
+  }
+
+  const byNumber = plan.filter((u) => Number(u.unitNumber) === unitNumber);
+  if (byNumber.length === 0) {
+    return { ok: false, error: `No hay caja #${unitNumber} en esta tarea.` };
+  }
+
+  const pending = byNumber.filter((u) => !u.confirmed);
+  if (pending.length === 0) {
+    return { ok: false, error: `La caja #${unitNumber} ya fue confirmada.` };
+  }
+
+  const hint = String(input.locationHint || '').trim();
+  if (pending.length > 1 && !hint) {
+    return {
+      ok: false,
+      error: `Hay ${pending.length} cajas #${unitNumber}. Indique la ubicación.`,
+      needsLocation: true,
+      candidates: pending,
+    };
+  }
+
+  const matched = hint ? pending.filter((u) => locationMatches(u, hint)) : pending;
+  if (matched.length === 0) {
+    return {
+      ok: false,
+      error: `No hay caja #${unitNumber} en esa ubicación.`,
+      needsLocation: true,
+      candidates: pending,
+    };
+  }
+  if (matched.length > 1) {
+    return {
+      ok: false,
+      error: `Varias cajas #${unitNumber} coinciden. Precise la ubicación.`,
+      needsLocation: true,
+      candidates: matched,
+    };
+  }
+
+  const unit = matched[0];
+  const index = plan.findIndex((u) => u.packingUnitId === unit.packingUnitId);
+  return { ok: true, unit, index };
+}
+
+/** Und / cajas confirmadas vs pendientes (Fase 5 finish). */
+export function summarizePackPlanProgress(plan: LabelingPackUnit[] | undefined | null) {
+  const list = Array.isArray(plan) ? plan : [];
+  const confirmed = list.filter((u) => u.confirmed);
+  const pending = list.filter((u) => !u.confirmed);
+  return {
+    totalBoxes: list.length,
+    confirmedBoxes: confirmed.length,
+    pendingBoxes: pending.length,
+    confirmedUnits: confirmed.reduce((s, u) => s + (Number(u.qty) || 0), 0),
+    pendingUnits: pending.reduce((s, u) => s + (Number(u.qty) || 0), 0),
+    confirmed,
+    pending,
+  };
+}
+
 type UnitMeta = {
   unitNumber: number;
   status: 'open' | 'closed';
