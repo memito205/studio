@@ -164,20 +164,26 @@ async function buildEmpaque(
 
     const withPackers = data.filter((r) => (r.packerProductivity?.length || 0) > 0);
     const pool = withPackers.length ? withPackers : data;
+    if (!pool.length) return area;
 
-    // KPIs agregados: consolidado más reciente / con más unidades; no el primero a ciegas.
+    // Un solo corte: el mismo que el usuario valida en histórico / último snapshot.
+    // (Antes se unían TODOS los cortes del día → und/cumpl. mezclados y no cuadraban.)
+    const snapshotMs = (r: (typeof pool)[number]) => {
+      const v = r.snapshotCreatedAt;
+      if (!v) return 0;
+      const t = v instanceof Date ? v.getTime() : new Date(v as string).getTime();
+      return Number.isFinite(t) ? t : 0;
+    };
     const ranked = [...pool].sort((a, b) => {
       const c = Number(!!b.isConsolidated) - Number(!!a.isConsolidated);
       if (c !== 0) return c;
-      const q = (b.totalQuantity || 0) - (a.totalQuantity || 0);
-      if (q !== 0) return q;
-      return (b.operatorCount || 0) - (a.operatorCount || 0);
+      const t = snapshotMs(b) - snapshotMs(a);
+      if (t !== 0) return t;
+      return (b.totalQuantity || 0) - (a.totalQuantity || 0);
     });
     const report = ranked[0];
     if (!report) return area;
 
-    // Personas: unión de cortes del día, fusionando cédula↔nombre vía maestro
-    // (evita fila duplicada y NO suma und de ambos: se queda con el mayor del día).
     const byPerson = new Map<
       string,
       {
@@ -188,55 +194,54 @@ async function buildEmpaque(
       }
     >();
 
-    const upsertPacker = (
-      rawLabel: string,
-      qty: number,
-      productivity: number,
-      compliance: number,
-      allowCreateZero: boolean
-    ) => {
-      const resolved = resolvePackerDisplayName(rawLabel, idToName, nameNormSet);
-      if (!resolved) return;
+    for (const p of report.packerProductivity || []) {
+      const raw = String(p.packerName || '').trim();
+      if (!raw) continue;
+      const resolved = resolvePackerDisplayName(raw, idToName, nameNormSet);
+      if (!resolved) continue;
       const key = normalizePersonLabel(resolved);
-      if (!key) return;
+      if (!key) continue;
       const prev = byPerson.get(key);
+      const qty = p.totalQuantity || 0;
       if (!prev) {
-        if (!allowCreateZero && qty <= 0) return;
         byPerson.set(key, {
           packerName: resolved,
           totalQuantity: qty,
-          productivity,
-          compliance,
+          productivity: p.productivity || 0,
+          compliance: p.compliance || 0,
         });
-        return;
+        continue;
       }
+      // Misma persona dos veces en el mismo corte (cédula + nombre): sumar und y
+      // quedarse con productividad/cumpl. del renglón con más und.
       const preferName =
         looksLikeDocumentId(prev.packerName) && !looksLikeDocumentId(resolved)
           ? resolved
           : prev.packerName;
-      if (qty > prev.totalQuantity) {
-        byPerson.set(key, {
-          packerName: preferName,
-          totalQuantity: qty,
-          productivity,
-          compliance,
-        });
-      } else if (preferName !== prev.packerName) {
-        byPerson.set(key, { ...prev, packerName: preferName });
-      }
-    };
+      const nextQty = prev.totalQuantity + qty;
+      const useNewMetrics = qty >= prev.totalQuantity;
+      byPerson.set(key, {
+        packerName: preferName,
+        totalQuantity: nextQty,
+        productivity: useNewMetrics ? p.productivity || 0 : prev.productivity,
+        compliance: useNewMetrics ? p.compliance || 0 : prev.compliance,
+      });
+    }
 
-    for (const r of pool) {
-      for (const p of r.packerProductivity || []) {
-        const name = String(p.packerName || '').trim();
-        if (!name) continue;
-        upsertPacker(name, p.totalQuantity || 0, p.productivity || 0, p.compliance || 0, true);
-      }
-      for (const n of r.operatorNames || []) {
-        const name = String(n || '').trim();
-        if (!name) continue;
-        upsertPacker(name, 0, 0, 0, true);
-      }
+    // Personas listadas en el corte sin fila de productividad.
+    for (const n of report.operatorNames || []) {
+      const raw = String(n || '').trim();
+      if (!raw) continue;
+      const resolved = resolvePackerDisplayName(raw, idToName, nameNormSet);
+      if (!resolved) continue;
+      const key = normalizePersonLabel(resolved);
+      if (!key || byPerson.has(key)) continue;
+      byPerson.set(key, {
+        packerName: resolved,
+        totalQuantity: 0,
+        productivity: 0,
+        compliance: 0,
+      });
     }
 
     const packers = [...byPerson.values()].sort((a, b) => {
@@ -244,12 +249,18 @@ async function buildEmpaque(
       return b.productivity - a.productivity;
     });
 
-    // Und de área = un solo corte (no suma del ranking fusionado).
-    area.units = report.totalQuantity || packers.reduce((s, p) => s + (p.totalQuantity || 0), 0);
+    const rankingUnits = packers.reduce((s, p) => s + (p.totalQuantity || 0), 0);
+    // Preferir total del snapshot; si falta, suma del ranking (mismo corte).
+    area.units = Number(report.totalQuantity) > 0 ? Number(report.totalQuantity) : rankingUnits;
     area.operators = packers.length || report.operatorCount || 0;
-    area.productivity = report.avgProductivity || 0;
+    area.productivity =
+      Number(report.avgProductivity) > 0
+        ? Number(report.avgProductivity)
+        : report.totalHours > 0
+          ? area.units / report.totalHours
+          : 0;
     {
-      const weight = packers.reduce((s, p) => s + (p.totalQuantity || 0), 0);
+      const weight = rankingUnits;
       area.compliance =
         weight > 0
           ? packers.reduce((s, p) => s + (p.compliance || 0) * (p.totalQuantity || 0), 0) / weight
@@ -262,10 +273,17 @@ async function buildEmpaque(
       compliance: p.compliance,
     }));
     area.peopleKeys = packers.map((p) => personKeyFromName(p.packerName, uidByNormName));
+
+    const snapLabel = (() => {
+      const t = snapshotMs(report);
+      if (!t) return report.isConsolidated ? 'Consolidado' : 'Último corte del día';
+      return `${report.isConsolidated ? 'Consolidado' : 'Corte'} ${format(new Date(t), 'HH:mm')}`;
+    })();
+
     area.extras = [
       { label: 'Horas', value: `${(report.totalHours || 0).toFixed(1)} h` },
-      { label: 'Fuente', value: report.isConsolidated ? 'Consolidado' : 'Mejor corte del día' },
-      { label: 'Pers. (unión día)', value: String(area.operators) },
+      { label: 'Fuente', value: snapLabel },
+      { label: 'Pers.', value: String(area.operators) },
     ];
   } catch (e) {
     console.error('bodegaTv empaque:', e);
