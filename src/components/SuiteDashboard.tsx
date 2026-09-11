@@ -379,6 +379,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Abrir Modo TV",
             onAction: () => window.open('/tv-bodega', '_blank'),
             roles: ['admin']
+        },
+        {
+            key: 'externos_tv',
+            icon: Tv,
+            title: "Monitor Live Externos",
+            description: "Kiosk con Tallado y Etiquetado Externo del día, para proyección en TV de personal externo.",
+            actionText: "Abrir Monitor",
+            onAction: () => window.open('/tv-bodega-externos', '_blank'),
+            roles: ['admin', 'supervisor', 'external_operator']
         }
     ];
 
@@ -394,10 +403,13 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     if (normalizedRole === 'tiendas') {
       visibleModules = modules.filter((module) => module.key === 'tf_platform_lookup');
     }
-    // Perfil restringido: Portal etiquetado externo + Tallado de mercancía
+    // Perfil restringido: Tallado + Portal etiquetado externo + Monitor Live Externos
     if (normalizedRole === 'external_operator') {
       visibleModules = modules.filter(
-        (module) => module.key === 'tallado_mercancia' || module.key === 'external_portal'
+        (module) =>
+          module.key === 'tallado_mercancia' ||
+          module.key === 'external_portal' ||
+          module.key === 'externos_tv'
       );
     }
 

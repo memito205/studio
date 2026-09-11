@@ -109,14 +109,20 @@ function RankTable({
 }
 
 export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
+  const isExternos = data.mode === 'externos';
+  const areaCols =
+    data.areas.length <= 2 ? 'grid-cols-2' : data.areas.length === 3 ? 'grid-cols-3' : 'grid-cols-4';
+
   return (
     <div className="w-full h-full flex flex-col min-h-0">
       <h2 className="text-[1.85em] font-black tracking-tight text-slate-100 mb-[0.35em] flex items-center gap-[0.55em] leading-none">
         <Trophy className="w-[1.1em] h-[1.1em] text-amber-400 shrink-0" />
-        Resumen operación bodega · Hoy
+        {isExternos ? 'Resumen externos · Hoy' : 'Resumen operación bodega · Hoy'}
       </h2>
       <p className="text-[0.85em] text-slate-500 font-semibold mb-[1em] leading-snug">
-        Recursos = personas únicas · Cumplimiento = promedio ponderado por und
+        {isExternos
+          ? 'Tallado + Etiquetado Externo · Recursos = personas únicas'
+          : 'Recursos = personas únicas · Cumplimiento = promedio ponderado por und'}
       </p>
 
       <div className="grid grid-cols-3 gap-[1.1em] mb-[1.2em] shrink-0">
@@ -146,7 +152,7 @@ export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-[1em] flex-1 min-h-0">
+      <div className={`grid ${areaCols} gap-[1em] flex-1 min-h-0`}>
         {data.areas.map((area) => {
           const Icon = AREA_ICON[area.key];
           const etiquetadoExtras = (area.extras || []).filter((ex) =>

@@ -5,7 +5,7 @@ import { Clock, RefreshCw } from 'lucide-react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { getBodegaTvSnapshot } from '@/app/bodegaTvActions';
-import type { BodegaTvSnapshot } from '@/lib/bodegaTvTypes';
+import type { BodegaTvMode, BodegaTvSnapshot } from '@/lib/bodegaTvTypes';
 import {
   BodegaAreaDetailSlide,
   BodegaOverviewSlide,
@@ -17,7 +17,7 @@ import {
 const SLIDE_DURATION_MS = 7000;
 const DATA_SYNC_INTERVAL = 45 * 1000;
 
-export default function BodegaTvBoard() {
+export default function BodegaTvBoard({ mode = 'full' }: { mode?: BodegaTvMode }) {
   const [data, setData] = useState<BodegaTvSnapshot | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
@@ -27,7 +27,7 @@ export default function BodegaTvBoard() {
   const fetchSnapshot = useCallback(async () => {
     setIsLoading(true);
     try {
-      const result = await getBodegaTvSnapshot();
+      const result = await getBodegaTvSnapshot({ mode });
       if (result.success && result.data) {
         setData(result.data);
         setError(null);
@@ -41,7 +41,7 @@ export default function BodegaTvBoard() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
     fetchSnapshot();
@@ -53,26 +53,28 @@ export default function BodegaTvBoard() {
     if (!data) return [] as React.ReactNode[];
     const nodes: React.ReactNode[] = [<BodegaOverviewSlide key="overview" data={data} />];
 
-    // Físico vs Distribución justo después del resumen (siempre en rotación, aunque esté vacío).
-    const assignments = data.remainderAssignments || [];
-    const remainderPages =
-      assignments.length === 0 ? 1 : Math.max(1, Math.ceil(assignments.length / REMAINDER_PAGE_SIZE));
-    for (let pageIndex = 0; pageIndex < remainderPages; pageIndex++) {
-      const pageRows =
-        assignments.length === 0
-          ? []
-          : assignments.slice(
-              pageIndex * REMAINDER_PAGE_SIZE,
-              pageIndex * REMAINDER_PAGE_SIZE + REMAINDER_PAGE_SIZE
-            );
-      nodes.push(
-        <BodegaRemainderAssignmentsSlide
-          key={`remainder-p${pageIndex}`}
-          rows={pageRows}
-          pageIndex={pageIndex}
-          pageCount={remainderPages}
-        />
-      );
+    // Remanentes solo en TV completa (no en monitor de externos).
+    if (mode === 'full') {
+      const assignments = data.remainderAssignments || [];
+      const remainderPages =
+        assignments.length === 0 ? 1 : Math.max(1, Math.ceil(assignments.length / REMAINDER_PAGE_SIZE));
+      for (let pageIndex = 0; pageIndex < remainderPages; pageIndex++) {
+        const pageRows =
+          assignments.length === 0
+            ? []
+            : assignments.slice(
+                pageIndex * REMAINDER_PAGE_SIZE,
+                pageIndex * REMAINDER_PAGE_SIZE + REMAINDER_PAGE_SIZE
+              );
+        nodes.push(
+          <BodegaRemainderAssignmentsSlide
+            key={`remainder-p${pageIndex}`}
+            rows={pageRows}
+            pageIndex={pageIndex}
+            pageCount={remainderPages}
+          />
+        );
+      }
     }
 
     for (const area of data.areas) {
@@ -96,7 +98,7 @@ export default function BodegaTvBoard() {
     }
 
     return nodes;
-  }, [data]);
+  }, [data, mode]);
 
   useEffect(() => {
     if (slides.length <= 1) return;
@@ -114,6 +116,13 @@ export default function BodegaTvBoard() {
     });
   }, [slides.length]);
 
+  const isExternos = mode === 'externos';
+  const titleAccent = isExternos ? 'text-violet-400' : 'text-emerald-400';
+  const badgeClass = isExternos
+    ? 'bg-violet-500/15 border-violet-500/30 text-violet-300'
+    : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300';
+  const syncAccent = isExternos ? 'text-violet-400' : 'text-emerald-400';
+
   return (
     <div
       className="bodega-tv-root h-[100dvh] w-[100dvw] overflow-hidden bg-slate-950 text-slate-100 font-sans flex flex-col"
@@ -125,13 +134,19 @@ export default function BodegaTvBoard() {
     >
       <header className="flex justify-between items-center shrink-0 px-[2.2vmin] pt-[1.6vmin] pb-[1.2vmin] gap-[2vmin]">
         <div className="flex items-center gap-[1.4vmin] min-w-0">
-          <h1 className="text-[2.6em] font-black tracking-tight text-emerald-400 whitespace-nowrap leading-none">
-            BODEGA<span className="text-white font-light ml-[0.35em]">LIVE</span>
-          </h1>
+          {isExternos ? (
+            <h1 className="text-[2.2em] font-black tracking-tight text-white whitespace-nowrap leading-none">
+              MONITOR LIVE <span className={`${titleAccent} font-black`}>EXTERNOS</span>
+            </h1>
+          ) : (
+            <h1 className="text-[2.6em] font-black tracking-tight text-emerald-400 whitespace-nowrap leading-none">
+              BODEGA<span className="text-white font-light ml-[0.35em]">LIVE</span>
+            </h1>
+          )}
           {isLoading ? (
-            <RefreshCw className="w-[1.2em] h-[1.2em] animate-spin text-emerald-400 shrink-0" />
+            <RefreshCw className={`w-[1.2em] h-[1.2em] animate-spin ${syncAccent} shrink-0`} />
           ) : null}
-          <div className="bg-emerald-500/15 px-[0.8em] py-[0.35em] rounded-lg border border-emerald-500/30 text-emerald-300 text-[0.85em] font-bold whitespace-nowrap">
+          <div className={`px-[0.8em] py-[0.35em] rounded-lg border text-[0.85em] font-bold whitespace-nowrap ${badgeClass}`}>
             HOY {data?.dayKey || '—'}
           </div>
         </div>
@@ -145,7 +160,7 @@ export default function BodegaTvBoard() {
           <span className="text-[0.95em] font-medium whitespace-nowrap text-slate-300">
             Corte: {lastSyncedAt ? format(lastSyncedAt, 'hh:mm a', { locale: es }) : '---'}
           </span>
-          <span className="ml-[0.8em] pl-[0.8em] border-l border-slate-700 text-[0.7em] font-bold text-emerald-400 uppercase tracking-widest">
+          <span className={`ml-[0.8em] pl-[0.8em] border-l border-slate-700 text-[0.7em] font-bold uppercase tracking-widest ${syncAccent}`}>
             Sincronizar
           </span>
         </button>
@@ -154,8 +169,10 @@ export default function BodegaTvBoard() {
       <main className="flex-1 min-h-0 relative px-[2.2vmin] pb-[0.6vmin]">
         {!data && isLoading ? (
           <div className="h-full flex flex-col items-center justify-center gap-[1em] text-slate-400">
-            <RefreshCw className="w-[2em] h-[2em] animate-spin text-emerald-400" />
-            <p className="text-[1.4em] font-semibold">Cargando operación de bodega…</p>
+            <RefreshCw className={`w-[2em] h-[2em] animate-spin ${syncAccent}`} />
+            <p className="text-[1.4em] font-semibold">
+              {isExternos ? 'Cargando monitor de externos…' : 'Cargando operación de bodega…'}
+            </p>
           </div>
         ) : error && !data ? (
           <div className="h-full flex items-center justify-center text-[1.5em] text-red-400 font-bold px-[2em] text-center">
@@ -181,7 +198,9 @@ export default function BodegaTvBoard() {
             <div
               key={idx}
               className={`h-[0.45em] rounded-full transition-all ${
-                idx === currentSlideIndex ? 'w-[1.8em] bg-emerald-400' : 'w-[0.45em] bg-slate-700'
+                idx === currentSlideIndex
+                  ? `w-[1.8em] ${isExternos ? 'bg-violet-400' : 'bg-emerald-400'}`
+                  : 'w-[0.45em] bg-slate-700'
               }`}
             />
           ))}

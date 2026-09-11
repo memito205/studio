@@ -16,6 +16,7 @@ import {
 import type {
   BodegaTvAreaKey,
   BodegaTvAreaSnapshot,
+  BodegaTvMode,
   BodegaTvRemainderAssignmentRow,
   BodegaTvSnapshot,
   EtiquetadoContributionRow,
@@ -294,9 +295,13 @@ async function buildEmpaque(
 async function buildEtiquetado(
   dayKey: string,
   nameByUid: Map<string, string>,
-  uidByNormName: Map<string, string>
+  uidByNormName: Map<string, string>,
+  scope: 'all' | 'external' = 'all'
 ): Promise<BodegaTvAreaSnapshot> {
-  const area = emptyArea('etiquetado', 'Etiquetado');
+  const area = emptyArea(
+    'etiquetado',
+    scope === 'external' ? 'Etiquetado Externo' : 'Etiquetado'
+  );
   try {
     const { summarizePackPlanProgress } = await import('@/lib/labelingPackPlan');
     const { computeLabelingProductivity } = await import('@/lib/labelingProductivity');
@@ -309,11 +314,19 @@ async function buildEtiquetado(
     const dayFromMs = new Date(`${dayKey}T00:00:00`).getTime();
     const dayToMs = new Date(`${dayKey}T23:59:59.999`).getTime();
 
+    const operationsScoped = (operations || []).filter(
+      (op) => scope === 'all' || Boolean(op.isExternal)
+    );
+    const employeePerformanceScoped = (employeePerformance || []).filter(
+      (e) => scope === 'all' || e.type === 'Externo'
+    );
+
     // Base histórica: solo FINISH del día (ya filtrado en getLabelingHistoricalData).
-    const finishUnits = summary.totalUnits || 0;
+    const finishUnits =
+      scope === 'external' ? summary.externalUnits || 0 : summary.totalUnits || 0;
 
     // LIVE: pack_units abiertas CON actividad de hoy (no arrastrar pausadas de ayer).
-    const activeOps = (operations || []).filter(
+    const activeOps = operationsScoped.filter(
       (op) => op.status === 'En Progreso' || op.status === 'Pausada'
     );
     const packActive = activeOps.filter((op) => {
@@ -359,7 +372,7 @@ async function buildEtiquetado(
 
     // Refs finalizadas hoy sin seguimiento por caja (legacy_finish / sin trackingMode).
     const legacyRefsDone = new Set(
-      (operations || [])
+      operationsScoped
         .filter(
           (op) =>
             op.status === 'Completada' &&
@@ -371,7 +384,7 @@ async function buildEtiquetado(
 
     // Refs finalizadas pack_units (sesión cerrada hoy).
     const packRefsDone = new Set(
-      (operations || [])
+      operationsScoped
         .filter(
           (op) =>
             op.status === 'Completada' &&
@@ -448,7 +461,13 @@ async function buildEtiquetado(
 
     // Headline: finalizadas + progreso live (sin doble contar Completada).
     area.units = finishUnits + liveUnits;
-    const activeMinutes = (summary.totalActiveMinutes || 0) + liveProductiveMinutes;
+    const histActiveMinutes = employeePerformanceScoped.reduce(
+      (s, e) => s + (Number(e.activeMinutes) || 0),
+      0
+    );
+    const activeMinutes =
+      (scope === 'external' ? histActiveMinutes : summary.totalActiveMinutes || 0) +
+      liveProductiveMinutes;
     area.productivity =
       activeMinutes > 0
         ? area.units / (activeMinutes / 60)
@@ -456,7 +475,7 @@ async function buildEtiquetado(
 
     // Estándar u/h por operario desde tareas del día (también FINISH legacy, no solo LIVE).
     const standardByKey = new Map<string, { weighted: number; weight: number }>();
-    for (const op of operations || []) {
+    for (const op of operationsScoped) {
       const std = Number(op.standard_units_per_hour) || 0;
       if (std <= 0) continue;
       const key = op.isExternal
@@ -486,7 +505,7 @@ async function buildEtiquetado(
       { name: string; units: number; productivity: number; compliance?: number; meta?: string }
     >();
 
-    for (const e of employeePerformance) {
+    for (const e of employeePerformanceScoped) {
       const live = liveAggByKey.get(e.id) || liveAggByKey.get(e.name);
       const liveUnitsAdd = live?.units || 0;
       const liveMinutesAdd = live?.minutes || 0;
@@ -542,7 +561,7 @@ async function buildEtiquetado(
     }
     if (compWeight > 0) area.compliance = compSum / compWeight;
 
-    area.peopleKeys = employeePerformance.map((e) => {
+    area.peopleKeys = employeePerformanceScoped.map((e) => {
       if (e.type === 'Interno' && e.id) return personKeyFromUid(e.id);
       return personKeyFromName(e.name || e.id, uidByNormName);
     });
@@ -554,30 +573,51 @@ async function buildEtiquetado(
       }
     }
 
-    area.extras = [
-      { label: 'Interno', value: String(summary.internalUnits || 0) },
-      { label: 'Externo', value: String(summary.externalUnits || 0) },
-      {
-        label: 'Horas prod.',
-        value: `${(activeMinutes / 60).toFixed(1)} h`,
-      },
-      {
-        label: 'Und LIVE',
-        value: String(liveUnits),
-      },
-      {
-        label: 'Cajas',
-        value: totalBoxes > 0 ? `${confirmedBoxes}/${totalBoxes}` : '—',
-      },
-      {
-        label: 'Refs finalizadas',
-        value: String(legacyRefsDone.size + packRefsDone.size),
-      },
-      {
-        label: 'Refs legacy',
-        value: String(legacyRefsDone.size),
-      },
-    ];
+    area.extras =
+      scope === 'external'
+        ? [
+            { label: 'Externo', value: String(finishUnits) },
+            {
+              label: 'Horas prod.',
+              value: `${(activeMinutes / 60).toFixed(1)} h`,
+            },
+            {
+              label: 'Und LIVE',
+              value: String(liveUnits),
+            },
+            {
+              label: 'Cajas',
+              value: totalBoxes > 0 ? `${confirmedBoxes}/${totalBoxes}` : '—',
+            },
+            {
+              label: 'Refs finalizadas',
+              value: String(legacyRefsDone.size + packRefsDone.size),
+            },
+          ]
+        : [
+            { label: 'Interno', value: String(summary.internalUnits || 0) },
+            { label: 'Externo', value: String(summary.externalUnits || 0) },
+            {
+              label: 'Horas prod.',
+              value: `${(activeMinutes / 60).toFixed(1)} h`,
+            },
+            {
+              label: 'Und LIVE',
+              value: String(liveUnits),
+            },
+            {
+              label: 'Cajas',
+              value: totalBoxes > 0 ? `${confirmedBoxes}/${totalBoxes}` : '—',
+            },
+            {
+              label: 'Refs finalizadas',
+              value: String(legacyRefsDone.size + packRefsDone.size),
+            },
+            {
+              label: 'Refs legacy',
+              value: String(legacyRefsDone.size),
+            },
+          ];
   } catch (e) {
     console.error('bodegaTv etiquetado:', e);
   }
@@ -984,12 +1024,15 @@ async function buildRemainderAssignments(
 }
 
 /** Snapshot unificado del día para el Modo TV Bodega (sin auth de UI). */
-export async function getBodegaTvSnapshot(): Promise<{
+export async function getBodegaTvSnapshot(options?: {
+  mode?: BodegaTvMode;
+}): Promise<{
   success: boolean;
   data?: BodegaTvSnapshot;
   error?: string;
 }> {
   try {
+    const mode: BodegaTvMode = options?.mode === 'externos' ? 'externos' : 'full';
     const dayKey = todayKeyLocal();
     const profiles = await getAllUserProfiles();
     const nameByUid = new Map<string, string>();
@@ -1003,15 +1046,27 @@ export async function getBodegaTvSnapshot(): Promise<{
     }
     const uidByNormName = buildUidByNormName(nameByUid);
 
-    const [empaque, etiquetado, tallado, recepcion, remainderAssignments] = await Promise.all([
-      buildEmpaque(dayKey, uidByNormName),
-      buildEtiquetado(dayKey, nameByUid, uidByNormName),
-      buildTallado(dayKey, uidByNormName),
-      buildRecepcion(dayKey, nameByUid),
-      buildRemainderAssignments(dayKey, nameByUid),
-    ]);
+    let areas: BodegaTvAreaSnapshot[];
+    let remainderAssignments: BodegaTvRemainderAssignmentRow[] | undefined;
 
-    const areas = [empaque, etiquetado, tallado, recepcion];
+    if (mode === 'externos') {
+      const [tallado, etiquetado] = await Promise.all([
+        buildTallado(dayKey, uidByNormName),
+        buildEtiquetado(dayKey, nameByUid, uidByNormName, 'external'),
+      ]);
+      areas = [tallado, etiquetado];
+      remainderAssignments = undefined;
+    } else {
+      const [empaque, etiquetado, tallado, recepcion, remainders] = await Promise.all([
+        buildEmpaque(dayKey, uidByNormName),
+        buildEtiquetado(dayKey, nameByUid, uidByNormName, 'all'),
+        buildTallado(dayKey, uidByNormName),
+        buildRecepcion(dayKey, nameByUid),
+        buildRemainderAssignments(dayKey, nameByUid),
+      ]);
+      areas = [empaque, etiquetado, tallado, recepcion];
+      remainderAssignments = remainders;
+    }
 
     let complianceWeight = 0;
     let complianceSum = 0;
@@ -1038,6 +1093,7 @@ export async function getBodegaTvSnapshot(): Promise<{
     const snapshot: BodegaTvSnapshot = {
       dayKey,
       generatedAt: new Date().toISOString(),
+      mode,
       areas,
       summary: {
         totalUnits: areas.reduce((s, a) => s + a.units, 0),

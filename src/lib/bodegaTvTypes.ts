@@ -8,6 +8,9 @@ export type BodegaTvPersonRank = {
 
 export type BodegaTvAreaKey = 'empaque' | 'etiquetado' | 'tallado' | 'recepcion';
 
+/** full = TV bodega completa; externos = Tallado + Etiquetado Externo (kiosk). */
+export type BodegaTvMode = 'full' | 'externos';
+
 export type BodegaTvAreaSnapshot = {
   key: BodegaTvAreaKey;
   title: string;
@@ -75,6 +78,7 @@ export type EtiquetadoDayBreakdown = {
 export type BodegaTvSnapshot = {
   dayKey: string;
   generatedAt: string;
+  mode?: BodegaTvMode;
   areas: BodegaTvAreaSnapshot[];
   summary: {
     totalUnits: number;
