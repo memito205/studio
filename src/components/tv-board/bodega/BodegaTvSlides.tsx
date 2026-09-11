@@ -1,7 +1,12 @@
 'use client';
 
 import React from 'react';
-import type { BodegaTvAreaSnapshot, BodegaTvPersonRank, BodegaTvSnapshot } from '@/lib/bodegaTvTypes';
+import type {
+  BodegaTvAreaSnapshot,
+  BodegaTvHourlyBucket,
+  BodegaTvPersonRank,
+  BodegaTvSnapshot,
+} from '@/lib/bodegaTvTypes';
 import { Package, Tags, ScanLine, Warehouse, Trophy, Users, Gauge } from 'lucide-react';
 
 const AREA_ACCENT: Record<string, string> = {
@@ -432,3 +437,109 @@ export function BodegaRemainderAssignmentsSlide({
 }
 
 export { REMAINDER_PAGE_SIZE };
+
+export const HOURLY_PAGE_SIZE = 8;
+
+export function BodegaAreaHourlySlide({
+  area,
+  buckets,
+  pageIndex,
+  pageCount,
+}: {
+  area: BodegaTvAreaSnapshot;
+  buckets: BodegaTvHourlyBucket[];
+  pageIndex: number;
+  pageCount: number;
+}) {
+  const Icon = AREA_ICON[area.key];
+  const maxUnits = Math.max(1, ...buckets.map((b) => b.units));
+
+  return (
+    <div className="w-full h-full flex flex-col min-h-0">
+      <div className="flex items-end justify-between mb-[0.75em] gap-[1em] shrink-0">
+        <div className="min-w-0">
+          <div className="flex items-center gap-[0.55em] mb-[0.35em]">
+            <Icon className={`w-[1.35em] h-[1.35em] shrink-0 ${AREA_ACCENT[area.key]}`} />
+            <h2
+              className={`text-[2.2em] font-black tracking-tight leading-none ${AREA_ACCENT[area.key]}`}
+            >
+              {area.title} · Por horas
+            </h2>
+          </div>
+          <p className="text-[1em] text-slate-400 font-semibold">
+            Unidades y productividad (U/H) por franja · Bogotá
+            {pageCount > 1 ? ` · página ${pageIndex + 1}/${pageCount}` : ''}
+          </p>
+        </div>
+        <div className="flex gap-[0.7em] shrink-0">
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+            <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
+              Und día
+            </div>
+            <div className="text-[1.7em] font-black text-slate-100 tabular-nums leading-none mt-[0.2em]">
+              {fmt(area.units)}
+            </div>
+          </div>
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+            <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
+              U/H día
+            </div>
+            <div className="text-[1.7em] font-black text-sky-300 tabular-nums leading-none mt-[0.2em]">
+              {fmt(area.productivity, 1)}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {buckets.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center text-[1.5em] text-slate-500 font-semibold">
+          Sin producción por hora registrada hoy
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 flex flex-col">
+          <div className="grid grid-cols-[5.5em_minmax(0,1.4fr)_minmax(5em,0.7fr)_minmax(5em,0.7fr)_minmax(4em,0.55fr)] gap-x-[1em] text-[0.9em] font-bold uppercase tracking-wider text-slate-500 px-[0.4em] mb-[0.55em] shrink-0">
+            <span>Hora</span>
+            <span>Producción</span>
+            <span className="text-right">Unidades</span>
+            <span className="text-right">U/H</span>
+            <span className="text-right">Pers.</span>
+          </div>
+          <div className="flex-1 min-h-0 space-y-[0.55em] overflow-hidden">
+            {buckets.map((row) => {
+              const barPct = Math.max(4, Math.round((row.units / maxUnits) * 100));
+              return (
+                <div
+                  key={row.hourLabel}
+                  className="grid grid-cols-[5.5em_minmax(0,1.4fr)_minmax(5em,0.7fr)_minmax(5em,0.7fr)_minmax(4em,0.55fr)] gap-x-[1em] items-center rounded-[0.85em] border border-slate-700 bg-slate-900/85 px-[0.9em] py-[0.7em]"
+                >
+                  <div className="text-[1.55em] font-black tabular-nums text-slate-100 leading-none">
+                    {row.hourLabel}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="h-[0.85em] rounded-full bg-slate-800 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${
+                          area.key === 'tallado' ? 'bg-emerald-400' : 'bg-violet-400'
+                        }`}
+                        style={{ width: `${barPct}%` }}
+                      />
+                    </div>
+                  </div>
+                  <div className="text-[1.7em] font-black tabular-nums text-right leading-none">
+                    {fmt(row.units)}
+                  </div>
+                  <div className="text-[1.7em] font-black tabular-nums text-right text-sky-300 leading-none">
+                    {fmt(row.productivity, 1)}
+                  </div>
+                  <div className="text-[1.45em] font-bold tabular-nums text-right text-slate-300 leading-none">
+                    {row.people != null && row.people > 0 ? fmt(row.people) : '—'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

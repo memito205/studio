@@ -16,6 +16,7 @@ import {
 import type {
   BodegaTvAreaKey,
   BodegaTvAreaSnapshot,
+  BodegaTvHourlyBucket,
   BodegaTvMode,
   BodegaTvRemainderAssignmentRow,
   BodegaTvSnapshot,
@@ -24,11 +25,15 @@ import type {
 } from '@/lib/bodegaTvTypes';
 import {
   filterTalladoBundleToDay,
+  isTalladoSameLocalDay,
+  talladoBogotaDayBounds,
   talladoLocalDayKey,
   talladoPauseMs,
   talladoPerPersonHour,
   talladoRankingByGrupo,
+  talladoShiftDayWindow,
 } from '@/lib/talladoProductivity';
+import type { LabelingActivityLog, LabelingOperation, TalladoPause, TalladoShift, TalladoUnit } from '@/types';
 
 function todayKeyLocal(): string {
   return format(new Date(), 'yyyy-MM-dd');
@@ -39,6 +44,240 @@ function isSameLocalDay(value: unknown, dayKey: string): boolean {
   const d = value instanceof Date ? value : new Date(String(value));
   if (Number.isNaN(d.getTime())) return false;
   return format(d, 'yyyy-MM-dd') === dayKey;
+}
+
+function bogotaHourFromIso(iso: string | Date | undefined | null): number | null {
+  if (!iso) return null;
+  const d = iso instanceof Date ? iso : new Date(String(iso));
+  if (Number.isNaN(d.getTime())) return null;
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Bogota',
+      hour: 'numeric',
+      hour12: false,
+    }).formatToParts(d);
+    const raw = parts.find((p) => p.type === 'hour')?.value;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return null;
+    return n === 24 ? 0 : n;
+  } catch {
+    return null;
+  }
+}
+
+function hourLabel(hour: number): string {
+  return `${String(hour).padStart(2, '0')}:00`;
+}
+
+function overlapMs(a0: number, a1: number, b0: number, b1: number): number {
+  return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+}
+
+function finalizeHourlyBuckets(
+  unitsByHour: number[],
+  personHoursByHour: number[],
+  peopleByHour?: number[]
+): BodegaTvHourlyBucket[] {
+  const out: BodegaTvHourlyBucket[] = [];
+  for (let h = 0; h < 24; h++) {
+    const units = unitsByHour[h] || 0;
+    const personHours = personHoursByHour[h] || 0;
+    const people = peopleByHour?.[h] || 0;
+    if (units <= 0 && personHours <= 0) continue;
+    out.push({
+      hour: h,
+      hourLabel: hourLabel(h),
+      units,
+      productivity: personHours > 0 ? units / personHours : units > 0 ? units : 0,
+      people: people > 0 ? people : undefined,
+    });
+  }
+  return out;
+}
+
+/** Und + persona·h por hora de reloj (Bogotá) para tallado. */
+function buildTalladoHourlyBuckets(
+  dayKey: string,
+  shifts: TalladoShift[],
+  units: TalladoUnit[],
+  pauses: TalladoPause[]
+): BodegaTvHourlyBucket[] {
+  const unitsByHour = Array.from({ length: 24 }, () => 0);
+  const personMsByHour = Array.from({ length: 24 }, () => 0);
+  const peopleByHour = Array.from({ length: 24 }, () => 0);
+  const nowMs = Date.now();
+  const { startMs: dayStart } = talladoBogotaDayBounds(dayKey);
+
+  for (const u of units) {
+    if (u.status !== 'done') continue;
+    const when = u.endedAt || u.startedAt;
+    const h = bogotaHourFromIso(when);
+    if (h == null) continue;
+    if (!isTalladoSameLocalDay(when, dayKey) && !isSameLocalDay(when, dayKey)) continue;
+    unitsByHour[h] += Number(u.cantidad) || 0;
+  }
+
+  for (const shift of shifts) {
+    const window = talladoShiftDayWindow({ shift, units, dayKey, nowMs });
+    if (!window) continue;
+    const people = Math.max(1, Number(shift.peopleCount) || 1);
+    for (let h = 0; h < 24; h++) {
+      const hourStart = dayStart + h * 3600000;
+      const hourEnd = hourStart + 3600000;
+      let raw = overlapMs(window.startMs, window.endMs, hourStart, hourEnd);
+      if (raw <= 0) continue;
+      for (const p of pauses) {
+        if (p.shiftId !== shift.id) continue;
+        const ps = p.pausedAt ? new Date(p.pausedAt).getTime() : NaN;
+        if (Number.isNaN(ps)) continue;
+        const pe =
+          p.status === 'open'
+            ? Math.min(window.endMs, nowMs)
+            : p.resumedAt
+              ? new Date(p.resumedAt).getTime()
+              : typeof p.durationMs === 'number'
+                ? ps + Math.max(0, Number(p.durationMs) || 0)
+                : Math.min(window.endMs, nowMs);
+        if (Number.isNaN(pe)) continue;
+        raw -= overlapMs(ps, pe, Math.max(hourStart, window.startMs), Math.min(hourEnd, window.endMs));
+      }
+      raw = Math.max(0, raw);
+      if (raw <= 0) continue;
+      personMsByHour[h] += people * raw;
+      peopleByHour[h] += people;
+    }
+  }
+
+  const personHoursByHour = personMsByHour.map((ms) => ms / 3600000);
+  return finalizeHourlyBuckets(unitsByHour, personHoursByHour, peopleByHour);
+}
+
+/** Und + minutos activos por hora para etiquetado (scope externo o total). */
+function buildEtiquetadoHourlyBuckets(
+  dayKey: string,
+  operations: LabelingOperation[],
+  logs: LabelingActivityLog[],
+  scope: 'all' | 'external'
+): BodegaTvHourlyBucket[] {
+  const unitsByHour = Array.from({ length: 24 }, () => 0);
+  const activeMsByHour = Array.from({ length: 24 }, () => 0);
+  const peopleKeysByHour: Array<Set<string>> = Array.from({ length: 24 }, () => new Set());
+  const { startMs: dayStart, endMs: dayEnd } = talladoBogotaDayBounds(dayKey);
+  const nowMs = Date.now();
+
+  const ops = (operations || []).filter((op) => scope === 'all' || Boolean(op.isExternal));
+  const opById = new Map(ops.map((op) => [op.id, op]));
+
+  const personKey = (op: LabelingOperation, log?: LabelingActivityLog) => {
+    if (op.isExternal || log?.isExternal) {
+      return (
+        log?.externalOperatorName ||
+        op.assignedExternalOperatorName ||
+        op.assignedExternalVendorId ||
+        'ext'
+      );
+    }
+    return op.assignedOperatorId || log?.operatorId || 'int';
+  };
+
+  // Und: FINISH canónico + UNIT_COMPLETE (misma lógica LIVE de Bodega).
+  const finishSeen = new Set<string>();
+  for (const log of logs || []) {
+    const op = opById.get(log.labelingOperationId);
+    if (!op) continue;
+    if (scope === 'external' && !(op.isExternal || log.isExternal)) continue;
+    const ts = log.timestamp;
+    if (!isSameLocalDay(ts, dayKey) && !isTalladoSameLocalDay(ts, dayKey)) continue;
+    const h = bogotaHourFromIso(ts);
+    if (h == null) continue;
+
+    if (log.type === 'FINISH') {
+      const key = log.labelingOperationId || log.id || `${ts}`;
+      if (finishSeen.has(key)) continue;
+      finishSeen.add(key);
+      let units = Number(log.completedUnits) || 0;
+      if (units <= 0 && op.status === 'Completada') {
+        units = Number(op.completedUnits) || 0;
+      }
+      if (units > 0) {
+        unitsByHour[h] += units;
+        peopleKeysByHour[h].add(personKey(op, log));
+      }
+    }
+  }
+
+  // UNIT_COMPLETE solo de tareas pack_units abiertas (evita doble conteo con FINISH).
+  const packActive = ops.filter(
+    (op) =>
+      (op.status === 'En Progreso' || op.status === 'Pausada') &&
+      op.trackingMode === 'pack_units' &&
+      (op.labelingPackPlan?.length || 0) > 0
+  );
+  const packActiveIds = new Set(packActive.map((op) => op.id));
+  const seenBox = new Set<string>();
+  for (const log of logs || []) {
+    if (log.type !== 'UNIT_COMPLETE') continue;
+    if (!packActiveIds.has(log.labelingOperationId)) continue;
+    const op = opById.get(log.labelingOperationId);
+    if (!op) continue;
+    const ts = log.timestamp;
+    if (!isSameLocalDay(ts, dayKey) && !isTalladoSameLocalDay(ts, dayKey)) continue;
+    const h = bogotaHourFromIso(ts);
+    if (h == null) continue;
+    const dedupeKey = log.packingUnitId
+      ? `box:${log.packingUnitId}`
+      : log.unitNumber != null
+        ? `n:${log.labelingOperationId}:${log.unitNumber}`
+        : `t:${log.timestamp}:${log.id || ''}`;
+    if (seenBox.has(dedupeKey)) continue;
+    seenBox.add(dedupeKey);
+    const units = Number(log.qty ?? log.completedUnits) || 0;
+    if (units <= 0) continue;
+    unitsByHour[h] += units;
+    peopleKeysByHour[h].add(personKey(op, log));
+  }
+
+  // Minutos activos por hora (START/RESUME → PAUSE/FINISH).
+  for (const op of ops) {
+    const opLogs = (logs || [])
+      .filter((l) => l.labelingOperationId === op.id)
+      .slice()
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    let lastStart: number | null = null;
+    const flush = (endMs: number) => {
+      if (lastStart == null) return;
+      const a = Math.max(lastStart, dayStart);
+      const b = Math.min(endMs, dayEnd, nowMs);
+      if (b <= a) {
+        lastStart = null;
+        return;
+      }
+      for (let h = 0; h < 24; h++) {
+        const hourStart = dayStart + h * 3600000;
+        const hourEnd = hourStart + 3600000;
+        const ov = overlapMs(a, b, hourStart, hourEnd);
+        if (ov > 0) {
+          activeMsByHour[h] += ov;
+          peopleKeysByHour[h].add(personKey(op));
+        }
+      }
+      lastStart = null;
+    };
+    for (const log of opLogs) {
+      const t = new Date(log.timestamp).getTime();
+      if (Number.isNaN(t)) continue;
+      if (log.type === 'START' || log.type === 'RESUME') {
+        lastStart = t;
+      } else if (log.type === 'PAUSE' || log.type === 'FINISH') {
+        flush(t);
+      }
+    }
+    if (lastStart != null) flush(nowMs);
+  }
+
+  const personHoursByHour = activeMsByHour.map((ms) => ms / 3600000);
+  const peopleByHour = peopleKeysByHour.map((s) => s.size);
+  return finalizeHourlyBuckets(unitsByHour, personHoursByHour, peopleByHour);
 }
 
 function normalizePersonLabel(value: string): string {
@@ -296,7 +535,8 @@ async function buildEtiquetado(
   dayKey: string,
   nameByUid: Map<string, string>,
   uidByNormName: Map<string, string>,
-  scope: 'all' | 'external' = 'all'
+  scope: 'all' | 'external' = 'all',
+  withHourly = false
 ): Promise<BodegaTvAreaSnapshot> {
   const area = emptyArea(
     'etiquetado',
@@ -618,6 +858,15 @@ async function buildEtiquetado(
               value: String(legacyRefsDone.size),
             },
           ];
+
+    if (withHourly) {
+      area.hourlyBuckets = buildEtiquetadoHourlyBuckets(
+        dayKey,
+        operationsScoped,
+        logs || [],
+        scope
+      );
+    }
   } catch (e) {
     console.error('bodegaTv etiquetado:', e);
   }
@@ -626,7 +875,8 @@ async function buildEtiquetado(
 
 async function buildTallado(
   dayKey: string,
-  uidByNormName: Map<string, string>
+  uidByNormName: Map<string, string>,
+  withHourly = false
 ): Promise<BodegaTvAreaSnapshot> {
   const area = emptyArea('tallado', 'Tallado');
   try {
@@ -689,6 +939,10 @@ async function buildTallado(
         value: `${qty} ÷ ${personHours.toFixed(2)} = ${perPersonHour.toFixed(1)} u/h`,
       },
     ];
+
+    if (withHourly) {
+      area.hourlyBuckets = buildTalladoHourlyBuckets(todayKey, shifts, units, pauses);
+    }
   } catch (e) {
     console.error('bodegaTv tallado:', e);
   }
@@ -1051,8 +1305,8 @@ export async function getBodegaTvSnapshot(options?: {
 
     if (mode === 'externos') {
       const [tallado, etiquetado] = await Promise.all([
-        buildTallado(dayKey, uidByNormName),
-        buildEtiquetado(dayKey, nameByUid, uidByNormName, 'external'),
+        buildTallado(dayKey, uidByNormName, true),
+        buildEtiquetado(dayKey, nameByUid, uidByNormName, 'external', true),
       ]);
       areas = [tallado, etiquetado];
       remainderAssignments = undefined;

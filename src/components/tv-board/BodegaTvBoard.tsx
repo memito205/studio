@@ -8,9 +8,11 @@ import { getBodegaTvSnapshot } from '@/app/bodegaTvActions';
 import type { BodegaTvMode, BodegaTvSnapshot } from '@/lib/bodegaTvTypes';
 import {
   BodegaAreaDetailSlide,
+  BodegaAreaHourlySlide,
   BodegaOverviewSlide,
   BodegaRemainderAssignmentsSlide,
   BODEGA_TV_PAGE_SIZE,
+  HOURLY_PAGE_SIZE,
   REMAINDER_PAGE_SIZE,
 } from './bodega/BodegaTvSlides';
 
@@ -94,6 +96,27 @@ export default function BodegaTvBoard({ mode = 'full' }: { mode?: BodegaTvMode }
             pageCount={pageCount}
           />
         );
+      }
+
+      // Solo Monitor Live Externos: productividad por horas (und + U/H).
+      if (mode === 'externos') {
+        const hourly = area.hourlyBuckets || [];
+        const hourlyPages = Math.max(1, Math.ceil(Math.max(hourly.length, 1) / HOURLY_PAGE_SIZE));
+        for (let pageIndex = 0; pageIndex < hourlyPages; pageIndex++) {
+          const pageBuckets = hourly.slice(
+            pageIndex * HOURLY_PAGE_SIZE,
+            pageIndex * HOURLY_PAGE_SIZE + HOURLY_PAGE_SIZE
+          );
+          nodes.push(
+            <BodegaAreaHourlySlide
+              key={`hourly-${area.key}-p${pageIndex}`}
+              area={area}
+              buckets={pageBuckets}
+              pageIndex={pageIndex}
+              pageCount={hourlyPages}
+            />
+          );
+        }
       }
     }
 

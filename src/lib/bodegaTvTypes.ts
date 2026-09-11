@@ -11,6 +11,17 @@ export type BodegaTvAreaKey = 'empaque' | 'etiquetado' | 'tallado' | 'recepcion'
 /** full = TV bodega completa; externos = Tallado + Etiquetado Externo (kiosk). */
 export type BodegaTvMode = 'full' | 'externos';
 
+/** Producción por hora de reloj (America/Bogota) para Monitor Live Externos. */
+export type BodegaTvHourlyBucket = {
+  hour: number;
+  hourLabel: string;
+  units: number;
+  /** Und / persona·h (o und / h activa) en esa franja. */
+  productivity: number;
+  /** Personas / recursos que aportaron tiempo o und en la franja. */
+  people?: number;
+};
+
 export type BodegaTvAreaSnapshot = {
   key: BodegaTvAreaKey;
   title: string;
@@ -27,6 +38,8 @@ export type BodegaTvAreaSnapshot = {
    * Solo aplica a tallado; el resumen las suma aparte del set único.
    */
   anonymousPeople?: number;
+  /** Solo Monitor Live Externos: und + U/H por hora. */
+  hourlyBuckets?: BodegaTvHourlyBucket[];
 };
 
 export type BodegaTvRemainderAssignmentRow = {
