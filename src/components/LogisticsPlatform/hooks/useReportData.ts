@@ -155,8 +155,14 @@ export const useReportData = (
     }
 
     if (documentNumberFilter) {
-      const lowerFilter = documentNumberFilter.toLowerCase();
-      filteredRows = filteredRows.filter(row => String(row[DOC_COL!]).toLowerCase().includes(lowerFilter));
+      const lowerFilter = documentNumberFilter.toLowerCase().trim();
+      const filterDigits = lowerFilter.replace(/\D/g, '');
+      filteredRows = filteredRows.filter((row) => {
+        const doc = String(row[DOC_COL!] || '');
+        if (doc.toLowerCase().includes(lowerFilter)) return true;
+        if (filterDigits && doc.replace(/\D/g, '').includes(filterDigits)) return true;
+        return false;
+      });
     }
     
     const sDate = parseDateString(startDate);

@@ -3908,13 +3908,30 @@ export async function syncAnalysisRecords(rawJson: any[]): Promise<{ success: bo
 
         const incomingDocs = new Map<string, any>();
         rawJson.forEach((row) => {
+            const pick = (...keys: string[]) => {
+                for (const k of keys) {
+                    const v = row[k];
+                    if (v !== undefined && v !== null && String(v).trim() !== '') return v;
+                }
+                return undefined;
+            };
             const numeroTF = String(
-                row['Numero TF'] || row['NUMERO TF'] || row['numeroTF'] || row['doc'] || 'N/A'
+                pick(
+                    'Numero TF',
+                    'NUMERO TF',
+                    'Número TF',
+                    'numeroTF',
+                    'Nro documento.2',
+                    'Nro documento.',
+                    'Nro Documento',
+                    'TF',
+                    'doc'
+                ) || 'N/A'
             );
-            const marca = String(row['Marca'] || row['MARCA'] || row['marca'] || '')
+            const marca = String(pick('Marca', 'MARCA', 'marca') || '')
                 .trim()
                 .toUpperCase();
-            const grupo = String(row['Grupo'] || row['GRUPO'] || row['grupo'] || '')
+            const grupo = String(pick('Grupo', 'GRUPO', 'grupo') || '')
                 .trim()
                 .toUpperCase();
             const key = `${numeroTF}-${marca}-${grupo}`;
@@ -3933,36 +3950,68 @@ export async function syncAnalysisRecords(rawJson: any[]): Promise<{ success: bo
         incomingDocs.forEach((row, key) => {
             const existingId = existingDocs.get(key);
             const docRef = existingId ? doc(analysisCollection, existingId) : doc(analysisCollection);
+            const pick = (...keys: string[]) => {
+                for (const k of keys) {
+                    const v = row[k];
+                    if (v !== undefined && v !== null && String(v).trim() !== '') return v;
+                }
+                return undefined;
+            };
+            const numeroTF = String(
+                pick(
+                    'Numero TF',
+                    'NUMERO TF',
+                    'Número TF',
+                    'numeroTF',
+                    'Nro documento.2',
+                    'Nro documento.',
+                    'Nro Documento',
+                    'TF',
+                    'doc'
+                ) || 'N/A'
+            );
             const dataToSave = {
                 ...row,
-                numeroTF: String(
-                    row['Numero TF'] || row['NUMERO TF'] || row['numeroTF'] || row['doc'] || 'N/A'
-                ),
-                marca: String(row['Marca'] || row['MARCA'] || row['marca'] || ''),
-                grupo: String(row['Grupo'] || row['GRUPO'] || row['grupo'] || ''),
+                numeroTF,
+                marca: String(pick('Marca', 'MARCA', 'marca') || ''),
+                grupo: String(pick('Grupo', 'GRUPO', 'grupo') || ''),
                 bodegaOrigen: String(
-                    row['Bodega Origen'] || row['BOD. SALIDA'] || row['bodegaOrigen'] || 'N/A'
+                    pick(
+                        'Bodega Origen',
+                        'BOD. SALIDA',
+                        'Bod. salida',
+                        'Bodega salida',
+                        'bodegaOrigen'
+                    ) || 'N/A'
                 ),
                 bodegaDestino: String(
-                    row['Bodega Destino'] ||
-                        row['BOD. ENTRADA'] ||
-                        row['BOD DESTINO'] ||
-                        row['bodegaDestino'] ||
-                        'N/A'
+                    pick(
+                        'Bodega Destino',
+                        'BOD. ENTRADA',
+                        'Bod. entrada',
+                        'Bodega entrada',
+                        'BOD DESTINO',
+                        'Bod Destino',
+                        'DESTINO',
+                        'bodegaDestino'
+                    ) || 'N/A'
                 ),
-                fecha: row['Fecha']
-                    ? convertDatesToTimestamps({ f: parseFlexibleDate(row['Fecha']) }).f
-                    : row['fechaFinalizado']
-                      ? convertDatesToTimestamps({ f: parseFlexibleDate(row['fechaFinalizado']) }).f
+                fecha: pick('Fecha', 'fecha')
+                    ? convertDatesToTimestamps({ f: parseFlexibleDate(pick('Fecha', 'fecha')) }).f
+                    : pick('fechaFinalizado')
+                      ? convertDatesToTimestamps({
+                          f: parseFlexibleDate(pick('fechaFinalizado')),
+                        }).f
                       : row.fecha || null,
-                cantidad: Number(row['Cantidad'] || row['CANTIDAD'] || row['cantidad'] || 1),
+                cantidad: Number(pick('Cantidad', 'CANTIDAD', 'cantidad') || 1),
                 codigoAlterno:
                     String(
-                        row['Codigo Alterno'] ||
-                            row['Código Alterno'] ||
-                            row['CODIGO ALTERNO'] ||
-                            row['codigoAlterno'] ||
-                            ''
+                        pick(
+                            'Codigo Alterno',
+                            'Código Alterno',
+                            'CODIGO ALTERNO',
+                            'codigoAlterno'
+                        ) || ''
                     ).trim() || undefined,
                 estadoPlataforma: row['estadoPlataforma'] || row['ESTADO PLATAFORMA'] || '',
                 novedad: row['novedad'] || row['NOVEDAD'] || '',

@@ -3164,19 +3164,42 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
           const analysisResult = await syncAnalysisRecords(json);
 
           const newRoutes: Omit<TransferEntry, 'id' | 'status'>[] = json.map((row, index) => {
-              const fecha = parseFlexibleDate(row['Fecha']);
+              const fecha = parseFlexibleDate(row['Fecha'] || row['fecha']);
               if (!fecha) {
                   console.warn(`Fila '${index+2}' omitida por fecha inválida.`);
                   return null;
               }
+              const numeroTF = String(
+                row['Numero TF'] ||
+                  row['NUMERO TF'] ||
+                  row['Número TF'] ||
+                  row['Nro documento.2'] ||
+                  row['Nro Documento'] ||
+                  row['TF'] ||
+                  row['numeroTF'] ||
+                  'N/A'
+              );
               return {
                   fecha,
-                  numeroTF: String(row['Numero TF'] || 'N/A'),
-                  bodegaOrigen: String(row['Bodega Origen'] || 'N/A'),
-                  bodegaDestino: String(row['Bodega Destino'] || 'N/A'),
-                  cantidad: Number(row['Cantidad'] || 1),
-                  marca: String(row['Marca'] || ''),
-                  grupo: String(row['Grupo'] || ''),
+                  numeroTF,
+                  bodegaOrigen: String(
+                    row['Bodega Origen'] ||
+                      row['BOD. SALIDA'] ||
+                      row['Bod. salida'] ||
+                      row['bodegaOrigen'] ||
+                      'N/A'
+                  ),
+                  bodegaDestino: String(
+                    row['Bodega Destino'] ||
+                      row['BOD. ENTRADA'] ||
+                      row['Bod. entrada'] ||
+                      row['BOD DESTINO'] ||
+                      row['bodegaDestino'] ||
+                      'N/A'
+                  ),
+                  cantidad: Number(row['Cantidad'] || row['CANTIDAD'] || row['cantidad'] || 1),
+                  marca: String(row['Marca'] || row['MARCA'] || ''),
+                  grupo: String(row['Grupo'] || row['GRUPO'] || ''),
                   codigoAlterno: String(
                     row['Codigo Alterno'] ||
                       row['Código Alterno'] ||

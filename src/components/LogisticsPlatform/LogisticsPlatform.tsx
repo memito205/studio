@@ -270,11 +270,40 @@ const WarehouseAnalyzer: React.FC = () => {
     setRawHeaders(headers);
     
     // --- Definición de columnas ---
-    const FECHA_COL_NAMES = ['Fecha'];
-    const WAREHOUSE_COL_NAMES = ['Bod. entrada', 'Bodega entrada', 'Bodega', 'Destino', 'Centro', 'Almacén', 'Almacen', 'Bodega Destino', 'BOD. DESTINO'];
-    const WAREHOUSE_OUT_COL_NAMES = ['Bod. salida', 'Bodega salida', 'BOD SALIDA', 'Bodega Origen', 'BODEGA ORIGEN'];
-    const DOC_COL_NAMES = ['Nro documento.2', 'Nro documento.', 'Nro Documento', 'Numero TF', 'numeroTF'];
-    const QTY_COL_NAMES = ['CANTIDAD', 'Cantidad'];
+    const DOC_COL_NAMES = [
+      'Nro documento.2',
+      'Nro documento.',
+      'Nro Documento',
+      'Numero TF',
+      'NUMERO TF',
+      'numeroTF',
+      'Número TF',
+      'TF',
+      'doc',
+    ];
+    const QTY_COL_NAMES = ['CANTIDAD', 'Cantidad', 'cantidad'];
+    const WAREHOUSE_COL_NAMES = [
+      'Bod. entrada',
+      'Bodega entrada',
+      'Bodega',
+      'Destino',
+      'Centro',
+      'Almacén',
+      'Almacen',
+      'Bodega Destino',
+      'BOD. DESTINO',
+      'BOD DESTINO',
+      'bodegaDestino',
+    ];
+    const FECHA_COL_NAMES = ['Fecha', 'fecha'];
+    const WAREHOUSE_OUT_COL_NAMES = [
+      'Bod. salida',
+      'Bodega salida',
+      'BOD SALIDA',
+      'Bodega Origen',
+      'BODEGA ORIGEN',
+      'bodegaOrigen',
+    ];
     const IMAGE_LINK_COL_NAMES = ['LINK IMAGENES.1.1.1', 'LINK_IMAGENES.1.1.1', 'LINK IMAGENES', 'Link Imagenes', 'linkimagenes', 'Imagenes', 'Evidencias'];
     const ESTADO_PLATAFORMA_COL_NAMES = ['ESTADO PLATAFORMA', 'Estado_Plataforma', 'Estado Plataforma', 'estadoplataforma'];
     const FECHA_FINALIZADO_PLATAFORMA_COL_NAMES = ['FECHA FINALIZADO PLATAFORMA', 'Fecha_Finalizado_Plataforma', 'Fecha Finalizado Plataforma', 'FECHA FINALIZADO', 'Fecha Finalizado', 'FECHA FINALIZACION', 'Fecha Finalizacion', 'FECHA FINALIZADO PALTAFORMA', 'FECHA FINALIZADO PLATAFORM'];
@@ -404,14 +433,15 @@ const WarehouseAnalyzer: React.FC = () => {
 
 
     // --- FILTRAR BODEGAS EXCLUIDAS DEL CONJUNTO DE DATOS PRINCIPAL ---
+    // Códigos internos (lista fija). NO usar endsWith('IN'): excluía MEDELLIN y similares.
     const excludedWarehouses = new Set(['BDTRA', 'BDIST', 'TRYNO', 'IMPOR', 'BGDOT', 'NONOS', 'BODFT', 'BREPA', 'SUCIO']);
     const filteredBaseData = dedupedData.filter(row => {
-        const warehouseName = String(row[newColumnMap.warehouse!]);
+        const warehouseName = String(row[newColumnMap.warehouse!] || '').trim();
         if (!warehouseName) {
             return false; // Excluir filas sin bodega
         }
         const upperWarehouse = warehouseName.toUpperCase();
-        return !upperWarehouse.endsWith('IN') && !excludedWarehouses.has(upperWarehouse);
+        return !excludedWarehouses.has(upperWarehouse);
     });
 
     setBaseData(filteredBaseData);
