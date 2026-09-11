@@ -857,26 +857,15 @@ function remainderLegalization(task: {
 }
 
 async function buildRemainderAssignments(
-  dayKey: string
+  _dayKey: string
 ): Promise<BodegaTvRemainderAssignmentRow[]> {
   try {
     const res = await listRemainderAssignmentBoard(250);
     if (!res.success || !res.data) return [];
 
-    const candidates = res.data.filter((t) => {
-      const touchedToday =
-        isSameLocalDay(t.assignedAt, dayKey) ||
-        isSameLocalDay(t.submittedAt, dayKey) ||
-        isSameLocalDay(t.validatedAt, dayKey) ||
-        isSameLocalDay(t.updatedAt, dayKey);
-
-      return (
-        t.status === 'assigned' ||
-        t.status === 'submitted' ||
-        t.status === 'rejected' ||
-        (t.status === 'validated' && touchedToday)
-      );
-    });
+    // TV: solo referencias actualmente asignadas o tomadas (claim).
+    // No validadas, no pendientes de validación enviadas, no pool disponible.
+    const candidates = res.data.filter((t) => t.status === 'assigned');
 
     // Backfill ubicación desde recepción (y compare si falta receptionOperationId).
     const needLoc = candidates.filter((t) => !String(t.locationName || '').trim()).slice(0, 40);

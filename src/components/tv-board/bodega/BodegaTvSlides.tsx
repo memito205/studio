@@ -340,7 +340,7 @@ export function BodegaRemainderAssignmentsSlide({
           Físico vs Distribución
         </h2>
         <p className="text-[1.05em] text-slate-400 font-semibold">
-          Operario · referencia · ubicación · remanente
+          Solo asignadas / tomadas (sin validar) · operario · ubicación · remanente
           {pageCount > 1 ? ` · ${pageIndex + 1}/${pageCount}` : ''}
         </p>
       </div>
