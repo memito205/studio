@@ -3959,7 +3959,16 @@ export async function syncAnalysisRecords(
             const key = `${numeroTF}-${marca.trim().toUpperCase()}-${grupo.trim().toUpperCase()}`;
             const existingId = existingDocs.get(key);
             const docRef = existingId ? doc(analysisCollection, existingId) : doc(analysisCollection);
-            const dataToSave = {
+            const codigoAlternoVal = String(
+                pickFrom(
+                    row,
+                    'Codigo Alterno',
+                    'Código Alterno',
+                    'CODIGO ALTERNO',
+                    'codigoAlterno'
+                ) || ''
+            ).trim();
+            const dataToSaveRaw: Record<string, unknown> = {
                 ...row,
                 numeroTF,
                 marca,
@@ -3997,16 +4006,6 @@ export async function syncAnalysisRecords(
                         }).f
                       : row.fecha || null,
                 cantidad: Number(pickFrom(row, 'Cantidad', 'CANTIDAD', 'cantidad') || 1),
-                codigoAlterno:
-                    String(
-                        pickFrom(
-                            row,
-                            'Codigo Alterno',
-                            'Código Alterno',
-                            'CODIGO ALTERNO',
-                            'codigoAlterno'
-                        ) || ''
-                    ).trim() || undefined,
                 estadoPlataforma: row['estadoPlataforma'] || row['ESTADO PLATAFORMA'] || '',
                 novedad: row['novedad'] || row['NOVEDAD'] || '',
                 image: row['image'] || row['link de imagenes'] || '',
@@ -4014,6 +4013,19 @@ export async function syncAnalysisRecords(
                 hoyRuta: row['hoyRuta'] || row['HOY RUTA'] || '',
                 lastSync: new Date(),
             };
+            if (codigoAlternoVal) {
+                dataToSaveRaw.codigoAlterno = codigoAlternoVal;
+            } else {
+                delete dataToSaveRaw.codigoAlterno;
+                delete dataToSaveRaw['Codigo Alterno'];
+                delete dataToSaveRaw['Código Alterno'];
+                delete dataToSaveRaw['CODIGO ALTERNO'];
+            }
+            // Firestore update/set no acepta undefined.
+            const dataToSave: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(dataToSaveRaw)) {
+                if (v !== undefined) dataToSave[k] = v;
+            }
             upsertOps.push({
                 type: existingId ? 'update' : 'set',
                 ref: docRef,
