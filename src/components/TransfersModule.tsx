@@ -3160,9 +3160,6 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
           const worksheet = workbook.Sheets[sheetName];
           const json: any[] = XLSX.utils.sheet_to_json(worksheet);
   
-          // --- DUAL SYNC ---
-          const analysisResult = await syncAnalysisRecords(json);
-
           const newRoutes: Omit<TransferEntry, 'id' | 'status'>[] = json.map((row, index) => {
               const fecha = parseFlexibleDate(row['Fecha'] || row['fecha']);
               if (!fecha) {
@@ -3213,13 +3210,41 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
           if(newRoutes.length === 0) {
             throw new Error("No se encontraron transferencias válidas para operación en el archivo.");
           }
+
+          // Misma data normalizada para Analizador + operativo (evita desfase de columnas).
+          const analysisRows = newRoutes.map((r) => ({
+            'Numero TF': r.numeroTF,
+            numeroTF: r.numeroTF,
+            'Bodega Origen': r.bodegaOrigen,
+            bodegaOrigen: r.bodegaOrigen,
+            'Bodega Destino': r.bodegaDestino,
+            bodegaDestino: r.bodegaDestino,
+            Fecha: r.fecha,
+            fecha: r.fecha,
+            Cantidad: r.cantidad,
+            cantidad: r.cantidad,
+            Marca: r.marca,
+            marca: r.marca,
+            Grupo: r.grupo,
+            grupo: r.grupo,
+            ...(r.codigoAlterno
+              ? { 'Codigo Alterno': r.codigoAlterno, codigoAlterno: r.codigoAlterno }
+              : {}),
+          }));
+
+          const analysisResult = await syncAnalysisRecords(analysisRows, { pruneMissing: true });
+          if (!analysisResult.success) {
+            throw new Error(
+              `El archivo NO se guardó para el Analizador: ${analysisResult.error || 'error desconocido'}. Reintente la carga.`
+            );
+          }
           
           const result = await saveTransfers(newRoutes);
   
           if(result.summary) {
               toast({ 
                   title: "Sincronización Completa", 
-                  description: `Análisis: ${analysisResult.count || 0} registros. Operación: ${result.summary.added} nuevas / ${result.summary.updated} actualizadas.` 
+                  description: `Analizador: ${analysisResult.count || 0} TFs. Operación: ${result.summary.added} nuevas / ${result.summary.updated} actualizadas.`, 
               });
               fetchData();
           } else if (result.error) {

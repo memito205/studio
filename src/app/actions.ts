@@ -3890,12 +3890,41 @@ export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'statu
 }
 
 /**
- * Perform a differential sync of raw JSON records from the uploaded Excel
- * specifically for the Warehouse Analyzer collection.
- * It clears records that are not in the new file and updates/adds the rest.
+ * Sync diferencial del Excel hacia `transfers_analysis` (Analizador de Bodega).
+ * - Primero UPSERT de todo lo entrante; luego (opcional) borra lo que ya no viene.
+ *   Antes se borraba primero: si el batch fallaba a mitad, se perdían cientos de TFs.
+ * - `pruneMissing: false` = solo actualizar/agregar (seguro si la UI manda un subset filtrado).
  */
-export async function syncAnalysisRecords(rawJson: any[]): Promise<{ success: boolean; error?: string; count?: number }> {
+export async function syncAnalysisRecords(
+  rawJson: any[],
+  options?: { pruneMissing?: boolean }
+): Promise<{ success: boolean; error?: string; count?: number; pruned?: number }> {
     const analysisCollection = collection(firestore, 'transfers_analysis');
+    const pruneMissing = options?.pruneMissing !== false;
+
+    const pickFrom = (row: any, ...keys: string[]) => {
+        for (const k of keys) {
+            const v = row?.[k];
+            if (v !== undefined && v !== null && String(v).trim() !== '') return v;
+        }
+        return undefined;
+    };
+
+    const resolveNumeroTF = (row: any) =>
+        String(
+            pickFrom(
+                row,
+                'Numero TF',
+                'NUMERO TF',
+                'Número TF',
+                'numeroTF',
+                'Nro documento.2',
+                'Nro documento.',
+                'Nro Documento',
+                'TF',
+                'doc'
+            ) || 'N/A'
+        );
 
     try {
         const snapshot = await getDocs(analysisCollection);
@@ -3908,30 +3937,11 @@ export async function syncAnalysisRecords(rawJson: any[]): Promise<{ success: bo
 
         const incomingDocs = new Map<string, any>();
         rawJson.forEach((row) => {
-            const pick = (...keys: string[]) => {
-                for (const k of keys) {
-                    const v = row[k];
-                    if (v !== undefined && v !== null && String(v).trim() !== '') return v;
-                }
-                return undefined;
-            };
-            const numeroTF = String(
-                pick(
-                    'Numero TF',
-                    'NUMERO TF',
-                    'Número TF',
-                    'numeroTF',
-                    'Nro documento.2',
-                    'Nro documento.',
-                    'Nro Documento',
-                    'TF',
-                    'doc'
-                ) || 'N/A'
-            );
-            const marca = String(pick('Marca', 'MARCA', 'marca') || '')
+            const numeroTF = resolveNumeroTF(row);
+            const marca = String(pickFrom(row, 'Marca', 'MARCA', 'marca') || '')
                 .trim()
                 .toUpperCase();
-            const grupo = String(pick('Grupo', 'GRUPO', 'grupo') || '')
+            const grupo = String(pickFrom(row, 'Grupo', 'GRUPO', 'grupo') || '')
                 .trim()
                 .toUpperCase();
             const key = `${numeroTF}-${marca}-${grupo}`;
@@ -3939,44 +3949,24 @@ export async function syncAnalysisRecords(rawJson: any[]): Promise<{ success: bo
         });
 
         type BatchOp = { type: 'delete' | 'set' | 'update'; ref: any; data?: any };
-        const ops: BatchOp[] = [];
+        const upsertOps: BatchOp[] = [];
+        const deleteOps: BatchOp[] = [];
 
-        existingDocs.forEach((docId, key) => {
-            if (!incomingDocs.has(key)) {
-                ops.push({ type: 'delete', ref: doc(analysisCollection, docId) });
-            }
-        });
-
-        incomingDocs.forEach((row, key) => {
+        incomingDocs.forEach((row) => {
+            const numeroTF = resolveNumeroTF(row);
+            const marca = String(pickFrom(row, 'Marca', 'MARCA', 'marca') || '');
+            const grupo = String(pickFrom(row, 'Grupo', 'GRUPO', 'grupo') || '');
+            const key = `${numeroTF}-${marca.trim().toUpperCase()}-${grupo.trim().toUpperCase()}`;
             const existingId = existingDocs.get(key);
             const docRef = existingId ? doc(analysisCollection, existingId) : doc(analysisCollection);
-            const pick = (...keys: string[]) => {
-                for (const k of keys) {
-                    const v = row[k];
-                    if (v !== undefined && v !== null && String(v).trim() !== '') return v;
-                }
-                return undefined;
-            };
-            const numeroTF = String(
-                pick(
-                    'Numero TF',
-                    'NUMERO TF',
-                    'Número TF',
-                    'numeroTF',
-                    'Nro documento.2',
-                    'Nro documento.',
-                    'Nro Documento',
-                    'TF',
-                    'doc'
-                ) || 'N/A'
-            );
             const dataToSave = {
                 ...row,
                 numeroTF,
-                marca: String(pick('Marca', 'MARCA', 'marca') || ''),
-                grupo: String(pick('Grupo', 'GRUPO', 'grupo') || ''),
+                marca,
+                grupo,
                 bodegaOrigen: String(
-                    pick(
+                    pickFrom(
+                        row,
                         'Bodega Origen',
                         'BOD. SALIDA',
                         'Bod. salida',
@@ -3985,7 +3975,8 @@ export async function syncAnalysisRecords(rawJson: any[]): Promise<{ success: bo
                     ) || 'N/A'
                 ),
                 bodegaDestino: String(
-                    pick(
+                    pickFrom(
+                        row,
                         'Bodega Destino',
                         'BOD. ENTRADA',
                         'Bod. entrada',
@@ -3996,17 +3987,20 @@ export async function syncAnalysisRecords(rawJson: any[]): Promise<{ success: bo
                         'bodegaDestino'
                     ) || 'N/A'
                 ),
-                fecha: pick('Fecha', 'fecha')
-                    ? convertDatesToTimestamps({ f: parseFlexibleDate(pick('Fecha', 'fecha')) }).f
-                    : pick('fechaFinalizado')
+                fecha: pickFrom(row, 'Fecha', 'fecha')
+                    ? convertDatesToTimestamps({
+                          f: parseFlexibleDate(pickFrom(row, 'Fecha', 'fecha')),
+                      }).f
+                    : pickFrom(row, 'fechaFinalizado')
                       ? convertDatesToTimestamps({
-                          f: parseFlexibleDate(pick('fechaFinalizado')),
+                          f: parseFlexibleDate(pickFrom(row, 'fechaFinalizado')),
                         }).f
                       : row.fecha || null,
-                cantidad: Number(pick('Cantidad', 'CANTIDAD', 'cantidad') || 1),
+                cantidad: Number(pickFrom(row, 'Cantidad', 'CANTIDAD', 'cantidad') || 1),
                 codigoAlterno:
                     String(
-                        pick(
+                        pickFrom(
+                            row,
                             'Codigo Alterno',
                             'Código Alterno',
                             'CODIGO ALTERNO',
@@ -4020,25 +4014,39 @@ export async function syncAnalysisRecords(rawJson: any[]): Promise<{ success: bo
                 hoyRuta: row['hoyRuta'] || row['HOY RUTA'] || '',
                 lastSync: new Date(),
             };
-            ops.push({
+            upsertOps.push({
                 type: existingId ? 'update' : 'set',
                 ref: docRef,
                 data: dataToSave,
             });
         });
 
-        const CHUNK = 400;
-        for (let i = 0; i < ops.length; i += CHUNK) {
-            const batch = writeBatch(firestore);
-            for (const op of ops.slice(i, i + CHUNK)) {
-                if (op.type === 'delete') batch.delete(op.ref);
-                else if (op.type === 'update') batch.update(op.ref, op.data);
-                else batch.set(op.ref, op.data);
-            }
-            await batch.commit();
+        if (pruneMissing) {
+            existingDocs.forEach((docId, key) => {
+                if (!incomingDocs.has(key)) {
+                    deleteOps.push({ type: 'delete', ref: doc(analysisCollection, docId) });
+                }
+            });
         }
 
-        return { success: true, count: incomingDocs.size };
+        const commitOps = async (ops: BatchOp[]) => {
+            const CHUNK = 400;
+            for (let i = 0; i < ops.length; i += CHUNK) {
+                const batch = writeBatch(firestore);
+                for (const op of ops.slice(i, i + CHUNK)) {
+                    if (op.type === 'delete') batch.delete(op.ref);
+                    else if (op.type === 'update') batch.update(op.ref, op.data);
+                    else batch.set(op.ref, op.data);
+                }
+                await batch.commit();
+            }
+        };
+
+        // 1) Escribir todo lo nuevo/actualizado. 2) Solo entonces podar ausentes.
+        await commitOps(upsertOps);
+        if (deleteOps.length) await commitOps(deleteOps);
+
+        return { success: true, count: incomingDocs.size, pruned: deleteOps.length };
     } catch (error: any) {
         console.error('Error syncing analysis records:', error);
         return { success: false, error: error.message };

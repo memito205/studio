@@ -60,6 +60,7 @@ const WarehouseAnalyzer: React.FC = () => {
   const [documentNumberFilter, setDocumentNumberFilter] = React.useState('');
   const deferredDocumentNumberFilter = React.useDeferredValue(documentNumberFilter);
   const [dataCount, setDataCount] = React.useState(0);
+  const [filteredCount, setFilteredCount] = React.useState(0);
   const [isSyncing, setIsSyncing] = React.useState(false);
   const [platformFileName, setPlatformFileName] = React.useState<string | null>(null);
   const [warehousePackFileName, setWarehousePackFileName] = React.useState<string | null>(null);
@@ -234,9 +235,14 @@ const WarehouseAnalyzer: React.FC = () => {
 
     setIsSyncing(true);
     try {
-        const result = await syncAnalysisRecords(baseData);
+        // Nunca podar: baseData del analizador ya viene filtrado; borrar el resto
+        // vaciaba transfers_analysis (ej. solo quedaban ~14 TFs y desaparecía 631254).
+        const result = await syncAnalysisRecords(baseData, { pruneMissing: false });
         if (result.success) {
-            toast({ title: "Sincronización Exitosa", description: `Se han actualizado ${result.count} registros en la base de datos.` });
+            toast({
+              title: "Sincronización parcial OK",
+              description: `Se actualizaron ${result.count} registros visibles. Para reemplazar TODO el analizador, vuelva a subir el Excel en Transferencias.`,
+            });
         } else {
             throw new Error(result.error);
         }
@@ -445,6 +451,7 @@ const WarehouseAnalyzer: React.FC = () => {
     });
 
     setBaseData(filteredBaseData);
+    setFilteredCount(filteredBaseData.length);
     
     // Derivar las bodegas disponibles del conjunto de datos ya filtrado
     const warehouses = [...new Set(filteredBaseData.map(row => String(row[newColumnMap.warehouse!])).filter(Boolean))]
@@ -452,8 +459,13 @@ const WarehouseAnalyzer: React.FC = () => {
     setAvailableWarehouses(warehouses);
 
     setError(null);
+    const dropped = dedupedData.length - filteredBaseData.length;
     if (inconsistenciesFound > 0) {
       setInfoMessage(`${inconsistenciesFound} registro(s) con fechas de finalización inconsistentes fueron corregidos (el estado se marcó como no finalizado).`);
+    } else if (dropped > 0) {
+      setInfoMessage(
+        `Base: ${dedupedData.length} líneas → ${filteredBaseData.length} tras excluir bodegas internas (BDTRA/BDIST/…). Si faltan TFs del Excel, re-suba el archivo en Transferencias.`
+      );
     } else {
       setInfoMessage(null);
     }
@@ -902,10 +914,10 @@ const WarehouseAnalyzer: React.FC = () => {
                     <Database className="w-6 h-6 text-blue-600" />
                 </div>
                 <div>
-                    <h3 className="font-semibold text-slate-900">Origen de Datos: Base de Datos (Transferencias)</h3>
+                    <h3 className="font-semibold text-slate-900">Origen de Datos: transfers_analysis (snapshot Excel)</h3>
                     <p className="text-sm text-slate-500">
-                      Se están analizando {dataCount} registros del último archivo sincronizado en Transferencias.
-                      Marca y Grupo incluidos.
+                      DB: {dataCount.toLocaleString()} · En pantalla: {filteredCount.toLocaleString()}.
+                      Si faltan TFs (ej. 631254), re-suba el Excel en Transferencias y luego Actualizar Datos.
                     </p>
                 </div>
             </div>
