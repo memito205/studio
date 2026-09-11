@@ -5,10 +5,9 @@ import { useAuth } from '@/hooks/use-auth-context';
 import { Button } from './ui/button';
 import { auth } from '@/services/firebase';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
-import { useInactivityGuard } from '@/hooks/useInactivityGuard';
 import { PulseDialog } from './PulseDialog';
 import { Badge } from './ui/badge';
-import { Coffee, Play, StopCircle, Clock, ExternalLink, AlertTriangle } from 'lucide-react';
+import { Coffee, Play, Clock } from 'lucide-react';
 
 interface AppShellProps {
   title: string;
@@ -20,15 +19,11 @@ export const AppShell: React.FC<AppShellProps> = ({ title, children }) => {
   const { 
     status, 
     isPaused, 
-    isInRemision, 
     startPause, 
     endPause, 
-    punchInRemision, 
-    punchOut,
     globalPulse 
   } = useSuitePulse();
   
-  const { showModal, justifyInactivity } = useInactivityGuard();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
   const handleLogout = async () => {
@@ -59,29 +54,6 @@ export const AppShell: React.FC<AppShellProps> = ({ title, children }) => {
               Espera a que un administrador reactive la operación.
             </p>
           )}
-        </div>
-      )}
-
-      {/* INACTIVITY MODAL OVERLAY */}
-      {showModal && !isPaused && (
-        <div className="fixed inset-0 z-[90] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-card w-full max-w-md p-8 rounded-2xl shadow-2xl border-2 border-primary/20 animate-in zoom-in-95">
-            <div className="flex items-center gap-3 text-primary mb-4">
-              <AlertTriangle className="w-8 h-8" />
-              <h3 className="text-2xl font-bold">¿Sigues ahí?</h3>
-            </div>
-            <p className="text-muted-foreground mb-8">
-              Detectamos 5 minutos de inactividad. Si estabas en un receso, por favor justifícalo para que no afecte tus indicadores.
-            </p>
-            <div className="grid grid-cols-1 gap-3">
-              <Button size="lg" className="justify-start gap-3 h-14" onClick={() => setIsDialogOpen(true)}>
-                <Coffee className="w-5 h-5" /> Registrar Pausa / Justificar
-              </Button>
-              <Button size="lg" variant="outline" className="justify-start gap-3 h-14" onClick={() => justifyInactivity('Otro')}>
-                <Play className="w-5 h-5" /> Sigo Trabajando
-              </Button>
-            </div>
-          </div>
         </div>
       )}
 
