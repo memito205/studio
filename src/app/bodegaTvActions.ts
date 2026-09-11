@@ -856,8 +856,29 @@ function remainderLegalization(task: {
   };
 }
 
+function looksLikeEmail(value: string): boolean {
+  return String(value || '').includes('@');
+}
+
+/** Preferir nombre de perfil sobre correo/uid guardados en la tarea. */
+function resolveRemainderOperatorName(
+  task: { assignedOperatorId?: string; assignedOperatorName?: string },
+  nameByUid: Map<string, string>
+): string {
+  const uid = String(task.assignedOperatorId || '').trim();
+  const stored = String(task.assignedOperatorName || '').trim();
+  const fromProfile = uid ? nameByUid.get(uid) : undefined;
+
+  if (fromProfile && !looksLikeEmail(fromProfile)) return fromProfile;
+  if (stored && !looksLikeEmail(stored) && stored !== uid) return stored;
+  if (fromProfile) return fromProfile;
+  if (stored && stored !== uid) return stored;
+  return fromProfile || stored || uid || '—';
+}
+
 async function buildRemainderAssignments(
-  _dayKey: string
+  _dayKey: string,
+  nameByUid: Map<string, string>
 ): Promise<BodegaTvRemainderAssignmentRow[]> {
   try {
     const res = await listRemainderAssignmentBoard(250);
@@ -937,7 +958,7 @@ async function buildRemainderAssignments(
     for (const t of candidates) {
       const legal = remainderLegalization(t);
       rows.push({
-        operatorName: t.assignedOperatorName || t.assignedOperatorId || '—',
+        operatorName: resolveRemainderOperatorName(t, nameByUid),
         reference: t.reference,
         rkIdentifier: t.rkIdentifier,
         locationName: t.locationName || locByTaskId.get(t.id) || undefined,
@@ -973,7 +994,12 @@ export async function getBodegaTvSnapshot(): Promise<{
     const profiles = await getAllUserProfiles();
     const nameByUid = new Map<string, string>();
     for (const u of profiles || []) {
-      nameByUid.set(u.uid, u.displayName || u.email || u.uid);
+      const dn = String(u.displayName || '').trim();
+      const email = String(u.email || '').trim();
+      // Preferir nombre real; no usar correo si hay displayName sin @.
+      const label =
+        dn && !looksLikeEmail(dn) ? dn : dn || email || u.uid;
+      nameByUid.set(u.uid, label);
     }
     const uidByNormName = buildUidByNormName(nameByUid);
 
@@ -982,7 +1008,7 @@ export async function getBodegaTvSnapshot(): Promise<{
       buildEtiquetado(dayKey, nameByUid, uidByNormName),
       buildTallado(dayKey, uidByNormName),
       buildRecepcion(dayKey, nameByUid),
-      buildRemainderAssignments(dayKey),
+      buildRemainderAssignments(dayKey, nameByUid),
     ]);
 
     const areas = [empaque, etiquetado, tallado, recepcion];

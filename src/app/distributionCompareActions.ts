@@ -70,6 +70,33 @@ function stripUndefinedDeep(value: unknown): unknown {
   return out;
 }
 
+/** Resuelve nombre legible desde users/{uid}; evita guardar correo/uid como "nombre". */
+async function resolveUserDisplayName(
+  uid: string,
+  fallback?: string
+): Promise<string> {
+  const fb = String(fallback || '').trim();
+  const looksEmail = fb.includes('@');
+  const looksUid = !!uid && fb === uid;
+  if (fb && !looksEmail && !looksUid) return fb;
+
+  try {
+    if (!uid) return fb || 'Operario';
+    const snap = await getDoc(doc(firestore, USERS_COL, uid));
+    if (snap.exists()) {
+      const d = snap.data() as { displayName?: string; email?: string };
+      const dn = String(d.displayName || '').trim();
+      if (dn && !dn.includes('@')) return dn;
+      if (dn) return dn;
+      if (fb) return fb;
+      return String(d.email || uid);
+    }
+  } catch {
+    /* ignore */
+  }
+  return fb || uid || 'Operario';
+}
+
 function normRef(value: unknown): string {
   // Misma normalización que recepción (referenceStats), para que el cruce cuadre.
   return normalizeReceptionReference(String(value ?? ''));
@@ -1047,6 +1074,7 @@ export async function claimDistributionRemainder(input: {
       input.reference
     );
     const now = new Date().toISOString();
+    const operatorName = await resolveUserDisplayName(input.operatorId, input.operatorName);
     const ref = doc(collection(firestore, TASKS_COL));
     const payload: DistributionRemainderTask = stripUndefinedDeep({
       id: ref.id,
@@ -1056,10 +1084,10 @@ export async function claimDistributionRemainder(input: {
       expectedRemainderQty: line.remainderQty,
       status: 'assigned',
       assignedOperatorId: input.operatorId,
-      assignedOperatorName: input.operatorName || input.operatorId,
+      assignedOperatorName: operatorName,
       assignedAt: now,
       assignedBy: input.operatorId,
-      assignedByName: input.operatorName || input.operatorId,
+      assignedByName: operatorName,
       claimedBySelf: true,
       receptionOperationId: compare.receptionOperationId,
       locationId: loc.locationId,
@@ -1133,6 +1161,8 @@ export async function assignDistributionRemainders(input: {
     const now = new Date().toISOString();
     let created = 0;
     let updated = 0;
+    const resolvedNameByUid = new Map<string, string>();
+    const assignedByName = await resolveUserDisplayName(input.assignedBy, input.assignedByName);
 
     for (const a of assignments) {
       const line = lineByRef.get(a.reference);
@@ -1141,6 +1171,12 @@ export async function assignDistributionRemainders(input: {
       const prev = existingByRef.get(a.reference);
       if (prev && (prev.data.status === 'submitted' || prev.data.status === 'validated')) {
         continue;
+      }
+
+      let operatorName = resolvedNameByUid.get(a.operatorId);
+      if (!operatorName) {
+        operatorName = await resolveUserDisplayName(a.operatorId, a.operatorName);
+        resolvedNameByUid.set(a.operatorId, operatorName);
       }
 
       const loc = await resolveReceptionLocationForReference(
@@ -1153,10 +1189,10 @@ export async function assignDistributionRemainders(input: {
           expectedRemainderQty: line.remainderQty,
           status: 'assigned' satisfies DistributionRemainderTaskStatus,
           assignedOperatorId: a.operatorId,
-          assignedOperatorName: a.operatorName,
+          assignedOperatorName: operatorName,
           assignedAt: now,
           assignedBy: input.assignedBy,
-          assignedByName: input.assignedByName || null,
+          assignedByName: assignedByName || null,
           claimedBySelf: false,
           receptionOperationId: compare.receptionOperationId || null,
           locationId: loc.locationId || null,
@@ -1182,10 +1218,10 @@ export async function assignDistributionRemainders(input: {
           expectedRemainderQty: line.remainderQty,
           status: 'assigned',
           assignedOperatorId: a.operatorId,
-          assignedOperatorName: a.operatorName,
+          assignedOperatorName: operatorName,
           assignedAt: now,
           assignedBy: input.assignedBy,
-          assignedByName: input.assignedByName,
+          assignedByName: assignedByName,
           claimedBySelf: false,
           receptionOperationId: compare.receptionOperationId,
           locationId: loc.locationId,
