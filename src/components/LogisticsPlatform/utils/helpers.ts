@@ -1097,8 +1097,9 @@ export const generateWarehousePdf = (
     summaryData: AnalysisResult | undefined,
     slaData: SlaAnalysisData | undefined,
     pendingData: PendingDocsAnalysisData | undefined,
-    brandData: BrandSummaryRecord[] | undefined
-) => {
+    brandData: BrandSummaryRecord[] | undefined,
+    options?: { download?: boolean }
+): { blob: Blob; fileName: string } => {
 const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
     const marginLeft = 15;
     const marginRight = 15;
@@ -1342,7 +1343,12 @@ const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
     }
 
     const dateStr = new Date().toISOString().slice(0, 10);
-    doc.save(`Reporte_Bodega_${warehouseName.replace(/ /g, '_')}_${dateStr}.pdf`);
+    const fileName = `Reporte_Bodega_${warehouseName.replace(/ /g, '_')}_${dateStr}.pdf`;
+    const blob = doc.output('blob');
+    if (options?.download !== false) {
+      doc.save(fileName);
+    }
+    return { blob, fileName };
 };
 
 export const generateMainRouteTemplate = () => {

@@ -4,6 +4,7 @@
 
 
 import React, { useState } from 'react';
+import JSZip from 'jszip';
 import type { ReportData } from '../types';
 import { TableIcon, ChevronDownIcon, PdfFileIcon, TruckIcon, CheckCircleIcon, PackageIcon } from './icons';
 import { generateWarehousePdf } from '../utils/helpers';
@@ -18,6 +19,7 @@ const PendingDocsAnalysisTable: React.FC<PendingDocsAnalysisTableProps> = ({ rep
   const { pendingDocsAnalysisData, slaAnalysisData, analysisData, brandSummaryByWarehouse } = reportData;
   const [expandedRows, setExpandedRows] = useState<string[]>([]);
   const [expandedSummaries, setExpandedSummaries] = useState<string[]>([]);
+  const [isExportingAll, setIsExportingAll] = useState(false);
 
   const handleToggleRow = (warehouse: string) => {
     setExpandedRows(prev => 
@@ -35,7 +37,7 @@ const PendingDocsAnalysisTable: React.FC<PendingDocsAnalysisTableProps> = ({ rep
     );
   };
 
-  const handleGeneratePdf = (warehouseName: string) => {
+  const buildWarehousePdf = (warehouseName: string, download: boolean) => {
     const warehouseSlaData = slaAnalysisData.find(
         (data) => data.warehouse === warehouseName
     );
@@ -50,21 +52,66 @@ const PendingDocsAnalysisTable: React.FC<PendingDocsAnalysisTableProps> = ({ rep
     )?.summary;
 
     if (!warehouseSlaData && !warehousePendingData && !warehouseSummaryData) {
-        alert(`No se encontraron datos para la bodega ${warehouseName}.`);
-        return;
+        return null;
     }
 
-    generateWarehousePdf(warehouseName, warehouseSummaryData, warehouseSlaData, warehousePendingData, warehouseBrandSummary);
+    return generateWarehousePdf(
+      warehouseName,
+      warehouseSummaryData,
+      warehouseSlaData,
+      warehousePendingData,
+      warehouseBrandSummary,
+      { download }
+    );
   };
 
-  const handleGenerateAllPdfs = () => {
+  const handleGeneratePdf = (warehouseName: string) => {
+    const result = buildWarehousePdf(warehouseName, true);
+    if (!result) {
+        alert(`No se encontraron datos para la bodega ${warehouseName}.`);
+    }
+  };
+
+  const handleGenerateAllPdfs = async () => {
     if (!analysisData || analysisData.length === 0) {
-        alert("No hay datos de bodegas para generar PDFs.");
+        alert('No hay datos de bodegas para generar PDFs.');
         return;
     }
-    analysisData.forEach(item => {
-        handleGeneratePdf(item.name);
-    });
+
+    setIsExportingAll(true);
+    try {
+      const zip = new JSZip();
+      let added = 0;
+
+      for (const item of analysisData) {
+        const result = buildWarehousePdf(item.name, false);
+        if (!result) continue;
+        zip.file(result.fileName, result.blob);
+        added += 1;
+      }
+
+      if (added === 0) {
+        alert('No se generó ningún PDF para empaquetar.');
+        return;
+      }
+
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const zipName = `Reportes_Bodega_Todos_${dateStr}.zip`;
+      const url = URL.createObjectURL(zipBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = zipName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error al exportar PDFs en ZIP:', error);
+      alert('No se pudo generar el ZIP con todos los PDFs. Intenta de nuevo.');
+    } finally {
+      setIsExportingAll(false);
+    }
   };
   
   if (!analysisData || analysisData.length === 0) {
@@ -101,11 +148,11 @@ const PendingDocsAnalysisTable: React.FC<PendingDocsAnalysisTableProps> = ({ rep
                 <button 
                     onClick={handleGenerateAllPdfs}
                     className="inline-flex items-center px-4 py-2 border border-red-500 shadow-sm text-sm font-medium rounded-md text-red-600 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50"
-                    disabled={!analysisData || analysisData.length === 0}
-                    aria-label="Exportar todos los reportes de bodega a PDF"
+                    disabled={isExportingAll || !analysisData || analysisData.length === 0}
+                    aria-label="Exportar todos los reportes de bodega a un ZIP"
                 >
                     <PdfFileIcon className="h-5 w-5 mr-2" />
-                    Exportar Todos los PDFs
+                    {isExportingAll ? 'Generando ZIP...' : 'Exportar Todos los PDFs'}
                 </button>
             </div>
         </div>
