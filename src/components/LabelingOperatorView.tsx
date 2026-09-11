@@ -166,6 +166,8 @@ const PauseReasonDialog: React.FC<PauseReasonDialogProps> = ({ isOpen, onOpenCha
 interface LabelingOperatorViewProps {
     operations?: LabelingOperation[];
     onRefresh?: () => void;
+    /** Actualiza una sola tarea en memoria (evita recargar todo el tablero al confirmar caja). */
+    onOperationUpdated?: (operation: LabelingOperation) => void;
     isExternalPortal?: boolean;
     externalVendor?: (ExternalVendor & { operatorName?: string }) | null;
 }
@@ -410,6 +412,7 @@ const OperatorTaskCard: React.FC<{
 export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({ 
     operations: propOperations, 
     onRefresh: propOnRefresh,
+    onOperationUpdated,
     isExternalPortal = false,
     externalVendor = null
 }) => {
@@ -691,14 +694,20 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
             title: 'Última caja · tarea finalizada',
             description: `Todas las cajas confirmadas (${result.confirmedBoxes}/${result.totalBoxes}). ${(result.completedUnitsLive || 0).toLocaleString()} und.${residualNote}`,
           });
+          // Finalización puede crear remanente / cambiar estado: refresco completo.
+          handleRefresh();
         } else {
           toast({
             title: 'Caja confirmada',
             description: `Progreso: ${result.confirmedBoxes || 0}/${result.totalBoxes || 0} cajas · ${(result.completedUnitsLive || 0).toLocaleString()} und${result.error ? ` · ${result.error}` : ''}`,
           });
+          if (result.operation && onOperationUpdated) {
+            onOperationUpdated(result.operation);
+          } else {
+            handleRefresh();
+          }
         }
-        handleRefresh();
-        const logRes = await getLabelingActivityLog(operationId, { limitN: 120 });
+        const logRes = await getLabelingActivityLog(operationId, { limitN: 80 });
         if (logRes.success && logRes.data) {
           setActivityByOp((prev) => ({ ...prev, [operationId]: logRes.data! }));
         }

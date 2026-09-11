@@ -1162,21 +1162,33 @@ export async function updateNovelty(noveltyId: string, updates: Partial<Omit<Ite
 export async function createPackingUnit(receptionId: string, userId: string): Promise<{ success: boolean; error?: string; newUnit?: PackingUnit }> {
   let newUnitData: PackingUnit | null = null;
   try {
-      await runTransaction(firestore, async (transaction) => {
-          const receptionRef = doc(firestore, 'receptionOperations', receptionId);
-          const unitsCollectionRef = collection(firestore, 'packingUnits');
-          const unitsQuery = query(unitsCollectionRef, where('reception_id', '==', receptionId));
+      const receptionRef = doc(firestore, 'receptionOperations', receptionId);
+      const unitsCollectionRef = collection(firestore, 'packingUnits');
 
-          // Run the query outside of the transaction to get the count and find the max ID
-          const unitsSnapshot = await getDocs(unitsQuery);
-          
-          let newUnitId = 1;
-          if (!unitsSnapshot.empty) {
-              const maxId = unitsSnapshot.docs.reduce((max, doc) => Math.max(max, doc.data().id), 0);
-              newUnitId = maxId + 1;
+      // Contador en la recepción: evita leer todas las cajas en cada creación.
+      const receptionSnap = await getDoc(receptionRef);
+      if (!receptionSnap.exists()) {
+        return { success: false, error: 'La operación de recepción no existe.' };
+      }
+      let baseline = Number(receptionSnap.data()?.lastPackingUnitId) || 0;
+      if (baseline < 1) {
+        const unitsSnapshot = await getDocs(
+          query(unitsCollectionRef, where('reception_id', '==', receptionId), limit(500))
+        );
+        baseline = unitsSnapshot.docs.reduce(
+          (max, d) => Math.max(max, Number(d.data().id) || 0),
+          0
+        );
+      }
+
+      await runTransaction(firestore, async (transaction) => {
+          const fresh = await transaction.get(receptionRef);
+          if (!fresh.exists()) {
+            throw new Error('La operación de recepción no existe.');
           }
+          const current = Math.max(Number(fresh.data()?.lastPackingUnitId) || 0, baseline);
+          const newUnitId = current + 1;
           
-          // Now, perform the write operation inside the transaction
           const newUnitRef = doc(unitsCollectionRef);
           const newUnit: Omit<PackingUnit, 'firestoreId'> = {
               id: newUnitId,
@@ -1188,8 +1200,11 @@ export async function createPackingUnit(receptionId: string, userId: string): Pr
           };
 
           transaction.set(newUnitRef, convertDatesToTimestamps(newUnit));
+          transaction.update(receptionRef, {
+            lastPackingUnitId: newUnitId,
+            updated_at: new Date().toISOString(),
+          });
 
-          // Prepare the data to be returned, including the new Firestore-generated ID
           newUnitData = {
               ...newUnit,
               firestoreId: newUnitRef.id,
@@ -2326,6 +2341,22 @@ export async function convertPendingPackUnitsForReception(receptionId: string): 
 }
 
 
+export async function getLabelingOperationById(
+  operationId: string
+): Promise<{ success: boolean; data?: LabelingOperation | null; error?: string }> {
+  try {
+    if (!operationId) return { success: false, error: 'Tarea inválida.' };
+    const snap = await getDoc(doc(firestore, 'labelingOperations', operationId));
+    if (!snap.exists()) return { success: true, data: null };
+    return {
+      success: true,
+      data: { id: snap.id, ...convertTimestampsToDates(snap.data()) } as LabelingOperation,
+    };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'No se pudo cargar la tarea.' };
+  }
+}
+
 export async function loadLabelingOperations(options?: {
   limitN?: number;
   receptionOperationId?: string;
@@ -3103,6 +3134,8 @@ export async function confirmLabelingPackUnit(
   residualBoxes?: number;
   needsLocation?: boolean;
   candidateLocations?: string[];
+  /** Snapshot liviano para actualizar UI sin recargar todo el tablero. */
+  operation?: LabelingOperation;
 }> {
   try {
     if (!operationId) {
@@ -3119,6 +3152,7 @@ export async function confirmLabelingPackUnit(
     let completedUnitsLive = 0;
     let confirmedBoxes = 0;
     let totalBoxes = 0;
+    let operationSnapshot: LabelingOperation | undefined;
 
     await runTransaction(firestore, async (transaction) => {
       const operationRef = doc(firestore, 'labelingOperations', operationId);
@@ -3221,6 +3255,13 @@ export async function confirmLabelingPackUnit(
           })
         )
       );
+
+      operationSnapshot = {
+        ...operationData,
+        labelingPackPlan: plan,
+        completedUnitsLive,
+        updatedAt: nowIso,
+      };
     });
 
     // Última caja confirmada → finalizar automáticamente.
@@ -3239,11 +3280,13 @@ export async function confirmLabelingPackUnit(
           confirmedBoxes,
           totalBoxes,
           autoFinished: false,
+          operation: operationSnapshot,
           error: finish.error
             ? `Caja OK, pero no se pudo auto-finalizar: ${finish.error}`
             : undefined,
         };
       }
+      const finishedOp = await getLabelingOperationById(operationId);
       return {
         success: true,
         completedUnitsLive,
@@ -3252,10 +3295,17 @@ export async function confirmLabelingPackUnit(
         autoFinished: true,
         residualCreated: finish.residualCreated,
         residualBoxes: finish.residualBoxes,
+        operation: finishedOp.data || operationSnapshot,
       };
     }
 
-    return { success: true, completedUnitsLive, confirmedBoxes, totalBoxes };
+    return {
+      success: true,
+      completedUnitsLive,
+      confirmedBoxes,
+      totalBoxes,
+      operation: operationSnapshot,
+    };
   } catch (error: any) {
     console.error('confirmLabelingPackUnit:', error);
     return {

@@ -25,6 +25,8 @@ interface ReceptionScanInputProps {
   expectedItems: ReceptionExpectedItem[];
   referenceLocationMap: Map<string, string>;
   totalItemsInActiveUnit: number; // Propiedad añadida para recibir el conteo correcto
+  /** Catálogo ya cargado en cliente: evita lookupBarcode en el beep típico. */
+  productDB?: ProductDatabaseItem[];
 }
 
 export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
@@ -38,6 +40,7 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
   expectedItems,
   referenceLocationMap,
   totalItemsInActiveUnit, // Usar esta propiedad
+  productDB = [],
 }) => {
   const [barcodeInput, setBarcodeInput] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -48,6 +51,25 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
 
   const expectedBarcodes = useMemo(() => new Set(expectedItems.map(item => String(item.barcode).trim())), [expectedItems]);
   const expectedRefSizePairs = useMemo(() => new Set(expectedItems.map(item => `${String(item.reference || '').trim()}|${String(item.size || '').trim()}`)), [expectedItems]);
+  const productByBarcode = useMemo(() => {
+    const map = new Map<string, ProductDatabaseItem>();
+    for (const p of productDB) {
+      const code = String(p.codigoBarras || p.id || '').trim();
+      if (code) map.set(code, p);
+    }
+    for (const item of expectedItems) {
+      const code = String(item.barcode || '').trim();
+      if (!code || map.has(code)) continue;
+      map.set(code, {
+        id: code,
+        codigoBarras: code,
+        referencia: item.reference,
+        talla: item.size,
+        item: item.item,
+      });
+    }
+    return map;
+  }, [productDB, expectedItems]);
 
   useEffect(() => {
     if (!isSubmitting) {
@@ -68,7 +90,15 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
 
     setIsSubmitting(true);
     const scannedBarcode = barcodeInput.trim();
-    const result: PackingScanResult = await lookupBarcode(scannedBarcode, receptionId);
+    const localProduct = productByBarcode.get(scannedBarcode);
+    const result: PackingScanResult = localProduct
+      ? {
+          status: 'success',
+          message: `Producto encontrado: ${localProduct.referencia || localProduct.reference || scannedBarcode}`,
+          scannedBarcode,
+          item: localProduct,
+        }
+      : await lookupBarcode(scannedBarcode, receptionId);
 
     if (result.status === 'success' && result.item) {
         const itemRef = (result.item.referencia || result.item.reference || '').trim();

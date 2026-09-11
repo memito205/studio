@@ -461,6 +461,18 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     }
   }, [recalculateProductivity, toast]);
 
+  const handleOperationUpdated = useCallback(
+    (updated: LabelingOperation) => {
+      setOperations((prev) => {
+        const next = prev.map((op) => (op.id === updated.id ? { ...op, ...updated } : op));
+        // Recalcular con logs actuales (sin nuevas lecturas masivas).
+        queueMicrotask(() => recalculateProductivity(next, allPulsesRef.current));
+        return next;
+      });
+    },
+    [recalculateProductivity]
+  );
+
   const handleAdminPauseConfirm = async (reason: string, startTime: string) => {
     if (!operationToPause) return;
     setIsSubmitting(true);
@@ -927,11 +939,19 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
                     />
                     )
                  ) : (
-                    <LabelingOperatorView operations={userOperations} onRefresh={fetchOperationsAndProductivity} />
+                    <LabelingOperatorView
+                      operations={userOperations}
+                      onRefresh={fetchOperationsAndProductivity}
+                      onOperationUpdated={handleOperationUpdated}
+                    />
                  )}
                </div>
             ) : (
-                 <LabelingOperatorView operations={userOperations} onRefresh={fetchOperationsAndProductivity} />
+                 <LabelingOperatorView
+                   operations={userOperations}
+                   onRefresh={fetchOperationsAndProductivity}
+                   onOperationUpdated={handleOperationUpdated}
+                 />
             )}
           </CardContent>
         </Card>

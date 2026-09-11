@@ -86,55 +86,77 @@ async function listInProgressUnits(): Promise<TalladoUnit[]> {
   return snap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoUnit));
 }
 
+function talladoCodeVariants(code: string, rawCode?: string): string[] {
+  return Array.from(
+    new Set(
+      [
+        code,
+        code.replace(/-/g, "'"),
+        code.replace(/-/g, ','),
+        code.replace(/-/g, ''),
+        String(rawCode || '').trim(),
+        String(rawCode || '')
+          .trim()
+          .toUpperCase(),
+      ].filter(Boolean)
+    )
+  );
+}
+
+/** Consultas en paralelo. Primero código normalizado (3 lecturas); variantes solo si no hay match. */
+async function findUnitsMatchingCode(scanCode: string): Promise<TalladoUnit[]> {
+  const code = normalizeTalladoScanCode(scanCode);
+  if (!code) return [];
+
+  const fields = ['scanCode', 'numeroTF', 'codigoAlterno'] as const;
+  const collect = (snaps: Awaited<ReturnType<typeof getDocs>>[]) => {
+    const found = new Map<string, TalladoUnit>();
+    for (const snap of snaps) {
+      for (const d of snap.docs) {
+        found.set(d.id, { id: d.id, ...d.data() } as TalladoUnit);
+      }
+    }
+    return Array.from(found.values())
+      .filter((u) => unitMatchesScanCode(u, code))
+      .sort((a, b) =>
+        String(b.endedAt || b.startedAt).localeCompare(String(a.endedAt || a.startedAt))
+      );
+  };
+
+  const primarySnaps = await Promise.all(
+    fields.map((field) =>
+      getDocs(query(collection(firestore, UNITS_COL), where(field, '==', code), limit(20)))
+    )
+  );
+  const primary = collect(primarySnaps);
+  if (primary.length > 0) return primary;
+
+  const otherVariants = talladoCodeVariants(code).filter((v) => v !== code);
+  if (otherVariants.length === 0) return [];
+
+  const variantSnaps = await Promise.all(
+    fields.flatMap((field) =>
+      otherVariants.map((variant) =>
+        getDocs(query(collection(firestore, UNITS_COL), where(field, '==', variant), limit(20)))
+      )
+    )
+  );
+  return collect(variantSnaps);
+}
+
+/** Unidades abiertas que coinciden con el código (sin listar las 500 in_progress). */
+async function findInProgressUnitsByCode(scanCode: string): Promise<TalladoUnit[]> {
+  const matches = await findUnitsMatchingCode(scanCode);
+  return matches
+    .filter((u) => u.status === 'in_progress')
+    .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+}
+
 async function listActiveShifts(): Promise<TalladoShift[]> {
   const snap = await getDocs(
     query(collection(firestore, SHIFTS_COL), where('status', '==', 'active'), limit(200))
   );
   return snap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoShift));
-}
-
-/** Busca unidades ya registradas (cualquier estado) que coincidan con el código / TF / alterno. */
-async function findUnitsMatchingCode(scanCode: string): Promise<TalladoUnit[]> {
-  const code = normalizeTalladoScanCode(scanCode);
-  if (!code) return [];
-
-  const variants = Array.from(
-    new Set([code, code.replace(/-/g, "'"), code.replace(/-/g, ','), code.replace(/-/g, '')])
-  );
-
-  const found = new Map<string, TalladoUnit>();
-  const fields = ['scanCode', 'numeroTF', 'codigoAlterno'] as const;
-  for (const field of fields) {
-    for (const variant of variants) {
-      const snap = await getDocs(
-        query(collection(firestore, UNITS_COL), where(field, '==', variant), limit(40))
-      );
-      for (const d of snap.docs) {
-        found.set(d.id, { id: d.id, ...d.data() } as TalladoUnit);
-      }
-    }
-  }
-
-  // Filtrar solo coincidencias reales del código (por si codigoAlterno vacío trajo ruido)
-  const matched = Array.from(found.values()).filter((u) => unitMatchesScanCode(u, code));
-  if (matched.length > 0) {
-    return matched.sort((a, b) =>
-      String(b.endedAt || b.startedAt).localeCompare(String(a.endedAt || a.startedAt))
-    );
-  }
-
-  // Fallback: recientes por si el código se guardó con formato raro
-  const recent = await getDocs(query(collection(firestore, UNITS_COL), limit(400)));
-  for (const d of recent.docs) {
-    const u = { id: d.id, ...d.data() } as TalladoUnit;
-    if (unitMatchesScanCode(u, code)) found.set(u.id, u);
-  }
-
-  return Array.from(found.values())
-    .filter((u) => unitMatchesScanCode(u, code))
-    .sort((a, b) =>
-      String(b.endedAt || b.startedAt).localeCompare(String(a.endedAt || a.startedAt))
-    );
 }
 
 function alreadyDoneError(unit: TalladoUnit): string {
@@ -224,35 +246,34 @@ function catalogToLookup(scanCode: string, item: TalladoCatalogItem): TalladoTra
 }
 
 async function lookupCatalogForTallado(scanCode: string): Promise<TalladoTransferLookup | null> {
-  const variants = Array.from(
-    new Set([
-      scanCode,
-      scanCode.replace(/-/g, "'"),
-      scanCode.replace(/-/g, ','),
-      scanCode.replace(/-/g, ''),
-    ])
-  );
+  const variants = talladoCodeVariants(scanCode);
 
-  for (const variant of variants) {
-    const snap = await getDocs(
-      query(
-        collection(firestore, CATALOG_COL),
-        where('codigoBarras', '==', variant),
-        where('active', '==', true),
-        limit(5)
-      )
-    );
-    if (!snap.empty) {
+  const indexedSnaps = await Promise.all(
+    variants.map((variant) =>
+      getDocs(
+        query(
+          collection(firestore, CATALOG_COL),
+          where('codigoBarras', '==', variant),
+          where('active', '==', true),
+          limit(5)
+        )
+      ).catch(() => null)
+    )
+  );
+  for (const snap of indexedSnaps) {
+    if (snap && !snap.empty) {
       const item = { id: snap.docs[0].id, ...snap.docs[0].data() } as TalladoCatalogItem;
       return catalogToLookup(scanCode, item);
     }
   }
 
-  // Fallback sin índice compuesto: buscar solo por código
-  for (const variant of variants) {
-    const snap = await getDocs(
-      query(collection(firestore, CATALOG_COL), where('codigoBarras', '==', variant), limit(5))
-    );
+  // Fallback sin índice compuesto: buscar solo por código (paralelo)
+  const plainSnaps = await Promise.all(
+    variants.map((variant) =>
+      getDocs(query(collection(firestore, CATALOG_COL), where('codigoBarras', '==', variant), limit(5)))
+    )
+  );
+  for (const snap of plainSnaps) {
     if (!snap.empty) {
       const item = { id: snap.docs[0].id, ...snap.docs[0].data() } as TalladoCatalogItem;
       if (item.active === false) continue;
@@ -271,48 +292,45 @@ export async function lookupTransferForTallado(
     if (!scanCode) return { success: false, error: 'Escanee un código válido.' };
 
     const col = collection(firestore, TRANSFERS_COL);
+    const digits = scanCode.replace(/\D/g, '');
+    const altVariants = talladoCodeVariants(scanCode, rawCode).filter((v) => v !== scanCode);
 
-    const byTf = await getDocs(query(col, where('numeroTF', '==', scanCode), limit(50)));
+    // Primera oleada en paralelo: TF exacto, dígitos, alterno exacto
+    const [byTf, byDigits, byAlt] = await Promise.all([
+      getDocs(query(col, where('numeroTF', '==', scanCode), limit(50))),
+      digits && digits !== scanCode
+        ? getDocs(query(col, where('numeroTF', '==', digits), limit(50)))
+        : Promise.resolve(null),
+      getDocs(query(col, where('codigoAlterno', '==', scanCode), limit(50))),
+    ]);
+
     if (!byTf.empty) {
       const docs = byTf.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
       return { success: true, data: aggregateTransfers(scanCode, 'numeroTF', docs) };
     }
-
-    // Variantes comunes de numeroTF (con/sin ceros / prefijo TF)
-    const digits = scanCode.replace(/\D/g, '');
-    if (digits && digits !== scanCode) {
-      const byDigits = await getDocs(query(col, where('numeroTF', '==', digits), limit(50)));
-      if (!byDigits.empty) {
-        const docs = byDigits.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
-        return { success: true, data: aggregateTransfers(scanCode, 'numeroTF', docs) };
-      }
+    if (byDigits && !byDigits.empty) {
+      const docs = byDigits.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
+      return { success: true, data: aggregateTransfers(scanCode, 'numeroTF', docs) };
     }
-
-    const byAlt = await getDocs(query(col, where('codigoAlterno', '==', scanCode), limit(50)));
     if (!byAlt.empty) {
       const docs = byAlt.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
       return { success: true, data: aggregateTransfers(scanCode, 'codigoAlterno', docs) };
     }
 
-    // Variantes guardadas con ' o , en vez de -
-    const altVariants = Array.from(
-      new Set([
-        scanCode.replace(/-/g, "'"),
-        scanCode.replace(/-/g, ','),
-        String(rawCode || '').trim(),
-        String(rawCode || '').trim().toUpperCase(),
-      ])
-    ).filter((v) => v && v !== scanCode);
-
-    for (const variant of altVariants) {
-      const byVariant = await getDocs(query(col, where('codigoAlterno', '==', variant), limit(50)));
-      if (!byVariant.empty) {
-        const docs = byVariant.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
-        return { success: true, data: aggregateTransfers(scanCode, 'codigoAlterno', docs) };
+    if (altVariants.length > 0) {
+      const variantSnaps = await Promise.all(
+        altVariants.map((variant) =>
+          getDocs(query(col, where('codigoAlterno', '==', variant), limit(50)))
+        )
+      );
+      for (const byVariant of variantSnaps) {
+        if (!byVariant.empty) {
+          const docs = byVariant.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
+          return { success: true, data: aggregateTransfers(scanCode, 'codigoAlterno', docs) };
+        }
       }
     }
 
-    // Alternativa: catálogo Excel (caja / ref / talla / cant) — destino SIN REMISIONAR
     const fromCatalog = await lookupCatalogForTallado(scanCode);
     if (fromCatalog) {
       return { success: true, data: fromCatalog };
@@ -458,9 +476,7 @@ export async function startTalladoUnit(input: {
     }
 
     // Global: no permitir la misma unidad activa dos veces (cualquier turno)
-    const openUnits = (await listInProgressUnits())
-      .filter((u) => unitMatchesScanCode(u, scanCode))
-      .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+    const openUnits = await findInProgressUnitsByCode(scanCode);
     if (openUnits.length > 0) {
       const existing = openUnits[0];
       if (existing.shiftId === input.shiftId) {
@@ -521,9 +537,7 @@ export async function finishTalladoUnit(input: {
     const scanCode = normalizeTalladoScanCode(input.scanCode);
     if (!input.shiftId || !scanCode) return { success: false, error: 'Datos incompletos.' };
 
-    const matches = (await listInProgressUnits())
-      .filter((u) => unitMatchesScanCode(u, scanCode))
-      .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+    const matches = await findInProgressUnitsByCode(scanCode);
 
     if (matches.length === 0) {
       return { success: false, error: 'No hay Inicio abierto para este código.' };
@@ -580,9 +594,7 @@ export async function scanTalladoCode(input: {
     const scanCode = normalizeTalladoScanCode(input.rawCode);
     if (!scanCode) return { success: false, error: 'Código vacío.' };
 
-    const openMatches = (await listInProgressUnits())
-      .filter((u) => unitMatchesScanCode(u, scanCode))
-      .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+    const openMatches = await findInProgressUnitsByCode(scanCode);
 
     if (openMatches.length > 0) {
       const fin = await finishTalladoUnit({

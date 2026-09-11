@@ -767,6 +767,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
             expectedItems={expectedItems}
             referenceLocationMap={referenceLocationMap}
             totalItemsInActiveUnit={totalItemsInActiveUnit}
+            productDB={productDB}
           />
          <ReceptionSummary 
             operation={operation}
