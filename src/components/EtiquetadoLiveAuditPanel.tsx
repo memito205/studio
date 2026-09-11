@@ -129,6 +129,14 @@ export const EtiquetadoLiveAuditPanel: React.FC<Props> = ({ day }) => {
       });
       return;
     }
+    const isCountingFinish = row.source === 'finish' && !row.excluded;
+    const ok = window.confirm(
+      isCountingFinish
+        ? `¿Borrar la finalización de ${row.reference} (${row.units} und)?\n\nDejará de sumar a la productividad del día. Si era el único FINISH, la tarea vuelve a Pausada.`
+        : `¿Borrar este registro (${sourceLabel(row.source)} · ${row.reference})?`
+    );
+    if (!ok) return;
+
     setSavingId(row.id);
     try {
       const r = await deleteLabelingActivityLog(row.operationId, row.logId);
@@ -136,7 +144,12 @@ export const EtiquetadoLiveAuditPanel: React.FC<Props> = ({ day }) => {
         toast({ variant: 'destructive', title: 'Error al borrar', description: r.error });
         return;
       }
-      toast({ title: 'Log borrado', description: 'Ya no suma al total.' });
+      toast({
+        title: 'Log borrado',
+        description: r.reopened
+          ? 'Ya no suma al total. La tarea quedó en Pausada para reabrir el trabajo.'
+          : 'Ya no suma al total.',
+      });
       await load();
     } finally {
       setSavingId(null);
@@ -212,7 +225,8 @@ export const EtiquetadoLiveAuditPanel: React.FC<Props> = ({ day }) => {
             <CardTitle className="text-lg">Auditoría Bodega Live · Etiquetado</CardTitle>
             <CardDescription className="mt-1">
               Qué está sumando el TV el {format(day, "d MMM yyyy", { locale: es })}: cada FINISH y
-              cada caja LIVE del día. Si una fecha está mal, corrígela aquí.
+              cada caja LIVE del día. Corrige fecha/und o borra un FINISH equivocado (deja de
+              sumar productividad).
             </CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -382,23 +396,22 @@ export const EtiquetadoLiveAuditPanel: React.FC<Props> = ({ day }) => {
                                   </>
                                 )}
                               </Button>
-                            ) : (
-                              <Button
-                                size="sm"
-                                variant="destructive"
-                                disabled={!row.logId || savingId === row.id}
-                                onClick={() => void deleteRow(row)}
-                              >
-                                {savingId === row.id ? (
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                ) : (
-                                  <>
-                                    <Trash2 className="mr-1 h-3.5 w-3.5" />
-                                    Borrar
-                                  </>
-                                )}
-                              </Button>
-                            )}
+                            ) : null}
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              disabled={!row.logId || savingId === row.id}
+                              onClick={() => void deleteRow(row)}
+                            >
+                              {savingId === row.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <>
+                                  <Trash2 className="mr-1 h-3.5 w-3.5" />
+                                  Borrar
+                                </>
+                              )}
+                            </Button>
                           </div>
                         </TableCell>
                       </TableRow>
@@ -415,10 +428,10 @@ export const EtiquetadoLiveAuditPanel: React.FC<Props> = ({ day }) => {
               </Table>
             </div>
             <p className="text-xs text-muted-foreground">
-              El total solo cuenta un FINISH por tarea. Si ves duplicados, usa{' '}
-              <strong>Eliminar duplicados</strong> (borra los extras en Firestore). Corregir und solo
-              cambia ese log — ya no reescribe los demás. Si pusiste la mitad como parche, restaura el
-              valor real en el FINISH que quede.
+              El total solo cuenta un FINISH por tarea. Si alguien finalizó mal y te infló el día:{' '}
+              <strong>Borrar</strong> ese FINISH (deja de sumar; la tarea vuelve a Pausada). Si ves
+              duplicados, usa <strong>Eliminar duplicados</strong>. Corregir und/fecha solo cambia
+              ese log.
             </p>
           </>
         ) : (

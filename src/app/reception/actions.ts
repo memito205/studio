@@ -2667,25 +2667,57 @@ export async function correctLabelingActivityLogUnits(
   }
 }
 
-/** Borra un log de actividad concreto (p. ej. FINISH duplicado). */
+/**
+ * Borra un log de actividad concreto (FINISH / UNIT_COMPLETE / etc.).
+ * Si borra el último FINISH de una tarea Completada, la reabre en Pausada
+ * para que deje de sumar productividad cerrada y se pueda finalizar bien después.
+ */
 export async function deleteLabelingActivityLog(
   operationId: string,
   logId: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; reopened?: boolean; error?: string }> {
   try {
     if (!operationId || !logId) {
       return { success: false, error: 'Tarea o log inválido.' };
     }
+    const opRef = doc(firestore, 'labelingOperations', operationId);
     const logRef = doc(firestore, 'labelingOperations', operationId, 'activityLog', logId);
-    const logSnap = await getDoc(logRef);
+    const [opSnap, logSnap] = await Promise.all([getDoc(opRef), getDoc(logRef)]);
     if (!logSnap.exists()) {
       return { success: false, error: 'El registro de actividad no existe.' };
     }
+
+    const logData = logSnap.data() as LabelingActivityLog;
+    const wasFinish = logData.type === 'FINISH';
     await deleteDoc(logRef);
-    await updateDoc(doc(firestore, 'labelingOperations', operationId), {
-      updatedAt: Timestamp.now(),
-    });
-    return { success: true };
+
+    let reopened = false;
+    if (wasFinish && opSnap.exists()) {
+      const op = { id: opSnap.id, ...convertTimestampsToDates(opSnap.data()) } as LabelingOperation;
+      const remainingFinish = await getDocs(
+        query(
+          collection(firestore, 'labelingOperations', operationId, 'activityLog'),
+          where('type', '==', 'FINISH'),
+          limit(5)
+        )
+      );
+      if (remainingFinish.empty && op.status === 'Completada') {
+        await updateDoc(
+          opRef,
+          convertDatesToTimestamps({
+            status: 'Pausada',
+            updatedAt: new Date().toISOString(),
+          })
+        );
+        reopened = true;
+      } else {
+        await updateDoc(opRef, { updatedAt: Timestamp.now() });
+      }
+    } else {
+      await updateDoc(opRef, { updatedAt: Timestamp.now() });
+    }
+
+    return { success: true, reopened };
   } catch (error: any) {
     console.error('deleteLabelingActivityLog:', error);
     return { success: false, error: error?.message || 'No se pudo borrar el log.' };
