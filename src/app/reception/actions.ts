@@ -3,7 +3,7 @@
 "use server";
 
 import { firestore } from "@/services/firebase";
-import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { buildReceptionIdleEntryId } from '@/lib/receptionIdleTime';
 import { parseISO } from 'date-fns';
 import { startOfDay, endOfDay, isWithinInterval } from 'date-fns';
@@ -2495,6 +2495,70 @@ export async function updateLabelingOperation(operationId: string, updates: Part
         console.error("Error updating labeling operation:", error);
         return { success: false, error: `Failed to update labeling operation: ${error.message}` };
     }
+}
+
+/**
+ * Quita operario/proveedor y deja la tarea en Pendiente (asignación errónea).
+ * Bloquea En Progreso / Completada y Pausada con avance (cajas o und LIVE).
+ */
+export async function unassignLabelingOperation(
+  operationId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!operationId) return { success: false, error: 'Tarea inválida.' };
+
+    const opRef = doc(firestore, 'labelingOperations', operationId);
+    const snap = await getDoc(opRef);
+    if (!snap.exists()) return { success: false, error: 'La tarea de etiquetado no existe.' };
+
+    const op = { id: snap.id, ...convertTimestampsToDates(snap.data()) } as LabelingOperation;
+    const hasAssignee = Boolean(
+      (op.assignedOperatorId && String(op.assignedOperatorId).trim()) ||
+        (op.assignedExternalVendorId && String(op.assignedExternalVendorId).trim())
+    );
+    if (!hasAssignee) {
+      return { success: false, error: 'La tarea no tiene operario asignado.' };
+    }
+
+    if (op.status === 'Completada') {
+      return { success: false, error: 'No se puede desasignar una tarea completada.' };
+    }
+    if (op.status === 'En Progreso') {
+      return {
+        success: false,
+        error: 'La tarea está En Progreso. Páusela o finalícela antes de desasignar.',
+      };
+    }
+
+    const liveUnits = Number(op.completedUnitsLive) || 0;
+    const confirmedBoxes = Array.isArray(op.labelingPackPlan)
+      ? op.labelingPackPlan.filter((u) => u.confirmed).length
+      : 0;
+    if (op.status === 'Pausada' && (liveUnits > 0 || confirmedBoxes > 0)) {
+      return {
+        success: false,
+        error:
+          'La tarea pausada ya tiene avance. Finalícela (o deje remanente) antes de desasignar.',
+      };
+    }
+    if (op.status !== 'Asignada' && op.status !== 'Pendiente' && op.status !== 'Pausada') {
+      return { success: false, error: `No se puede desasignar en estado ${op.status}.` };
+    }
+
+    await updateDoc(opRef, {
+      status: 'Pendiente',
+      assignedOperatorId: '',
+      isExternal: false,
+      assignedExternalVendorId: deleteField(),
+      assignedExternalOperatorName: deleteField(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    return { success: true };
+  } catch (error: any) {
+    console.error('unassignLabelingOperation:', error);
+    return { success: false, error: error?.message || 'No se pudo desasignar la tarea.' };
+  }
 }
 
 /**

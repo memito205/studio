@@ -4,7 +4,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Loader2, MoreHorizontal, Users, Target, FileDown, Tag, Pause, Search, Play, RotateCcw, Check, Pencil, Trash2 } from 'lucide-react';
+import { ArrowLeft, Loader2, MoreHorizontal, Users, Target, FileDown, Tag, Pause, Search, Play, RotateCcw, Check, Pencil, Trash2, UserMinus } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -31,7 +31,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import type { LabelingOperation, LabelingOperationStatus, LabelingActivityLog, AppUser, ReceptionExpectedItem, OperationPulse, ExternalVendor } from '@/types';
-import { loadLabelingOperations, updateLabelingOperation, getExpectedItemsForLabeling, getAllUserProfiles, getLabelingActivityLog, logLabelingActivity, finishLabelingTaskSession, getExternalVendors, correctLabelingTaskQuantity, purgeAllLabelingOperations, deleteSelectedLabelingOperations } from '@/app/reception/actions';
+import { loadLabelingOperations, updateLabelingOperation, unassignLabelingOperation, getExpectedItemsForLabeling, getAllUserProfiles, getLabelingActivityLog, logLabelingActivity, finishLabelingTaskSession, getExternalVendors, correctLabelingTaskQuantity, purgeAllLabelingOperations, deleteSelectedLabelingOperations } from '@/app/reception/actions';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { FinishWorkDialog } from './FinishWorkDialog';
 import { getUserGoals, getProductivitySettings, getPulsesByDate } from '@/app/actions';
@@ -155,12 +155,30 @@ interface AdminDashboardProps {
     onAdminPause: (operation: LabelingOperation) => void;
     onAction: (operationId: string, actionType: 'START' | 'PAUSE' | 'RESUME' | 'FINISH', reason?: string) => void;
     onFinish: (operation: LabelingOperation) => void;
+    onUnassign: (operation: LabelingOperation) => void;
     selectedIds: Set<string>;
     onToggleSelect: (id: string) => void;
     onToggleAll: (ids: string[]) => void;
 }
 
-const AdminDashboard: React.FC<AdminDashboardProps> = ({ operations, productivityData, isSubmitting, onOpenDialog, onGenerateExcel, users, vendors, onAdminPause, onAction, onFinish, selectedIds, onToggleSelect, onToggleAll }) => {
+const canUnassignLabelingOp = (op: LabelingOperation): boolean => {
+  const hasAssignee = Boolean(
+    (op.assignedOperatorId && String(op.assignedOperatorId).trim()) ||
+      (op.assignedExternalVendorId && String(op.assignedExternalVendorId).trim())
+  );
+  if (!hasAssignee) return false;
+  if (op.status === 'Asignada' || op.status === 'Pendiente') return true;
+  if (op.status === 'Pausada') {
+    const liveUnits = Number(op.completedUnitsLive) || 0;
+    const confirmedBoxes = Array.isArray(op.labelingPackPlan)
+      ? op.labelingPackPlan.filter((u) => u.confirmed).length
+      : 0;
+    return liveUnits <= 0 && confirmedBoxes <= 0;
+  }
+  return false;
+};
+
+const AdminDashboard: React.FC<AdminDashboardProps> = ({ operations, productivityData, isSubmitting, onOpenDialog, onGenerateExcel, users, vendors, onAdminPause, onAction, onFinish, onUnassign, selectedIds, onToggleSelect, onToggleAll }) => {
     
     const userMap = useMemo(() => new Map(users.map(u => [u.uid, u.displayName || u.email])), [users]);
     const vendorMap = useMemo(() => new Map(vendors.map(v => [v.id, v.name])), [vendors]);
@@ -261,6 +279,13 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ operations, productivit
                                         <DropdownMenuItem onClick={() => onOpenDialog(op, 'log')}>Ver Actividad</DropdownMenuItem>
                                         <DropdownMenuItem onClick={() => onOpenDialog(op, 'assign')} disabled={op.status === 'En Progreso' || op.status === 'Completada'}>
                                             <Users className="mr-2 h-4 w-4" /> Reasignar Operario
+                                        </DropdownMenuItem>
+                                        <DropdownMenuItem
+                                          onClick={() => onUnassign(op)}
+                                          disabled={isSubmitting || !canUnassignLabelingOp(op)}
+                                          className="text-destructive focus:text-destructive"
+                                        >
+                                            <UserMinus className="mr-2 h-4 w-4" /> Desasignar
                                         </DropdownMenuItem>
                                         <DropdownMenuItem onClick={() => onOpenDialog(op, 'standard')}>
                                             <Target className="mr-2 h-4 w-4" /> Definir Estándar
@@ -573,6 +598,22 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     }
     setIsSubmitting(false);
     setIsAssignDialogOpen(false);
+  };
+
+  const handleUnassignOperator = async (operation: LabelingOperation) => {
+    const ok = window.confirm(
+      `¿Desasignar la referencia ${operation.reference} (RK ${operation.rk_identifier})?\n\nQuedará en Pendiente sin operario.`
+    );
+    if (!ok) return;
+    setIsSubmitting(true);
+    const result = await unassignLabelingOperation(operation.id);
+    if (result.success) {
+      toast({ title: 'Desasignada', description: 'La tarea quedó en Pendiente sin operario.' });
+      await fetchOperationsAndProductivity();
+    } else {
+      toast({ variant: 'destructive', title: 'No se pudo desasignar', description: result.error });
+    }
+    setIsSubmitting(false);
   };
 
   const handleSetStandard = async (standard: number) => {
@@ -925,6 +966,7 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
                         onAdminPause={handleAdminPauseClick}
                         onAction={handleAdminAction}
                         onFinish={handleOpenFinishDialog}
+                        onUnassign={handleUnassignOperator}
                         selectedIds={selectedIds}
                         onToggleSelect={(id) => setSelectedIds(prev => {
                           const next = new Set(prev);
