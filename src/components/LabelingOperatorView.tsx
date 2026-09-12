@@ -740,53 +740,84 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
     ) => {
       setIsConfirmingPack(true);
       setIsSubmitting(true);
-      const result = await confirmLabelingPackUnit(
-        operationId,
-        { unitNumber, locationHint },
-        isExternalPortal,
-        providedPin,
-        externalVendor?.operatorName
-      );
-      if (result.success) {
-        if (result.autoFinished) {
-          const residualNote =
-            result.residualCreated && result.residualBoxes
-              ? ` Remanente: ${result.residualBoxes} cajas → Pendiente.`
-              : '';
-          toast({
-            title: 'Última caja · tarea finalizada',
-            description: `Todas las cajas confirmadas (${result.confirmedBoxes}/${result.totalBoxes}). ${(result.completedUnitsLive || 0).toLocaleString()} und.${residualNote}`,
-          });
-          // Finalización puede crear remanente / cambiar estado: refresco completo.
-          handleRefresh();
+      try {
+        const result = await confirmLabelingPackUnit(
+          operationId,
+          { unitNumber, locationHint },
+          isExternalPortal,
+          providedPin,
+          externalVendor?.operatorName
+        );
+        if (result.success) {
+          if (result.operation) {
+            if (isExternalPortal) {
+              setExternalOperations((prev) => {
+                if (result.autoFinished || result.operation!.status === 'Completada') {
+                  return prev.filter((op) => op.id !== result.operation!.id);
+                }
+                return prev.map((op) =>
+                  op.id === result.operation!.id ? { ...op, ...result.operation! } : op
+                );
+              });
+            } else if (onOperationUpdated) {
+              onOperationUpdated(result.operation);
+            }
+          }
+
+          if (result.autoFinished) {
+            const residualNote =
+              result.residualCreated && result.residualBoxes
+                ? ` Remanente: ${result.residualBoxes} cajas → Pendiente.`
+                : '';
+            toast({
+              title: 'Última caja · tarea finalizada',
+              description: `Todas las cajas confirmadas (${result.confirmedBoxes}/${result.totalBoxes}). ${(result.completedUnitsLive || 0).toLocaleString()} und.${residualNote}`,
+            });
+            // Solo refresco completo si no hay patch local (interno sin callback).
+            if (!isExternalPortal && !onOperationUpdated) {
+              handleRefresh();
+            } else if (!isExternalPortal && onOperationUpdated && result.residualCreated) {
+              // Remanente nuevo: conviene refrescar lista.
+              handleRefresh();
+            }
+          } else {
+            toast({
+              title: 'Caja confirmada',
+              description: `Progreso: ${result.confirmedBoxes || 0}/${result.totalBoxes || 0} cajas · ${(result.completedUnitsLive || 0).toLocaleString()} und${result.error ? ` · ${result.error}` : ''}`,
+            });
+            if (!result.operation && !isExternalPortal) {
+              if (onOperationUpdated) {
+                // no-op
+              } else {
+                handleRefresh();
+              }
+            }
+          }
+
+          // No bloquear el cierre de caja con lectura de logs (U/H se actualiza en segundo plano).
+          // En portal externo tras caja se cambia de usuario: no hace falta.
+          if (!isExternalPortal || !onAfterPackConfirm) {
+            void getLabelingActivityLog(operationId, { limitN: 60 }).then((logRes) => {
+              if (logRes.success && logRes.data) {
+                setActivityByOp((prev) => ({ ...prev, [operationId]: logRes.data! }));
+              }
+            });
+          }
+
+          if (isExternalPortal && onAfterPackConfirm) {
+            onAfterPackConfirm();
+          }
         } else {
           toast({
-            title: 'Caja confirmada',
-            description: `Progreso: ${result.confirmedBoxes || 0}/${result.totalBoxes || 0} cajas · ${(result.completedUnitsLive || 0).toLocaleString()} und${result.error ? ` · ${result.error}` : ''}`,
+            variant: 'destructive',
+            title: result.needsLocation ? 'Indique ubicación' : 'No se confirmó la caja',
+            description: result.error,
           });
-          if (result.operation && onOperationUpdated) {
-            onOperationUpdated(result.operation);
-          } else {
-            handleRefresh();
-          }
         }
-        const logRes = await getLabelingActivityLog(operationId, { limitN: 80 });
-        if (logRes.success && logRes.data) {
-          setActivityByOp((prev) => ({ ...prev, [operationId]: logRes.data! }));
-        }
-        // Kiosk compartido: liberar sesión para el siguiente operario.
-        if (isExternalPortal && onAfterPackConfirm) {
-          onAfterPackConfirm();
-        }
-      } else {
-        toast({
-          variant: 'destructive',
-          title: result.needsLocation ? 'Indique ubicación' : 'No se confirmó la caja',
-          description: result.error,
-        });
+      } finally {
+        setIsSubmitting(false);
+        setIsConfirmingPack(false);
       }
-      setIsSubmitting(false);
-      setIsConfirmingPack(false);
     };
 
     if (isLoading) {

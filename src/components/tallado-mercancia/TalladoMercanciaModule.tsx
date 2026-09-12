@@ -442,7 +442,18 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
             title: 'Fin registrado',
             description: `${finCode} · neto ${fmtDuration(res.unit?.durationNetMs)}`,
           });
-          await refreshShift(shift.id);
+          // Patch local (sin esperar listTalladoShiftBundle completo).
+          if (res.unit) {
+            setUnits((prev) => {
+              const idx = prev.findIndex((u) => u.id === res.unit!.id);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = res.unit!;
+                return next;
+              }
+              return [res.unit!, ...prev];
+            });
+          }
           return;
         }
         if (res.lookup) {
@@ -455,10 +466,9 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         setScanCode('');
         focusScanInput(50);
         focusScanInput(200);
-        focusScanInput(600);
       }
     },
-    [shift, user, openPause, toast, refreshShift, showScanFlash, focusScanInput]
+    [shift, user, openPause, toast, showScanFlash, focusScanInput]
   );
 
   const handleScanSubmit = async (e?: React.FormEvent) => {
@@ -482,6 +492,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       userId: user.uid,
       userName: user.displayName || user.email || 'Operario',
       grupo: shift.grupo,
+      skipOpenPauseCheck: !openPause,
     });
     setBusyUnit(false);
     if (!res.success) {
@@ -491,7 +502,9 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     setPendingLookup(null);
     showScanFlash(res.data?.scanCode || pendingLookup.scanCode, 'INICIO registrado', 'ok');
     toast({ title: 'Inicio', description: `${res.data?.scanCode} · cant. ${res.data?.cantidad}` });
-    await refreshShift(shift.id);
+    if (res.data) {
+      setUnits((prev) => [res.data!, ...prev.filter((u) => u.id !== res.data!.id)]);
+    }
     focusScanInput(80);
     focusScanInput(300);
   };

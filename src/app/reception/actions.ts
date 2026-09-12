@@ -3000,7 +3000,8 @@ export async function finishLabelingTaskSession(
   completedUnits: number,
   isExternal: boolean = false,
   providedPin?: string,
-  externalOperatorName?: string
+  externalOperatorName?: string,
+  opts?: { skipPinValidation?: boolean }
 ): Promise<{ success: boolean; error?: string; residualCreated?: boolean; residualBoxes?: number }> {
   try {
     let residualCreated = false;
@@ -3026,6 +3027,27 @@ export async function finishLabelingTaskSession(
       return { success: true, residualCreated: false, residualBoxes: 0 };
     }
 
+    // PIN fuera de la transacción (salvo si ya se validó al confirmar la última caja).
+    if (isExternal && !opts?.skipPinValidation) {
+      if (!providedPin || !externalOperatorName) {
+        return { success: false, error: 'Validación de PIN requerida para finalizar.' };
+      }
+      const vendorId = opPreData.assignedExternalVendorId;
+      if (!vendorId) {
+        return { success: false, error: 'La tarea no tiene proveedor externo.' };
+      }
+      const vendorSnap = await getDoc(doc(firestore, 'externalVendors', vendorId));
+      if (!vendorSnap.exists()) {
+        return { success: false, error: 'Proveedor no encontrado.' };
+      }
+      const operator = ((vendorSnap.data().operators as any[]) || []).find(
+        (o) => o.name === externalOperatorName
+      );
+      if (!operator || operator.pin !== providedPin) {
+        return { success: false, error: 'PIN de operario incorrecto.' };
+      }
+    }
+
     await runTransaction(firestore, async (transaction) => {
       const { stripUndefinedDeep, summarizePackPlanProgress } = await import('@/lib/labelingPackPlan');
       const operationRef = doc(firestore, 'labelingOperations', operationId);
@@ -3041,22 +3063,6 @@ export async function finishLabelingTaskSession(
 
       if (operationData.status === 'Completada') {
         return;
-      }
-
-      // PIN validation for external workers
-      if (isExternal) {
-          if (!providedPin || !externalOperatorName) {
-              throw new Error("Validación de PIN requerida para finalizar.");
-          }
-          const vendorRef = doc(firestore, 'externalVendors', operationData.assignedExternalVendorId!);
-          const vendorSnap = await transaction.get(vendorRef);
-          if (!vendorSnap.exists()) throw new Error("Proveedor no encontrado.");
-          
-          const vendorData = vendorSnap.data();
-          const operator = (vendorData.operators as any[] || []).find(o => o.name === externalOperatorName);
-          if (!operator || operator.pin !== providedPin) {
-              throw new Error("PIN de operario incorrecto.");
-          }
       }
 
       const isPackMode =
@@ -3213,6 +3219,32 @@ export async function confirmLabelingPackUnit(
 
     const { stripUndefinedDeep, resolvePackUnitFromPlan } = await import('@/lib/labelingPackPlan');
 
+    // PIN fuera de la transacción: evita leer vendor dentro del lock (más rápido / menos cuelgues).
+    if (isExternal) {
+      if (!providedPin || !externalOperatorName) {
+        return { success: false, error: 'Validación de PIN requerida para confirmar caja.' };
+      }
+      const opPre = await getDoc(doc(firestore, 'labelingOperations', operationId));
+      if (!opPre.exists()) {
+        return { success: false, error: 'La tarea de etiquetado no fue encontrada.' };
+      }
+      const opPreData = convertTimestampsToDates(opPre.data()) as LabelingOperation;
+      const vendorId = opPreData.assignedExternalVendorId;
+      if (!vendorId) {
+        return { success: false, error: 'La tarea no tiene proveedor externo.' };
+      }
+      const vendorSnap = await getDoc(doc(firestore, 'externalVendors', vendorId));
+      if (!vendorSnap.exists()) {
+        return { success: false, error: 'Proveedor no encontrado.' };
+      }
+      const operator = ((vendorSnap.data().operators as any[]) || []).find(
+        (o) => o.name === externalOperatorName
+      );
+      if (!operator || operator.pin !== providedPin) {
+        return { success: false, error: 'PIN de operario incorrecto.' };
+      }
+    }
+
     let completedUnitsLive = 0;
     let confirmedBoxes = 0;
     let totalBoxes = 0;
@@ -3239,22 +3271,6 @@ export async function confirmLabelingPackUnit(
             ? 'Reanude la tarea antes de confirmar cajas.'
             : `Solo se confirman cajas en En Progreso. Estado: ${operationData.status}.`
         );
-      }
-
-      if (isExternal) {
-        if (!providedPin || !externalOperatorName) {
-          throw new Error('Validación de PIN requerida para confirmar caja.');
-        }
-        const vendorRef = doc(firestore, 'externalVendors', operationData.assignedExternalVendorId!);
-        const vendorSnap = await transaction.get(vendorRef);
-        if (!vendorSnap.exists()) throw new Error('Proveedor no encontrado.');
-        const vendorData = vendorSnap.data();
-        const operator = (vendorData.operators as any[] || []).find(
-          (o) => o.name === externalOperatorName
-        );
-        if (!operator || operator.pin !== providedPin) {
-          throw new Error('PIN de operario incorrecto.');
-        }
       }
 
       const plan = Array.isArray(operationData.labelingPackPlan)
@@ -3335,7 +3351,8 @@ export async function confirmLabelingPackUnit(
         completedUnitsLive,
         isExternal,
         providedPin,
-        externalOperatorName
+        externalOperatorName,
+        { skipPinValidation: true }
       );
       if (!finish.success) {
         return {
@@ -3350,7 +3367,15 @@ export async function confirmLabelingPackUnit(
             : undefined,
         };
       }
-      const finishedOp = await getLabelingOperationById(operationId);
+      // Evitar otra lectura getLabelingOperationById: devolver snapshot Completada.
+      const finishedSnapshot: LabelingOperation | undefined = operationSnapshot
+        ? {
+            ...operationSnapshot,
+            status: 'Completada',
+            completedUnits: completedUnitsLive,
+            completedUnitsLive,
+          }
+        : undefined;
       return {
         success: true,
         completedUnitsLive,
@@ -3359,7 +3384,7 @@ export async function confirmLabelingPackUnit(
         autoFinished: true,
         residualCreated: finish.residualCreated,
         residualBoxes: finish.residualBoxes,
-        operation: finishedOp.data || operationSnapshot,
+        operation: finishedSnapshot || operationSnapshot,
       };
     }
 

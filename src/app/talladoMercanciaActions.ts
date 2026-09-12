@@ -456,27 +456,32 @@ export async function startTalladoUnit(input: {
   userId: string;
   userName: string;
   grupo: string;
+  /** Si el cliente ya sabe que no hay pausa abierta, evita 1 lectura. */
+  skipOpenPauseCheck?: boolean;
 }): Promise<{ success: boolean; data?: TalladoUnit; error?: string }> {
   try {
     if (!input.shiftId) return { success: false, error: 'Sin turno activo.' };
     const scanCode = normalizeTalladoScanCode(input.lookup.scanCode);
     if (!scanCode) return { success: false, error: 'Código inválido.' };
 
-    // Bloquear si hay pausa abierta
-    const openPause = await getDocs(
-      query(
-        collection(firestore, PAUSES_COL),
-        where('shiftId', '==', input.shiftId),
-        where('status', '==', 'open'),
-        limit(1)
-      )
-    );
-    if (!openPause.empty) {
-      return { success: false, error: 'El grupo está en pausa. Reanude antes de iniciar una unidad.' };
+    // Bloquear si hay pausa abierta (omitible si UI ya lo validó).
+    if (!input.skipOpenPauseCheck) {
+      const openPause = await getDocs(
+        query(
+          collection(firestore, PAUSES_COL),
+          where('shiftId', '==', input.shiftId),
+          where('status', '==', 'open'),
+          limit(1)
+        )
+      );
+      if (!openPause.empty) {
+        return { success: false, error: 'El grupo está en pausa. Reanude antes de iniciar una unidad.' };
+      }
     }
 
-    // Global: no permitir la misma unidad activa dos veces (cualquier turno)
-    const openUnits = await findInProgressUnitsByCode(scanCode);
+    // Una sola búsqueda del código (abiertas + cerradas).
+    const prior = await findUnitsMatchingCode(scanCode);
+    const openUnits = prior.filter((u) => u.status === 'in_progress');
     if (openUnits.length > 0) {
       const existing = openUnits[0];
       if (existing.shiftId === input.shiftId) {
@@ -491,8 +496,6 @@ export async function startTalladoUnit(input: {
       };
     }
 
-    // No reiniciar unidades que ya tienen Fin
-    const prior = await findUnitsMatchingCode(scanCode);
     const done = prior.find((u) => u.status === 'done');
     if (done) {
       return { success: false, error: alreadyDoneError(done) };
@@ -532,24 +535,40 @@ export async function startTalladoUnit(input: {
 export async function finishTalladoUnit(input: {
   shiftId: string;
   scanCode: string;
+  /** Si ya se resolvió la unidad abierta, evita re-consultar. */
+  unit?: TalladoUnit;
+  openMatches?: TalladoUnit[];
 }): Promise<{ success: boolean; data?: TalladoUnit; error?: string }> {
   try {
     const scanCode = normalizeTalladoScanCode(input.scanCode);
     if (!input.shiftId || !scanCode) return { success: false, error: 'Datos incompletos.' };
 
-    const matches = await findInProgressUnitsByCode(scanCode);
+    const matches =
+      input.openMatches && input.openMatches.length > 0
+        ? input.openMatches
+        : input.unit
+          ? [input.unit]
+          : await findInProgressUnitsByCode(scanCode);
 
     if (matches.length === 0) {
       return { success: false, error: 'No hay Inicio abierto para este código.' };
     }
 
     // Preferir unidad del turno actual; si no, la más antigua
-    const unit = matches.find((u) => u.shiftId === input.shiftId) || matches[0];
+    const unit =
+      input.unit ||
+      matches.find((u) => u.shiftId === input.shiftId) ||
+      matches[0];
     const endedAt = new Date().toISOString();
     const durationMs = Math.max(0, new Date(endedAt).getTime() - new Date(unit.startedAt).getTime());
 
+    // Pausas: solo las del turno de la unidad (límite bajo para no colgar el cierre).
     const pausesSnap = await getDocs(
-      query(collection(firestore, PAUSES_COL), where('shiftId', '==', unit.shiftId), limit(200))
+      query(
+        collection(firestore, PAUSES_COL),
+        where('shiftId', '==', unit.shiftId),
+        limit(80)
+      )
     );
     const pauses = pausesSnap.docs.map((d) => d.data() as TalladoPause);
     const durationNetMs = computeNetDurationMs(unit.startedAt, endedAt, pauses);
@@ -563,9 +582,9 @@ export async function finishTalladoUnit(input: {
     await updateDoc(doc(firestore, UNITS_COL, unit.id), patch);
 
     // Si quedaron duplicados abiertos del mismo código, borrarlos (deja cerrado el más viejo)
-    for (const dup of matches) {
-      if (dup.id === unit.id) continue;
-      await deleteDoc(doc(firestore, UNITS_COL, dup.id));
+    const dups = matches.filter((dup) => dup.id !== unit.id);
+    if (dups.length > 0) {
+      await Promise.all(dups.map((dup) => deleteDoc(doc(firestore, UNITS_COL, dup.id))));
     }
 
     return { success: true, data: { ...unit, ...patch } };
@@ -594,19 +613,23 @@ export async function scanTalladoCode(input: {
     const scanCode = normalizeTalladoScanCode(input.rawCode);
     if (!scanCode) return { success: false, error: 'Código vacío.' };
 
-    const openMatches = await findInProgressUnitsByCode(scanCode);
+    // Una sola búsqueda del código para decidir Fin vs Inicio.
+    const prior = await findUnitsMatchingCode(scanCode);
+    const openMatches = prior
+      .filter((u) => u.status === 'in_progress')
+      .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
 
     if (openMatches.length > 0) {
       const fin = await finishTalladoUnit({
         shiftId: input.shiftId,
         scanCode: openMatches[0].scanCode || scanCode,
+        unit: openMatches.find((u) => u.shiftId === input.shiftId) || openMatches[0],
+        openMatches,
       });
       if (!fin.success) return { success: false, error: fin.error };
       return { success: true, action: 'finished', unit: fin.data };
     }
 
-    // Si ya tuvo Fin, bloquear (no volver a preparar Inicio)
-    const prior = await findUnitsMatchingCode(scanCode);
     const done = prior.find((u) => u.status === 'done');
     if (done) {
       return { success: false, error: alreadyDoneError(done) };
@@ -622,6 +645,7 @@ export async function scanTalladoCode(input: {
         userId: input.userId,
         userName: input.userName,
         grupo: input.grupo,
+        skipOpenPauseCheck: true,
       });
       if (!started.success) return { success: false, error: started.error, lookup: lookup.data };
       return { success: true, action: 'auto_started', lookup: lookup.data, unit: started.data };
