@@ -135,37 +135,44 @@ export const ExternalLabelingPortal: React.FC = () => {
   if (vendor) {
     return (
         <div className="container mx-auto p-4 max-w-6xl">
-            <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-6 bg-card p-4 rounded-lg shadow-sm border">
-                <div className="min-w-0">
-                    <h1 className="text-xl font-bold flex items-center gap-2">
-                        <Tags className="text-primary shrink-0" />
-                        Portal de Etiquetado Externo
-                    </h1>
-                    <p className="text-sm text-muted-foreground">
-                        {vendor.name} • <strong>{operatorName}</strong>
-                    </p>
-                    <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
-                        Tras confirmar una caja vuelves a elegir operario · idle 2 min cierra sesión
-                    </p>
+            <div className="mb-6 rounded-xl border-2 border-primary/30 bg-card shadow-sm overflow-hidden">
+                <div className="bg-primary/10 px-4 py-3 sm:px-6 border-b border-primary/15">
+                    <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-primary">
+                        <Tags className="h-4 w-4 shrink-0" />
+                        Usuario actual · Portal Etiquetado Externo
+                    </div>
                 </div>
-                <div className="flex flex-col sm:flex-row gap-2 shrink-0 w-full sm:w-auto">
-                    <Button
-                      size="lg"
-                      onClick={() => handleSwitchUser()}
-                      className="h-12 text-base font-bold flex items-center gap-2"
-                    >
-                        <Users className="h-5 w-5" />
-                        Cambiar usuario
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="lg"
-                      onClick={handleSignOut}
-                      className="h-12 text-base flex items-center gap-2"
-                    >
-                        <LogOut className="h-5 w-5" />
-                        Menú empresas
-                    </Button>
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 p-4 sm:p-6">
+                    <div className="min-w-0 text-center lg:text-left">
+                        <p className="text-xs sm:text-sm font-medium text-muted-foreground mb-1">
+                            {vendor.name}
+                        </p>
+                        <p className="text-4xl sm:text-5xl md:text-6xl font-black tracking-tight text-foreground leading-[1.05] break-words">
+                            {operatorName}
+                        </p>
+                        <p className="text-xs text-amber-700 dark:text-amber-400 mt-3">
+                            Tras confirmar una caja vuelves a elegir operario · idle 2 min cierra sesión
+                        </p>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2 shrink-0 w-full lg:w-auto">
+                        <Button
+                          size="lg"
+                          onClick={() => handleSwitchUser()}
+                          className="h-14 text-base font-bold flex items-center justify-center gap-2"
+                        >
+                            <Users className="h-5 w-5" />
+                            Cambiar usuario
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="lg"
+                          onClick={handleSignOut}
+                          className="h-14 text-base flex items-center justify-center gap-2"
+                        >
+                            <LogOut className="h-5 w-5" />
+                            Menú empresas
+                        </Button>
+                    </div>
                 </div>
             </div>
 
