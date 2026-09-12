@@ -46,6 +46,7 @@ export const ExternalLabelingPortal: React.FC = () => {
   const clearSessionStorage = () => {
     sessionStorage.removeItem('ext_vendor');
     sessionStorage.removeItem('ext_name');
+    sessionStorage.removeItem('ext_pin');
   };
 
   /** Vuelve a elegir operario (misma empresa) — cambio rápido en kiosk compartido. */
@@ -109,28 +110,70 @@ export const ExternalLabelingPortal: React.FC = () => {
     fetchVendors();
   }, [toast]);
 
+  // Teclado numérico físico en pantalla de PIN
+  useEffect(() => {
+    if (step !== 'p-entry' || vendor) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      if (e.key >= '0' && e.key <= '9') {
+        e.preventDefault();
+        setPin((prev) => (prev.length < 4 ? prev + e.key : prev));
+        return;
+      }
+      if (e.key === 'Backspace') {
+        e.preventDefault();
+        setPin((prev) => prev.slice(0, -1));
+        return;
+      }
+      if (e.key === 'Escape' || e.key === 'Delete') {
+        e.preventDefault();
+        setPin('');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [step, vendor]);
+
   const handlePinInput = (num: string) => {
     if (pin.length < 4) {
         setPin(prev => prev + num);
     }
   };
 
-  const handlePinSubmit = async () => {
-    if (!vendorId || pin.length < 4) return;
+  const handlePinSubmit = useCallback(async (pinOverride?: string) => {
+    const pinToUse = pinOverride ?? pin;
+    if (!vendorId || pinToUse.length < 4) return;
 
     setIsLoading(true);
-    const result = await validateExternalVendorPin(vendorId, pin, operatorName);
+    const result = await validateExternalVendorPin(vendorId, pinToUse, operatorName);
     if (result.success && result.vendor) {
         setVendor(result.vendor);
         sessionStorage.setItem('ext_vendor', JSON.stringify(result.vendor));
         sessionStorage.setItem('ext_name', operatorName);
+        sessionStorage.setItem('ext_pin', pinToUse);
+        setPin('');
         toast({ title: 'Bienvenido', description: `Sesión iniciada para ${operatorName} (${result.vendor.name})` });
     } else {
       toast({ variant: 'destructive', title: 'Acceso Denegado', description: result.error || 'PIN incorrecto' });
       setPin('');
     }
     setIsLoading(false);
-  };
+  }, [vendorId, pin, operatorName, toast]);
+
+  // Auto-enviar al completar 4 dígitos (teclado o pad)
+  useEffect(() => {
+    if (step !== 'p-entry' || vendor || pin.length !== 4 || isLoading) return;
+    const t = window.setTimeout(() => {
+      void handlePinSubmit(pin);
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [pin, step, vendor, isLoading, handlePinSubmit]);
+
+  const sessionPin = typeof window !== 'undefined' ? sessionStorage.getItem('ext_pin') || '' : '';
 
   if (vendor) {
     return (
@@ -151,7 +194,7 @@ export const ExternalLabelingPortal: React.FC = () => {
                             {operatorName}
                         </p>
                         <p className="text-xs text-amber-700 dark:text-amber-400 mt-3">
-                            Tras confirmar una caja vuelves a elegir operario · idle 2 min cierra sesión
+                            Al confirmar caja no se pide PIN otra vez · tras caja vuelves a elegir operario · idle 2 min
                         </p>
                     </div>
                     <div className="flex flex-col sm:flex-row gap-2 shrink-0 w-full lg:w-auto">
@@ -179,7 +222,7 @@ export const ExternalLabelingPortal: React.FC = () => {
             <div className="bg-muted/30 p-6 rounded-xl min-h-[60vh]">
                 <LabelingOperatorView 
                     isExternalPortal={true} 
-                    externalVendor={{ ...vendor, operatorName }}
+                    externalVendor={{ ...vendor, operatorName, sessionPin }}
                     onAfterPackConfirm={handleAfterPackConfirm}
                 />
             </div>
@@ -259,9 +302,12 @@ export const ExternalLabelingPortal: React.FC = () => {
                 {step === 'p-entry' && (
                     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2">
                         <div className="text-center">
-                            <p className="text-sm text-muted-foreground mb-4">
+                            <p className="text-sm text-muted-foreground mb-1">
                                 Empresa: <strong>{vendors.find(v => v.id === vendorId)?.name}</strong><br />
                                 Operario: <strong>{operatorName}</strong>
+                            </p>
+                            <p className="text-xs text-muted-foreground mb-4">
+                              Digita el PIN con teclado numérico o el pad
                             </p>
                             <div className="flex items-center justify-center gap-3 mb-8">
                                 {[0, 1, 2, 3].map((i) => (
@@ -314,7 +360,8 @@ export const ExternalLabelingPortal: React.FC = () => {
              <div className="space-y-1 text-left">
                 <p className="text-xs font-bold text-amber-700 dark:text-amber-400">Aviso de Seguridad</p>
                 <p className="text-[10px] leading-relaxed text-amber-600/80 dark:text-amber-400/80">
-                    Tras confirmar una caja la pantalla vuelve a la lista de operarios para el siguiente turno.
+                    Puedes digitar el PIN con el <strong>teclado numérico</strong> o el pad en pantalla.
+                    Tras confirmar una caja no se vuelve a pedir PIN; la pantalla vuelve a la lista de operarios.
                     También puedes usar <strong>Cambiar usuario</strong> en cualquier momento.
                     Por inactividad, la sesión se cierra a los <strong>2 minutos</strong>.
                 </p>

@@ -46,6 +46,45 @@ const ValidatedActionDialog: React.FC<ValidatedActionDialogProps> = ({
         }
     };
 
+    useEffect(() => {
+      if (!isOpen) {
+        setPin('');
+        return;
+      }
+      const onKeyDown = (e: KeyboardEvent) => {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        if (e.key >= '0' && e.key <= '9') {
+          e.preventDefault();
+          setPin((prev) => (prev.length < 4 ? prev + e.key : prev));
+          return;
+        }
+        if (e.key === 'Backspace') {
+          e.preventDefault();
+          setPin((prev) => prev.slice(0, -1));
+          return;
+        }
+        if (e.key === 'Escape' || e.key === 'Delete') {
+          e.preventDefault();
+          setPin('');
+          return;
+        }
+        if (e.key === 'Enter' && pin.length === 4 && !isSubmitting) {
+          e.preventDefault();
+          handleConfirm();
+        }
+      };
+      window.addEventListener('keydown', onKeyDown);
+      return () => window.removeEventListener('keydown', onKeyDown);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOpen, pin, isSubmitting]);
+
+    useEffect(() => {
+      if (!isOpen || pin.length !== 4 || isSubmitting) return;
+      const t = window.setTimeout(() => handleConfirm(), 60);
+      return () => window.clearTimeout(t);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pin, isOpen, isSubmitting]);
+
     return (
         <Dialog open={isOpen} onOpenChange={onOpenChange}>
             <DialogContent className="sm:max-w-md border-primary/20 shadow-2xl">
@@ -60,7 +99,9 @@ const ValidatedActionDialog: React.FC<ValidatedActionDialogProps> = ({
                     </DialogDescription>
                 </DialogHeader>
                 <div className="flex flex-col items-center py-6">
-                    <p className="text-xs text-muted-foreground mb-4">Ingresa el PIN de 4 dígitos para confirmar</p>
+                    <p className="text-xs text-muted-foreground mb-4">
+                      Ingresa el PIN de 4 dígitos (pad o teclado numérico)
+                    </p>
                     <div className="flex items-center gap-2 mb-6">
                         {[0, 1, 2, 3].map((i) => (
                             <div 
@@ -169,7 +210,7 @@ interface LabelingOperatorViewProps {
     /** Actualiza una sola tarea en memoria (evita recargar todo el tablero al confirmar caja). */
     onOperationUpdated?: (operation: LabelingOperation) => void;
     isExternalPortal?: boolean;
-    externalVendor?: (ExternalVendor & { operatorName?: string }) | null;
+    externalVendor?: (ExternalVendor & { operatorName?: string; sessionPin?: string }) | null;
     /** Tras confirmar caja (portal externo): volver al menú / cambio de usuario. */
     onAfterPackConfirm?: () => void;
 }
@@ -668,7 +709,16 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
       unitNumber: number,
       locationHint?: string
     ) => {
+      // Portal externo: el PIN ya se validó al ingresar; no volver a pedirlo al cerrar caja.
       if (isExternalPortal) {
+        const sessionPin =
+          externalVendor?.sessionPin ||
+          (typeof window !== 'undefined' ? sessionStorage.getItem('ext_pin') || '' : '');
+        if (sessionPin) {
+          void performConfirmPackEntry(operation.id, unitNumber, locationHint, sessionPin);
+          return;
+        }
+        // Fallback raro (sesión sin PIN guardado): pedir PIN una vez.
         setPendingAction({
           operationId: operation.id,
           actionType: 'UNIT_COMPLETE',
