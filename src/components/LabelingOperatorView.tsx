@@ -170,6 +170,8 @@ interface LabelingOperatorViewProps {
     onOperationUpdated?: (operation: LabelingOperation) => void;
     isExternalPortal?: boolean;
     externalVendor?: (ExternalVendor & { operatorName?: string }) | null;
+    /** Tras confirmar caja (portal externo): volver al menú / cambio de usuario. */
+    onAfterPackConfirm?: () => void;
 }
 
 const getStatusVariant = (status: LabelingOperationStatus) => {
@@ -414,7 +416,8 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
     onRefresh: propOnRefresh,
     onOperationUpdated,
     isExternalPortal = false,
-    externalVendor = null
+    externalVendor = null,
+    onAfterPackConfirm,
 }) => {
     const { toast } = useToast();
     const { user } = useAuth();
@@ -710,6 +713,10 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
         const logRes = await getLabelingActivityLog(operationId, { limitN: 80 });
         if (logRes.success && logRes.data) {
           setActivityByOp((prev) => ({ ...prev, [operationId]: logRes.data! }));
+        }
+        // Kiosk compartido: liberar sesión para el siguiente operario.
+        if (isExternalPortal && onAfterPackConfirm) {
+          onAfterPackConfirm();
         }
       } else {
         toast({

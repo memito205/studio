@@ -5,7 +5,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Loader2, Lock, Building2, LogOut, Clock, AlertTriangle, Tags, ArrowLeft } from 'lucide-react';
+import { Loader2, Lock, Building2, LogOut, Clock, AlertTriangle, Tags, ArrowLeft, Users } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { getExternalVendors, validateExternalVendorPin } from '@/app/reception/actions';
 import type { ExternalVendor } from '@/types';
@@ -43,21 +43,58 @@ export const ExternalLabelingPortal: React.FC = () => {
   const [vendor, setVendor] = useState<ExternalVendor | null>(null);
   const { toast } = useToast();
   
+  const clearSessionStorage = () => {
+    sessionStorage.removeItem('ext_vendor');
+    sessionStorage.removeItem('ext_name');
+  };
+
+  /** Vuelve a elegir operario (misma empresa) — cambio rápido en kiosk compartido. */
+  const handleSwitchUser = useCallback((opts?: { silent?: boolean }) => {
+    const keepVendorId = vendorId || vendor?.id || '';
+    setVendor(null);
+    setOperatorName('');
+    setPin('');
+    if (keepVendorId) {
+      setVendorId(keepVendorId);
+      setStep('o-select');
+    } else {
+      setStep('v-select');
+    }
+    clearSessionStorage();
+    if (!opts?.silent) {
+      toast({
+        title: 'Cambiar usuario',
+        description: 'Elige el siguiente operario e ingresa su PIN.',
+      });
+    }
+  }, [toast, vendorId, vendor?.id]);
+
   const handleSignOut = useCallback(() => {
     setVendor(null);
     setOperatorName('');
     setPin('');
+    setVendorId('');
     setStep('v-select');
-    sessionStorage.removeItem('ext_vendor');
-    sessionStorage.removeItem('ext_name');
-    toast({ title: "Sesión cerrada", description: "La sesión se ha cerrado correctamente." });
+    clearSessionStorage();
+    toast({ title: 'Sesión cerrada', description: 'Volviste al menú de empresas.' });
   }, [toast]);
+
+  /** Tras confirmar caja: liberar pantalla al listado de operarios sin toast extra. */
+  const handleAfterPackConfirm = useCallback(() => {
+    handleSwitchUser({ silent: true });
+    toast({
+      title: 'Caja OK',
+      description: 'Selecciona el siguiente operario para continuar.',
+    });
+  }, [handleSwitchUser, toast]);
 
   useEffect(() => {
     const storedVendor = sessionStorage.getItem('ext_vendor');
     const storedName = sessionStorage.getItem('ext_name');
     if (storedVendor && storedName) {
-        setVendor(JSON.parse(storedVendor));
+        const parsed = JSON.parse(storedVendor) as ExternalVendor;
+        setVendor(parsed);
+        setVendorId(parsed.id || '');
         setOperatorName(storedName);
     }
 
@@ -98,26 +135,45 @@ export const ExternalLabelingPortal: React.FC = () => {
   if (vendor) {
     return (
         <div className="container mx-auto p-4 max-w-6xl">
-            <div className="flex justify-between items-center mb-6 bg-card p-4 rounded-lg shadow-sm border">
-                <div>
+            <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-6 bg-card p-4 rounded-lg shadow-sm border">
+                <div className="min-w-0">
                     <h1 className="text-xl font-bold flex items-center gap-2">
-                        <Tags className="text-primary" />
+                        <Tags className="text-primary shrink-0" />
                         Portal de Etiquetado Externo
                     </h1>
                     <p className="text-sm text-muted-foreground">
                         {vendor.name} • <strong>{operatorName}</strong>
                     </p>
+                    <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                        Tras confirmar una caja vuelves a elegir operario · idle 2 min cierra sesión
+                    </p>
                 </div>
-                <Button variant="outline" size="sm" onClick={handleSignOut} className="flex items-center gap-2">
-                    <LogOut className="h-4 w-4" />
-                    Cerrar Sesión
-                </Button>
+                <div className="flex flex-col sm:flex-row gap-2 shrink-0 w-full sm:w-auto">
+                    <Button
+                      size="lg"
+                      onClick={() => handleSwitchUser()}
+                      className="h-12 text-base font-bold flex items-center gap-2"
+                    >
+                        <Users className="h-5 w-5" />
+                        Cambiar usuario
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="lg"
+                      onClick={handleSignOut}
+                      className="h-12 text-base flex items-center gap-2"
+                    >
+                        <LogOut className="h-5 w-5" />
+                        Menú empresas
+                    </Button>
+                </div>
             </div>
 
             <div className="bg-muted/30 p-6 rounded-xl min-h-[60vh]">
                 <LabelingOperatorView 
                     isExternalPortal={true} 
-                    externalVendor={{ ...vendor, operatorName }} 
+                    externalVendor={{ ...vendor, operatorName }}
+                    onAfterPackConfirm={handleAfterPackConfirm}
                 />
             </div>
             
@@ -251,7 +307,9 @@ export const ExternalLabelingPortal: React.FC = () => {
              <div className="space-y-1 text-left">
                 <p className="text-xs font-bold text-amber-700 dark:text-amber-400">Aviso de Seguridad</p>
                 <p className="text-[10px] leading-relaxed text-amber-600/80 dark:text-amber-400/80">
-                    Por seguridad, la sesión se cerrará automáticamente tras <strong>2 minutos</strong> de inactividad detectada.
+                    Tras confirmar una caja la pantalla vuelve a la lista de operarios para el siguiente turno.
+                    También puedes usar <strong>Cambiar usuario</strong> en cualquier momento.
+                    Por inactividad, la sesión se cierra a los <strong>2 minutos</strong>.
                 </p>
              </div>
           </div>
