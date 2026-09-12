@@ -11,6 +11,11 @@ import * as XLSX from 'xlsx';
 import { normalizeHeader, parseFlexibleDate, excelSerialDateToJSDate, findCaseInsensitiveKey } from '@/lib/parsingUtils';
 import { normalizeReceptionReference, normalizeReceptionSize, receptionRefSizeKey } from '@/lib/receptionReference';
 import type { ReceptionOperation, ScannedItem, ItemNovelty, PackingUnit, Location, CsvRow, ReceptionExpectedItem, ReceptionProduct, AlternateBarcodeUploadRow, AppUser, OperationPause, ProductivitySettings, UserGoal, PackedItem, ProductDatabaseItem, DiscardedRecord, LabelingOperation, LabelingActivityLog, LabelingActivityType, LabelingOperationStatus, PackingScanResult, ExternalVendor, LabelingDashboardData, LabelingSummaryKPIs, LabelingEmployeePerformance, ReceptionIdleTimeDetail, ReceptionIdleJustifications } from '@/types';
+import {
+  stripUndefinedDeep,
+  resolvePackUnitFromPlan,
+  summarizePackPlanProgress,
+} from '@/lib/labelingPackPlan';
 
 
 // Helper function to convert Dates back to Timestamps FOR WRITING to Firestore
@@ -3049,7 +3054,6 @@ export async function finishLabelingTaskSession(
     }
 
     await runTransaction(firestore, async (transaction) => {
-      const { stripUndefinedDeep, summarizePackPlanProgress } = await import('@/lib/labelingPackPlan');
       const operationRef = doc(firestore, 'labelingOperations', operationId);
       const operationDoc = await transaction.get(operationRef);
       if (!operationDoc.exists()) {
@@ -3192,7 +3196,8 @@ export async function confirmLabelingPackUnit(
       },
   isExternal: boolean = false,
   providedPin?: string,
-  externalOperatorName?: string
+  externalOperatorName?: string,
+  opts?: { skipPinValidation?: boolean }
 ): Promise<{
   success: boolean;
   error?: string;
@@ -3217,10 +3222,8 @@ export async function confirmLabelingPackUnit(
         ? { packingUnitId: packingUnitIdOrLookup }
         : packingUnitIdOrLookup || {};
 
-    const { stripUndefinedDeep, resolvePackUnitFromPlan } = await import('@/lib/labelingPackPlan');
-
-    // PIN fuera de la transacción: evita leer vendor dentro del lock (más rápido / menos cuelgues).
-    if (isExternal) {
+    // PIN solo si no viene de sesión ya validada (portal externo).
+    if (isExternal && !opts?.skipPinValidation) {
       if (!providedPin || !externalOperatorName) {
         return { success: false, error: 'Validación de PIN requerida para confirmar caja.' };
       }
@@ -3292,6 +3295,9 @@ export async function confirmLabelingPackUnit(
       }
 
       const { unit, index: idx } = resolved;
+      if (unit.confirmed) {
+        throw new Error(`La caja #${unit.unitNumber} ya fue confirmada.`);
+      }
       const nowIso = new Date().toISOString();
       plan[idx] = stripUndefinedDeep({
         ...unit,
@@ -3367,7 +3373,6 @@ export async function confirmLabelingPackUnit(
             : undefined,
         };
       }
-      // Evitar otra lectura getLabelingOperationById: devolver snapshot Completada.
       const finishedSnapshot: LabelingOperation | undefined = operationSnapshot
         ? {
             ...operationSnapshot,

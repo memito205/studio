@@ -4,7 +4,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Loader2, MoreHorizontal, Users, Target, FileDown, Tag, Pause, Search, Play, RotateCcw, Check, Pencil, Trash2, UserMinus } from 'lucide-react';
+import { ArrowLeft, Loader2, MoreHorizontal, Users, Target, FileDown, Tag, Pause, Search, Play, RotateCcw, Check, Pencil, Trash2, UserMinus, Package } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -148,7 +148,7 @@ interface AdminDashboardProps {
     operations: LabelingOperation[];
     productivityData: Map<string, ProductivityMetrics>;
     isSubmitting: boolean;
-    onOpenDialog: (operation: LabelingOperation, dialog: 'assign' | 'standard' | 'log' | 'quantity') => void | Promise<void>;
+    onOpenDialog: (operation: LabelingOperation, dialog: 'assign' | 'standard' | 'log' | 'quantity' | 'boxes') => void | Promise<void>;
     onGenerateExcel: (operation: LabelingOperation) => void | Promise<void>;
     users: AppUser[];
     vendors: ExternalVendor[];
@@ -249,16 +249,41 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ operations, productivit
                                 {op.status === 'Completada'
                                   ? `${op.completedUnits || 0} / ${op.totalUnits}`
                                   : op.trackingMode === 'pack_units'
-                                    ? `${op.completedUnitsLive || 0} / ${op.totalUnits}${
-                                        (op.labelingPackPlan?.length || 0) > 0
-                                          ? ` · ${op.labelingPackPlan!.filter((u) => u.confirmed).length}/${op.labelingPackPlan!.length} cajas`
-                                          : ''
-                                      }`
+                                    ? (() => {
+                                        const plan = op.labelingPackPlan || [];
+                                        const confirmed = plan.filter((u) => u.confirmed);
+                                        const pending = plan.filter((u) => !u.confirmed);
+                                        return (
+                                          <button
+                                            type="button"
+                                            className="space-y-1 max-w-[220px] text-left hover:underline decoration-dotted"
+                                            onClick={() => onOpenDialog(op, 'boxes')}
+                                            title="Ver cajas confirmadas y pendientes"
+                                          >
+                                            <div>
+                                              {(op.completedUnitsLive || 0).toLocaleString()} / {op.totalUnits.toLocaleString()}
+                                              {plan.length > 0
+                                                ? ` · ${confirmed.length}/${plan.length} cajas`
+                                                : ''}
+                                            </div>
+                                            {pending.length > 0 ? (
+                                              <div className="text-[10px] text-amber-700 leading-snug">
+                                                Faltan: {pending
+                                                  .slice(0, 8)
+                                                  .map((u) => `#${u.unitNumber}`)
+                                                  .join(', ')}
+                                                {pending.length > 8 ? ` +${pending.length - 8}` : ''}
+                                              </div>
+                                            ) : plan.length > 0 ? (
+                                              <div className="text-[10px] text-emerald-700">Todas confirmadas</div>
+                                            ) : null}
+                                            {op.status === 'En Progreso' || op.status === 'Pausada' ? (
+                                              <div className="text-[10px] text-emerald-700">LIVE</div>
+                                            ) : null}
+                                          </button>
+                                        );
+                                      })()
                                     : op.totalUnits.toLocaleString()}
-                                {op.trackingMode === 'pack_units' &&
-                                (op.status === 'En Progreso' || op.status === 'Pausada') ? (
-                                  <div className="text-[10px] text-emerald-700">LIVE</div>
-                                ) : null}
                             </TableCell>
                             <TableCell>{op.standard_units_per_hour || 'N/A'}</TableCell>
                             <TableCell>{metrics ? `${metrics.productiveTimeMinutes.toFixed(0)} min` : '-'}</TableCell>
@@ -277,6 +302,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ operations, productivit
                                     </DropdownMenuTrigger>
                                     <DropdownMenuContent align="end">
                                         <DropdownMenuItem onClick={() => onOpenDialog(op, 'log')}>Ver Actividad</DropdownMenuItem>
+                                        {op.trackingMode === 'pack_units' && (op.labelingPackPlan?.length || 0) > 0 ? (
+                                          <DropdownMenuItem onClick={() => onOpenDialog(op, 'boxes')}>
+                                            <Package className="mr-2 h-4 w-4" /> Ver cajas (OK / faltan)
+                                          </DropdownMenuItem>
+                                        ) : null}
                                         <DropdownMenuItem onClick={() => onOpenDialog(op, 'assign')} disabled={op.status === 'En Progreso' || op.status === 'Completada'}>
                                             <Users className="mr-2 h-4 w-4" /> Reasignar Operario
                                         </DropdownMenuItem>
@@ -349,6 +379,7 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
   const [isStandardDialogOpen, setIsStandardDialogOpen] = useState(false);
   const [isQuantityDialogOpen, setIsQuantityDialogOpen] = useState(false);
   const [isActivityLogOpen, setIsActivityLogOpen] = useState(false);
+  const [isBoxesDialogOpen, setIsBoxesDialogOpen] = useState(false);
   const [selectedOperation, setSelectedOperation] = useState<LabelingOperation | null>(null);
   const [selectedLog, setSelectedLog] = useState<LabelingActivityLog[]>([]);
   const [purgingHistory, setPurgingHistory] = useState(false);
@@ -565,12 +596,13 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
 
   const handleOpenDialog = async (
     operation: LabelingOperation,
-    dialog: 'assign' | 'standard' | 'log' | 'quantity'
+    dialog: 'assign' | 'standard' | 'log' | 'quantity' | 'boxes'
   ) => {
     setSelectedOperation(operation);
     if (dialog === 'assign') setIsAssignDialogOpen(true);
     if (dialog === 'standard') setIsStandardDialogOpen(true);
     if (dialog === 'quantity') setIsQuantityDialogOpen(true);
+    if (dialog === 'boxes') setIsBoxesDialogOpen(true);
     if (dialog === 'log') {
         const logResult = await getLabelingActivityLog(operation.id);
         if (logResult.data) {
@@ -804,6 +836,85 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
         logs={selectedLog}
         taskTitle={selectedOperation ? `${selectedOperation.rk_identifier} - ${selectedOperation.reference}` : ''}
        />
+      <Dialog open={isBoxesDialogOpen} onOpenChange={setIsBoxesDialogOpen}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Estado de cajas</DialogTitle>
+            <DialogDescription>
+              {selectedOperation
+                ? `${selectedOperation.rk_identifier} · ${selectedOperation.reference}`
+                : 'Detalle confirmadas vs pendientes'}
+            </DialogDescription>
+          </DialogHeader>
+          {selectedOperation?.labelingPackPlan?.length ? (
+            (() => {
+              const plan = [...selectedOperation.labelingPackPlan].sort(
+                (a, b) => (a.unitNumber || 0) - (b.unitNumber || 0)
+              );
+              const confirmed = plan.filter((u) => u.confirmed);
+              const pending = plan.filter((u) => !u.confirmed);
+              return (
+                <div className="space-y-4 overflow-y-auto pr-1 text-sm">
+                  <p className="text-muted-foreground">
+                    {confirmed.length}/{plan.length} cajas confirmadas ·{' '}
+                    {(selectedOperation.completedUnitsLive || 0).toLocaleString()} und
+                  </p>
+                  <div>
+                    <p className="font-medium text-amber-800 mb-1">
+                      Pendientes ({pending.length})
+                    </p>
+                    {pending.length === 0 ? (
+                      <p className="text-emerald-700 text-xs">Ninguna — todas confirmadas.</p>
+                    ) : (
+                      <ul className="space-y-1 max-h-48 overflow-y-auto rounded border bg-amber-50/50 p-2">
+                        {pending.map((u) => (
+                          <li key={u.packingUnitId || `${u.unitNumber}-${u.locationId}`}>
+                            <span className="font-semibold">#{u.unitNumber}</span>
+                            {u.locationName || u.locationId
+                              ? ` · ${u.locationName || u.locationId}`
+                              : ''}
+                            {u.qty ? ` · ${u.qty} und` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div>
+                    <p className="font-medium text-emerald-800 mb-1">
+                      Confirmadas ({confirmed.length})
+                    </p>
+                    {confirmed.length === 0 ? (
+                      <p className="text-muted-foreground text-xs">Aún no hay cajas OK.</p>
+                    ) : (
+                      <ul className="space-y-1 max-h-48 overflow-y-auto rounded border bg-emerald-50/50 p-2">
+                        {confirmed.map((u) => (
+                          <li key={u.packingUnitId || `ok-${u.unitNumber}-${u.locationId}`}>
+                            <span className="font-semibold">#{u.unitNumber}</span>
+                            {u.locationName || u.locationId
+                              ? ` · ${u.locationName || u.locationId}`
+                              : ''}
+                            {u.qty ? ` · ${u.qty} und` : ''}
+                            {u.confirmedAt
+                              ? ` · ${format(new Date(u.confirmedAt), 'HH:mm', { locale: es })}`
+                              : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              );
+            })()
+          ) : (
+            <p className="text-sm text-muted-foreground">Esta tarea no tiene plan de cajas.</p>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="secondary" onClick={() => setIsBoxesDialogOpen(false)}>
+              Cerrar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <div className="space-y-6 max-w-7xl mx-auto">
         <Card>
           <CardHeader className="flex flex-row justify-between items-center pb-2">

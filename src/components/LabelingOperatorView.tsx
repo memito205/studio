@@ -350,21 +350,44 @@ const PackUnitsPanel: React.FC<{
         </form>
       ) : null}
 
-      {progress.confirmedBoxes > 0 ? (
-        <div className="text-[11px] text-muted-foreground">
-          Últimas OK:{' '}
-          {plan
-            .filter((u) => u.confirmed)
-            .slice(-4)
-            .map((u) => `#${u.unitNumber}`)
-            .join(', ')}
-          {progress.pendingBoxes > 0 ? ` · pendientes ${progress.pendingBoxes}` : ' · todas confirmadas'}
+      {progress.confirmedBoxes > 0 || progress.pendingBoxes > 0 ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-[11px]">
+          <div className="rounded border bg-amber-50/60 p-2 space-y-1">
+            <p className="font-medium text-amber-900">
+              Faltan ({progress.pendingBoxes})
+            </p>
+            {progress.pendingBoxes === 0 ? (
+              <p className="text-emerald-700">Ninguna</p>
+            ) : (
+              <p className="text-amber-900/90 leading-snug break-words">
+                {plan
+                  .filter((u) => !u.confirmed)
+                  .map((u) =>
+                    u.locationName || u.locationId
+                      ? `#${u.unitNumber} (${u.locationName || u.locationId})`
+                      : `#${u.unitNumber}`
+                  )
+                  .join(', ')}
+              </p>
+            )}
+          </div>
+          <div className="rounded border bg-emerald-50/60 p-2 space-y-1">
+            <p className="font-medium text-emerald-900">
+              OK ({progress.confirmedBoxes})
+            </p>
+            {progress.confirmedBoxes === 0 ? (
+              <p className="text-muted-foreground">Ninguna aún</p>
+            ) : (
+              <p className="text-emerald-900/90 leading-snug break-words">
+                {plan
+                  .filter((u) => u.confirmed)
+                  .map((u) => `#${u.unitNumber}`)
+                  .join(', ')}
+              </p>
+            )}
+          </div>
         </div>
-      ) : (
-        <div className="text-[11px] text-muted-foreground">
-          {progress.pendingBoxes} cajas pendientes · no se muestra lista clicable
-        </div>
-      )}
+      ) : null}
     </div>
   );
 };
@@ -739,14 +762,59 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
       providedPin?: string
     ) => {
       setIsConfirmingPack(true);
-      setIsSubmitting(true);
+      const useSessionPinSkip = Boolean(isExternalPortal && providedPin);
+
+      const buildOptimisticOp = (op: LabelingOperation): LabelingOperation | null => {
+        if (op.id !== operationId || !op.labelingPackPlan?.length) return null;
+        const pending = op.labelingPackPlan.filter(
+          (u) => !u.confirmed && Number(u.unitNumber) === unitNumber
+        );
+        let target = pending.length === 1 ? pending[0] : undefined;
+        if (!target && locationHint && pending.length > 1) {
+          const hint = locationHint.trim().toLowerCase();
+          target = pending.find((u) => {
+            const loc = String(u.locationName || u.locationId || '').toLowerCase();
+            return loc === hint || (hint && loc.includes(hint));
+          });
+        }
+        if (!target) return null;
+        const plan = op.labelingPackPlan.map((u) =>
+          u.packingUnitId === target!.packingUnitId
+            ? { ...u, confirmed: true, confirmedAt: new Date().toISOString() }
+            : u
+        );
+        const completedUnitsLive = plan
+          .filter((u) => u.confirmed)
+          .reduce((s, u) => s + (Number(u.qty) || 0), 0);
+        return { ...op, labelingPackPlan: plan, completedUnitsLive };
+      };
+
+      let rollbackExternal: LabelingOperation[] | null = null;
+      let rollbackInternal: LabelingOperation | null = null;
+      if (isExternalPortal) {
+        setExternalOperations((prev) => {
+          rollbackExternal = prev;
+          return prev.map((op) => buildOptimisticOp(op) || op);
+        });
+      } else if (onOperationUpdated) {
+        const current = (propOperations || []).find((op) => op.id === operationId);
+        if (current) {
+          const optimistic = buildOptimisticOp(current);
+          if (optimistic) {
+            rollbackInternal = current;
+            onOperationUpdated(optimistic);
+          }
+        }
+      }
+
       try {
         const result = await confirmLabelingPackUnit(
           operationId,
           { unitNumber, locationHint },
           isExternalPortal,
           providedPin,
-          externalVendor?.operatorName
+          externalVendor?.operatorName,
+          useSessionPinSkip ? { skipPinValidation: true } : undefined
         );
         if (result.success) {
           if (result.operation) {
@@ -773,11 +841,9 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
               title: 'Última caja · tarea finalizada',
               description: `Todas las cajas confirmadas (${result.confirmedBoxes}/${result.totalBoxes}). ${(result.completedUnitsLive || 0).toLocaleString()} und.${residualNote}`,
             });
-            // Solo refresco completo si no hay patch local (interno sin callback).
             if (!isExternalPortal && !onOperationUpdated) {
               handleRefresh();
             } else if (!isExternalPortal && onOperationUpdated && result.residualCreated) {
-              // Remanente nuevo: conviene refrescar lista.
               handleRefresh();
             }
           } else {
@@ -785,17 +851,11 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
               title: 'Caja confirmada',
               description: `Progreso: ${result.confirmedBoxes || 0}/${result.totalBoxes || 0} cajas · ${(result.completedUnitsLive || 0).toLocaleString()} und${result.error ? ` · ${result.error}` : ''}`,
             });
-            if (!result.operation && !isExternalPortal) {
-              if (onOperationUpdated) {
-                // no-op
-              } else {
-                handleRefresh();
-              }
+            if (!result.operation && !isExternalPortal && !onOperationUpdated) {
+              handleRefresh();
             }
           }
 
-          // No bloquear el cierre de caja con lectura de logs (U/H se actualiza en segundo plano).
-          // En portal externo tras caja se cambia de usuario: no hace falta.
           if (!isExternalPortal || !onAfterPackConfirm) {
             void getLabelingActivityLog(operationId, { limitN: 60 }).then((logRes) => {
               if (logRes.success && logRes.data) {
@@ -808,14 +868,23 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
             onAfterPackConfirm();
           }
         } else {
+          if (rollbackExternal) setExternalOperations(rollbackExternal);
+          if (rollbackInternal && onOperationUpdated) onOperationUpdated(rollbackInternal);
           toast({
             variant: 'destructive',
             title: result.needsLocation ? 'Indique ubicación' : 'No se confirmó la caja',
             description: result.error,
           });
         }
+      } catch (err: any) {
+        if (rollbackExternal) setExternalOperations(rollbackExternal);
+        if (rollbackInternal && onOperationUpdated) onOperationUpdated(rollbackInternal);
+        toast({
+          variant: 'destructive',
+          title: 'Error al confirmar',
+          description: err?.message || 'Intente de nuevo.',
+        });
       } finally {
-        setIsSubmitting(false);
         setIsConfirmingPack(false);
       }
     };
