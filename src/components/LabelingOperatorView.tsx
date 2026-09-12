@@ -446,16 +446,19 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
     const [externalOperations, setExternalOperations] = useState<LabelingOperation[]>([]);
     const [isLoading, setIsLoading] = useState(false);
 
-    const fetchExternalTasks = React.useCallback(async () => {
+    const fetchExternalTasks = React.useCallback(async (opts?: { silent?: boolean }) => {
         if (!isExternalPortal || !externalVendor) return;
-        setIsLoading(true);
-        const result = await getLabelingOperationsForExternal(externalVendor.id, externalVendor.operatorName);
-        if (result.success && result.data) {
-            setExternalOperations(result.data);
-        } else if (!result.success) {
-            toast({ variant: 'destructive', title: 'Error al cargar tareas', description: result.error });
+        if (!opts?.silent) setIsLoading(true);
+        try {
+            const result = await getLabelingOperationsForExternal(externalVendor.id, externalVendor.operatorName);
+            if (result.success && result.data) {
+                setExternalOperations(result.data);
+            } else if (!result.success) {
+                toast({ variant: 'destructive', title: 'Error al cargar tareas', description: result.error });
+            }
+        } finally {
+            if (!opts?.silent) setIsLoading(false);
         }
-        setIsLoading(false);
     }, [isExternalPortal, externalVendor, toast]);
 
     React.useEffect(() => {
@@ -465,7 +468,9 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
     }, [isExternalPortal, fetchExternalTasks]);
 
     const activeOperations = isExternalPortal ? externalOperations : (propOperations || []);
-    const handleRefresh = isExternalPortal ? fetchExternalTasks : (propOnRefresh || (() => {}));
+    const handleRefresh = isExternalPortal
+      ? () => fetchExternalTasks({ silent: true })
+      : (propOnRefresh || (() => {}));
 
     const packLiveKey = useMemo(
       () =>
@@ -481,7 +486,7 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
       [activeOperations]
     );
 
-    // Cargar logs de tareas pack_units activas para u/h en vivo
+    // Cargar logs solo de tareas pack_units activas (no bloquea el listado inicial).
     React.useEffect(() => {
       if (!packLiveKey) return;
       let cancelled = false;
@@ -493,12 +498,18 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
 
       (async () => {
         const next: Record<string, LabelingActivityLog[]> = {};
-        await Promise.all(
-          packActive.map(async (op) => {
-            const res = await getLabelingActivityLog(op.id, { limitN: 120 });
-            if (res.success && res.data) next[op.id] = res.data;
-          })
-        );
+        // Limitar concurrencia: máximo 4 logs en paralelo para no colgar el portal.
+        const chunkSize = 4;
+        for (let i = 0; i < packActive.length; i += chunkSize) {
+          const chunk = packActive.slice(i, i + chunkSize);
+          await Promise.all(
+            chunk.map(async (op) => {
+              const res = await getLabelingActivityLog(op.id, { limitN: 60 });
+              if (res.success && res.data) next[op.id] = res.data;
+            })
+          );
+          if (cancelled) return;
+        }
         if (!cancelled) {
           setActivityByOp((prev) => ({ ...prev, ...next }));
         }
@@ -507,7 +518,6 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
       return () => {
         cancelled = true;
       };
-      // packLiveKey captura ids/estado/progreso; activeOperations se lee al cambiar esa clave
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [packLiveKey]);
 

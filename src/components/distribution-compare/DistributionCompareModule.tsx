@@ -12,6 +12,7 @@ import {
   Trash2,
   UserCheck,
   XCircle,
+  Search,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -162,6 +163,8 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const [notes, setNotes] = useState('');
   const [onlyRemainder, setOnlyRemainder] = useState(true);
 
+  const [listSearch, setListSearch] = useState('');
+  const [detailSearch, setDetailSearch] = useState('');
   const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
   const [rowOperatorByRef, setRowOperatorByRef] = useState<Record<string, string>>({});
   const [assignOperatorId, setAssignOperatorId] = useState('');
@@ -300,10 +303,56 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
 
   const detailLines = useMemo(() => {
     const lines = selected?.lines || [];
-    if (!onlyRemainder) return lines;
-    // Asignables: remanente > 0 o confirmación en 0. Oculta sobredistribución (< 0).
-    return lines.filter((l) => l.remainderQty >= 0);
-  }, [selected, onlyRemainder]);
+    const base = onlyRemainder
+      ? // Asignables: remanente > 0 o confirmación en 0. Oculta sobredistribución (< 0).
+        lines.filter((l) => l.remainderQty >= 0)
+      : lines;
+    const q = detailSearch.trim().toLowerCase();
+    if (!q) return base;
+    return base.filter((l) => String(l.reference || '').toLowerCase().includes(q));
+  }, [selected, onlyRemainder, detailSearch]);
+
+  const matchesListSearch = useCallback(
+    (parts: Array<string | number | null | undefined>) => {
+      const q = listSearch.trim().toLowerCase();
+      if (!q) return true;
+      return parts
+        .map((p) => String(p ?? '').toLowerCase())
+        .join(' ')
+        .includes(q);
+    },
+    [listSearch]
+  );
+
+  const filteredMyTasks = useMemo(
+    () =>
+      myTasks.filter((t) =>
+        matchesListSearch([t.reference, t.rkIdentifier, t.locationName, t.assignedOperatorName])
+      ),
+    [myTasks, matchesListSearch]
+  );
+
+  const filteredAvailableClaims = useMemo(
+    () =>
+      availableClaims.filter((r) =>
+        matchesListSearch([r.reference, r.rkIdentifier, r.locationName, r.compareStatus])
+      ),
+    [availableClaims, matchesListSearch]
+  );
+
+  const filteredAssignmentBoard = useMemo(
+    () =>
+      assignmentBoard.filter((t) =>
+        matchesListSearch([
+          t.reference,
+          t.rkIdentifier,
+          t.assignedOperatorName,
+          t.assignedOperatorId,
+          t.locationName,
+        ])
+      ),
+    [assignmentBoard, matchesListSearch]
+  );
 
   const onPlanFile = async (file: File | null) => {
     if (!file) return;
@@ -801,6 +850,20 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
         </div>
       ) : null}
 
+      {view === 'list' ? (
+        <div className="flex flex-wrap gap-2 items-center">
+          <div className="relative flex-1 min-w-[220px] max-w-md">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              value={listSearch}
+              onChange={(e) => setListSearch(e.target.value)}
+              placeholder="Buscar referencia, RK, ubicación, operario…"
+              className="pl-9 h-9"
+            />
+          </div>
+        </div>
+      ) : null}
+
       {view === 'list' && tab === 'compares' ? (
         <Card>
           <CardHeader>
@@ -910,10 +973,16 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
             </CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto">
-            {myTasks.length === 0 ? (
+            {filteredMyTasks.length === 0 ? (
               <p className="text-center text-muted-foreground py-8">
-                No tiene tareas pendientes. Revise la pestaña <strong>Disponibles</strong> para tomar una
-                referencia.
+                {myTasks.length === 0
+                  ? (
+                    <>
+                      No tiene tareas pendientes. Revise la pestaña <strong>Disponibles</strong> para tomar una
+                      referencia.
+                    </>
+                  )
+                  : 'No hay remanentes que coincidan con la búsqueda.'}
               </p>
             ) : (
               <Table>
@@ -929,7 +998,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {myTasks.map((task) => (
+                  {filteredMyTasks.map((task) => (
                     <TableRow key={task.id}>
                       <TableCell className="text-sm">{task.rkIdentifier || '—'}</TableCell>
                       <TableCell className="font-medium">{task.reference}</TableCell>
@@ -997,9 +1066,11 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
             </CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto">
-            {availableClaims.length === 0 ? (
+            {filteredAvailableClaims.length === 0 ? (
               <p className="text-center text-muted-foreground py-8">
-                No hay referencias sin asignar por ahora.
+                {availableClaims.length === 0
+                  ? 'No hay referencias sin asignar por ahora.'
+                  : 'No hay referencias que coincidan con la búsqueda.'}
               </p>
             ) : (
               <Table>
@@ -1014,7 +1085,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {availableClaims.map((row) => {
+                  {filteredAvailableClaims.map((row) => {
                     const key = `${row.compareId}:${row.reference}`;
                     return (
                       <TableRow key={key}>
@@ -1066,8 +1137,12 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
             </CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto">
-            {assignmentBoard.length === 0 ? (
-              <p className="text-center text-muted-foreground py-8">Aún no hay asignaciones.</p>
+            {filteredAssignmentBoard.length === 0 ? (
+              <p className="text-center text-muted-foreground py-8">
+                {assignmentBoard.length === 0
+                  ? 'Aún no hay asignaciones.'
+                  : 'No hay asignaciones que coincidan con la búsqueda.'}
+              </p>
             ) : (
               <Table>
                 <TableHeader>
@@ -1083,7 +1158,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {assignmentBoard.map((task) => (
+                  {filteredAssignmentBoard.map((task) => (
                     <TableRow key={task.id}>
                       <TableCell className="text-sm">{task.rkIdentifier || '—'}</TableCell>
                       <TableCell className="font-medium">{task.reference}</TableCell>
@@ -1433,13 +1508,24 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   {selected.notes ? ` · ${selected.notes}` : ''}
                 </CardDescription>
               </div>
-              <label className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={onlyRemainder}
-                  onCheckedChange={(v) => setOnlyRemainder(Boolean(v))}
-                />
-                Solo asignables (remanente ≥ 0)
-              </label>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="relative min-w-[200px]">
+                  <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    value={detailSearch}
+                    onChange={(e) => setDetailSearch(e.target.value)}
+                    placeholder="Buscar referencia…"
+                    className="pl-9 h-9 w-56"
+                  />
+                </div>
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={onlyRemainder}
+                    onCheckedChange={(v) => setOnlyRemainder(Boolean(v))}
+                  />
+                  Solo asignables (remanente ≥ 0)
+                </label>
+              </div>
             </CardHeader>
             <CardContent className="overflow-x-auto">
               <Table>

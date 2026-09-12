@@ -1,7 +1,7 @@
 /** @jsxImportSource react */
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -22,7 +22,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Loader2, User } from 'lucide-react';
+import { Loader2, User, Search } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import type { AppUser, LabelingOperation, ExternalVendor } from '@/types';
 import { bulkCreateLabelingTasks } from '@/app/reception/actions';
@@ -32,6 +32,7 @@ interface GroupedItem {
   item: string;
   totalQuantity: number;
   sizes: { [size: string]: number };
+  location?: string;
 }
 
 interface AssignmentData {
@@ -75,6 +76,7 @@ export const AssignOperatorsDialog: React.FC<AssignOperatorsDialogProps> = ({
   const [singleExtName, setSingleExtName] = useState<string>('');
   const [globalStandard, setGlobalStandard] = useState<number>(150);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [referenceFilter, setReferenceFilter] = useState('');
   const { toast } = useToast();
 
   useEffect(() => {
@@ -85,9 +87,19 @@ export const AssignOperatorsDialog: React.FC<AssignOperatorsDialogProps> = ({
       } else {
         setAssignments(new Map());
         setGlobalStandard(150);
+        setReferenceFilter('');
       }
     }
   }, [isOpen, isSingleTaskReassign, initialAssignedIds]);
+
+  const filteredItemsToAssign = useMemo(() => {
+    const q = referenceFilter.trim().toLowerCase();
+    if (!q) return itemsToAssign || [];
+    return (itemsToAssign || []).filter((item) => {
+      const hay = `${item.reference} ${item.item} ${item.location || ''}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [itemsToAssign, referenceFilter]);
 
   const handleAssignmentChange = (reference: string, operatorId: string) => {
     setAssignments(prev => {
@@ -247,15 +259,29 @@ export const AssignOperatorsDialog: React.FC<AssignOperatorsDialogProps> = ({
           </DialogDescription>
         </DialogHeader>
         
-        <div className="py-4 border-b">
-            <Label htmlFor="global-standard">Estándar Global (unidades por hora)</Label>
-            <Input
-                id="global-standard"
-                type="number"
-                value={globalStandard}
-                onChange={(e) => setGlobalStandard(Number(e.target.value))}
-                className="mt-1 w-full md:w-1/3 h-9"
-            />
+        <div className="py-4 border-b space-y-3">
+            <div>
+              <Label htmlFor="global-standard">Estándar Global (unidades por hora)</Label>
+              <Input
+                  id="global-standard"
+                  type="number"
+                  value={globalStandard}
+                  onChange={(e) => setGlobalStandard(Number(e.target.value))}
+                  className="mt-1 w-full md:w-1/3 h-9"
+              />
+            </div>
+            <div className="relative max-w-md">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={referenceFilter}
+                onChange={(e) => setReferenceFilter(e.target.value)}
+                placeholder="Buscar referencia, ítem o ubicación…"
+                className="pl-9 h-9"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Mostrando {filteredItemsToAssign.length} de {(itemsToAssign || []).length} referencia(s)
+            </p>
         </div>
 
         <div className="flex-grow overflow-hidden border rounded-md mt-4">
@@ -264,13 +290,14 @@ export const AssignOperatorsDialog: React.FC<AssignOperatorsDialogProps> = ({
                 <TableHeader className="sticky top-0 bg-secondary z-10">
                     <TableRow>
                         <TableHead>Referencia</TableHead>
-                        <TableHead>Item</TableHead>
+                        <TableHead>Ítem</TableHead>
+                        <TableHead>Ubicación</TableHead>
                         <TableHead>Cantidad</TableHead>
                         <TableHead className="w-[300px]">Asignar a</TableHead>
                     </TableRow>
                 </TableHeader>
                 <TableBody>
-                {itemsToAssign?.map(item => {
+                {filteredItemsToAssign.map(item => {
                     const currentAssignment = assignments.get(item.reference);
                     const isExtRow = currentAssignment?.operatorId?.startsWith('ext_');
                     const vendorRow = isExtRow ? externalVendors.find(v => `ext_${v.id}` === currentAssignment?.operatorId) : null;
@@ -279,6 +306,9 @@ export const AssignOperatorsDialog: React.FC<AssignOperatorsDialogProps> = ({
                         <TableRow key={item.reference}>
                             <TableCell className="font-medium text-xs">{item.reference}</TableCell>
                             <TableCell className="text-xs">{item.item}</TableCell>
+                            <TableCell className="text-xs font-medium">
+                              {item.location ? item.location : <span className="text-muted-foreground">—</span>}
+                            </TableCell>
                             <TableCell className="text-xs font-bold">{item.totalQuantity}</TableCell>
                             <TableCell>
                                 <div className="space-y-2 py-1">
@@ -325,7 +355,13 @@ export const AssignOperatorsDialog: React.FC<AssignOperatorsDialogProps> = ({
                 })}
                 </TableBody>
             </Table>
-             {!itemsToAssign || itemsToAssign.length === 0 && <p className="text-center p-8 text-muted-foreground">No hay referencias disponibles para asignar.</p>}
+             {filteredItemsToAssign.length === 0 && (
+               <p className="text-center p-8 text-muted-foreground">
+                 {referenceFilter.trim()
+                   ? 'No hay referencias que coincidan con la búsqueda.'
+                   : 'No hay referencias disponibles para asignar.'}
+               </p>
+             )}
             </ScrollArea>
         </div>
 

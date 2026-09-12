@@ -3547,24 +3547,55 @@ export async function deleteExternalVendor(vendorId: string): Promise<{ success:
 
 export async function getLabelingOperationsForExternal(vendorId: string, operatorName?: string): Promise<{ success: boolean; data?: LabelingOperation[]; error?: string }> {
     try {
-        const q = query(
-            collection(firestore, 'labelingOperations'), 
-            where('assignedExternalVendorId', '==', vendorId)
-            // Removed orderBy to avoid missing index error
-        );
-        const querySnapshot = await getDocs(q);
-        let operations = querySnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...convertTimestampsToDates(doc.data())
-        } as LabelingOperation))
-        .filter(op => op.status !== 'Completada')
-        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); // Sort by createdAt desc
-        
-        if (operatorName) {
-            operations = operations.filter(op => op.assignedExternalOperatorName === operatorName);
+        const openStatuses = ['Pendiente', 'Asignada', 'En Progreso', 'Pausada'] as const;
+        let operations: LabelingOperation[] = [];
+
+        // Preferir consulta acotada (sin Completada) para que el portal sea ágil.
+        try {
+            const qFast = query(
+                collection(firestore, 'labelingOperations'),
+                where('assignedExternalVendorId', '==', vendorId),
+                where('status', 'in', [...openStatuses])
+            );
+            const snap = await getDocs(qFast);
+            operations = snap.docs.map(
+                (d) =>
+                    ({
+                        id: d.id,
+                        ...convertTimestampsToDates(d.data()),
+                    }) as LabelingOperation
+            );
+            if (operatorName) {
+                operations = operations.filter(
+                    (op) => op.assignedExternalOperatorName === operatorName
+                );
+            }
+        } catch (indexErr) {
+            // Fallback si falta índice compuesto: vendor + filtro en cliente (sin Completada).
+            console.warn('getLabelingOperationsForExternal fast query fallback:', indexErr);
+            const q = query(
+                collection(firestore, 'labelingOperations'),
+                where('assignedExternalVendorId', '==', vendorId)
+            );
+            const querySnapshot = await getDocs(q);
+            operations = querySnapshot.docs
+                .map(
+                    (d) =>
+                        ({
+                            id: d.id,
+                            ...convertTimestampsToDates(d.data()),
+                        }) as LabelingOperation
+                )
+                .filter((op) => op.status !== 'Completada');
+            if (operatorName) {
+                operations = operations.filter((op) => op.assignedExternalOperatorName === operatorName);
+            }
         }
-        
-    
+
+        operations.sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+
         return { success: true, data: operations };
     } catch (error: any) {
         console.error("Error loading labeling operations for external vendor:", error);

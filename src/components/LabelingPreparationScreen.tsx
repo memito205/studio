@@ -5,7 +5,8 @@ import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ArrowLeft, Loader2, Package, Tag, Users } from 'lucide-react';
+import { ArrowLeft, Loader2, Package, Search, Tag, Users } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import type { ReceptionOperation, AppUser, LabelingOperation, LabelingOperationStatus } from '@/types';
 import { CreateLabelingTaskDialog } from './CreateLabelingTaskDialog';
 import { AssignOperatorsDialog } from './AssignOperatorsDialog';
@@ -35,6 +36,7 @@ export interface GroupedItem {
   item: string;
   totalQuantity: number;
   sizes: { [size: string]: number };
+  location?: string;
   status: PrepReferenceStatus;
   /** Unidades aún no cubiertas por tareas activas + completadas. */
   remainingUnits: number;
@@ -156,20 +158,39 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
   const [convertingPack, setConvertingPack] = useState<string | null>(null);
   /** ref normalizada → cantidad de cajas en plan */
   const [packPlanByRef, setPackPlanByRef] = useState<Record<string, number>>({});
+  /** ref normalizada → ubicación (desde cajas o expectedItems) */
+  const [packLocationByRef, setPackLocationByRef] = useState<Record<string, string>>({});
+  const [prepSearch, setPrepSearch] = useState('');
   const { toast } = useToast();
+
+  const applyPackMeta = useCallback(
+    (data: Record<string, import('@/types').ReceptionPackUnitDetail[]>) => {
+      const nextCounts: Record<string, number> = {};
+      const nextLocs: Record<string, string> = {};
+      for (const [refKey, list] of Object.entries(data)) {
+        const norm = normalizeReceptionReference(refKey);
+        nextCounts[norm] = list.length;
+        const loc =
+          list.find((u) => u.locationName)?.locationName ||
+          list.find((u) => u.locationId)?.locationId ||
+          '';
+        if (loc) nextLocs[norm] = loc;
+      }
+      setPackPlanByRef(nextCounts);
+      setPackLocationByRef(nextLocs);
+    },
+    []
+  );
 
   const refreshPackPlanMeta = useCallback(async () => {
     const res = await getReceptionPackSummaries(operation.id);
     if (!res.success || !res.data) {
       setPackPlanByRef({});
+      setPackLocationByRef({});
       return;
     }
-    const next: Record<string, number> = {};
-    for (const [refKey, list] of Object.entries(res.data)) {
-      next[normalizeReceptionReference(refKey)] = list.length;
-    }
-    setPackPlanByRef(next);
-  }, [operation.id]);
+    applyPackMeta(res.data);
+  }, [operation.id, applyPackMeta]);
 
   const fetchDependencies = useCallback(async () => {
     setLoadingOperators(true);
@@ -199,13 +220,10 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
       }
 
       if (packMeta.success && packMeta.data) {
-        const next: Record<string, number> = {};
-        for (const [refKey, list] of Object.entries(packMeta.data)) {
-          next[normalizeReceptionReference(refKey)] = list.length;
-        }
-        setPackPlanByRef(next);
+        applyPackMeta(packMeta.data);
       } else {
         setPackPlanByRef({});
+        setPackLocationByRef({});
       }
 
       if (usersResult) {
@@ -232,7 +250,7 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
       setLoadingVendors(false);
       setLoadingOperators(false);
     }
-  }, [operation.id, toast]);
+  }, [operation.id, toast, applyPackMeta]);
 
   useEffect(() => {
     fetchDependencies();
@@ -243,16 +261,22 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
     (operation.expectedItems || []).forEach((item) => {
       const refKey = item.reference;
       if (!map.has(refKey)) {
+        const packKey = normalizeReceptionReference(item.reference);
         map.set(refKey, {
           reference: item.reference,
           item: item.item,
           totalQuantity: 0,
           sizes: {},
+          location: item.location || packLocationByRef[packKey] || undefined,
         });
       }
       const grouped = map.get(refKey)!;
       grouped.totalQuantity += item.expected_quantity;
       grouped.sizes[item.size] = (grouped.sizes[item.size] || 0) + item.expected_quantity;
+      if (!grouped.location) {
+        const packKey = normalizeReceptionReference(item.reference);
+        grouped.location = item.location || packLocationByRef[packKey] || undefined;
+      }
     });
 
     const tasksByRef = new Map<string, LabelingOperation[]>();
@@ -269,9 +293,22 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
         hasPackPlan: packUnitCount > 0,
         packUnitCount,
       });
-      return { ...item, ...derived };
+      return {
+        ...item,
+        location: item.location || packLocationByRef[packKey] || undefined,
+        ...derived,
+      };
     });
-  }, [operation.expectedItems, existingTasks, packPlanByRef]);
+  }, [operation.expectedItems, existingTasks, packPlanByRef, packLocationByRef]);
+
+  const filteredGroupedItems = useMemo(() => {
+    const q = prepSearch.trim().toLowerCase();
+    if (!q) return groupedItems;
+    return groupedItems.filter((item) => {
+      const hay = `${item.reference} ${item.item} ${item.location || ''}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [groupedItems, prepSearch]);
 
   const canCreateTask = (item: GroupedItem) => {
     // Solo crear desde prep si no hay trabajo abierto y aún falta cantidad
@@ -466,6 +503,15 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
             Use <strong>Cargar unidades de empaque</strong> para guardar el resumen de cajas de esta
             recepción (no modifica tareas ya en proceso).
           </p>
+          <div className="relative mb-3 max-w-md">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              value={prepSearch}
+              onChange={(e) => setPrepSearch(e.target.value)}
+              placeholder="Buscar referencia, ítem o ubicación…"
+              className="pl-9"
+            />
+          </div>
           <div className="border rounded-md">
             {loadingOperators ? (
               <div className="flex justify-center items-center h-64">
@@ -477,6 +523,7 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
                   <TableRow>
                     <TableHead>Referencia</TableHead>
                     <TableHead>Ítem</TableHead>
+                    <TableHead>Ubicación</TableHead>
                     <TableHead>Tallas y Cantidades</TableHead>
                     <TableHead className="text-right">Cantidad Total</TableHead>
                     <TableHead className="text-center">Estado</TableHead>
@@ -484,10 +531,13 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {groupedItems.map((item) => (
+                  {filteredGroupedItems.map((item) => (
                     <TableRow key={item.reference}>
                       <TableCell className="font-medium">{item.reference}</TableCell>
                       <TableCell>{item.item}</TableCell>
+                      <TableCell className="text-sm">
+                        {item.location || <span className="text-muted-foreground">—</span>}
+                      </TableCell>
                       <TableCell>
                         <div className="flex flex-wrap gap-x-4 gap-y-1">
                           {Object.entries(item.sizes).map(([size, qty]) => (
