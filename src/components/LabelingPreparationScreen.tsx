@@ -302,11 +302,11 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
   }, [operation.expectedItems, existingTasks, packPlanByRef, packLocationByRef]);
 
   const filteredGroupedItems = useMemo(() => {
-    const q = prepSearch.trim().toLowerCase();
-    if (!q) return groupedItems;
+    const tokens = prepSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (!tokens.length) return groupedItems;
     return groupedItems.filter((item) => {
       const hay = `${item.reference} ${item.item} ${item.location || ''}`.toLowerCase();
-      return hay.includes(q);
+      return tokens.every((t) => hay.includes(t));
     });
   }, [groupedItems, prepSearch]);
 
@@ -503,14 +503,20 @@ export const LabelingPreparationScreen: React.FC<LabelingPreparationScreenProps>
             Use <strong>Cargar unidades de empaque</strong> para guardar el resumen de cajas de esta
             recepción (no modifica tareas ya en proceso).
           </p>
-          <div className="relative mb-3 max-w-md">
-            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              value={prepSearch}
-              onChange={(e) => setPrepSearch(e.target.value)}
-              placeholder="Buscar referencia, ítem o ubicación…"
-              className="pl-9"
-            />
+          <div className="mb-3 max-w-md space-y-1">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={prepSearch}
+                onChange={(e) => setPrepSearch(e.target.value)}
+                placeholder="Filtrar por referencia, nombre (ítem) o ubicación…"
+                className="pl-9"
+                autoFocus
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Mostrando {filteredGroupedItems.length} de {groupedItems.length} referencia(s)
+            </p>
           </div>
           <div className="border rounded-md">
             {loadingOperators ? (

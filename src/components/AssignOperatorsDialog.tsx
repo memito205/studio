@@ -77,6 +77,7 @@ export const AssignOperatorsDialog: React.FC<AssignOperatorsDialogProps> = ({
   const [globalStandard, setGlobalStandard] = useState<number>(150);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [referenceFilter, setReferenceFilter] = useState('');
+  const [operatorFilter, setOperatorFilter] = useState('');
   const { toast } = useToast();
 
   useEffect(() => {
@@ -84,22 +85,50 @@ export const AssignOperatorsDialog: React.FC<AssignOperatorsDialogProps> = ({
       if (isSingleTaskReassign) {
         setSingleAssignment(initialAssignedIds[0] || '');
         setSingleExtName('');
+        setOperatorFilter('');
       } else {
         setAssignments(new Map());
         setGlobalStandard(150);
         setReferenceFilter('');
+        setOperatorFilter('');
       }
     }
   }, [isOpen, isSingleTaskReassign, initialAssignedIds]);
 
   const filteredItemsToAssign = useMemo(() => {
-    const q = referenceFilter.trim().toLowerCase();
-    if (!q) return itemsToAssign || [];
+    const tokens = referenceFilter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (!tokens.length) return itemsToAssign || [];
     return (itemsToAssign || []).filter((item) => {
       const hay = `${item.reference} ${item.item} ${item.location || ''}`.toLowerCase();
-      return hay.includes(q);
+      return tokens.every((t) => hay.includes(t));
     });
   }, [itemsToAssign, referenceFilter]);
+
+  const filteredOperators = useMemo(() => {
+    const tokens = operatorFilter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (!tokens.length) return operators;
+    return operators.filter((op) => {
+      const hay = `${op.displayName || ''} ${op.email || ''}`.toLowerCase();
+      return tokens.every((t) => hay.includes(t));
+    });
+  }, [operators, operatorFilter]);
+
+  const filteredVendors = useMemo(() => {
+    const tokens = operatorFilter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (!tokens.length) return externalVendors;
+    return externalVendors.filter((v) => {
+      const opNames = (v.operators || []).map((o) => o.name).join(' ');
+      const hay = `${v.name || ''} ${opNames}`.toLowerCase();
+      return tokens.every((t) => hay.includes(t));
+    });
+  }, [externalVendors, operatorFilter]);
+
+  const filterExternalNames = (names: { name: string }[] | undefined) => {
+    const list = names || [];
+    const tokens = operatorFilter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (!tokens.length) return list;
+    return list.filter((op) => tokens.every((t) => op.name.toLowerCase().includes(t)));
+  };
 
   const handleAssignmentChange = (reference: string, operatorId: string) => {
     setAssignments(prev => {
@@ -210,17 +239,32 @@ export const AssignOperatorsDialog: React.FC<AssignOperatorsDialogProps> = ({
             <DialogTitle>Reasignar Operario</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={operatorFilter}
+                onChange={(e) => setOperatorFilter(e.target.value)}
+                placeholder="Filtrar por nombre de operario o empresa…"
+                className="pl-9 h-9"
+                autoFocus
+              />
+            </div>
             <Select value={singleAssignment} onValueChange={setSingleAssignment} disabled={isLoading}>
               <SelectTrigger>
                   <SelectValue placeholder={isLoading ? "Cargando..." : "Seleccionar..."} />
               </SelectTrigger>
               <SelectContent>
-                  {operators.map(op => (
+                  {filteredOperators.map(op => (
                       <SelectItem key={op.uid} value={op.uid}>[Interno] {op.displayName || op.email}</SelectItem>
                   ))}
-                  {externalVendors?.map(vendor => (
+                  {filteredVendors.map(vendor => (
                       <SelectItem key={vendor.id} value={`ext_${vendor.id}`}>[Externo] {vendor.name}</SelectItem>
                   ))}
+                  {filteredOperators.length === 0 && filteredVendors.length === 0 ? (
+                    <div className="px-2 py-3 text-xs text-muted-foreground text-center">
+                      Sin coincidencias para “{operatorFilter.trim()}”
+                    </div>
+                  ) : null}
               </SelectContent>
             </Select>
 
@@ -232,7 +276,7 @@ export const AssignOperatorsDialog: React.FC<AssignOperatorsDialogProps> = ({
                             <SelectValue placeholder="Elegir trabajador..." />
                         </SelectTrigger>
                         <SelectContent>
-                            {singleVendor.operators?.map((op, i) => (
+                            {filterExternalNames(singleVendor.operators).map((op, i) => (
                                 <SelectItem key={i} value={op.name}>{op.name}</SelectItem>
                             ))}
                         </SelectContent>
@@ -270,17 +314,32 @@ export const AssignOperatorsDialog: React.FC<AssignOperatorsDialogProps> = ({
                   className="mt-1 w-full md:w-1/3 h-9"
               />
             </div>
-            <div className="relative max-w-md">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input
-                value={referenceFilter}
-                onChange={(e) => setReferenceFilter(e.target.value)}
-                placeholder="Buscar referencia, ítem o ubicación…"
-                className="pl-9 h-9"
-              />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  value={referenceFilter}
+                  onChange={(e) => setReferenceFilter(e.target.value)}
+                  placeholder="Filtrar referencia, nombre (ítem) o ubicación…"
+                  className="pl-9 h-9"
+                  autoFocus
+                />
+              </div>
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  value={operatorFilter}
+                  onChange={(e) => setOperatorFilter(e.target.value)}
+                  placeholder="Filtrar operario o empresa por nombre…"
+                  className="pl-9 h-9"
+                />
+              </div>
             </div>
             <p className="text-xs text-muted-foreground">
               Mostrando {filteredItemsToAssign.length} de {(itemsToAssign || []).length} referencia(s)
+              {operatorFilter.trim()
+                ? ` · operarios: ${filteredOperators.length} int. / ${filteredVendors.length} ext.`
+                : ''}
             </p>
         </div>
 
@@ -321,12 +380,17 @@ export const AssignOperatorsDialog: React.FC<AssignOperatorsDialogProps> = ({
                                             <SelectValue placeholder={isLoading ? "Cargando..." : "Seleccionar..."} />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            {operators.map(op => (
+                                            {filteredOperators.map(op => (
                                                 <SelectItem key={op.uid} value={op.uid}>[Int] {op.displayName || op.email}</SelectItem>
                                             ))}
-                                            {externalVendors.map(vendor => (
+                                            {filteredVendors.map(vendor => (
                                                 <SelectItem key={vendor.id} value={`ext_${vendor.id}`}>[Ext] {vendor.name}</SelectItem>
                                             ))}
+                                            {filteredOperators.length === 0 && filteredVendors.length === 0 ? (
+                                              <div className="px-2 py-3 text-xs text-muted-foreground text-center">
+                                                Sin operarios/empresas para ese nombre
+                                              </div>
+                                            ) : null}
                                         </SelectContent>
                                     </Select>
 
@@ -341,7 +405,7 @@ export const AssignOperatorsDialog: React.FC<AssignOperatorsDialogProps> = ({
                                                     <SelectValue placeholder="Elegir operario..." />
                                                 </SelectTrigger>
                                                 <SelectContent>
-                                                    {vendorRow.operators?.map((op, i) => (
+                                                    {filterExternalNames(vendorRow.operators).map((op, i) => (
                                                         <SelectItem key={i} value={op.name}>{op.name}</SelectItem>
                                                     ))}
                                                 </SelectContent>

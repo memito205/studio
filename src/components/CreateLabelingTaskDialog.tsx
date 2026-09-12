@@ -1,7 +1,7 @@
 /** @jsxImportSource react */
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
@@ -18,7 +18,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, User } from 'lucide-react';
+import { Loader2, User, Search } from 'lucide-react';
 import type { AppUser, ExternalVendor } from '@/types';
 import { createLabelingTask } from '@/app/reception/actions';
 
@@ -70,6 +70,7 @@ export const CreateLabelingTaskDialog: React.FC<CreateLabelingTaskDialogProps> =
 }) => {
   const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [operatorFilter, setOperatorFilter] = useState('');
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
@@ -84,8 +85,37 @@ export const CreateLabelingTaskDialog: React.FC<CreateLabelingTaskDialogProps> =
   const isExternal = selectedOperatorId.startsWith('ext_');
   const selectedVendor = isExternal ? externalVendors.find(v => `ext_${v.id}` === selectedOperatorId) : null;
 
+  const filterTokens = useMemo(
+    () => operatorFilter.trim().toLowerCase().split(/\s+/).filter(Boolean),
+    [operatorFilter]
+  );
+
+  const filteredOperators = useMemo(() => {
+    if (!filterTokens.length) return operators;
+    return operators.filter((op) => {
+      const hay = `${op.displayName || ''} ${op.email || ''}`.toLowerCase();
+      return filterTokens.every((t) => hay.includes(t));
+    });
+  }, [operators, filterTokens]);
+
+  const filteredVendors = useMemo(() => {
+    if (!filterTokens.length) return externalVendors;
+    return externalVendors.filter((v) => {
+      const opNames = (v.operators || []).map((o) => o.name).join(' ');
+      const hay = `${v.name || ''} ${opNames}`.toLowerCase();
+      return filterTokens.every((t) => hay.includes(t));
+    });
+  }, [externalVendors, filterTokens]);
+
+  const filteredExternalWorkers = useMemo(() => {
+    const list = selectedVendor?.operators || [];
+    if (!filterTokens.length) return list;
+    return list.filter((op) => filterTokens.every((t) => op.name.toLowerCase().includes(t)));
+  }, [selectedVendor, filterTokens]);
+
   useEffect(() => {
     if (isOpen) {
+      setOperatorFilter('');
       form.reset({
         operatorId: '',
         externalOperatorName: '',
@@ -187,6 +217,15 @@ export const CreateLabelingTaskDialog: React.FC<CreateLabelingTaskDialogProps> =
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel className="text-xs">Responsable (Interno o Empresa)</FormLabel>
+                      <div className="relative mb-2">
+                        <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                        <Input
+                          value={operatorFilter}
+                          onChange={(e) => setOperatorFilter(e.target.value)}
+                          placeholder="Escriba el nombre para filtrar…"
+                          className="pl-9 h-9"
+                        />
+                      </div>
                       <Select onValueChange={(val) => {
                           field.onChange(val);
                           form.setValue('externalOperatorName', ''); // Reset operator if vendor changes
@@ -197,12 +236,17 @@ export const CreateLabelingTaskDialog: React.FC<CreateLabelingTaskDialogProps> =
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          {operators.map(op => (
+                          {filteredOperators.map(op => (
                             <SelectItem key={op.uid} value={op.uid}>[Interno] {op.displayName || op.email}</SelectItem>
                           ))}
-                          {externalVendors.map(vendor => (
+                          {filteredVendors.map(vendor => (
                             <SelectItem key={vendor.id} value={`ext_${vendor.id}`}>[Empresa Ext] {vendor.name}</SelectItem>
                           ))}
+                          {filteredOperators.length === 0 && filteredVendors.length === 0 ? (
+                            <div className="px-2 py-3 text-xs text-muted-foreground text-center">
+                              Sin coincidencias
+                            </div>
+                          ) : null}
                         </SelectContent>
                       </Select>
                       <FormMessage className="text-[10px]" />
@@ -226,7 +270,7 @@ export const CreateLabelingTaskDialog: React.FC<CreateLabelingTaskDialogProps> =
                               </SelectTrigger>
                             </FormControl>
                             <SelectContent>
-                              {selectedVendor.operators?.map((op, i) => (
+                              {filteredExternalWorkers.map((op, i) => (
                                 <SelectItem key={i} value={op.name}>{op.name}</SelectItem>
                               ))}
                             </SelectContent>
