@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Table,
   TableBody,
@@ -10,11 +10,11 @@ import {
 } from "@/components/ui/table";
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Checkbox } from '@/components/ui/checkbox';
 import { EditReceptionOperationDialog } from './EditReceptionOperationDialog';
-import { Settings, Play, Eye, Edit, Boxes, Download, ArrowDownUp, BarChartHorizontal, Bug, Loader2, Search, Tag, RotateCcw } from 'lucide-react'; 
+import { Play, Eye, Edit, Boxes, Download, ArrowDownUp, BarChartHorizontal, Bug, Loader2, Search, Tag, RotateCcw, CheckCircle2 } from 'lucide-react';
 import { OperationPackingUnitsSummaryDialog } from './OperationPackingUnitsSummaryDialog';
 import { ReceptionOperation, OperationReport, Location, PackedItem } from '@/types';
-import SetStandardPerHourDialog from './SetStandardPerHourDialog';
 import { OperationDetailedReportDialog } from './OperationDetailedReportDialog';
 import { exportToXlsx } from '@/services/export';
 import ProductivityReportDialog from './ProductivityReportDialog';
@@ -36,8 +36,11 @@ interface ReceptionOperationsTableProps {
   sortDescriptor: { column: keyof ReceptionOperation; direction: 'asc' | 'desc' };
   onSortChange: (column: keyof ReceptionOperation) => void;
   allLocations: Location[];
-  onRowClick?: (operation: ReceptionOperation) => void; // Make this optional
+  onRowClick?: (operation: ReceptionOperation) => void;
 }
+
+const canFinalizeStatus = (status: ReceptionOperation['status']) =>
+  status === 'pending' || status === 'in_progress' || status === 'paused';
 
 const SortableHeader: React.FC<{
   label: string;
@@ -60,25 +63,118 @@ const ReceptionOperationsTable: React.FC<ReceptionOperationsTableProps> = ({ ope
   const [isExporting, setIsExporting] = useState<string | null>(null);
   const [isExportingCatalog, setIsExportingCatalog] = useState<string | null>(null);
   const [reopeningId, setReopeningId] = useState<string | null>(null);
+  const [finalizingId, setFinalizingId] = useState<string | null>(null);
+  const [isBulkFinalizing, setIsBulkFinalizing] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isFindUnitDialogOpen, setIsFindUnitDialogOpen] = useState(false);
   const [isUnitDetailsOpen, setIsUnitDetailsOpen] = useState(false);
   const [isFindingUnit, setIsFindingUnit] = useState(false);
   const [selectedOperationIdForFind, setSelectedOperationIdForFind] = useState<string | null>(null);
   const [foundUnitData, setFoundUnitData] = useState<{ unit: any; items: PackedItem[] } | null>(null);
 
+  const isAdmin = role === 'admin';
+
+  const finalizableOps = useMemo(
+    () => operations.filter((op) => op.id && canFinalizeStatus(op.status)),
+    [operations]
+  );
+
+  useEffect(() => {
+    const valid = new Set(finalizableOps.map((op) => op.id!));
+    setSelectedIds((prev) => {
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (valid.has(id)) next.add(id);
+      });
+      return next;
+    });
+  }, [finalizableOps]);
+
+  const allFinalizableSelected =
+    finalizableOps.length > 0 && finalizableOps.every((op) => selectedIds.has(op.id!));
+
+  const toggleSelectAll = (checked: boolean) => {
+    if (!checked) {
+      setSelectedIds(new Set());
+      return;
+    }
+    setSelectedIds(new Set(finalizableOps.map((op) => op.id!)));
+  };
+
+  const toggleSelectOne = (id: string, checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  const completeOperation = async (operationId: string) => {
+    return updateReceptionOperation(operationId, {
+      status: 'completed',
+      end_time: new Date().toISOString(),
+    });
+  };
+
+  const handleFinalizeOne = async (operationId: string) => {
+    setFinalizingId(operationId);
+    try {
+      const result = await completeOperation(operationId);
+      if (result.success) {
+        toast({ title: 'Operación finalizada', description: 'Quedó marcada como completada.' });
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(operationId);
+          return next;
+        });
+        onOperationUpdated();
+      } else {
+        toast({ variant: 'destructive', title: 'Error', description: result.error });
+      }
+    } finally {
+      setFinalizingId(null);
+    }
+  };
+
+  const handleBulkFinalize = async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    setIsBulkFinalizing(true);
+    let ok = 0;
+    const errors: string[] = [];
+    for (const id of ids) {
+      const result = await completeOperation(id);
+      if (result.success) ok += 1;
+      else errors.push(result.error || id);
+    }
+    setIsBulkFinalizing(false);
+    setSelectedIds(new Set());
+    onOperationUpdated();
+    if (errors.length === 0) {
+      toast({
+        title: 'Operaciones finalizadas',
+        description: `Se finalizaron ${ok} operación(es).`,
+      });
+    } else {
+      toast({
+        variant: 'destructive',
+        title: `Finalizadas ${ok} de ${ids.length}`,
+        description: errors.slice(0, 3).join(' · '),
+      });
+    }
+  };
 
   const handleExport = () => {
-    // We need to construct the OperationReport object here before exporting.
-    // This is a simplified version. A real implementation might need more data.
     const reportData: OperationReport[] = operations.map(op => ({
       ...op,
-      quantityStatus: { text: 'N/A', color: 'gray' }, // Placeholder
-      uniquePackingUnitNames: [], // Placeholder
-      uniqueLocationNames: [], // Placeholder
+      quantityStatus: { text: 'N/A', color: 'gray' },
+      uniquePackingUnitNames: [],
+      uniqueLocationNames: [],
     }));
     exportToXlsx(reportData, "Reporte_General_Operaciones");
-  }
-  
+  };
+
 
   const handleFullReportExport = async (operation: ReceptionOperation) => {
     if (!operation.id) return;
@@ -178,6 +274,8 @@ const ReceptionOperationsTable: React.FC<ReceptionOperationsTableProps> = ({ ope
     return `${day}/${month}/${year}`;
   };
 
+  const selectedOps = operations.filter((op) => op.id && selectedIds.has(op.id));
+
   return (
     <>
       <FindPackingUnitDialog 
@@ -195,7 +293,61 @@ const ReceptionOperationsTable: React.FC<ReceptionOperationsTableProps> = ({ ope
         />
       )}
       <div className="rounded-md border overflow-x-auto">
-        <div className="flex justify-end p-2">
+        <div className="flex flex-wrap justify-between items-center gap-2 p-2">
+          <div className="flex items-center gap-2">
+            {isAdmin && finalizableOps.length > 0 ? (
+              <>
+                <span className="text-sm text-muted-foreground">
+                  {selectedIds.size > 0
+                    ? `${selectedIds.size} seleccionada(s)`
+                    : 'Seleccione operaciones para finalizar'}
+                </span>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      size="sm"
+                      disabled={selectedIds.size === 0 || isBulkFinalizing}
+                    >
+                      {isBulkFinalizing ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="mr-2 h-4 w-4" />
+                      )}
+                      Finalizar seleccionadas
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        ¿Finalizar {selectedIds.size} operación(es)?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription asChild>
+                        <div className="space-y-2 text-sm text-muted-foreground">
+                          <p>
+                            Quedarán como completadas y no se podrá seguir escaneando en ellas
+                            (salvo que un admin las reabra).
+                          </p>
+                          <ul className="max-h-40 overflow-y-auto list-disc pl-5 text-foreground">
+                            {selectedOps.map((op) => (
+                              <li key={op.id}>
+                                {op.rk_identifier} · {op.supplier} · {op.status}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => void handleBulkFinalize()}>
+                        Sí, finalizar
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </>
+            ) : null}
+          </div>
           {role !== 'operator' && (
             <Button onClick={handleExport} variant="outline" size="sm">
               <Download className="mr-2 h-4 w-4"/>
@@ -206,6 +358,16 @@ const ReceptionOperationsTable: React.FC<ReceptionOperationsTableProps> = ({ ope
         <Table>
           <TableHeader>
             <TableRow>
+              {isAdmin ? (
+                <TableHead className="w-10">
+                  <Checkbox
+                    checked={allFinalizableSelected}
+                    onCheckedChange={(v) => toggleSelectAll(v === true)}
+                    disabled={finalizableOps.length === 0}
+                    aria-label="Seleccionar todas"
+                  />
+                </TableHead>
+              ) : null}
               <SortableHeader label="Identificador RK" sortKey="rk_identifier" currentSortKey={sortDescriptor.column} sortDirection={sortDescriptor.direction} onSort={onSortChange} />
               <SortableHeader label="Proveedor" sortKey="supplier" currentSortKey={sortDescriptor.column} sortDirection={sortDescriptor.direction} onSort={onSortChange} />
               <SortableHeader label="Fecha de Llegada" sortKey="expected_arrival_date" currentSortKey={sortDescriptor.column} sortDirection={sortDescriptor.direction} onSort={onSortChange} />
@@ -219,8 +381,21 @@ const ReceptionOperationsTable: React.FC<ReceptionOperationsTableProps> = ({ ope
             {operations.map((operation) => {
               const isOperationImmutable = operation.status === 'completed' || operation.status === 'cancelled';
               const isPrivilegedUser = role === 'admin' || role === 'supervisor';
+              const canFinalize = Boolean(operation.id && canFinalizeStatus(operation.status));
               return (
               <TableRow key={operation.id} onClick={() => onRowClick?.(operation)} className={onRowClick ? 'cursor-pointer' : ''}>
+                {isAdmin ? (
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <Checkbox
+                      checked={Boolean(operation.id && selectedIds.has(operation.id))}
+                      disabled={!canFinalize}
+                      onCheckedChange={(v) => {
+                        if (operation.id) toggleSelectOne(operation.id, v === true);
+                      }}
+                      aria-label={`Seleccionar ${operation.rk_identifier}`}
+                    />
+                  </TableCell>
+                ) : null}
                 <TableCell className="font-medium">{operation.rk_identifier}</TableCell>
                 <TableCell>{operation.supplier}</TableCell>
                 <TableCell>{formatDateString(operation.expected_arrival_date)}</TableCell>
@@ -239,6 +414,40 @@ const ReceptionOperationsTable: React.FC<ReceptionOperationsTableProps> = ({ ope
                         >
                           <Play className="h-4 w-4 text-green-500" />
                       </Button>
+
+                      {isAdmin && canFinalize ? (
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              title="Finalizar operación"
+                              disabled={finalizingId === operation.id || isBulkFinalizing}
+                            >
+                              {finalizingId === operation.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                              )}
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>¿Finalizar esta operación?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                La operación &quot;{operation.rk_identifier}&quot; quedará completada y no se
+                                podrá seguir escaneando (salvo reapertura por admin).
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                              <AlertDialogAction onClick={() => void handleFinalizeOne(operation.id!)}>
+                                Sí, finalizar
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      ) : null}
                       
                       {isPrivilegedUser && (
                         <>
@@ -303,7 +512,7 @@ const ReceptionOperationsTable: React.FC<ReceptionOperationsTableProps> = ({ ope
                                 </AlertDialogHeader>
                                 <AlertDialogFooter>
                                   <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                                  <AlertDialogAction onClick={() => handleReopenOperation(operation.id)}>Sí, Reabrir</AlertDialogAction>
+                                  <AlertDialogAction onClick={() => handleReopenOperation(operation.id!)}>Sí, Reabrir</AlertDialogAction>
                                 </AlertDialogFooter>
                               </AlertDialogContent>
                             </AlertDialog>
@@ -319,7 +528,7 @@ const ReceptionOperationsTable: React.FC<ReceptionOperationsTableProps> = ({ ope
                         </>
                       )}
                       
-                      <Button variant="ghost" size="icon" title="Buscar Caja Específica" onClick={() => handleOpenFindUnitDialog(operation.id)}>
+                      <Button variant="ghost" size="icon" title="Buscar Caja Específica" onClick={() => handleOpenFindUnitDialog(operation.id!)}>
                           <Search className="h-4 w-4 text-blue-500" />
                       </Button>
                     </>
