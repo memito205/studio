@@ -18,6 +18,7 @@ import type {
   BodegaTvAreaSnapshot,
   BodegaTvHourlyBucket,
   BodegaTvMode,
+  BodegaTvReceptionOpSummary,
   BodegaTvRemainderAssignmentRow,
   BodegaTvSnapshot,
   EtiquetadoContributionRow,
@@ -369,6 +370,7 @@ function emptyArea(key: BodegaTvAreaKey, title: string): BodegaTvAreaSnapshot {
     extras: [],
     peopleKeys: [],
     anonymousPeople: 0,
+    receptionOps: key === 'recepcion' ? [] : undefined,
   };
 }
 
@@ -1000,6 +1002,24 @@ async function buildRecepcion(
     let totalUnits = 0;
     let fillAcc = 0;
     let fillN = 0;
+    const receptionOps: BodegaTvReceptionOpSummary[] = [];
+
+    const statusLabel = (status: string) => {
+      switch (status) {
+        case 'in_progress':
+          return 'En curso';
+        case 'paused':
+          return 'Pausada';
+        case 'completed':
+          return 'Completada';
+        case 'pending':
+          return 'Pendiente';
+        case 'cancelled':
+          return 'Cancelada';
+        default:
+          return status;
+      }
+    };
 
     for (let i = 0; i < targetOps.length; i++) {
       const op = targetOps[i];
@@ -1014,6 +1034,26 @@ async function buildRecepcion(
         fillAcc += Math.min(200, (opUnits / op.expected_quantity) * 100);
         fillN += 1;
       }
+
+      const opUsers = new Set(
+        items.map((it) => it.user_id).filter((uid): uid is string => Boolean(uid))
+      );
+      const expected = Number(op.expected_quantity) || 0;
+      const isActive = op.status === 'in_progress' || op.status === 'paused';
+      if (isActive || opUnits > 0) {
+        receptionOps.push({
+          id: op.id,
+          rkIdentifier: op.rk_identifier || op.id.slice(0, 8),
+          supplier: op.supplier || '—',
+          status: op.status,
+          statusLabel: statusLabel(op.status),
+          unitsToday: opUnits,
+          expectedQuantity: expected,
+          progressPct: expected > 0 ? Math.min(999, (opUnits / expected) * 100) : undefined,
+          operatorsToday: opUsers.size,
+        });
+      }
+
       for (const it of items) {
         const uid = it.user_id || 'sin-usuario';
         const ts = new Date(it.scanned_at).getTime();
@@ -1035,6 +1075,13 @@ async function buildRecepcion(
         byUser.set(uid, prev);
       }
     }
+
+    receptionOps.sort((a, b) => {
+      const act = (s: string) => (s === 'in_progress' || s === 'paused' ? 0 : 1);
+      const byStatus = act(a.status) - act(b.status);
+      if (byStatus !== 0) return byStatus;
+      return b.unitsToday - a.unitsToday || a.rkIdentifier.localeCompare(b.rkIdentifier);
+    });
 
     const ranking = Array.from(byUser.entries())
       .map(([uid, v]) => {
@@ -1071,6 +1118,7 @@ async function buildRecepcion(
       area.compliance = compWeight > 0 ? compSum / compWeight : undefined;
     }
     area.ranking = ranking;
+    area.receptionOps = receptionOps;
     area.peopleKeys = [...byUser.keys()]
       .filter((uid) => uid && uid !== 'sin-usuario')
       .map((uid) => personKeyFromUid(uid));

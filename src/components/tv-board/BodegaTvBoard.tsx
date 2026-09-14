@@ -10,9 +10,11 @@ import {
   BodegaAreaDetailSlide,
   BodegaAreaHourlySlide,
   BodegaOverviewSlide,
+  BodegaRecepcionOpsSlide,
   BodegaRemainderAssignmentsSlide,
   BODEGA_TV_PAGE_SIZE,
   HOURLY_PAGE_SIZE,
+  RECEPTION_OPS_PAGE_SIZE,
   REMAINDER_PAGE_SIZE,
 } from './bodega/BodegaTvSlides';
 
@@ -80,6 +82,27 @@ export default function BodegaTvBoard({ mode = 'full' }: { mode?: BodegaTvMode }
     }
 
     for (const area of data.areas) {
+      // Recepción: resumen por operación (pueden ir varias en paralelo) antes del ranking.
+      if (area.key === 'recepcion') {
+        const ops = area.receptionOps || [];
+        const opsPageCount = Math.max(1, Math.ceil(Math.max(ops.length, 1) / RECEPTION_OPS_PAGE_SIZE));
+        for (let pageIndex = 0; pageIndex < opsPageCount; pageIndex++) {
+          const opsPage = ops.slice(
+            pageIndex * RECEPTION_OPS_PAGE_SIZE,
+            pageIndex * RECEPTION_OPS_PAGE_SIZE + RECEPTION_OPS_PAGE_SIZE
+          );
+          nodes.push(
+            <BodegaRecepcionOpsSlide
+              key={`recepcion-ops-p${pageIndex}`}
+              area={area}
+              opsPage={opsPage}
+              pageIndex={pageIndex}
+              pageCount={opsPageCount}
+            />
+          );
+        }
+      }
+
       const ranking = area.ranking || [];
       const pageCount = Math.max(1, Math.ceil(ranking.length / BODEGA_TV_PAGE_SIZE));
       for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {

@@ -6,6 +6,19 @@ export type BodegaTvPersonRank = {
   meta?: string;
 };
 
+/** Resumen de una operación de recepción (varias pueden ir en paralelo). */
+export type BodegaTvReceptionOpSummary = {
+  id: string;
+  rkIdentifier: string;
+  supplier: string;
+  status: string;
+  statusLabel: string;
+  unitsToday: number;
+  expectedQuantity: number;
+  progressPct?: number;
+  operatorsToday: number;
+};
+
 export type BodegaTvAreaKey = 'empaque' | 'etiquetado' | 'tallado' | 'recepcion';
 
 /** full = TV bodega completa; externos = Tallado + Etiquetado Externo (kiosk). */
@@ -31,6 +44,8 @@ export type BodegaTvAreaSnapshot = {
   compliance?: number;
   ranking: BodegaTvPersonRank[];
   extras?: { label: string; value: string }[];
+  /** Solo recepción: resumen por operación activa / con und hoy (antes del ranking). */
+  receptionOps?: BodegaTvReceptionOpSummary[];
   /** Claves canónicas de personas identificadas (uid:/name:) para deduplicar recursos. */
   peopleKeys?: string[];
   /**

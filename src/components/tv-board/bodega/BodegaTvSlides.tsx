@@ -5,6 +5,7 @@ import type {
   BodegaTvAreaSnapshot,
   BodegaTvHourlyBucket,
   BodegaTvPersonRank,
+  BodegaTvReceptionOpSummary,
   BodegaTvSnapshot,
 } from '@/lib/bodegaTvTypes';
 import { Package, Tags, ScanLine, Warehouse, Trophy, Users, Gauge } from 'lucide-react';
@@ -24,6 +25,8 @@ const AREA_ICON = {
 } as const;
 
 export const BODEGA_TV_PAGE_SIZE = 2;
+/** Operaciones de recepción por slide (antes del ranking de operarios). */
+export const RECEPTION_OPS_PAGE_SIZE = 3;
 
 function fmt(n: number, digits = 0) {
   if (!Number.isFinite(n)) return '0';
@@ -329,6 +332,125 @@ export function BodegaAreaDetailSlide({
         showCompliance={showCompliance}
         rankOffset={rankOffset}
       />
+    </div>
+  );
+}
+
+export function BodegaRecepcionOpsSlide({
+  area,
+  opsPage,
+  pageIndex,
+  pageCount,
+}: {
+  area: BodegaTvAreaSnapshot;
+  opsPage: BodegaTvReceptionOpSummary[];
+  pageIndex: number;
+  pageCount: number;
+}) {
+  const Icon = AREA_ICON.recepcion;
+
+  return (
+    <div className="w-full h-full flex flex-col min-h-0">
+      <div className="flex items-end justify-between mb-[0.9em] gap-[1em] shrink-0">
+        <div className="min-w-0">
+          <div className="flex items-center gap-[0.55em] mb-[0.35em]">
+            <Icon className={`w-[1.35em] h-[1.35em] shrink-0 ${AREA_ACCENT.recepcion}`} />
+            <h2
+              className={`text-[2.4em] font-black tracking-tight leading-none ${AREA_ACCENT.recepcion}`}
+            >
+              {area.title}
+            </h2>
+          </div>
+          <p className="text-[1em] text-slate-400 font-semibold">
+            Operaciones en paralelo · día en curso
+            {pageCount > 1 ? ` · página ${pageIndex + 1}/${pageCount}` : ''}
+          </p>
+        </div>
+        <div className="flex gap-[0.7em] shrink-0">
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+            <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
+              Ops
+            </div>
+            <div className="text-[1.7em] font-black text-amber-300 tabular-nums leading-none mt-[0.2em]">
+              {fmt((area.receptionOps || []).length)}
+            </div>
+          </div>
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+            <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
+              Und hoy
+            </div>
+            <div className="text-[1.7em] font-black text-slate-100 tabular-nums leading-none mt-[0.2em]">
+              {fmt(area.units)}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {!opsPage.length ? (
+        <div className="flex-1 flex items-center justify-center text-[1.5em] text-slate-500 font-semibold">
+          Sin operaciones activas hoy
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 overflow-hidden flex flex-col justify-center gap-[0.9em]">
+          <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.6fr)_minmax(5em,0.7fr)_minmax(6em,0.9fr)_minmax(5em,0.7fr)_minmax(5.5em,0.75fr)] gap-x-[0.9em] text-[0.85em] font-bold uppercase tracking-wider text-slate-500 px-[0.4em]">
+            <span>RK</span>
+            <span>Proveedor</span>
+            <span className="text-right">Estado</span>
+            <span className="text-right">Und hoy</span>
+            <span className="text-right">Pers.</span>
+            <span className="text-right">Avance</span>
+          </div>
+          <div className="space-y-[0.85em]">
+            {opsPage.map((op) => {
+              const active = op.status === 'in_progress' || op.status === 'paused';
+              return (
+                <div
+                  key={op.id}
+                  className={`grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.6fr)_minmax(5em,0.7fr)_minmax(6em,0.9fr)_minmax(5em,0.7fr)_minmax(5.5em,0.75fr)] gap-x-[0.9em] items-center rounded-[1em] px-[1em] py-[1em] border ${
+                    active
+                      ? 'bg-amber-500/10 border-amber-500/40'
+                      : 'bg-slate-900/80 border-slate-700'
+                  }`}
+                >
+                  <div className="min-w-0 text-[1.55em] font-black text-slate-100 leading-tight break-words">
+                    {op.rkIdentifier}
+                  </div>
+                  <div className="min-w-0 text-[1.25em] font-bold text-slate-300 leading-tight break-words">
+                    {op.supplier}
+                  </div>
+                  <div
+                    className={`text-right text-[1.15em] font-extrabold ${
+                      op.status === 'in_progress'
+                        ? 'text-amber-300'
+                        : op.status === 'paused'
+                          ? 'text-orange-300'
+                          : op.status === 'completed'
+                            ? 'text-emerald-400'
+                            : 'text-slate-400'
+                    }`}
+                  >
+                    {op.statusLabel}
+                  </div>
+                  <div className="text-right text-[1.7em] font-black tabular-nums leading-none">
+                    {fmt(op.unitsToday)}
+                    {op.expectedQuantity > 0 ? (
+                      <span className="block text-[0.55em] font-semibold text-slate-500 mt-[0.25em]">
+                        / {fmt(op.expectedQuantity)}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="text-right text-[1.7em] font-black tabular-nums text-violet-300 leading-none">
+                    {fmt(op.operatorsToday)}
+                  </div>
+                  <div className="text-right text-[1.7em] font-black tabular-nums text-sky-300 leading-none">
+                    {typeof op.progressPct === 'number' ? `${fmt(op.progressPct, 0)}%` : '—'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
