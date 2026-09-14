@@ -1046,8 +1046,9 @@ async function buildRecepcion(
         allItems.map((it) => it.user_id).filter((uid): uid is string => Boolean(uid))
       );
       const expected = Number(op.expected_quantity) || 0;
-      const isActive = op.status === 'in_progress' || op.status === 'paused';
-      if (isActive || counted > 0 || opUnitsToday > 0) {
+      // Slice de resumen: solo operaciones en progreso (no completadas).
+      const isActive = op.status === 'in_progress';
+      if (isActive) {
         receptionOps.push({
           id: op.id,
           rkIdentifier: op.rk_identifier || op.id.slice(0, 8),
