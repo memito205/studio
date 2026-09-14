@@ -1835,6 +1835,12 @@ export interface PackingUnitType {
     created_at: Date;
 }
 
+export type ReceptionDimensionalGoalMaps = {
+  byBrand?: Record<string, number>;
+  byGroup?: Record<string, number>;
+  byReference?: Record<string, number>;
+};
+
 export interface ProductivitySettings {
     id: string;
     standard_per_hour_goal: number;
@@ -1842,13 +1848,13 @@ export interface ProductivitySettings {
     medium_productivity_threshold: number;
     high_productivity_threshold: number;
     /**
-     * Metas u/h de recepción por dimensión (prioridad al resolver:
-     * referencia → marca → grupo → meta de operación → meta de usuario → meta general).
+     * Metas u/h de recepción por dimensión.
+     * Prioridad: (opcional) maps de la operación → maps globales → meta de operación → usuario → meta general.
+     * Dentro de cada map: referencia → marca → grupo.
      */
-    receptionDimensionalGoals?: {
-      byBrand?: Record<string, number>;
-      byGroup?: Record<string, number>;
-      byReference?: Record<string, number>;
+    receptionDimensionalGoals?: ReceptionDimensionalGoalMaps & {
+      /** Metas acotadas a una recepción concreta (varían entre RK). */
+      byOperationId?: Record<string, ReceptionDimensionalGoalMaps>;
     };
 }
 

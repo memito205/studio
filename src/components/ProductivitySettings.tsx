@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
@@ -15,11 +15,17 @@ import { Input } from '@/components/ui/input';
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { useToast } from '@/hooks/use-toast';
 import { getProductivitySettings, updateProductivitySettings } from '@/app/actions';
+import { loadReceptionOperations } from '@/app/reception/actions';
 import { Skeleton } from '@/components/ui/skeleton';
-import type { ProductivitySettings as ProductivitySettingsType } from '@/types';
+import type { ProductivitySettings as ProductivitySettingsType, ReceptionOperation } from '@/types';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Plus, Trash2 } from 'lucide-react';
-import { sanitizeDimensionalGoalsMap } from '@/lib/receptionGoals';
+import {
+  dimensionalMapsToRows,
+  rowsToDimensionalGoalsConfig,
+  type DimensionalGoalRow,
+} from '@/lib/receptionGoals';
 
 const formSchema = z.object({
   standard_per_hour_goal: z.preprocess(
@@ -40,22 +46,24 @@ const formSchema = z.object({
   ),
 });
 
-type GoalRow = { key: string; value: number };
-
-function mapToRows(map?: Record<string, number>): GoalRow[] {
-  if (!map) return [];
-  return Object.entries(map)
-    .filter(([, v]) => Number(v) > 0)
-    .map(([key, value]) => ({ key, value: Number(value) }))
-    .sort((a, b) => a.key.localeCompare(b.key));
-}
+const GLOBAL_OP_VALUE = '__global__';
 
 const DimensionalGoalsEditor: React.FC<{
   title: string;
   placeholder: string;
-  rows: GoalRow[];
-  onChange: (rows: GoalRow[]) => void;
-}> = ({ title, placeholder, rows, onChange }) => {
+  rows: DimensionalGoalRow[];
+  onChange: (rows: DimensionalGoalRow[]) => void;
+  operations: ReceptionOperation[];
+}> = ({ title, placeholder, rows, onChange, operations }) => {
+  const opLabel = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const op of operations) {
+      if (!op.id) continue;
+      map.set(op.id, `${op.rk_identifier}${op.supplier ? ` · ${op.supplier}` : ''}`);
+    }
+    return map;
+  }, [operations]);
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
@@ -64,17 +72,19 @@ const DimensionalGoalsEditor: React.FC<{
           type="button"
           variant="outline"
           size="sm"
-          onClick={() => onChange([...rows, { key: '', value: 0 }])}
+          onClick={() => onChange([...rows, { key: '', value: 0, operationId: '' }])}
         >
           <Plus className="mr-1 h-4 w-4" /> Agregar
         </Button>
       </div>
       {rows.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Sin metas específicas. Se usará la meta general / de operación / de usuario.</p>
+        <p className="text-sm text-muted-foreground">
+          Sin metas específicas. Se usará la meta general / de operación / de usuario.
+        </p>
       ) : (
         <div className="space-y-2">
           {rows.map((row, idx) => (
-            <div key={idx} className="flex gap-2 items-center">
+            <div key={idx} className="grid grid-cols-1 md:grid-cols-[minmax(0,1.1fr)_minmax(0,1.4fr)_7rem_auto] gap-2 items-center">
               <Input
                 placeholder={placeholder}
                 value={row.key}
@@ -83,8 +93,32 @@ const DimensionalGoalsEditor: React.FC<{
                   next[idx] = { ...next[idx], key: e.target.value };
                   onChange(next);
                 }}
-                className="flex-1"
               />
+              <Select
+                value={row.operationId?.trim() ? row.operationId : GLOBAL_OP_VALUE}
+                onValueChange={(val) => {
+                  const next = [...rows];
+                  next[idx] = {
+                    ...next[idx],
+                    operationId: val === GLOBAL_OP_VALUE ? '' : val,
+                  };
+                  onChange(next);
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Operación (RK)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={GLOBAL_OP_VALUE}>Todas las operaciones (global)</SelectItem>
+                  {operations.map((op) =>
+                    op.id ? (
+                      <SelectItem key={op.id} value={op.id}>
+                        {opLabel.get(op.id) || op.rk_identifier}
+                      </SelectItem>
+                    ) : null
+                  )}
+                </SelectContent>
+              </Select>
               <Input
                 type="number"
                 min={0}
@@ -95,7 +129,6 @@ const DimensionalGoalsEditor: React.FC<{
                   next[idx] = { ...next[idx], value: Number(e.target.value) || 0 };
                   onChange(next);
                 }}
-                className="w-28"
               />
               <Button
                 type="button"
@@ -115,11 +148,11 @@ const DimensionalGoalsEditor: React.FC<{
 };
 
 export const ProductivitySettings: React.FC = () => {
-  const [settings, setSettings] = useState<ProductivitySettingsType | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [brandRows, setBrandRows] = useState<GoalRow[]>([]);
-  const [groupRows, setGroupRows] = useState<GoalRow[]>([]);
-  const [referenceRows, setReferenceRows] = useState<GoalRow[]>([]);
+  const [brandRows, setBrandRows] = useState<DimensionalGoalRow[]>([]);
+  const [groupRows, setGroupRows] = useState<DimensionalGoalRow[]>([]);
+  const [referenceRows, setReferenceRows] = useState<DimensionalGoalRow[]>([]);
+  const [operations, setOperations] = useState<ReceptionOperation[]>([]);
   const { toast } = useToast();
 
   const form = useForm<z.infer<typeof formSchema>>({
@@ -134,23 +167,37 @@ export const ProductivitySettings: React.FC = () => {
 
   const fetchSettings = React.useCallback(async () => {
     setIsLoading(true);
-    const result = await getProductivitySettings();
-    if (result.success) {
-      if (result.data) {
-        setSettings(result.data);
+    const [settingsResult, opsResult] = await Promise.all([
+      getProductivitySettings(),
+      loadReceptionOperations({
+        statusFilter: ['pending', 'in_progress', 'paused', 'completed'],
+        limit: 200,
+      }),
+    ]);
+
+    if (opsResult.success && opsResult.data?.operations) {
+      setOperations(
+        [...opsResult.data.operations].sort((a, b) =>
+          String(a.rk_identifier || '').localeCompare(String(b.rk_identifier || ''))
+        )
+      );
+    }
+
+    if (settingsResult.success) {
+      if (settingsResult.data) {
         form.reset({
-          standard_per_hour_goal: result.data.standard_per_hour_goal ?? 0,
-          high_productivity_threshold: result.data.high_productivity_threshold ?? 90,
-          medium_productivity_threshold: result.data.medium_productivity_threshold ?? 75,
-          low_productivity_threshold: result.data.low_productivity_threshold ?? 50,
+          standard_per_hour_goal: settingsResult.data.standard_per_hour_goal ?? 0,
+          high_productivity_threshold: settingsResult.data.high_productivity_threshold ?? 90,
+          medium_productivity_threshold: settingsResult.data.medium_productivity_threshold ?? 75,
+          low_productivity_threshold: settingsResult.data.low_productivity_threshold ?? 50,
         });
-        const dim = result.data.receptionDimensionalGoals;
-        setBrandRows(mapToRows(dim?.byBrand));
-        setGroupRows(mapToRows(dim?.byGroup));
-        setReferenceRows(mapToRows(dim?.byReference));
+        const dim = settingsResult.data.receptionDimensionalGoals;
+        setBrandRows(dimensionalMapsToRows(dim, 'byBrand'));
+        setGroupRows(dimensionalMapsToRows(dim, 'byGroup'));
+        setReferenceRows(dimensionalMapsToRows(dim, 'byReference'));
       }
     } else {
-      toast({ variant: 'destructive', title: 'Error', description: result.error });
+      toast({ variant: 'destructive', title: 'Error', description: settingsResult.error });
     }
     setIsLoading(false);
   }, [form, toast]);
@@ -162,11 +209,11 @@ export const ProductivitySettings: React.FC = () => {
   const onSubmit = async (values: z.infer<typeof formSchema>) => {
     const payload: Omit<ProductivitySettingsType, 'id'> = {
       ...values,
-      receptionDimensionalGoals: {
-        byBrand: sanitizeDimensionalGoalsMap(brandRows),
-        byGroup: sanitizeDimensionalGoalsMap(groupRows),
-        byReference: sanitizeDimensionalGoalsMap(referenceRows),
-      },
+      receptionDimensionalGoals: rowsToDimensionalGoalsConfig({
+        brandRows,
+        groupRows,
+        referenceRows,
+      }),
     };
     const result = await updateProductivitySettings(payload);
     if (result.success) {
@@ -198,9 +245,13 @@ export const ProductivitySettings: React.FC = () => {
       <CardHeader>
         <CardTitle>Metas de Productividad (Recepción)</CardTitle>
         <CardDescription>
-          Meta general e individual (por usuario / por operación) ya existen. Aquí puede definir
-          metas u/h por marca, grupo o referencia. Prioridad al medir:{' '}
-          <strong>referencia → marca → grupo → operación → usuario → meta general</strong>.
+          Meta general e individual siguen vigentes. En marca/grupo/referencia puede dejar la meta
+          global o elegir la operación (RK) a la que aplica — porque puede variar entre recepciones.
+          Prioridad:{' '}
+          <strong>
+            dimensión de la operación → dimensión global → meta de operación → usuario → meta general
+          </strong>
+          .
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -216,7 +267,7 @@ export const ProductivitySettings: React.FC = () => {
                     <Input type="number" placeholder="Ej: 350" {...field} onChange={(e) => field.onChange(Number(e.target.value))} />
                   </FormControl>
                   <FormDescription>
-                    Fallback cuando no hay meta de referencia/marca/grupo, ni de la operación, ni del usuario.
+                    Fallback cuando no hay meta dimensional, de la operación ni del usuario.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -227,30 +278,31 @@ export const ProductivitySettings: React.FC = () => {
               <div>
                 <h3 className="font-semibold text-sm">Metas dimensionales (opcional)</h3>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Defina solo las dimensiones que necesite. La meta de la operación (al crear/editar RK)
-                  y la meta individual del usuario siguen vigentes.
+                  En cada fila elija si aplica a <em>Todas las operaciones</em> o a un RK concreto.
                 </p>
               </div>
-              <Tabs defaultValue="brand">
+              <Tabs defaultValue="group">
                 <TabsList className="grid w-full grid-cols-3">
-                  <TabsTrigger value="brand">Por marca</TabsTrigger>
                   <TabsTrigger value="group">Por grupo</TabsTrigger>
+                  <TabsTrigger value="brand">Por marca</TabsTrigger>
                   <TabsTrigger value="reference">Por referencia</TabsTrigger>
                 </TabsList>
-                <TabsContent value="brand" className="pt-3">
-                  <DimensionalGoalsEditor
-                    title="Meta u/h por marca"
-                    placeholder="Ej: FILA, NIKE…"
-                    rows={brandRows}
-                    onChange={setBrandRows}
-                  />
-                </TabsContent>
                 <TabsContent value="group" className="pt-3">
                   <DimensionalGoalsEditor
                     title="Meta u/h por grupo"
                     placeholder="Ej: CALZADO, TEXTIL…"
                     rows={groupRows}
                     onChange={setGroupRows}
+                    operations={operations}
+                  />
+                </TabsContent>
+                <TabsContent value="brand" className="pt-3">
+                  <DimensionalGoalsEditor
+                    title="Meta u/h por marca"
+                    placeholder="Ej: FILA, NIKE…"
+                    rows={brandRows}
+                    onChange={setBrandRows}
+                    operations={operations}
                   />
                 </TabsContent>
                 <TabsContent value="reference" className="pt-3">
@@ -259,6 +311,7 @@ export const ProductivitySettings: React.FC = () => {
                     placeholder="Código de referencia"
                     rows={referenceRows}
                     onChange={setReferenceRows}
+                    operations={operations}
                   />
                 </TabsContent>
               </Tabs>
@@ -273,9 +326,6 @@ export const ProductivitySettings: React.FC = () => {
                   <FormControl>
                     <Input type="number" placeholder="Ej: 90" {...field} onChange={(e) => field.onChange(Number(e.target.value))} />
                   </FormControl>
-                  <FormDescription>
-                    Porcentaje de la meta por hora para considerar alta productividad (ej. 90 para 90%).
-                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -289,9 +339,6 @@ export const ProductivitySettings: React.FC = () => {
                   <FormControl>
                     <Input type="number" placeholder="Ej: 75" {...field} onChange={(e) => field.onChange(Number(e.target.value))} />
                   </FormControl>
-                  <FormDescription>
-                    Porcentaje de la meta por hora para considerar productividad media (ej. 75 para 75%).
-                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -305,9 +352,6 @@ export const ProductivitySettings: React.FC = () => {
                   <FormControl>
                     <Input type="number" placeholder="Ej: 50" {...field} onChange={(e) => field.onChange(Number(e.target.value))} />
                   </FormControl>
-                  <FormDescription>
-                    Porcentaje de la meta por hora para considerar baja productividad (ej. 50 para 50%).
-                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}

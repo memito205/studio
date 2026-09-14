@@ -590,6 +590,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
         reference: currentRef,
         marca: currentMarca,
         grupo: currentGrupo,
+        operationId: operation?.id,
         operationStandard: operation?.standard_units_per_hour,
         userHourlyGoal: userGoals?.hourly_productivity_goal,
         settings: productivitySettings,
@@ -605,6 +606,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
           reference: it.reference,
         })),
         {
+          operationId: operation?.id,
           operationStandard: operation?.standard_units_per_hour,
           userHourlyGoal: userGoals?.hourly_productivity_goal,
           settings: productivitySettings,
@@ -615,6 +617,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
 
     return (
       resolveReceptionHourlyGoal({
+        operationId: operation?.id,
         operationStandard: operation?.standard_units_per_hour,
         userHourlyGoal: userGoals?.hourly_productivity_goal,
         settings: productivitySettings,

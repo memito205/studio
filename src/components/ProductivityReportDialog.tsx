@@ -289,6 +289,7 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
           };
         });
         const goal = weightedReceptionHourlyGoal(enrichedItems, {
+          operationId: opData.id,
           operationStandard: opData.standard_units_per_hour,
           userHourlyGoal: userGoals?.hourly_productivity_goal,
           settings: settingsResult.data || null,
