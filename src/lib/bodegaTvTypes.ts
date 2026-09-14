@@ -13,7 +13,10 @@ export type BodegaTvReceptionOpSummary = {
   supplier: string;
   status: string;
   statusLabel: string;
-  unitsToday: number;
+  /** Misma base que Cant. Leída en Recepción (totalScannedQuantity). */
+  unitsCounted: number;
+  /** @deprecated usar unitsCounted */
+  unitsToday?: number;
   expectedQuantity: number;
   progressPct?: number;
   operatorsToday: number;

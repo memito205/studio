@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { cn } from '@/lib/utils';
 import { normalizeReceptionReference, normalizeReceptionSize } from '@/lib/receptionReference';
+import { resolveReceptionHourlyGoal, weightedReceptionHourlyGoal } from '@/lib/receptionGoals';
 
 
 interface ReceptionReadingScreenProps {
@@ -576,13 +577,50 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
   }, [userScannedItems]);
   
   const productivityGoal = useMemo(() => {
-    // Only use the field if it's a positive number. If it's 0, null or undefined, fall back.
-    const opGoal = operation?.standard_units_per_hour && operation.standard_units_per_hour > 0 ? operation.standard_units_per_hour : null;
-    const userGoal = userGoals?.hourly_productivity_goal && userGoals.hourly_productivity_goal > 0 ? userGoals.hourly_productivity_goal : null;
-    const globalGoal = productivitySettings?.standard_per_hour_goal && productivitySettings.standard_per_hour_goal > 0 ? productivitySettings.standard_per_hour_goal : null;
+    const currentRef =
+      currentScannedProductDetails?.referencia ||
+      currentScannedProductDetails?.reference ||
+      null;
+    const currentMarca = (currentScannedProductDetails as any)?.marca || null;
+    const currentGrupo = (currentScannedProductDetails as any)?.grupo || null;
 
-    return opGoal ?? userGoal ?? globalGoal ?? 350;
-  }, [operation, userGoals, productivitySettings]);
+    // Si hay producto en pantalla, aplica meta dimensional de ese ítem.
+    if (currentRef || currentMarca || currentGrupo) {
+      const g = resolveReceptionHourlyGoal({
+        reference: currentRef,
+        marca: currentMarca,
+        grupo: currentGrupo,
+        operationStandard: operation?.standard_units_per_hour,
+        userHourlyGoal: userGoals?.hourly_productivity_goal,
+        settings: productivitySettings,
+      });
+      if (g > 0) return g;
+    }
+
+    // Si ya hay escaneos del usuario, pondera por lo leído.
+    if (userScannedItems.length > 0) {
+      const g = weightedReceptionHourlyGoal(
+        userScannedItems.map((it) => ({
+          quantity: it.quantity,
+          reference: it.reference,
+        })),
+        {
+          operationStandard: operation?.standard_units_per_hour,
+          userHourlyGoal: userGoals?.hourly_productivity_goal,
+          settings: productivitySettings,
+        }
+      );
+      if (g > 0) return g;
+    }
+
+    return (
+      resolveReceptionHourlyGoal({
+        operationStandard: operation?.standard_units_per_hour,
+        userHourlyGoal: userGoals?.hourly_productivity_goal,
+        settings: productivitySettings,
+      }) || 350
+    );
+  }, [operation, userGoals, productivitySettings, currentScannedProductDetails, userScannedItems]);
   
   const lastScannedItemLocationName = useMemo(() => {
     if (!currentScannedProductDetails) return null;

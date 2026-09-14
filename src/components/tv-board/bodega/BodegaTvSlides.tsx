@@ -377,10 +377,15 @@ export function BodegaRecepcionOpsSlide({
           </div>
           <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
             <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
-              Und hoy
+              Contado
             </div>
             <div className="text-[1.7em] font-black text-slate-100 tabular-nums leading-none mt-[0.2em]">
-              {fmt(area.units)}
+              {fmt(
+                (area.receptionOps || []).reduce(
+                  (s, op) => s + (Number(op.unitsCounted ?? op.unitsToday) || 0),
+                  0
+                )
+              )}
             </div>
           </div>
         </div>
@@ -396,13 +401,14 @@ export function BodegaRecepcionOpsSlide({
             <span>RK</span>
             <span>Proveedor</span>
             <span className="text-right">Estado</span>
-            <span className="text-right">Und hoy</span>
+            <span className="text-right">Contado</span>
             <span className="text-right">Pers.</span>
             <span className="text-right">Avance</span>
           </div>
           <div className="space-y-[0.85em]">
             {opsPage.map((op) => {
               const active = op.status === 'in_progress' || op.status === 'paused';
+              const counted = Number(op.unitsCounted ?? op.unitsToday) || 0;
               return (
                 <div
                   key={op.id}
@@ -432,7 +438,7 @@ export function BodegaRecepcionOpsSlide({
                     {op.statusLabel}
                   </div>
                   <div className="text-right text-[1.7em] font-black tabular-nums leading-none">
-                    {fmt(op.unitsToday)}
+                    {fmt(counted)}
                     {op.expectedQuantity > 0 ? (
                       <span className="block text-[0.55em] font-semibold text-slate-500 mt-[0.25em]">
                         / {fmt(op.expectedQuantity)}

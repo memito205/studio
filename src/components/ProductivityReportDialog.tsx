@@ -11,10 +11,11 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from './ui/button';
 import { Loader2 } from 'lucide-react';
-import { getPausesForOperation, getScannedItemsByReception, getAllUserProfiles, getUserGoals, getProductivitySettings, getReceptionIdleJustifications } from '@/app/reception/actions';
+import { getPausesForOperation, getScannedItemsByReception, getAllUserProfiles, getUserGoals, getProductivitySettings, getReceptionIdleJustifications, getProductsByBarcodes } from '@/app/reception/actions';
 import { getUserPulsesForDay } from '@/app/actions';
 import { showError } from '@/lib/toast';
 import { justifiedIdleIntervalMs } from '@/lib/receptionIdleTime';
+import { weightedReceptionHourlyGoal } from '@/lib/receptionGoals';
 import type { ReceptionOperation, ScannedItem, OperationPause, AppUser, ProductivitySettings, UserGoal, UserProductivity, HourlyOperatorDetail, OperationPulse } from '@/types';
 import { UserProductivityTable } from './UserProductivityTable';
 import { UserHourlyPerformanceTable } from './UserHourlyPerformanceTable';
@@ -178,6 +179,15 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
           end_time: p.end_time ? new Date(p.end_time) : null
       }));
       const usersMap = new Map((allUsersResult || []).map(u => [u.uid, u.displayName || u.email || 'Desconocido']));
+
+      const barcodes = [...new Set(allItems.map((i) => i.barcode).filter(Boolean))];
+      const productsResult = await getProductsByBarcodes(barcodes);
+      const productMetaByBarcode = new Map<string, { marca?: string; grupo?: string }>();
+      for (const p of productsResult.data || []) {
+        const bc = p.codigoBarras || p.id;
+        if (!bc) continue;
+        productMetaByBarcode.set(bc, { marca: p.marca, grupo: p.grupo });
+      }
       
       const userIdsFromScans = new Set(allItems.map(item => item.user_id));
       const userIdsFromPauses = new Set(allPausesForOperation.map(pause => pause.user_id));
@@ -269,7 +279,20 @@ const ProductivityReportDialog: React.FC<ProductivityReportDialogProps> = ({
         const productivityPerHour = effectiveTimeMinutes > 0 ? (totalScanned / effectiveTimeMinutes) * 60 : 0;
         
         const userGoals = goalsByUserId.get(userId);
-        const goal = opData.standard_units_per_hour ?? userGoals?.hourly_productivity_goal ?? settingsResult.data?.standard_per_hour_goal ?? 0;
+        const enrichedItems = userItems.map((it) => {
+          const meta = productMetaByBarcode.get(it.barcode);
+          return {
+            quantity: it.quantity,
+            reference: it.reference,
+            marca: meta?.marca,
+            grupo: meta?.grupo,
+          };
+        });
+        const goal = weightedReceptionHourlyGoal(enrichedItems, {
+          operationStandard: opData.standard_units_per_hour,
+          userHourlyGoal: userGoals?.hourly_productivity_goal,
+          settings: settingsResult.data || null,
+        });
         const compliance = goal > 0 ? (productivityPerHour / goal) * 100 : 0;
 
         const { hourlyProductivity, allHours } = calculateUserHourlyPerformance(userItems, mergedPauseIntervals, goal, userFirstActivityTime, sessionEndTime);

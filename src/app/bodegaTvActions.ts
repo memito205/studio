@@ -1027,34 +1027,42 @@ async function buildRecepcion(
         Number(op.standard_units_per_hour) > 0
           ? Number(op.standard_units_per_hour)
           : globalStandard;
-      const items = scannedBatches[i].filter((it) => isSameLocalDay(it.scanned_at, dayKey));
-      const opUnits = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
-      totalUnits += opUnits;
-      if (op.expected_quantity > 0 && opUnits > 0) {
-        fillAcc += Math.min(200, (opUnits / op.expected_quantity) * 100);
+      const allItems = scannedBatches[i];
+      const todayItems = allItems.filter((it) => isSameLocalDay(it.scanned_at, dayKey));
+      const scannedSum = allItems.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+      // Misma base que "Cant. Leída" en el módulo Recepción.
+      const counted =
+        typeof op.totalScannedQuantity === 'number' && Number.isFinite(op.totalScannedQuantity)
+          ? Number(op.totalScannedQuantity)
+          : scannedSum;
+      const opUnitsToday = todayItems.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+      totalUnits += opUnitsToday;
+      if (op.expected_quantity > 0 && counted > 0) {
+        fillAcc += Math.min(200, (counted / op.expected_quantity) * 100);
         fillN += 1;
       }
 
       const opUsers = new Set(
-        items.map((it) => it.user_id).filter((uid): uid is string => Boolean(uid))
+        allItems.map((it) => it.user_id).filter((uid): uid is string => Boolean(uid))
       );
       const expected = Number(op.expected_quantity) || 0;
       const isActive = op.status === 'in_progress' || op.status === 'paused';
-      if (isActive || opUnits > 0) {
+      if (isActive || counted > 0 || opUnitsToday > 0) {
         receptionOps.push({
           id: op.id,
           rkIdentifier: op.rk_identifier || op.id.slice(0, 8),
           supplier: op.supplier || '—',
           status: op.status,
           statusLabel: statusLabel(op.status),
-          unitsToday: opUnits,
+          unitsCounted: counted,
+          unitsToday: opUnitsToday,
           expectedQuantity: expected,
-          progressPct: expected > 0 ? Math.min(999, (opUnits / expected) * 100) : undefined,
+          progressPct: expected > 0 ? Math.min(999, (counted / expected) * 100) : undefined,
           operatorsToday: opUsers.size,
         });
       }
 
-      for (const it of items) {
+      for (const it of todayItems) {
         const uid = it.user_id || 'sin-usuario';
         const ts = new Date(it.scanned_at).getTime();
         const qty = Number(it.quantity) || 0;
@@ -1080,7 +1088,7 @@ async function buildRecepcion(
       const act = (s: string) => (s === 'in_progress' || s === 'paused' ? 0 : 1);
       const byStatus = act(a.status) - act(b.status);
       if (byStatus !== 0) return byStatus;
-      return b.unitsToday - a.unitsToday || a.rkIdentifier.localeCompare(b.rkIdentifier);
+      return b.unitsCounted - a.unitsCounted || a.rkIdentifier.localeCompare(b.rkIdentifier);
     });
 
     const ranking = Array.from(byUser.entries())

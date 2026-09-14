@@ -1841,6 +1841,15 @@ export interface ProductivitySettings {
     low_productivity_threshold: number;
     medium_productivity_threshold: number;
     high_productivity_threshold: number;
+    /**
+     * Metas u/h de recepción por dimensión (prioridad al resolver:
+     * referencia → marca → grupo → meta de operación → meta de usuario → meta general).
+     */
+    receptionDimensionalGoals?: {
+      byBrand?: Record<string, number>;
+      byGroup?: Record<string, number>;
+      byReference?: Record<string, number>;
+    };
 }
 
 
