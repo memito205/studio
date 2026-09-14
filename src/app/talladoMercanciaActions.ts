@@ -144,6 +144,29 @@ async function findUnitsMatchingCode(scanCode: string): Promise<TalladoUnit[]> {
   return collect(variantSnaps);
 }
 
+/**
+ * Auditoría de unidades por código (TF / alterno / scanCode).
+ * Devuelve historial con fechas de Inicio (se leyó/talló) y Fin.
+ */
+export async function auditTalladoUnitsByCode(rawCode: string): Promise<{
+  success: boolean;
+  data?: TalladoUnit[];
+  normalizedCode?: string;
+  error?: string;
+}> {
+  try {
+    const code = normalizeTalladoScanCode(rawCode);
+    if (!code) {
+      return { success: false, error: 'Ingrese un código para auditar.' };
+    }
+    const units = await findUnitsMatchingCode(code);
+    return { success: true, data: units, normalizedCode: code };
+  } catch (error: any) {
+    console.error('auditTalladoUnitsByCode:', error);
+    return { success: false, error: error?.message || 'No se pudo consultar el historial.' };
+  }
+}
+
 /** Unidades abiertas que coinciden con el código (sin listar las 500 in_progress). */
 async function findInProgressUnitsByCode(scanCode: string): Promise<TalladoUnit[]> {
   const matches = await findUnitsMatchingCode(scanCode);

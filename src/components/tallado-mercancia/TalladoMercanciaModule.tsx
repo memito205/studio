@@ -20,6 +20,7 @@ import {
   XCircle,
   Upload,
   FileSpreadsheet,
+  Search,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
@@ -62,6 +63,7 @@ import {
   importTalladoCatalog,
   getTalladoCatalogStats,
   clearTalladoCatalog,
+  auditTalladoUnitsByCode,
 } from '@/app/talladoMercanciaActions';
 import {
   downloadTalladoDayConsolidatedPdf,
@@ -176,6 +178,22 @@ function fmtClock(iso?: string) {
   }
 }
 
+function fmtDateTime(iso?: string) {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleString('es-CO', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    return '—';
+  }
+}
+
 function fmtElapsedSince(iso?: string) {
   if (!iso) return '—';
   const start = new Date(iso).getTime();
@@ -237,6 +255,10 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const [catalogImporting, setCatalogImporting] = useState(false);
   const [catalogReplaceAll, setCatalogReplaceAll] = useState(false);
   const catalogFileRef = useRef<HTMLInputElement>(null);
+  const [auditCode, setAuditCode] = useState('');
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditUnits, setAuditUnits] = useState<TalladoUnit[] | null>(null);
+  const [auditQueriedCode, setAuditQueriedCode] = useState('');
   const [scanFlash, setScanFlash] = useState<{
     code: string;
     label: string;
@@ -353,6 +375,27 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     }
     toast({ title: 'Catálogo vacío', description: `Eliminados: ${res.deleted || 0}` });
     await loadCatalogStats();
+  };
+
+  const handleAuditUnit = async () => {
+    const code = auditCode.trim();
+    if (!code) {
+      toast({ variant: 'destructive', title: 'Auditor', description: 'Digite un código (TF / alterno / barras).' });
+      return;
+    }
+    setAuditLoading(true);
+    setAuditUnits(null);
+    const res = await auditTalladoUnitsByCode(code);
+    setAuditLoading(false);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Auditor', description: res.error });
+      return;
+    }
+    setAuditQueriedCode(res.normalizedCode || code);
+    setAuditUnits(res.data || []);
+    if ((res.data || []).length === 0) {
+      toast({ title: 'Sin historial', description: `No hay lecturas talladas para “${res.normalizedCode || code}”.` });
+    }
   };
 
   const refreshShift = useCallback(async (shiftId: string) => {
@@ -1048,6 +1091,128 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
               Solo admin/supervisor cargan el Excel. Usted puede escanear códigos ya cargados.
             </p>
           )}
+        </CardContent>
+      </Card>
+
+      <Card className="border-violet-600/25">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Search className="h-4 w-4 text-violet-600" />
+            Auditor de unidades
+          </CardTitle>
+          <CardDescription>
+            Digite TF, código alterno o barras para ver cuándo se leyó (Inicio) y cuándo se cerró el tallado (Fin).
+            No inicia ni finaliza unidades.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <form
+            className="flex flex-wrap items-end gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void handleAuditUnit();
+            }}
+          >
+            <div className="space-y-1.5 flex-1 min-w-[200px]">
+              <Label htmlFor="audit-code">Código</Label>
+              <Input
+                id="audit-code"
+                value={auditCode}
+                onChange={(e) => setAuditCode(e.target.value)}
+                placeholder="Ej: TF… / código barras"
+                className="font-mono"
+                autoComplete="off"
+              />
+            </div>
+            <Button type="submit" disabled={auditLoading}>
+              {auditLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
+              Consultar
+            </Button>
+            {auditUnits !== null ? (
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setAuditUnits(null);
+                  setAuditQueriedCode('');
+                  setAuditCode('');
+                }}
+              >
+                Limpiar
+              </Button>
+            ) : null}
+          </form>
+
+          {auditUnits !== null ? (
+            <div className="rounded-md border overflow-x-auto">
+              <div className="px-3 py-2 text-xs text-muted-foreground border-b bg-muted/30">
+                Resultados para <span className="font-mono font-semibold text-foreground">{auditQueriedCode}</span>
+                {' · '}
+                {auditUnits.length} registro(s)
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Código</TableHead>
+                    <TableHead>Grupo</TableHead>
+                    <TableHead>Operario</TableHead>
+                    <TableHead>Cant.</TableHead>
+                    <TableHead>Inicio (se leyó)</TableHead>
+                    <TableHead>Fin (cerró)</TableHead>
+                    <TableHead>Duración</TableHead>
+                    <TableHead>Estado</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {auditUnits.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="text-center text-muted-foreground py-6">
+                        Sin lecturas talladas para este código.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    auditUnits.map((u) => (
+                      <TableRow key={u.id}>
+                        <TableCell className="font-mono text-xs">
+                          <div>{u.scanCode || u.numeroTF}</div>
+                          {u.codigoAlterno ? (
+                            <div className="text-muted-foreground">Alt: {u.codigoAlterno}</div>
+                          ) : null}
+                          {u.referencia ? (
+                            <div className="text-muted-foreground">
+                              {u.referencia}
+                              {u.talla ? ` / ${u.talla}` : ''}
+                            </div>
+                          ) : null}
+                        </TableCell>
+                        <TableCell className="text-sm">{u.grupo || '—'}</TableCell>
+                        <TableCell className="text-sm">{u.userName || '—'}</TableCell>
+                        <TableCell className="text-right tabular-nums">{u.cantidad ?? '—'}</TableCell>
+                        <TableCell className="tabular-nums text-xs whitespace-nowrap">
+                          {fmtDateTime(u.startedAt)}
+                        </TableCell>
+                        <TableCell className="tabular-nums text-xs whitespace-nowrap">
+                          {fmtDateTime(u.endedAt)}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {fmtDuration(u.durationNetMs ?? u.durationMs)}
+                        </TableCell>
+                        <TableCell>
+                          {u.status === 'done' ? (
+                            <Badge variant="secondary">Cerrada</Badge>
+                          ) : u.status === 'in_progress' ? (
+                            <Badge className="bg-amber-500/20 text-amber-900">En proceso</Badge>
+                          ) : (
+                            <Badge variant="outline">{u.status}</Badge>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
