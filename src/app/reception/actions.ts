@@ -3674,6 +3674,11 @@ export async function getLabelingHistoricalData(dateRange?: { from: Date; to?: D
         const hourlyMap = new Map<string, number>();
         const pauseReasonMap = new Map<string, { count: number; totalMinutes: number }>();
 
+        const users = await getAllUserProfiles();
+        const userDisplayByUid = new Map(
+          users.map((u) => [u.uid, (u.displayName || u.email || u.uid).trim()])
+        );
+
         // 2. Fetch logs for each candidate operation
         for (const op of filteredOps) {
             const logResult = await getLabelingActivityLog(op.id, { limitN: 200 });
@@ -3776,7 +3781,9 @@ export async function getLabelingHistoricalData(dateRange?: { from: Date; to?: D
 
             const performance: LabelingEmployeePerformance = {
                 id: opId,
-                name: extName || opId,
+                name: isExt
+                  ? (extName || opId)
+                  : (userDisplayByUid.get(opId) || opId),
                 type: isExt ? 'Externo' : 'Interno',
                 totalUnits: opUnits,
                 activeMinutes: Math.round(opActiveMinutes),
