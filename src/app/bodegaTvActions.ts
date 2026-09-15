@@ -1046,9 +1046,11 @@ async function buildRecepcion(
         allItems.map((it) => it.user_id).filter((uid): uid is string => Boolean(uid))
       );
       const expected = Number(op.expected_quantity) || 0;
-      // Slice de resumen: solo operaciones en progreso (no completadas).
+      const progressPct = expected > 0 ? Math.min(999, (counted / expected) * 100) : undefined;
+      // Slice: solo en progreso y aún sin completar lectura (100% deja de mostrarse).
       const isActive = op.status === 'in_progress';
-      if (isActive) {
+      const reachedFull = typeof progressPct === 'number' && progressPct >= 100;
+      if (isActive && !reachedFull) {
         receptionOps.push({
           id: op.id,
           rkIdentifier: op.rk_identifier || op.id.slice(0, 8),
@@ -1058,7 +1060,7 @@ async function buildRecepcion(
           unitsCounted: counted,
           unitsToday: opUnitsToday,
           expectedQuantity: expected,
-          progressPct: expected > 0 ? Math.min(999, (counted / expected) * 100) : undefined,
+          progressPct,
           operatorsToday: opUsers.size,
         });
       }
