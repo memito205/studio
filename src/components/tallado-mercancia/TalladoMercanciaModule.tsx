@@ -74,8 +74,8 @@ import {
   getTalladoCatalogStats,
   clearTalladoCatalog,
   auditTalladoUnitsByCode,
-  talladoEtiquetadoModoLabel,
 } from '@/app/talladoMercanciaActions';
+import { talladoEtiquetadoModoLabel } from '@/lib/talladoEtiquetado';
 import {
   downloadTalladoDayConsolidatedPdf,
   downloadTalladoHourlyPdf,
