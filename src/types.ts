@@ -1581,6 +1581,10 @@ export interface TalladoShift {
   startedAt: string;
   endedAt?: string;
   status: 'active' | 'closed';
+  /** Día calendario America/Bogota (YYYY-MM-DD). Turnos de otro día no se reanudan. */
+  dayKey?: string;
+  /** Motivo de cierre automático (p. ej. day_rollover, duplicate_grupo). */
+  closedReason?: string;
   /**
    * Hora real de inicio productivo (admin).
    * Si existe, la jornada del día usa este valor en lugar de startedAt / primera lectura.
@@ -1592,7 +1596,7 @@ export interface TalladoUnit {
   id: string;
   shiftId: string;
   grupo: string;
-  /** Código escaneado (numeroTF, codigoAlterno o código de barras de catálogo). */
+  /** Código escaneado (numeroTF, codigoAlterno, catálogo o # caja recepción). */
   scanCode: string;
   transferIds: string[];
   numeroTF: string;
@@ -1601,8 +1605,8 @@ export interface TalladoUnit {
   bodegaOrigen?: string;
   marca: string;
   grupoMercancia?: string;
-  /** Origen del match: transfers o catálogo sin remisión. */
-  source?: 'transfers' | 'catalogo';
+  /** Origen del match: transfers, catálogo Excel o cruce recepción. */
+  source?: 'transfers' | 'catalogo' | 'recepcion';
   referencia?: string;
   talla?: string;
   cantidad: number;
@@ -1615,6 +1619,13 @@ export interface TalladoUnit {
   userId: string;
   userName: string;
   status: 'in_progress' | 'done';
+  /** Cruce recepción: # caja humano. */
+  unitNumber?: number;
+  packingUnitId?: string;
+  receptionOperationId?: string;
+  rkIdentifier?: string;
+  /** Si la caja ya fue confirmada en etiquetado (pack_units). */
+  yaEtiquetada?: boolean;
 }
 
 export interface TalladoPause {
@@ -1655,10 +1666,10 @@ export interface TalladoCatalogImportRow {
   cantidad: number;
 }
 
-/** Resultado de buscar un código en transferencias o catálogo para Tallado. */
+/** Resultado de buscar un código en transferencias, catálogo o recepción para Tallado. */
 export interface TalladoTransferLookup {
   scanCode: string;
-  matchedBy: 'numeroTF' | 'codigoAlterno' | 'catalogo';
+  matchedBy: 'numeroTF' | 'codigoAlterno' | 'catalogo' | 'recepcion_caja';
   transferIds: string[];
   numeroTF: string;
   codigoAlterno?: string;
@@ -1668,10 +1679,15 @@ export interface TalladoTransferLookup {
   grupoMercancia?: string;
   cantidad: number;
   lineCount: number;
-  source?: 'transfers' | 'catalogo';
+  source?: 'transfers' | 'catalogo' | 'recepcion';
   referencia?: string;
   talla?: string;
   catalogId?: string;
+  unitNumber?: number;
+  packingUnitId?: string;
+  receptionOperationId?: string;
+  rkIdentifier?: string;
+  yaEtiquetada?: boolean;
 }
 
 // Types for Merchandise Reception

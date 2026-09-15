@@ -53,6 +53,8 @@ import {
   listTalladoLiveMonitor,
   cleanupTalladoDuplicates,
   listTalladoShiftBundle,
+  listTalladoActiveShiftsForDay,
+  enterTalladoShift,
   resumeTalladoPause,
   scanTalladoCode,
   startTalladoPause,
@@ -86,6 +88,28 @@ const PAUSE_LABELS: Record<TalladoPauseType, string> = {
   fin_jornada: 'Fin jornada',
   otros: 'Otros',
 };
+
+const TALLADO_SS_SHIFT = 'tallado.activeShiftId';
+const TALLADO_SS_DAY = 'tallado.activeDayKey';
+
+function persistTalladoShiftSession(shift: TalladoShift) {
+  try {
+    const day = shift.dayKey || talladoLocalDayKey(new Date(shift.startedAt));
+    sessionStorage.setItem(TALLADO_SS_SHIFT, shift.id);
+    sessionStorage.setItem(TALLADO_SS_DAY, day);
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearTalladoShiftSession() {
+  try {
+    sessionStorage.removeItem(TALLADO_SS_SHIFT);
+    sessionStorage.removeItem(TALLADO_SS_DAY);
+  } catch {
+    /* ignore */
+  }
+}
 
 const START_SOURCE_LABEL: Record<'admin' | 'primera_lectura' | 'turno', string> = {
   admin: 'Admin',
@@ -144,7 +168,7 @@ function firstUnitStartIsoForShift(units: TalladoUnit[], shiftId: string, dayKey
 }
 
 function isTalladoSinRemision(u: Pick<TalladoUnit, 'source' | 'bodegaDestino' | 'marca'>): boolean {
-  if (u.source === 'catalogo') return true;
+  if (u.source === 'catalogo' || u.source === 'recepcion') return true;
   const dest = String(u.bodegaDestino || '').toUpperCase();
   const marca = String(u.marca || '').toUpperCase();
   return (
@@ -226,9 +250,14 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const [units, setUnits] = useState<TalladoUnit[]>([]);
   const [pauses, setPauses] = useState<TalladoPause[]>([]);
   const [startingShift, setStartingShift] = useState(false);
+  const [todayShifts, setTodayShifts] = useState<TalladoShift[]>([]);
+  const [loadingEntry, setLoadingEntry] = useState(true);
+  const [entryMode, setEntryMode] = useState<'pick' | 'create'>('create');
+  const [selectedTodayShiftId, setSelectedTodayShiftId] = useState<string>('');
   const [scanCode, setScanCode] = useState('');
   const [scanning, setScanning] = useState(false);
   const [pendingLookup, setPendingLookup] = useState<TalladoTransferLookup | null>(null);
+  const [receptionCandidates, setReceptionCandidates] = useState<TalladoTransferLookup[]>([]);
   const [busyUnit, setBusyUnit] = useState(false);
   const [otrosNote, setOtrosNote] = useState('');
   const [showOtros, setShowOtros] = useState(false);
@@ -404,10 +433,93 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       toast({ variant: 'destructive', title: 'Error', description: res.error });
       return;
     }
-    if (res.shift) setShift(res.shift);
+    if (res.shift) {
+      if (res.shift.status === 'closed') {
+        clearTalladoShiftSession();
+        setShift(null);
+        setUnits([]);
+        setPauses([]);
+        return;
+      }
+      setShift(res.shift);
+      persistTalladoShiftSession(res.shift);
+    }
     setUnits(res.units || []);
     setPauses(res.pauses || []);
   }, [toast]);
+
+  const reloadTodayShifts = useCallback(async () => {
+    const dayKey = talladoLocalDayKey();
+    const res = await listTalladoActiveShiftsForDay(dayKey);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Turnos del día', description: res.error });
+      return [];
+    }
+    const list = res.data || [];
+    setTodayShifts(list);
+    if (list.length > 0) {
+      setSelectedTodayShiftId((prev) => (prev && list.some((s) => s.id === prev) ? prev : list[0].id));
+      setEntryMode('pick');
+    } else {
+      setEntryMode('create');
+      setSelectedTodayShiftId('');
+    }
+    return list;
+  }, [toast]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoadingEntry(true);
+      const dayKey = talladoLocalDayKey();
+      const listRes = await listTalladoActiveShiftsForDay(dayKey);
+      if (cancelled) return;
+      const list = listRes.success ? listRes.data || [] : [];
+      setTodayShifts(list);
+      if (list.length > 0) {
+        setEntryMode('pick');
+        setSelectedTodayShiftId(list[0].id);
+      } else {
+        setEntryMode('create');
+      }
+
+      try {
+        const sid = sessionStorage.getItem(TALLADO_SS_SHIFT);
+        const sday = sessionStorage.getItem(TALLADO_SS_DAY);
+        if (sid && sday === dayKey) {
+          const bundle = await listTalladoShiftBundle(sid);
+          if (
+            !cancelled &&
+            bundle.success &&
+            bundle.shift?.status === 'active' &&
+            (bundle.shift.dayKey ? bundle.shift.dayKey === dayKey : true)
+          ) {
+            const s = bundle.shift;
+            const sameDay =
+              s.dayKey === dayKey ||
+              talladoLocalDayKey(new Date(s.startedAt)) === dayKey;
+            if (sameDay) {
+              setShift(s);
+              setUnits(bundle.units || []);
+              setPauses(bundle.pauses || []);
+              setGrupo(s.grupo);
+              setPeopleCount(s.peopleCount);
+              persistTalladoShiftSession(s);
+              setLoadingEntry(false);
+              return;
+            }
+          }
+          clearTalladoShiftSession();
+        }
+      } catch {
+        clearTalladoShiftSession();
+      }
+      if (!cancelled) setLoadingEntry(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (shift?.id) void refreshShift(shift.id);
@@ -416,6 +528,26 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   useEffect(() => {
     if (shift && !openPause) focusScanInput(100);
   }, [shift, openPause, pendingLookup, scanning, focusScanInput]);
+
+  const applyEnteredShift = async (next: TalladoShift, rejoined?: boolean) => {
+    setShift(next);
+    setGrupo(next.grupo);
+    setPeopleCount(next.peopleCount);
+    persistTalladoShiftSession(next);
+    setPendingLookup(null);
+    if (rejoined) {
+      toast({
+        title: 'Turno ya activo',
+        description: `Se reanudó el turno de ${next.grupo} (no se creó otro).`,
+      });
+      await refreshShift(next.id);
+    } else {
+      setUnits([]);
+      setPauses([]);
+      toast({ title: 'Turno iniciado', description: `${next.grupo} · ${next.peopleCount} persona(s)` });
+    }
+    void reloadTodayShifts();
+  };
 
   const handleStartShift = async () => {
     if (!user?.uid) {
@@ -434,19 +566,33 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       toast({ variant: 'destructive', title: 'No se inició el turno', description: res.error });
       return;
     }
-    setShift(res.data);
+    await applyEnteredShift(res.data, res.rejoined);
+  };
+
+  const handleEnterExistingShift = async () => {
+    if (!selectedTodayShiftId) {
+      toast({ variant: 'destructive', title: 'Grupo', description: 'Seleccione un grupo activo de hoy.' });
+      return;
+    }
+    setStartingShift(true);
+    const res = await enterTalladoShift(selectedTodayShiftId);
+    setStartingShift(false);
+    if (!res.success || !res.data) {
+      toast({ variant: 'destructive', title: 'No se pudo entrar', description: res.error });
+      void reloadTodayShifts();
+      return;
+    }
+    await applyEnteredShift(res.data, true);
+  };
+
+  const handleLeaveShiftLocally = () => {
+    clearTalladoShiftSession();
+    setShift(null);
     setUnits([]);
     setPauses([]);
     setPendingLookup(null);
-    if (res.rejoined) {
-      toast({
-        title: 'Turno ya activo',
-        description: `Se reanudó el turno existente de ${res.data.grupo} (no se creó otro).`,
-      });
-      await refreshShift(res.data.id);
-    } else {
-      toast({ title: 'Turno iniciado', description: `${res.data.grupo} · ${res.data.peopleCount} persona(s)` });
-    }
+    setReceptionCandidates([]);
+    void reloadTodayShifts();
   };
 
   const processScanCode = useCallback(
@@ -481,6 +627,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
           const finCode = res.unit?.scanCode || code;
           showScanFlash(finCode, 'FIN registrado', 'fin');
           setPendingLookup(null);
+          setReceptionCandidates([]);
           toast({
             title: 'Fin registrado',
             description: `${finCode} · neto ${fmtDuration(res.unit?.durationNetMs)}`,
@@ -499,10 +646,35 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
           }
           return;
         }
+        if (res.action === 'pick_reception' && res.candidates?.length) {
+          setReceptionCandidates(res.candidates);
+          setPendingLookup(null);
+          showScanFlash(code, 'Varias RK — elija caja', 'ok');
+          toast({
+            title: 'Varias recepciones',
+            description: res.error || 'Elija la RK / caja correcta para continuar.',
+          });
+          return;
+        }
         if (res.lookup) {
           showScanFlash(res.lookup.scanCode || code, 'Listo — confirme Inicio', 'ok');
           setPendingLookup(res.lookup);
-          toast({ title: 'TF encontrada', description: 'Confirme Inicio para registrar el comienzo.' });
+          setReceptionCandidates([]);
+          const title =
+            res.lookup.source === 'recepcion'
+              ? 'Caja de recepción'
+              : res.lookup.source === 'catalogo'
+                ? 'Catálogo'
+                : 'TF encontrada';
+          toast({
+            title,
+            description:
+              res.lookup.source === 'recepcion'
+                ? `Caja #${res.lookup.unitNumber ?? res.lookup.scanCode}${
+                    res.lookup.yaEtiquetada ? ' · ya etiquetada' : ''
+                  }. Confirme Inicio.`
+                : 'Confirme Inicio para registrar el comienzo.',
+          });
         }
       } finally {
         setScanning(false);
@@ -577,6 +749,14 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     setOtrosNote('');
     setPendingLookup(null);
     toast({ title: 'Pausa iniciada', description: PAUSE_LABELS[type] });
+    if (type === 'fin_jornada') {
+      clearTalladoShiftSession();
+      setShift(null);
+      setUnits([]);
+      setPauses([]);
+      void reloadTodayShifts();
+      return;
+    }
     await refreshShift(shift.id);
   };
 
@@ -1241,33 +1421,104 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
             <Card className="max-w-lg border-sky-600/30">
               <CardHeader>
                 <CardTitle className="text-base">Ingreso al turno</CardTitle>
-                <CardDescription>Indique el grupo y cuántas personas están laborando.</CardDescription>
+                <CardDescription>
+                  {loadingEntry
+                    ? 'Cargando turnos del día…'
+                    : todayShifts.length > 0 && entryMode === 'pick'
+                      ? 'Elija un grupo ya activo hoy. No hace falta volver a digitar personas.'
+                      : 'Primera vez hoy: indique el grupo y cuántas personas están laborando.'}
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="space-y-1.5">
-                  <Label htmlFor="grupo">Grupo</Label>
-                  <Input
-                    id="grupo"
-                    value={grupo}
-                    onChange={(e) => setGrupo(e.target.value)}
-                    placeholder="Grupo 1"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="people">Personas laborando</Label>
-                  <Input
-                    id="people"
-                    type="number"
-                    min={1}
-                    className="tabular-nums"
-                    value={peopleCount}
-                    onChange={(e) => setPeopleCount(Math.max(1, Number(e.target.value) || 1))}
-                  />
-                </div>
-                <Button type="button" onClick={() => void handleStartShift()} disabled={startingShift}>
-                  {startingShift ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Users className="mr-2 h-4 w-4" />}
-                  Entrar
-                </Button>
+                {loadingEntry ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Preparando ingreso…
+                  </div>
+                ) : todayShifts.length > 0 && entryMode === 'pick' ? (
+                  <>
+                    <div className="space-y-1.5">
+                      <Label>Grupo activo hoy</Label>
+                      <Select value={selectedTodayShiftId} onValueChange={setSelectedTodayShiftId}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Seleccione grupo" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {todayShifts.map((s) => (
+                            <SelectItem key={s.id} value={s.id}>
+                              {s.grupo} · {s.peopleCount} persona(s)
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        onClick={() => void handleEnterExistingShift()}
+                        disabled={startingShift || !selectedTodayShiftId}
+                      >
+                        {startingShift ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <Users className="mr-2 h-4 w-4" />
+                        )}
+                        Entrar
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setEntryMode('create')}
+                        disabled={startingShift}
+                      >
+                        Crear otro grupo
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="grupo">Grupo</Label>
+                      <Input
+                        id="grupo"
+                        value={grupo}
+                        onChange={(e) => setGrupo(e.target.value)}
+                        placeholder="Grupo 1"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="people">Personas laborando</Label>
+                      <Input
+                        id="people"
+                        type="number"
+                        min={1}
+                        className="tabular-nums"
+                        value={peopleCount}
+                        onChange={(e) => setPeopleCount(Math.max(1, Number(e.target.value) || 1))}
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" onClick={() => void handleStartShift()} disabled={startingShift}>
+                        {startingShift ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <Users className="mr-2 h-4 w-4" />
+                        )}
+                        Entrar
+                      </Button>
+                      {todayShifts.length > 0 ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setEntryMode('pick')}
+                          disabled={startingShift}
+                        >
+                          Elegir grupo existente
+                        </Button>
+                      ) : null}
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           ) : (
@@ -1287,6 +1538,9 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                 )}
                 <Badge variant="outline">{inProgress.length} en proceso</Badge>
                 <Badge variant="outline">{doneUnits.length} cerradas</Badge>
+                <Button type="button" size="sm" variant="ghost" onClick={handleLeaveShiftLocally}>
+                  Cambiar grupo
+                </Button>
               </div>
 
               <Card className="border-sky-600/20">
@@ -1375,28 +1629,78 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                         onDetected={handleCameraDetected}
                       />
 
+                      {receptionCandidates.length > 0 ? (
+                        <div className="rounded-md border border-amber-600/30 bg-amber-50/50 dark:bg-amber-950/20 p-3 space-y-2">
+                          <div className="font-semibold">Elija la recepción (caja #{receptionCandidates[0]?.unitNumber})</div>
+                          <p className="text-xs text-muted-foreground">
+                            El mismo # de caja existe en varias RK. Seleccione la correcta.
+                          </p>
+                          <div className="space-y-2">
+                            {receptionCandidates.map((c) => (
+                              <button
+                                key={c.packingUnitId || `${c.receptionOperationId}-${c.scanCode}`}
+                                type="button"
+                                className="w-full text-left rounded-md border bg-background px-3 py-2 text-sm hover:border-sky-600/50"
+                                onClick={() => {
+                                  setPendingLookup(c);
+                                  setReceptionCandidates([]);
+                                }}
+                              >
+                                <div className="font-semibold flex flex-wrap items-center gap-2">
+                                  RK {c.rkIdentifier || c.receptionOperationId || '—'}
+                                  {c.yaEtiquetada ? (
+                                    <Badge className="bg-emerald-500/15 text-emerald-900">Ya etiquetada</Badge>
+                                  ) : (
+                                    <Badge variant="outline">Sin confirmar en etiquetado</Badge>
+                                  )}
+                                </div>
+                                <div className="text-muted-foreground text-xs mt-0.5">
+                                  Ref {c.referencia || c.numeroTF} · cant. {c.cantidad}
+                                  {c.talla ? ` · talla ${c.talla}` : ''}
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setReceptionCandidates([])}
+                          >
+                            Cancelar
+                          </Button>
+                        </div>
+                      ) : null}
+
                       {pendingLookup ? (
                         <div className="rounded-md border border-sky-600/30 bg-sky-50/50 dark:bg-sky-950/20 p-3 space-y-2">
                           <div className="font-semibold flex flex-wrap items-center gap-2">
                             {pendingLookup.matchedBy === 'catalogo'
                               ? 'Catálogo (caja)'
-                              : pendingLookup.matchedBy === 'codigoAlterno'
-                                ? 'Código alterno'
-                                : 'Número TF'}
+                              : pendingLookup.matchedBy === 'recepcion_caja'
+                                ? `Caja recepción #${pendingLookup.unitNumber ?? pendingLookup.scanCode}`
+                                : pendingLookup.matchedBy === 'codigoAlterno'
+                                  ? 'Código alterno'
+                                  : 'Número TF'}
                             : {pendingLookup.scanCode}
-                            {pendingLookup.source === 'catalogo' ? (
+                            {pendingLookup.source === 'catalogo' || pendingLookup.source === 'recepcion' ? (
                               <Badge className="bg-violet-500/15 text-violet-900">Sin remisión</Badge>
                             ) : (
                               <Badge variant="secondary">Transferencias</Badge>
                             )}
+                            {pendingLookup.yaEtiquetada ? (
+                              <Badge className="bg-emerald-500/15 text-emerald-900">Ya etiquetada</Badge>
+                            ) : null}
                           </div>
                           <div className="grid grid-cols-2 gap-2 text-sm">
                             <div>
                               <span className="text-muted-foreground">
-                                {pendingLookup.source === 'catalogo' ? 'Referencia' : 'TF'}
+                                {pendingLookup.source === 'catalogo' || pendingLookup.source === 'recepcion'
+                                  ? 'Referencia'
+                                  : 'TF'}
                               </span>
                               <div className="font-semibold">
-                                {pendingLookup.source === 'catalogo'
+                                {pendingLookup.source === 'catalogo' || pendingLookup.source === 'recepcion'
                                   ? pendingLookup.referencia || pendingLookup.numeroTF
                                   : pendingLookup.numeroTF}
                               </div>
@@ -1407,12 +1711,18 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                             </div>
                             <div>
                               <span className="text-muted-foreground">
-                                {pendingLookup.source === 'catalogo' ? 'Talla' : 'Marca'}
+                                {pendingLookup.source === 'recepcion'
+                                  ? 'RK'
+                                  : pendingLookup.source === 'catalogo'
+                                    ? 'Talla'
+                                    : 'Marca'}
                               </span>
                               <div className="font-semibold">
-                                {pendingLookup.source === 'catalogo'
-                                  ? pendingLookup.talla || '—'
-                                  : pendingLookup.marca || '—'}
+                                {pendingLookup.source === 'recepcion'
+                                  ? pendingLookup.rkIdentifier || '—'
+                                  : pendingLookup.source === 'catalogo'
+                                    ? pendingLookup.talla || '—'
+                                    : pendingLookup.marca || '—'}
                               </div>
                             </div>
                             <div>
@@ -1420,7 +1730,10 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                               <div className="font-semibold tabular-nums text-lg">{pendingLookup.cantidad}</div>
                             </div>
                           </div>
-                          {pendingLookup.lineCount > 1 ? (
+                          {pendingLookup.source === 'recepcion' && pendingLookup.talla ? (
+                            <p className="text-xs text-muted-foreground">Talla(s): {pendingLookup.talla}</p>
+                          ) : null}
+                          {pendingLookup.lineCount > 1 && pendingLookup.source !== 'recepcion' ? (
                             <p className="text-xs text-muted-foreground">
                               {pendingLookup.lineCount} líneas de TF agrupadas (suma de cantidades).
                             </p>
@@ -1462,7 +1775,19 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                             units.map((u) => (
                               <TableRow key={u.id}>
                                 <TableCell className="font-mono text-xs">
-                                  <div>{u.scanCode}</div>
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    <span>{u.scanCode}</span>
+                                    {u.source === 'recepcion' ? (
+                                      <Badge variant="outline" className="text-[10px] px-1 py-0">
+                                        Rec #{u.unitNumber ?? u.scanCode}
+                                      </Badge>
+                                    ) : null}
+                                    {u.yaEtiquetada ? (
+                                      <Badge className="bg-emerald-500/15 text-emerald-900 text-[10px] px-1 py-0">
+                                        Ya etiquetada
+                                      </Badge>
+                                    ) : null}
+                                  </div>
                                   <div className="text-muted-foreground">{displayTalladoMarca(u)}</div>
                                 </TableCell>
                                 <TableCell>{u.bodegaDestino}</TableCell>

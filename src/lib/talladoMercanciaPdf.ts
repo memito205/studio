@@ -13,7 +13,7 @@ const PAUSE_LABELS: Record<string, string> = {
 };
 
 function isSinRemision(u: TalladoUnit): boolean {
-  if (u.source === 'catalogo') return true;
+  if (u.source === 'catalogo' || u.source === 'recepcion') return true;
   const dest = String(u.bodegaDestino || '')
     .trim()
     .toUpperCase()
@@ -88,10 +88,10 @@ function writeUnitsAndPauses(
 ) {
   autoTable(doc, {
     startY,
-    head: [['Código', 'TF / Ref', 'Destino', 'Marca', 'Cant.', 'Inicio', 'Fin', 'Bruto', 'Neto', 'Grupo']],
+    head: [['Código', 'TF / Ref', 'Destino', 'Marca', 'Cant.', 'Inicio', 'Fin', 'Bruto', 'Neto', 'Grupo', 'Nota']],
     body:
       units.length === 0
-        ? [['—', 'Sin unidades', '—', '—', '—', '—', '—', '—', '—', '—']]
+        ? [['—', 'Sin unidades', '—', '—', '—', '—', '—', '—', '—', '—', '—']]
         : units.map((u) => [
             u.scanCode,
             isSinRemision(u) ? u.referencia || u.numeroTF || u.scanCode : u.numeroTF,
@@ -103,6 +103,13 @@ function writeUnitsAndPauses(
             fmtDuration(u.durationMs),
             fmtDuration(u.durationNetMs ?? u.durationMs),
             u.grupo || '—',
+            u.yaEtiquetada
+              ? 'Ya etiquetada'
+              : u.source === 'recepcion'
+                ? `Caja #${u.unitNumber ?? u.scanCode}${u.rkIdentifier ? ` · RK ${u.rkIdentifier}` : ''}`
+                : u.source === 'catalogo'
+                  ? 'Catálogo'
+                  : '—',
           ]),
     styles: { fontSize: 7, cellPadding: 2.5 },
     headStyles: { fillColor: [30, 64, 175] },

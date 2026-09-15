@@ -6,6 +6,7 @@ import {
   deleteField,
   doc,
   documentId,
+  getDoc,
   getDocs,
   limit,
   orderBy,
@@ -24,6 +25,9 @@ import type {
   TalladoTransferLookup,
   TalladoUnit,
   TransferEntry,
+  PackingUnit,
+  LabelingOperation,
+  ReceptionOperation,
 } from '@/types';
 import { isTalladoSameLocalDay, talladoLocalDayKey, filterTalladoBundleToDay } from '@/lib/talladoProductivity';
 
@@ -32,8 +36,13 @@ const UNITS_COL = 'talladoUnits';
 const PAUSES_COL = 'talladoPauses';
 const TRANSFERS_COL = 'transfers';
 const CATALOG_COL = 'talladoCatalog';
+const PACKING_UNITS_COL = 'packingUnits';
+const LABELING_OPS_COL = 'labelingOperations';
+const RECEPTION_OPS_COL = 'receptionOperations';
 
 const DEFAULT_DESTINO_SIN_REMISION = 'MERCANCIA SIN REMISIONAR';
+/** # caja recepción: solo dígitos cortos (no confundir con TF largos). */
+const RECEPTION_BOX_NUMBER_RE = /^\d{1,4}$/;
 
 function stripUndefinedDeep(value: unknown): unknown {
   if (value === undefined) return undefined;
@@ -72,11 +81,17 @@ function normalizeGrupoKey(raw: string): string {
 function unitMatchesScanCode(unit: TalladoUnit, scanCode: string): boolean {
   const code = normalizeTalladoScanCode(scanCode);
   if (!code) return false;
-  return (
+  if (
     normalizeTalladoScanCode(unit.scanCode) === code ||
     normalizeTalladoScanCode(unit.numeroTF) === code ||
     normalizeTalladoScanCode(unit.codigoAlterno || '') === code
-  );
+  ) {
+    return true;
+  }
+  if (RECEPTION_BOX_NUMBER_RE.test(code) && unit.unitNumber != null) {
+    return String(unit.unitNumber) === code;
+  }
+  return false;
 }
 
 async function listInProgressUnits(): Promise<TalladoUnit[]> {
@@ -182,6 +197,20 @@ async function listActiveShifts(): Promise<TalladoShift[]> {
   return snap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoShift));
 }
 
+/** Turno pertenece al día (dayKey explícito o startedAt en Bogotá). */
+function shiftBelongsToDay(shift: TalladoShift, dayKey: string): boolean {
+  if (shift.dayKey) return shift.dayKey === dayKey;
+  return isTalladoSameLocalDay(shift.startedAt, dayKey);
+}
+
+async function closeShiftAsDayRollover(shiftId: string, endedAt: string): Promise<void> {
+  await updateDoc(doc(firestore, SHIFTS_COL, shiftId), {
+    status: 'closed',
+    endedAt,
+    closedReason: 'day_rollover',
+  });
+}
+
 function alreadyDoneError(unit: TalladoUnit): string {
   const when = unit.endedAt
     ? new Date(unit.endedAt).toLocaleString('es-CO', { hour12: false })
@@ -268,6 +297,179 @@ function catalogToLookup(scanCode: string, item: TalladoCatalogItem): TalladoTra
   };
 }
 
+function packingUnitToReceptionLookup(
+  scanCode: string,
+  opts: {
+    unit: PackingUnit;
+    packingUnitFirestoreId: string;
+    rkIdentifier?: string;
+    yaEtiquetada: boolean;
+  }
+): TalladoTransferLookup {
+  const items = opts.unit.items && typeof opts.unit.items === 'object' ? Object.values(opts.unit.items) : [];
+  const refQty = new Map<string, number>();
+  const tallas = new Set<string>();
+  let cantidad = 0;
+  for (const row of items) {
+    const qty = Math.max(0, Number(row?.packedQuantity) || 0);
+    cantidad += qty;
+    const ref = String(row?.item?.referencia || '').trim();
+    if (ref) refQty.set(ref, (refQty.get(ref) || 0) + qty);
+    const talla = String(row?.item?.talla || row?.item?.size || '').trim();
+    if (talla) tallas.add(talla);
+  }
+  const refsSorted = Array.from(refQty.entries()).sort((a, b) => b[1] - a[1]);
+  const referencia = refsSorted.map(([r]) => r).join(', ') || undefined;
+  const primaryRef = refsSorted[0]?.[0];
+  const unitNumber = Number(opts.unit.id) || Number(scanCode) || 0;
+  const rk = String(opts.rkIdentifier || '').trim();
+
+  return {
+    scanCode,
+    matchedBy: 'recepcion_caja',
+    transferIds: [],
+    numeroTF: primaryRef || `CAJA-${unitNumber}`,
+    codigoAlterno: opts.packingUnitFirestoreId,
+    bodegaDestino: DEFAULT_DESTINO_SIN_REMISION,
+    marca: DEFAULT_DESTINO_SIN_REMISION,
+    grupoMercancia: rk ? `RK ${rk}` : undefined,
+    cantidad,
+    lineCount: Math.max(1, items.length),
+    source: 'recepcion',
+    referencia,
+    talla: tallas.size ? Array.from(tallas).join(', ') : undefined,
+    unitNumber: unitNumber || undefined,
+    packingUnitId: opts.packingUnitFirestoreId,
+    receptionOperationId: opts.unit.reception_id,
+    rkIdentifier: rk || undefined,
+    yaEtiquetada: opts.yaEtiquetada,
+  };
+}
+
+/**
+ * Cruce liviano por # caja de recepción (`packingUnits.id`).
+ * Sin colección índice extra: el id secuencial de packingUnits ya es consultable (Fase D no requerida).
+ */
+async function lookupReceptionBoxForTallado(rawCode: string): Promise<{
+  success: boolean;
+  data?: TalladoTransferLookup;
+  candidates?: TalladoTransferLookup[];
+  error?: string;
+}> {
+  const scanCode = normalizeTalladoScanCode(rawCode);
+  if (!RECEPTION_BOX_NUMBER_RE.test(scanCode)) {
+    return { success: false, error: 'Código no es un # de caja de recepción.' };
+  }
+  const unitNumber = Number(scanCode);
+  if (!Number.isFinite(unitNumber) || unitNumber < 1) {
+    return { success: false, error: 'Número de caja inválido.' };
+  }
+
+  const snap = await getDocs(
+    query(collection(firestore, PACKING_UNITS_COL), where('id', '==', unitNumber), limit(25))
+  );
+  if (snap.empty) {
+    return { success: false, error: `No hay caja #${unitNumber} en recepción.` };
+  }
+
+  type Cand = { lookup: TalladoTransferLookup; closedAt?: string; status?: string };
+  const docs = snap.docs.filter((d) => !!(d.data() as PackingUnit).reception_id);
+  if (docs.length === 0) {
+    return {
+      success: false,
+      error: `Caja #${unitNumber} encontrada pero sin recepción asociada.`,
+    };
+  }
+
+  const receptionIds = Array.from(
+    new Set(docs.map((d) => String((d.data() as PackingUnit).reception_id || '').trim()).filter(Boolean))
+  );
+
+  const rkByReception = new Map<string, string>();
+  await Promise.all(
+    receptionIds.map(async (rid) => {
+      try {
+        const opSnap = await getDoc(doc(firestore, RECEPTION_OPS_COL, rid));
+        if (opSnap.exists()) {
+          const op = opSnap.data() as ReceptionOperation;
+          const rk = String(op.rk_identifier || '').trim();
+          if (rk) rkByReception.set(rid, rk);
+        }
+      } catch {
+        /* ignore */
+      }
+    })
+  );
+
+  const labelingPlansByReception = new Map<string, LabelingOperation[]>();
+  await Promise.all(
+    receptionIds.map(async (rid) => {
+      try {
+        const snap = await getDocs(
+          query(
+            collection(firestore, LABELING_OPS_COL),
+            where('receptionOperationId', '==', rid),
+            limit(40)
+          )
+        );
+        labelingPlansByReception.set(
+          rid,
+          snap.docs.map((d) => ({ id: d.id, ...d.data() } as LabelingOperation))
+        );
+      } catch {
+        labelingPlansByReception.set(rid, []);
+      }
+    })
+  );
+
+  const yaByPackId = new Map<string, boolean>();
+  for (const d of docs) {
+    const rid = String((d.data() as PackingUnit).reception_id || '');
+    const ops = labelingPlansByReception.get(rid) || [];
+    let ya = false;
+    for (const op of ops) {
+      const plan = op.labelingPackPlan;
+      if (!Array.isArray(plan)) continue;
+      if (plan.some((u) => u.packingUnitId === d.id && u.confirmed)) {
+        ya = true;
+        break;
+      }
+    }
+    yaByPackId.set(d.id, ya);
+  }
+
+  const built: Cand[] = docs.map((d) => {
+    const raw = d.data() as Omit<PackingUnit, 'firestoreId'>;
+    const unit: PackingUnit = { firestoreId: d.id, ...raw };
+    const rid = String(raw.reception_id || '');
+    return {
+      lookup: packingUnitToReceptionLookup(scanCode, {
+        unit,
+        packingUnitFirestoreId: d.id,
+        rkIdentifier: rkByReception.get(rid),
+        yaEtiquetada: yaByPackId.get(d.id) === true,
+      }),
+      closedAt: unit.closed_at,
+      status: unit.status,
+    };
+  });
+
+  // Preferir cajas cerradas; si hay varias, devolver candidatos para elegir RK.
+  const closed = built.filter((c) => c.status === 'closed');
+  const pool = closed.length > 0 ? closed : built;
+  pool.sort((a, b) => String(b.closedAt || '').localeCompare(String(a.closedAt || '')));
+
+  if (pool.length === 1) {
+    return { success: true, data: pool[0].lookup };
+  }
+
+  return {
+    success: true,
+    candidates: pool.map((c) => c.lookup),
+    error: `Hay ${pool.length} recepciones con caja #${unitNumber}. Elija la RK correcta.`,
+  };
+}
+
 async function lookupCatalogForTallado(scanCode: string): Promise<TalladoTransferLookup | null> {
   const variants = talladoCodeVariants(scanCode);
 
@@ -309,7 +511,12 @@ async function lookupCatalogForTallado(scanCode: string): Promise<TalladoTransfe
 
 export async function lookupTransferForTallado(
   rawCode: string
-): Promise<{ success: boolean; data?: TalladoTransferLookup; error?: string }> {
+): Promise<{
+  success: boolean;
+  data?: TalladoTransferLookup;
+  candidates?: TalladoTransferLookup[];
+  error?: string;
+}> {
   try {
     const scanCode = normalizeTalladoScanCode(rawCode);
     if (!scanCode) return { success: false, error: 'Escanee un código válido.' };
@@ -359,9 +566,23 @@ export async function lookupTransferForTallado(
       return { success: true, data: fromCatalog };
     }
 
+    // Cruce recepción por # caja (solo dígitos cortos; no pisa TF/catálogo).
+    if (RECEPTION_BOX_NUMBER_RE.test(scanCode)) {
+      const fromReception = await lookupReceptionBoxForTallado(scanCode);
+      if (fromReception.success && (fromReception.data || fromReception.candidates?.length)) {
+        return fromReception;
+      }
+      if (fromReception.error && !fromReception.error.includes('no es un #')) {
+        return {
+          success: false,
+          error: `${fromReception.error} Tampoco en transferencias ni catálogo.`,
+        };
+      }
+    }
+
     return {
       success: false,
-      error: `No se encontró el código "${scanCode}" en transferencias ni en el catálogo de cajas (sin remisión).`,
+      error: `No se encontró el código "${scanCode}" en transferencias, catálogo ni recepción (# caja).`,
     };
   } catch (error: any) {
     console.error('lookupTransferForTallado:', error);
@@ -381,30 +602,42 @@ export async function startTalladoShift(input: {
     if (!grupo) return { success: false, error: 'Indique el grupo (ej. Grupo 1).' };
     if (!input.userId) return { success: false, error: 'Usuario no autenticado.' };
 
+    const todayKey = talladoLocalDayKey();
+    const now = new Date().toISOString();
     const grupoKey = normalizeGrupoKey(grupo);
     const active = await listActiveShifts();
-    const sameGrupo = active
-      .filter((s) => normalizeGrupoKey(s.grupo) === grupoKey)
+    const sameGrupo = active.filter((s) => normalizeGrupoKey(s.grupo) === grupoKey);
+
+    // Turnos activos de días anteriores: cerrar; no reanudar.
+    for (const stale of sameGrupo.filter((s) => !shiftBelongsToDay(s, todayKey))) {
+      await closeShiftAsDayRollover(stale.id, now);
+    }
+
+    const sameGrupoToday = sameGrupo
+      .filter((s) => shiftBelongsToDay(s, todayKey))
       .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
 
-    if (sameGrupo.length > 0) {
-      const kept = sameGrupo[0];
-      // Cerrar turnos activos duplicados del mismo grupo (deja el más viejo)
-      for (const dup of sameGrupo.slice(1)) {
+    if (sameGrupoToday.length > 0) {
+      const kept = sameGrupoToday[0];
+      // Cerrar turnos activos duplicados del mismo grupo hoy (deja el más viejo)
+      for (const dup of sameGrupoToday.slice(1)) {
         await updateDoc(doc(firestore, SHIFTS_COL, dup.id), {
           status: 'closed',
-          endedAt: new Date().toISOString(),
+          endedAt: now,
           closedReason: 'duplicate_grupo',
         });
       }
-      if (peopleCount !== kept.peopleCount) {
-        await updateDoc(doc(firestore, SHIFTS_COL, kept.id), { peopleCount });
-        kept.peopleCount = peopleCount;
+      const patch: Record<string, unknown> = {};
+      if (peopleCount !== kept.peopleCount) patch.peopleCount = peopleCount;
+      if (!kept.dayKey) patch.dayKey = todayKey;
+      if (Object.keys(patch).length > 0) {
+        await updateDoc(doc(firestore, SHIFTS_COL, kept.id), patch);
+        if (patch.peopleCount != null) kept.peopleCount = peopleCount;
+        if (patch.dayKey) kept.dayKey = todayKey;
       }
       return { success: true, data: { ...kept, grupo }, rejoined: true };
     }
 
-    const now = new Date().toISOString();
     const ref = doc(collection(firestore, SHIFTS_COL));
     const row: TalladoShift = {
       id: ref.id,
@@ -413,12 +646,76 @@ export async function startTalladoShift(input: {
       userId: input.userId,
       userName: input.userName || 'Operario',
       startedAt: now,
+      dayKey: todayKey,
       status: 'active',
     };
     await setDoc(ref, stripUndefinedDeep(row) as TalladoShift);
     return { success: true, data: row, rejoined: false };
   } catch (error: any) {
     return { success: false, error: error?.message || 'No se pudo iniciar el turno.' };
+  }
+}
+
+/** Grupos activos del día (Bogotá). Cierra residuos de días previos. */
+export async function listTalladoActiveShiftsForDay(dayKey?: string): Promise<{
+  success: boolean;
+  data?: TalladoShift[];
+  error?: string;
+}> {
+  try {
+    const key = dayKey || talladoLocalDayKey();
+    const now = new Date().toISOString();
+    const active = await listActiveShifts();
+    const today: TalladoShift[] = [];
+    for (const s of active) {
+      if (shiftBelongsToDay(s, key)) {
+        today.push(s);
+      } else {
+        try {
+          await closeShiftAsDayRollover(s.id, now);
+        } catch {
+          // No bloquear el listado si un cierre falla
+        }
+      }
+    }
+    today.sort(
+      (a, b) =>
+        String(a.grupo).localeCompare(String(b.grupo), 'es') ||
+        String(a.startedAt).localeCompare(String(b.startedAt))
+    );
+    return { success: true, data: today };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'No se pudieron listar los turnos del día.' };
+  }
+}
+
+/** Entrar a un turno ya activo de hoy (sin recrear). */
+export async function enterTalladoShift(shiftId: string): Promise<{
+  success: boolean;
+  data?: TalladoShift;
+  error?: string;
+}> {
+  try {
+    if (!shiftId) return { success: false, error: 'Turno inválido.' };
+    const { getDoc } = await import('firebase/firestore');
+    const snap = await getDoc(doc(firestore, SHIFTS_COL, shiftId));
+    if (!snap.exists()) return { success: false, error: 'El turno no existe.' };
+    const shift = { id: snap.id, ...snap.data() } as TalladoShift;
+    const todayKey = talladoLocalDayKey();
+    if (shift.status !== 'active') {
+      return { success: false, error: 'Ese turno ya no está activo.' };
+    }
+    if (!shiftBelongsToDay(shift, todayKey)) {
+      await closeShiftAsDayRollover(shift.id, new Date().toISOString());
+      return { success: false, error: 'Ese turno es de otro día. Cree uno nuevo para hoy.' };
+    }
+    if (!shift.dayKey) {
+      await updateDoc(doc(firestore, SHIFTS_COL, shift.id), { dayKey: todayKey });
+      shift.dayKey = todayKey;
+    }
+    return { success: true, data: shift };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'No se pudo entrar al turno.' };
   }
 }
 
@@ -521,11 +818,28 @@ export async function startTalladoUnit(input: {
 
     const done = prior.find((u) => u.status === 'done');
     if (done) {
-      return { success: false, error: alreadyDoneError(done) };
+      const lookupPackId = input.lookup.packingUnitId;
+      if (lookupPackId) {
+        const doneSamePack = prior.find(
+          (u) => u.status === 'done' && u.packingUnitId === lookupPackId
+        );
+        if (doneSamePack) return { success: false, error: alreadyDoneError(doneSamePack) };
+      } else if (!done.packingUnitId) {
+        return { success: false, error: alreadyDoneError(done) };
+      } else {
+        // Código numérico reutilizado en otra caja de recepción: no bloquear.
+      }
     }
 
     const now = new Date().toISOString();
     const ref = doc(collection(firestore, UNITS_COL));
+    const source: TalladoUnit['source'] =
+      input.lookup.source ||
+      (input.lookup.matchedBy === 'catalogo'
+        ? 'catalogo'
+        : input.lookup.matchedBy === 'recepcion_caja'
+          ? 'recepcion'
+          : 'transfers');
     const row: TalladoUnit = {
       id: ref.id,
       shiftId: input.shiftId,
@@ -538,7 +852,7 @@ export async function startTalladoUnit(input: {
       bodegaOrigen: input.lookup.bodegaOrigen,
       marca: input.lookup.marca,
       grupoMercancia: input.lookup.grupoMercancia,
-      source: input.lookup.source || (input.lookup.matchedBy === 'catalogo' ? 'catalogo' : 'transfers'),
+      source,
       referencia: input.lookup.referencia,
       talla: input.lookup.talla,
       cantidad: Math.max(0, Number(input.lookup.cantidad) || 0),
@@ -546,6 +860,11 @@ export async function startTalladoUnit(input: {
       userId: input.userId,
       userName: input.userName || 'Operario',
       status: 'in_progress',
+      unitNumber: input.lookup.unitNumber,
+      packingUnitId: input.lookup.packingUnitId,
+      receptionOperationId: input.lookup.receptionOperationId,
+      rkIdentifier: input.lookup.rkIdentifier,
+      yaEtiquetada: input.lookup.yaEtiquetada,
     };
     await setDoc(ref, stripUndefinedDeep(row) as TalladoUnit);
     return { success: true, data: row };
@@ -627,8 +946,9 @@ export async function scanTalladoCode(input: {
   autoStart?: boolean;
 }): Promise<{
   success: boolean;
-  action?: 'finished' | 'ready_to_start' | 'auto_started';
+  action?: 'finished' | 'ready_to_start' | 'auto_started' | 'pick_reception';
   lookup?: TalladoTransferLookup;
+  candidates?: TalladoTransferLookup[];
   unit?: TalladoUnit;
   error?: string;
 }> {
@@ -653,13 +973,31 @@ export async function scanTalladoCode(input: {
       return { success: true, action: 'finished', unit: fin.data };
     }
 
-    const done = prior.find((u) => u.status === 'done');
-    if (done) {
-      return { success: false, error: alreadyDoneError(done) };
+    const lookup = await lookupTransferForTallado(scanCode);
+    if (!lookup.success) return { success: false, error: lookup.error };
+
+    if (lookup.candidates && lookup.candidates.length > 1 && !lookup.data) {
+      return {
+        success: true,
+        action: 'pick_reception',
+        candidates: lookup.candidates,
+        error: lookup.error,
+      };
     }
 
-    const lookup = await lookupTransferForTallado(scanCode);
-    if (!lookup.success || !lookup.data) return { success: false, error: lookup.error };
+    if (!lookup.data) return { success: false, error: lookup.error || 'Sin datos de lookup.' };
+
+    // Bloquear solo si la misma caja de recepción (o el mismo código no-recepción) ya terminó.
+    const doneSame = prior.find((u) => {
+      if (u.status !== 'done') return false;
+      if (lookup.data!.packingUnitId) {
+        return u.packingUnitId === lookup.data!.packingUnitId;
+      }
+      return !u.packingUnitId && unitMatchesScanCode(u, scanCode);
+    });
+    if (doneSame) {
+      return { success: false, error: alreadyDoneError(doneSame) };
+    }
 
     if (input.autoStart) {
       const started = await startTalladoUnit({

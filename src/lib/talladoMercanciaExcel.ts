@@ -16,7 +16,7 @@ const PAUSE_LABELS: Record<string, string> = {
 };
 
 function isSinRemision(u: TalladoUnit): boolean {
-  if (u.source === 'catalogo') return true;
+  if (u.source === 'catalogo' || u.source === 'recepcion') return true;
   const dest = String(u.bodegaDestino || '')
     .trim()
     .toUpperCase()
@@ -184,6 +184,9 @@ export function downloadTalladoDayConsolidatedExcel(opts: {
     Marca: reportMarca(u),
     Destino: reportDestino(u),
     Origen: u.source || '',
+    'Caja #': u.unitNumber ?? '',
+    RK: u.rkIdentifier || '',
+    'Ya etiquetada': u.yaEtiquetada ? 'Sí' : '',
     Estado: u.status,
     Inicio: fmtLocal(u.startedAt),
     Fin: fmtLocal(u.endedAt),
