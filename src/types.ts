@@ -1592,6 +1592,9 @@ export interface TalladoShift {
   productivityStartedAt?: string;
 }
 
+/** Declaración del operario en Tallado para costos (no viene de Etiquetado). */
+export type TalladoEtiquetadoModo = 'ya_etiquetada' | 'tallar_y_etiquetar';
+
 export interface TalladoUnit {
   id: string;
   shiftId: string;
@@ -1624,8 +1627,15 @@ export interface TalladoUnit {
   packingUnitId?: string;
   receptionOperationId?: string;
   rkIdentifier?: string;
-  /** Si la caja ya fue confirmada en etiquetado (pack_units). */
+  /**
+   * @deprecated Informativo desde Etiquetado (pack_units). El costo usa `etiquetadoModo`.
+   */
   yaEtiquetada?: boolean;
+  /**
+   * Declaración del operario en Tallado para costos.
+   * Ausente = lectura normal (sin nada).
+   */
+  etiquetadoModo?: TalladoEtiquetadoModo;
 }
 
 export interface TalladoPause {
@@ -1688,6 +1698,8 @@ export interface TalladoTransferLookup {
   receptionOperationId?: string;
   rkIdentifier?: string;
   yaEtiquetada?: boolean;
+  /** Si el cliente ya eligió modo; si no, se sugiere por source. */
+  etiquetadoModo?: TalladoEtiquetadoModo;
 }
 
 // Types for Merchandise Reception

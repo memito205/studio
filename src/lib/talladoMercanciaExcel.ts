@@ -187,6 +187,12 @@ export function downloadTalladoDayConsolidatedExcel(opts: {
     'Caja #': u.unitNumber ?? '',
     RK: u.rkIdentifier || '',
     'Ya etiquetada': u.yaEtiquetada ? 'Sí' : '',
+    'Modo etiquetado':
+      u.etiquetadoModo === 'ya_etiquetada'
+        ? 'Ya etiquetada'
+        : u.etiquetadoModo === 'tallar_y_etiquetar'
+          ? 'Tallar y etiquetar'
+          : 'Normal',
     Estado: u.status,
     Inicio: fmtLocal(u.startedAt),
     Fin: fmtLocal(u.endedAt),

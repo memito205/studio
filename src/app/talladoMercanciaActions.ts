@@ -19,6 +19,7 @@ import { firestore } from '@/services/firebase';
 import type {
   TalladoCatalogImportRow,
   TalladoCatalogItem,
+  TalladoEtiquetadoModo,
   TalladoPause,
   TalladoPauseType,
   TalladoShift,
@@ -843,6 +844,24 @@ function resolveTalladoSource(lookup: TalladoTransferLookup): TalladoUnit['sourc
   );
 }
 
+/**
+ * Modo etiquetado para costos: solo lo que el operario prendió en el check.
+ * Sin check = normal (sin nada). Las sugerencias por camino son solo en la UI.
+ */
+export function resolveTalladoEtiquetadoModo(
+  declared: TalladoEtiquetadoModo | null | undefined,
+  _source?: TalladoUnit['source'] | TalladoTransferLookup['source']
+): TalladoEtiquetadoModo | undefined {
+  if (declared === 'ya_etiquetada' || declared === 'tallar_y_etiquetar') return declared;
+  return undefined;
+}
+
+export function talladoEtiquetadoModoLabel(modo?: TalladoEtiquetadoModo | null): string {
+  if (modo === 'ya_etiquetada') return 'Ya etiquetada';
+  if (modo === 'tallar_y_etiquetar') return 'Tallar y etiquetar';
+  return 'Normal';
+}
+
 function isLookupAlreadyDone(prior: TalladoUnit[], lookup: TalladoTransferLookup, scanCode: string) {
   return prior.find((u) => {
     if (u.status !== 'done') return false;
@@ -862,6 +881,8 @@ export async function confirmTalladoUnitFromLookup(input: {
   userName: string;
   grupo: string;
   skipOpenPauseCheck?: boolean;
+  /** Check del operario; si no viene, se sugiere según el camino (source). */
+  etiquetadoModo?: TalladoEtiquetadoModo | null;
 }): Promise<{ success: boolean; data?: TalladoUnit; error?: string }> {
   try {
     if (!input.shiftId) return { success: false, error: 'Sin turno activo.' };
@@ -897,6 +918,12 @@ export async function confirmTalladoUnitFromLookup(input: {
       return { success: false, error: alreadyDoneError(doneSame) };
     }
 
+    const source = resolveTalladoSource(input.lookup);
+    const etiquetadoModo = resolveTalladoEtiquetadoModo(
+      input.etiquetadoModo ?? input.lookup.etiquetadoModo,
+      source
+    );
+
     const now = new Date().toISOString();
     const ref = doc(collection(firestore, UNITS_COL));
     const row: TalladoUnit = {
@@ -911,7 +938,7 @@ export async function confirmTalladoUnitFromLookup(input: {
       bodegaOrigen: input.lookup.bodegaOrigen,
       marca: input.lookup.marca,
       grupoMercancia: input.lookup.grupoMercancia,
-      source: resolveTalladoSource(input.lookup),
+      source,
       referencia: input.lookup.referencia,
       talla: input.lookup.talla,
       cantidad: Math.max(0, Number(input.lookup.cantidad) || 0),
@@ -927,6 +954,7 @@ export async function confirmTalladoUnitFromLookup(input: {
       receptionOperationId: input.lookup.receptionOperationId,
       rkIdentifier: input.lookup.rkIdentifier,
       yaEtiquetada: input.lookup.yaEtiquetada,
+      etiquetadoModo,
     };
     await setDoc(ref, stripUndefinedDeep(row) as TalladoUnit);
     return { success: true, data: row };
@@ -1021,6 +1049,8 @@ export async function scanTalladoCode(input: {
   autoStart?: boolean;
   /** Recepción fija para # caja (obligatoria en cruce recepción). */
   receptionOperationId?: string;
+  /** Check del operario (null/omit = sugerir según camino). */
+  etiquetadoModo?: TalladoEtiquetadoModo | null;
 }): Promise<{
   success: boolean;
   action?: 'finished' | 'confirmed' | 'pick_reception' | 'ready_to_start' | 'auto_started';
@@ -1077,6 +1107,7 @@ export async function scanTalladoCode(input: {
       userId: input.userId,
       userName: input.userName,
       grupo: input.grupo,
+      etiquetadoModo: input.etiquetadoModo,
     });
     if (!confirmed.success) {
       return { success: false, error: confirmed.error, lookup: lookup.data };

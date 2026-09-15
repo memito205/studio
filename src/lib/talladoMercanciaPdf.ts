@@ -105,11 +105,15 @@ function writeUnitsAndPauses(
             u.grupo || '—',
             u.yaEtiquetada
               ? 'Ya etiquetada'
-              : u.source === 'recepcion'
-                ? `Caja #${u.unitNumber ?? u.scanCode}${u.rkIdentifier ? ` · RK ${u.rkIdentifier}` : ''}`
-                : u.source === 'catalogo'
-                  ? 'Catálogo'
-                  : '—',
+              : u.etiquetadoModo === 'ya_etiquetada'
+                ? 'Ya etiquetada'
+                : u.etiquetadoModo === 'tallar_y_etiquetar'
+                  ? 'Tallar y etiquetar'
+                  : u.source === 'recepcion'
+                    ? `Caja #${u.unitNumber ?? u.scanCode}${u.rkIdentifier ? ` · RK ${u.rkIdentifier}` : ''}`
+                    : u.source === 'catalogo'
+                      ? 'Catálogo'
+                      : '—',
           ]),
     styles: { fontSize: 7, cellPadding: 2.5 },
     headStyles: { fillColor: [30, 64, 175] },

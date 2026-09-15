@@ -43,6 +43,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import type {
+  TalladoEtiquetadoModo,
   TalladoPause,
   TalladoPauseType,
   TalladoShift,
@@ -70,6 +71,7 @@ import {
   getTalladoCatalogStats,
   clearTalladoCatalog,
   auditTalladoUnitsByCode,
+  talladoEtiquetadoModoLabel,
 } from '@/app/talladoMercanciaActions';
 import {
   downloadTalladoDayConsolidatedPdf,
@@ -281,6 +283,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const [receptionCandidates, setReceptionCandidates] = useState<TalladoTransferLookup[]>([]);
   const [confirmingCandidate, setConfirmingCandidate] = useState(false);
   const [receptionScopeId, setReceptionScopeId] = useState(() => readReceptionScope());
+  const [etiquetadoModo, setEtiquetadoModo] = useState<TalladoEtiquetadoModo | null>(null);
   const [receptionOptions, setReceptionOptions] = useState<
     Array<{ id: string; rk: string; supplier: string; status: string }>
   >([]);
@@ -667,6 +670,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
           grupo: shift.grupo,
           autoStart: false,
           receptionOperationId: receptionScopeId || undefined,
+          etiquetadoModo,
         });
         setScanCode('');
         if (!res.success) {
@@ -717,7 +721,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
           setReceptionCandidates([]);
           toast({
             title: 'Unidad confirmada',
-            description: `${label} · ${u.cantidad} und.${u.yaEtiquetada ? ' · ya etiquetada' : ''}`,
+            description: `${label} · ${u.cantidad} und. · ${talladoEtiquetadoModoLabel(u.etiquetadoModo)}`,
           });
           setUnits((prev) => [u, ...prev.filter((x) => x.id !== u.id)]);
           return;
@@ -729,7 +733,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         focusScanInput(200);
       }
     },
-    [shift, user, openPause, toast, showScanFlash, focusScanInput, receptionScopeId]
+    [shift, user, openPause, toast, showScanFlash, focusScanInput, receptionScopeId, etiquetadoModo]
   );
 
   const handleAdminCloseShift = async (shiftId: string) => {
@@ -795,6 +799,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       userName: user.displayName || user.email || 'Operario',
       grupo: shift.grupo,
       skipOpenPauseCheck: true,
+      etiquetadoModo,
     });
     setConfirmingCandidate(false);
     if (!res.success || !res.data) {
@@ -806,7 +811,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     showScanFlash(u.scanCode, `Confirmada · ${u.cantidad}`, 'ok');
     toast({
       title: 'Unidad confirmada',
-      description: `Caja #${u.unitNumber ?? u.scanCode} · RK ${u.rkIdentifier || '—'} · ${u.cantidad} und.`,
+      description: `Caja #${u.unitNumber ?? u.scanCode} · RK ${u.rkIdentifier || '—'} · ${u.cantidad} und. · ${talladoEtiquetadoModoLabel(u.etiquetadoModo)}`,
     });
     setUnits((prev) => [u, ...prev.filter((x) => x.id !== u.id)]);
     focusScanInput(80);
@@ -1707,6 +1712,8 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                             const next = v === '__none__' ? '' : v;
                             setReceptionScopeId(next);
                             persistReceptionScope(next);
+                            // Sugerencia flexible: cruce recepción → ya etiquetada (se puede quitar).
+                            if (next) setEtiquetadoModo('ya_etiquetada');
                           }}
                         >
                           <SelectTrigger>
@@ -1729,6 +1736,34 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                         <p className="text-xs text-muted-foreground">
                           Obligatorio si va a digitar solo el número de caja. No modifica el módulo de recepción.
                         </p>
+                        <div className="space-y-1.5 pt-1 border-t border-violet-600/20">
+                          <Label className="text-xs">Etiquetado (costos) — por defecto sin nada</Label>
+                          <div className="flex flex-wrap gap-4">
+                            <label className="flex items-center gap-2 text-sm cursor-pointer">
+                              <Checkbox
+                                checked={etiquetadoModo === 'ya_etiquetada'}
+                                onCheckedChange={(c) =>
+                                  setEtiquetadoModo(c === true ? 'ya_etiquetada' : null)
+                                }
+                              />
+                              Ya etiquetada
+                            </label>
+                            <label className="flex items-center gap-2 text-sm cursor-pointer">
+                              <Checkbox
+                                checked={etiquetadoModo === 'tallar_y_etiquetar'}
+                                onCheckedChange={(c) =>
+                                  setEtiquetadoModo(c === true ? 'tallar_y_etiquetar' : null)
+                                }
+                              />
+                              Tallar y etiquetar
+                            </label>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground leading-snug">
+                            Sin check = lectura normal (TF/alterno). Puede marcar uno: recepción suele ser «ya
+                            etiquetada» (al elegir RK se sugiere); catálogo externo suele ser «tallar y etiquetar».
+                            Puede cambiarlo en cualquier momento.
+                          </p>
+                        </div>
                       </div>
                       <form onSubmit={(e) => void handleScanSubmit(e)} className="flex gap-2">
                         <Input
@@ -1848,9 +1883,14 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                                         Rec #{u.unitNumber ?? u.scanCode}
                                       </Badge>
                                     ) : null}
-                                    {u.yaEtiquetada ? (
+                                    {u.etiquetadoModo === 'ya_etiquetada' ? (
                                       <Badge className="bg-emerald-500/15 text-emerald-900 text-[10px] px-1 py-0">
                                         Ya etiquetada
+                                      </Badge>
+                                    ) : null}
+                                    {u.etiquetadoModo === 'tallar_y_etiquetar' ? (
+                                      <Badge className="bg-amber-500/15 text-amber-900 text-[10px] px-1 py-0">
+                                        Tallar y etiquetar
                                       </Badge>
                                     ) : null}
                                   </div>
