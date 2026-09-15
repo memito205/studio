@@ -1336,6 +1336,50 @@ export async function repairTalladoShiftReceptionQtys(shiftId: string): Promise<
   }
 }
 
+/**
+ * Admin/supervisor: fija manualmente la cantidad de una unidad (p. ej. caja recepción
+ * tallada por menos und. que el plan). No toca recepción.
+ */
+export async function adminUpdateTalladoUnitCantidad(input: {
+  unitId: string;
+  cantidad: number;
+}): Promise<{ success: boolean; data?: TalladoUnit; error?: string }> {
+  try {
+    if (!input.unitId) return { success: false, error: 'Unidad inválida.' };
+    const qty = Math.round(Number(input.cantidad));
+    if (!Number.isFinite(qty) || qty < 0) {
+      return { success: false, error: 'Cantidad inválida (use un número ≥ 0).' };
+    }
+    const ref = doc(firestore, UNITS_COL, input.unitId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return { success: false, error: 'La unidad no existe.' };
+    const current = { id: snap.id, ...snap.data() } as TalladoUnit;
+    await updateDoc(ref, { cantidad: qty });
+    return { success: true, data: { ...current, cantidad: qty } };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'No se pudo actualizar la cantidad.' };
+  }
+}
+
+/**
+ * Admin/supervisor: elimina un registro de unidad de tallado (no toca recepción).
+ */
+export async function adminDeleteTalladoUnit(unitId: string): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  try {
+    if (!unitId) return { success: false, error: 'Unidad inválida.' };
+    const ref = doc(firestore, UNITS_COL, unitId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return { success: false, error: 'La unidad no existe.' };
+    await deleteDoc(ref);
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'No se pudo eliminar el registro.' };
+  }
+}
+
 export async function finishTalladoUnit(input: {
   shiftId: string;
   scanCode: string;

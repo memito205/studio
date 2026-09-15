@@ -65,6 +65,8 @@ import {
   confirmTalladoUnitFromLookup,
   adminCloseTalladoShift,
   adminDeleteTalladoShift,
+  adminUpdateTalladoUnitCantidad,
+  adminDeleteTalladoUnit,
   updateTalladoUnitEtiquetadoModo,
   repairTalladoUnitReceptionQty,
   repairTalladoShiftReceptionQtys,
@@ -837,6 +839,60 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       description: `Corregidas: ${res.fixed || 0} · Sin datos: ${res.skipped || 0}`,
     });
     await refreshShift(shift.id);
+  };
+
+  const handleAdminEditUnitCantidad = async (unit: TalladoUnit) => {
+    if (!canAdmin) return;
+    const current = Number(unit.cantidad) || 0;
+    const raw = window.prompt(
+      `Cantidad real tallada${
+        unit.source === 'recepcion' ? ` (caja Rec #${unit.unitNumber ?? unit.scanCode})` : ''
+      }:\nPuede ser menor a la del plan de recepción.`,
+      String(current)
+    );
+    if (raw == null) return;
+    const qty = Math.round(Number(String(raw).trim().replace(',', '.')));
+    if (!Number.isFinite(qty) || qty < 0) {
+      toast({ variant: 'destructive', title: 'Cantidad', description: 'Ingrese un número ≥ 0.' });
+      return;
+    }
+    if (qty === current) return;
+    setUpdatingUnitId(unit.id);
+    const res = await adminUpdateTalladoUnitCantidad({ unitId: unit.id, cantidad: qty });
+    setUpdatingUnitId(null);
+    if (!res.success || !res.data) {
+      toast({ variant: 'destructive', title: 'Cantidad', description: res.error });
+      return;
+    }
+    setUnits((prev) => prev.map((u) => (u.id === unit.id ? res.data! : u)));
+    toast({
+      title: 'Cantidad actualizada',
+      description: `${res.data.scanCode} · ${res.data.cantidad} und.`,
+    });
+  };
+
+  const handleAdminDeleteUnit = async (unit: TalladoUnit) => {
+    if (!canAdmin) return;
+    const label =
+      unit.source === 'recepcion'
+        ? `Rec #${unit.unitNumber ?? unit.scanCode}`
+        : unit.scanCode;
+    if (
+      !window.confirm(
+        `¿Eliminar el registro ${label} (${unit.cantidad} und.)?\nNo se puede deshacer. No modifica recepción.`
+      )
+    ) {
+      return;
+    }
+    setUpdatingUnitId(unit.id);
+    const res = await adminDeleteTalladoUnit(unit.id);
+    setUpdatingUnitId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Eliminar', description: res.error });
+      return;
+    }
+    setUnits((prev) => prev.filter((u) => u.id !== unit.id));
+    toast({ title: 'Registro eliminado', description: label });
   };
 
   const handleConfirmReceptionCandidate = async (lookup: TalladoTransferLookup) => {
@@ -1945,12 +2001,16 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                             <TableHead>Fin</TableHead>
                             <TableHead>Neto</TableHead>
                             <TableHead>Estado</TableHead>
+                            {canAdmin ? <TableHead className="text-right">Admin</TableHead> : null}
                           </TableRow>
                         </TableHeader>
                         <TableBody>
                           {units.length === 0 ? (
                             <TableRow>
-                              <TableCell colSpan={8} className="text-center text-muted-foreground py-6">
+                              <TableCell
+                                colSpan={canAdmin ? 9 : 8}
+                                className="text-center text-muted-foreground py-6"
+                              >
                                 Sin unidades aún.
                               </TableCell>
                             </TableRow>
@@ -1990,6 +2050,18 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                                         )}
                                       </Button>
                                     ) : null}
+                                    {canAdmin ? (
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-7 text-xs px-2"
+                                        disabled={updatingUnitId === u.id}
+                                        onClick={() => void handleAdminEditUnitCantidad(u)}
+                                      >
+                                        Editar cant.
+                                      </Button>
+                                    ) : null}
                                   </div>
                                 </TableCell>
                                 <TableCell>
@@ -2021,9 +2093,28 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                                   {u.status === 'done' ? (
                                     <Badge variant="secondary">Fin</Badge>
                                   ) : (
-                                    <Badge className="bg-amber-500/20 text-amber-900">En proceso</Badge>
+                                    <Badge className="bg-amber-500/20 text-amber-900">En curso</Badge>
                                   )}
                                 </TableCell>
+                                {canAdmin ? (
+                                  <TableCell className="text-right">
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="ghost"
+                                      className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+                                      title="Eliminar registro"
+                                      disabled={updatingUnitId === u.id}
+                                      onClick={() => void handleAdminDeleteUnit(u)}
+                                    >
+                                      {updatingUnitId === u.id ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                      ) : (
+                                        <Trash2 className="h-4 w-4" />
+                                      )}
+                                    </Button>
+                                  </TableCell>
+                                ) : null}
                               </TableRow>
                             ))
                           )}
