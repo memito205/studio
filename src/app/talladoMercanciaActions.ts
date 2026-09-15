@@ -305,25 +305,36 @@ function packingUnitToReceptionLookup(
     packingUnitFirestoreId: string;
     rkIdentifier?: string;
     yaEtiquetada: boolean;
+    /** Cantidad resuelta desde packUnitsById / escaneos (preferida). */
+    cantidadOverride?: number;
+    referenciaOverride?: string;
+    tallaOverride?: string;
   }
 ): TalladoTransferLookup {
   const items = opts.unit.items && typeof opts.unit.items === 'object' ? Object.values(opts.unit.items) : [];
   const refQty = new Map<string, number>();
   const tallas = new Set<string>();
-  let cantidad = 0;
+  let cantidadFromItems = 0;
   for (const row of items) {
     const qty = Math.max(0, Number(row?.packedQuantity) || 0);
-    cantidad += qty;
+    cantidadFromItems += qty;
     const ref = String(row?.item?.referencia || '').trim();
     if (ref) refQty.set(ref, (refQty.get(ref) || 0) + qty);
     const talla = String(row?.item?.talla || row?.item?.size || '').trim();
     if (talla) tallas.add(talla);
   }
   const refsSorted = Array.from(refQty.entries()).sort((a, b) => b[1] - a[1]);
-  const referencia = refsSorted.map(([r]) => r).join(', ') || undefined;
-  const primaryRef = refsSorted[0]?.[0];
+  const referencia =
+    String(opts.referenciaOverride || '').trim() ||
+    refsSorted.map(([r]) => r).join(', ') ||
+    undefined;
+  const primaryRef = (referencia || '').split(',')[0]?.trim() || refsSorted[0]?.[0];
   const unitNumber = Number(opts.unit.id) || Number(scanCode) || 0;
   const rk = String(opts.rkIdentifier || '').trim();
+  const cantidad =
+    opts.cantidadOverride != null && Number.isFinite(opts.cantidadOverride)
+      ? Math.max(0, Number(opts.cantidadOverride))
+      : cantidadFromItems;
 
   return {
     scanCode,
@@ -335,16 +346,76 @@ function packingUnitToReceptionLookup(
     marca: DEFAULT_DESTINO_SIN_REMISION,
     grupoMercancia: rk ? `RK ${rk}` : undefined,
     cantidad,
-    lineCount: Math.max(1, items.length),
+    lineCount: Math.max(1, items.length || 1),
     source: 'recepcion',
     referencia,
-    talla: tallas.size ? Array.from(tallas).join(', ') : undefined,
+    talla:
+      String(opts.tallaOverride || '').trim() ||
+      (tallas.size ? Array.from(tallas).join(', ') : undefined),
     unitNumber: unitNumber || undefined,
     packingUnitId: opts.packingUnitFirestoreId,
     receptionOperationId: opts.unit.reception_id,
     rkIdentifier: rk || undefined,
     yaEtiquetada: opts.yaEtiquetada,
   };
+}
+
+/** Qty + refs de una caja desde referenceStats.packUnitsById (liviano; sin items del doc). */
+async function resolveReceptionBoxQty(
+  receptionId: string,
+  packingUnitFirestoreId: string
+): Promise<{ qty: number; refs: string[] }> {
+  const refs: string[] = [];
+  let qty = 0;
+  try {
+    const statsSnap = await getDocs(
+      collection(firestore, RECEPTION_OPS_COL, receptionId, 'referenceStats')
+    );
+    for (const d of statsSnap.docs) {
+      const packUnitsById = (d.data() as {
+        packUnitsById?: Record<string, { qty?: number; packingUnitId?: string }>;
+        reference?: string;
+      }).packUnitsById;
+      if (!packUnitsById || typeof packUnitsById !== 'object') continue;
+      const detail =
+        packUnitsById[packingUnitFirestoreId] ||
+        Object.values(packUnitsById).find((u) => u?.packingUnitId === packingUnitFirestoreId);
+      if (!detail) continue;
+      const q = Math.max(0, Number(detail.qty) || 0);
+      if (q <= 0) continue;
+      qty += q;
+      const ref = String(d.data().reference || d.id || '').trim();
+      if (ref) refs.push(ref);
+    }
+  } catch (err) {
+    console.warn('resolveReceptionBoxQty stats:', err);
+  }
+
+  if (qty > 0) return { qty, refs };
+
+  // Fallback: sumar escaneos de la caja
+  try {
+    const itemsSnap = await getDocs(
+      query(
+        collection(firestore, 'scannedItems'),
+        where('packing_unit_id', '==', packingUnitFirestoreId),
+        limit(500)
+      )
+    );
+    const refQty = new Map<string, number>();
+    for (const d of itemsSnap.docs) {
+      const data = d.data() as { quantity?: number; reference?: string };
+      const q = Math.max(0, Number(data.quantity) || 0);
+      qty += q;
+      const ref = String(data.reference || '').trim();
+      if (ref) refQty.set(ref, (refQty.get(ref) || 0) + q);
+    }
+    const sorted = Array.from(refQty.entries()).sort((a, b) => b[1] - a[1]);
+    return { qty, refs: sorted.map(([r]) => r) };
+  } catch (err) {
+    console.warn('resolveReceptionBoxQty scannedItems:', err);
+  }
+  return { qty: 0, refs: [] };
 }
 
 /**
@@ -430,6 +501,8 @@ async function lookupReceptionBoxForTallado(
     /* ignore */
   }
 
+  const fromStats = await resolveReceptionBoxQty(receptionId, d.id);
+
   return {
     success: true,
     data: packingUnitToReceptionLookup(scanCode, {
@@ -437,6 +510,8 @@ async function lookupReceptionBoxForTallado(
       packingUnitFirestoreId: d.id,
       rkIdentifier,
       yaEtiquetada,
+      cantidadOverride: fromStats.qty > 0 ? fromStats.qty : undefined,
+      referenciaOverride: fromStats.refs.length ? fromStats.refs.join(', ') : undefined,
     }),
   };
 }
@@ -972,9 +1047,110 @@ export async function startTalladoUnit(input: {
   grupo: string;
   /** Si el cliente ya sabe que no hay pausa abierta, evita 1 lectura. */
   skipOpenPauseCheck?: boolean;
+  etiquetadoModo?: TalladoEtiquetadoModo | null;
 }): Promise<{ success: boolean; data?: TalladoUnit; error?: string }> {
   // Compat: el flujo operario usa confirmación en un escaneo.
   return confirmTalladoUnitFromLookup(input);
+}
+
+/** Cambia modo etiquetado (costos) en una unidad ya cerrada. */
+export async function updateTalladoUnitEtiquetadoModo(input: {
+  unitId: string;
+  etiquetadoModo: TalladoEtiquetadoModo | null;
+}): Promise<{ success: boolean; data?: TalladoUnit; error?: string }> {
+  try {
+    if (!input.unitId) return { success: false, error: 'Unidad inválida.' };
+    const ref = doc(firestore, UNITS_COL, input.unitId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return { success: false, error: 'La unidad no existe.' };
+    const current = { id: snap.id, ...snap.data() } as TalladoUnit;
+    const modo = resolveTalladoEtiquetadoModo(input.etiquetadoModo, current.source);
+    if (modo) {
+      await updateDoc(ref, { etiquetadoModo: modo });
+      return { success: true, data: { ...current, etiquetadoModo: modo } };
+    }
+    await updateDoc(ref, { etiquetadoModo: deleteField() });
+    const { etiquetadoModo: _removed, ...rest } = current;
+    return { success: true, data: rest as TalladoUnit };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'No se pudo actualizar el modo de etiquetado.' };
+  }
+}
+
+/**
+ * Recalcula cantidad (y ref) de una unidad de cruce recepción con qty 0 / incorrecta.
+ * Usa packUnitsById o escaneos; no toca recepción.
+ */
+export async function repairTalladoUnitReceptionQty(unitId: string): Promise<{
+  success: boolean;
+  data?: TalladoUnit;
+  error?: string;
+}> {
+  try {
+    if (!unitId) return { success: false, error: 'Unidad inválida.' };
+    const ref = doc(firestore, UNITS_COL, unitId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return { success: false, error: 'La unidad no existe.' };
+    const unit = { id: snap.id, ...snap.data() } as TalladoUnit;
+    const receptionId = String(unit.receptionOperationId || '').trim();
+    const packingUnitId = String(unit.packingUnitId || unit.codigoAlterno || '').trim();
+    if (!receptionId || !packingUnitId) {
+      return { success: false, error: 'Esta unidad no es de cruce recepción (falta RK/caja).' };
+    }
+    const resolved = await resolveReceptionBoxQty(receptionId, packingUnitId);
+    if (resolved.qty <= 0) {
+      return {
+        success: false,
+        error: 'No se encontró cantidad en recepción para esa caja (packUnitsById / escaneos).',
+      };
+    }
+    const referencia = resolved.refs.length ? resolved.refs.join(', ') : unit.referencia;
+    const numeroTF = resolved.refs[0] || unit.numeroTF;
+    await updateDoc(ref, {
+      cantidad: resolved.qty,
+      ...(referencia ? { referencia } : {}),
+      ...(numeroTF ? { numeroTF } : {}),
+    });
+    return {
+      success: true,
+      data: {
+        ...unit,
+        cantidad: resolved.qty,
+        referencia: referencia || unit.referencia,
+        numeroTF: numeroTF || unit.numeroTF,
+      },
+    };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'No se pudo corregir la cantidad.' };
+  }
+}
+
+/** Corrige todas las unidades de recepción con cantidad 0 de un turno. */
+export async function repairTalladoShiftReceptionQtys(shiftId: string): Promise<{
+  success: boolean;
+  fixed?: number;
+  skipped?: number;
+  error?: string;
+}> {
+  try {
+    if (!shiftId) return { success: false, error: 'Turno inválido.' };
+    const snap = await getDocs(
+      query(collection(firestore, UNITS_COL), where('shiftId', '==', shiftId), limit(500))
+    );
+    let fixed = 0;
+    let skipped = 0;
+    for (const d of snap.docs) {
+      const u = { id: d.id, ...d.data() } as TalladoUnit;
+      if (u.source !== 'recepcion') continue;
+      if (Number(u.cantidad) > 0) continue;
+      const res = await repairTalladoUnitReceptionQty(u.id);
+      if (res.success) fixed += 1;
+      else skipped += 1;
+    }
+    return { success: true, fixed, skipped };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'No se pudieron corregir las cantidades.' };
+  }
 }
 
 export async function finishTalladoUnit(input: {

@@ -65,6 +65,9 @@ import {
   confirmTalladoUnitFromLookup,
   adminCloseTalladoShift,
   adminDeleteTalladoShift,
+  updateTalladoUnitEtiquetadoModo,
+  repairTalladoUnitReceptionQty,
+  repairTalladoShiftReceptionQtys,
   updateTalladoShiftPeople,
   updateTalladoShiftProductivityStart,
   importTalladoCatalog,
@@ -289,6 +292,8 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   >([]);
   const [loadingReceptionOptions, setLoadingReceptionOptions] = useState(false);
   const [deletingShiftId, setDeletingShiftId] = useState<string | null>(null);
+  const [updatingUnitId, setUpdatingUnitId] = useState<string | null>(null);
+  const [repairingQtys, setRepairingQtys] = useState(false);
   const [otrosNote, setOtrosNote] = useState('');
   const [showOtros, setShowOtros] = useState(false);
   const [pauseBusy, setPauseBusy] = useState(false);
@@ -783,6 +788,55 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     }
     void loadDashboard();
     void reloadTodayShifts();
+  };
+
+  const handleUpdateUnitEtiquetado = async (
+    unitId: string,
+    next: TalladoEtiquetadoModo | null
+  ) => {
+    setUpdatingUnitId(unitId);
+    const res = await updateTalladoUnitEtiquetadoModo({ unitId, etiquetadoModo: next });
+    setUpdatingUnitId(null);
+    if (!res.success || !res.data) {
+      toast({ variant: 'destructive', title: 'Etiquetado', description: res.error });
+      return;
+    }
+    setUnits((prev) => prev.map((u) => (u.id === unitId ? res.data! : u)));
+    toast({
+      title: 'Etiquetado actualizado',
+      description: talladoEtiquetadoModoLabel(res.data.etiquetadoModo),
+    });
+  };
+
+  const handleRepairUnitQty = async (unitId: string) => {
+    setUpdatingUnitId(unitId);
+    const res = await repairTalladoUnitReceptionQty(unitId);
+    setUpdatingUnitId(null);
+    if (!res.success || !res.data) {
+      toast({ variant: 'destructive', title: 'Cantidad', description: res.error });
+      return;
+    }
+    setUnits((prev) => prev.map((u) => (u.id === unitId ? res.data! : u)));
+    toast({
+      title: 'Cantidad corregida',
+      description: `${res.data.scanCode} · ${res.data.cantidad} und.`,
+    });
+  };
+
+  const handleRepairShiftReceptionQtys = async () => {
+    if (!shift?.id) return;
+    setRepairingQtys(true);
+    const res = await repairTalladoShiftReceptionQtys(shift.id);
+    setRepairingQtys(false);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Corregir cantidades', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Cantidades recepción',
+      description: `Corregidas: ${res.fixed || 0} · Sin datos: ${res.skipped || 0}`,
+    });
+    await refreshShift(shift.id);
   };
 
   const handleConfirmReceptionCandidate = async (lookup: TalladoTransferLookup) => {
@@ -1704,6 +1758,49 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
+                      <div className="rounded-md border-2 border-emerald-600/40 bg-emerald-50/60 dark:bg-emerald-950/25 p-3 space-y-2">
+                        <Label className="text-sm font-semibold">Etiquetado (costos)</Label>
+                        <div className="flex flex-wrap gap-3">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={etiquetadoModo === null ? 'default' : 'outline'}
+                            onClick={() => setEtiquetadoModo(null)}
+                          >
+                            Normal
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={etiquetadoModo === 'ya_etiquetada' ? 'default' : 'outline'}
+                            className={
+                              etiquetadoModo === 'ya_etiquetada'
+                                ? 'bg-emerald-700 hover:bg-emerald-800'
+                                : ''
+                            }
+                            onClick={() => setEtiquetadoModo('ya_etiquetada')}
+                          >
+                            Ya etiquetada
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={etiquetadoModo === 'tallar_y_etiquetar' ? 'default' : 'outline'}
+                            className={
+                              etiquetadoModo === 'tallar_y_etiquetar'
+                                ? 'bg-amber-700 hover:bg-amber-800'
+                                : ''
+                            }
+                            onClick={() => setEtiquetadoModo('tallar_y_etiquetar')}
+                          >
+                            Tallar y etiquetar
+                          </Button>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Aplica a las próximas lecturas. También puede cambiarlo en cada fila de unidades ya
+                          cerradas.
+                        </p>
+                      </div>
                       <div className="rounded-md border border-violet-600/25 bg-violet-50/40 dark:bg-violet-950/20 p-3 space-y-2">
                         <Label>Recepción (RK) para cruce por # caja</Label>
                         <Select
@@ -1736,34 +1833,6 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                         <p className="text-xs text-muted-foreground">
                           Obligatorio si va a digitar solo el número de caja. No modifica el módulo de recepción.
                         </p>
-                        <div className="space-y-1.5 pt-1 border-t border-violet-600/20">
-                          <Label className="text-xs">Etiquetado (costos) — por defecto sin nada</Label>
-                          <div className="flex flex-wrap gap-4">
-                            <label className="flex items-center gap-2 text-sm cursor-pointer">
-                              <Checkbox
-                                checked={etiquetadoModo === 'ya_etiquetada'}
-                                onCheckedChange={(c) =>
-                                  setEtiquetadoModo(c === true ? 'ya_etiquetada' : null)
-                                }
-                              />
-                              Ya etiquetada
-                            </label>
-                            <label className="flex items-center gap-2 text-sm cursor-pointer">
-                              <Checkbox
-                                checked={etiquetadoModo === 'tallar_y_etiquetar'}
-                                onCheckedChange={(c) =>
-                                  setEtiquetadoModo(c === true ? 'tallar_y_etiquetar' : null)
-                                }
-                              />
-                              Tallar y etiquetar
-                            </label>
-                          </div>
-                          <p className="text-[11px] text-muted-foreground leading-snug">
-                            Sin check = lectura normal (TF/alterno). Puede marcar uno: recepción suele ser «ya
-                            etiquetada» (al elegir RK se sugiere); catálogo externo suele ser «tallar y etiquetar».
-                            Puede cambiarlo en cualquier momento.
-                          </p>
-                        </div>
                       </div>
                       <form onSubmit={(e) => void handleScanSubmit(e)} className="flex gap-2">
                         <Input
@@ -1849,8 +1918,20 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                   </Card>
 
                   <Card>
-                    <CardHeader className="pb-2">
+                    <CardHeader className="pb-2 flex flex-row flex-wrap items-center justify-between gap-2">
                       <CardTitle className="text-base">Unidades del turno</CardTitle>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={repairingQtys || !shift?.id}
+                        onClick={() => void handleRepairShiftReceptionQtys()}
+                      >
+                        {repairingQtys ? (
+                          <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                        ) : null}
+                        Corregir cant. recepción en 0
+                      </Button>
                     </CardHeader>
                     <CardContent className="overflow-x-auto">
                       <Table>
@@ -1859,6 +1940,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                             <TableHead>Código</TableHead>
                             <TableHead>Destino</TableHead>
                             <TableHead className="text-right">Cant.</TableHead>
+                            <TableHead>Etiquetado</TableHead>
                             <TableHead>Inicio</TableHead>
                             <TableHead>Fin</TableHead>
                             <TableHead>Neto</TableHead>
@@ -1868,7 +1950,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                         <TableBody>
                           {units.length === 0 ? (
                             <TableRow>
-                              <TableCell colSpan={7} className="text-center text-muted-foreground py-6">
+                              <TableCell colSpan={8} className="text-center text-muted-foreground py-6">
                                 Sin unidades aún.
                               </TableCell>
                             </TableRow>
@@ -1883,21 +1965,55 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                                         Rec #{u.unitNumber ?? u.scanCode}
                                       </Badge>
                                     ) : null}
-                                    {u.etiquetadoModo === 'ya_etiquetada' ? (
-                                      <Badge className="bg-emerald-500/15 text-emerald-900 text-[10px] px-1 py-0">
-                                        Ya etiquetada
-                                      </Badge>
-                                    ) : null}
-                                    {u.etiquetadoModo === 'tallar_y_etiquetar' ? (
-                                      <Badge className="bg-amber-500/15 text-amber-900 text-[10px] px-1 py-0">
-                                        Tallar y etiquetar
-                                      </Badge>
-                                    ) : null}
                                   </div>
                                   <div className="text-muted-foreground">{displayTalladoMarca(u)}</div>
                                 </TableCell>
                                 <TableCell>{u.bodegaDestino}</TableCell>
-                                <TableCell className="text-right tabular-nums">{u.cantidad}</TableCell>
+                                <TableCell className="text-right tabular-nums">
+                                  <div className="flex flex-col items-end gap-1">
+                                    <span className={Number(u.cantidad) <= 0 ? 'text-destructive font-semibold' : ''}>
+                                      {u.cantidad}
+                                    </span>
+                                    {u.source === 'recepcion' && Number(u.cantidad) <= 0 ? (
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-7 text-xs"
+                                        disabled={updatingUnitId === u.id}
+                                        onClick={() => void handleRepairUnitQty(u.id)}
+                                      >
+                                        {updatingUnitId === u.id ? (
+                                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                          'Corregir'
+                                        )}
+                                      </Button>
+                                    ) : null}
+                                  </div>
+                                </TableCell>
+                                <TableCell>
+                                  <Select
+                                    value={u.etiquetadoModo || '__normal__'}
+                                    onValueChange={(v) => {
+                                      const next =
+                                        v === '__normal__'
+                                          ? null
+                                          : (v as TalladoEtiquetadoModo);
+                                      void handleUpdateUnitEtiquetado(u.id, next);
+                                    }}
+                                    disabled={updatingUnitId === u.id}
+                                  >
+                                    <SelectTrigger className="h-8 w-[150px] text-xs">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="__normal__">Normal</SelectItem>
+                                      <SelectItem value="ya_etiquetada">Ya etiquetada</SelectItem>
+                                      <SelectItem value="tallar_y_etiquetar">Tallar y etiquetar</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </TableCell>
                                 <TableCell className="tabular-nums text-xs">{fmtClock(u.startedAt)}</TableCell>
                                 <TableCell className="tabular-nums text-xs">{fmtClock(u.endedAt)}</TableCell>
                                 <TableCell className="text-xs">{fmtDuration(u.durationNetMs ?? u.durationMs)}</TableCell>
