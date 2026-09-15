@@ -1042,15 +1042,17 @@ async function buildRecepcion(
         fillN += 1;
       }
 
-      const opUsers = new Set(
-        allItems.map((it) => it.user_id).filter((uid): uid is string => Boolean(uid))
-      );
       const expected = Number(op.expected_quantity) || 0;
       const progressPct = expected > 0 ? Math.min(999, (counted / expected) * 100) : undefined;
-      // Slice: solo en progreso y aún sin completar lectura (100% deja de mostrarse).
-      const isActive = op.status === 'in_progress';
-      const reachedFull = typeof progressPct === 'number' && progressPct >= 100;
-      if (isActive && !reachedFull) {
+      // Slice Live: solo ops con lectura HOY y aún sin completar.
+      // - Al 100% (aunque sigan "en progreso" en recepción) no se muestran.
+      // - Sin lecturas del día (p. ej. ayer al 80% y hoy sin escanear) tampoco.
+      const reachedFull =
+        expected > 0 &&
+        (counted >= expected || (typeof progressPct === 'number' && Math.round(progressPct) >= 100));
+      const hasTodayReads = opUnitsToday > 0;
+      const isLiveStatus = op.status === 'in_progress' || op.status === 'paused';
+      if (isLiveStatus && hasTodayReads && !reachedFull) {
         receptionOps.push({
           id: op.id,
           rkIdentifier: op.rk_identifier || op.id.slice(0, 8),
@@ -1061,7 +1063,9 @@ async function buildRecepcion(
           unitsToday: opUnitsToday,
           expectedQuantity: expected,
           progressPct,
-          operatorsToday: opUsers.size,
+          operatorsToday: new Set(
+            todayItems.map((it) => it.user_id).filter((uid): uid is string => Boolean(uid))
+          ).size,
         });
       }
 
