@@ -59,7 +59,7 @@ import {
   scanTalladoCode,
   startTalladoPause,
   startTalladoShift,
-  startTalladoUnit,
+  confirmTalladoUnitFromLookup,
   updateTalladoShiftPeople,
   updateTalladoShiftProductivityStart,
   importTalladoCatalog,
@@ -256,9 +256,8 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const [selectedTodayShiftId, setSelectedTodayShiftId] = useState<string>('');
   const [scanCode, setScanCode] = useState('');
   const [scanning, setScanning] = useState(false);
-  const [pendingLookup, setPendingLookup] = useState<TalladoTransferLookup | null>(null);
   const [receptionCandidates, setReceptionCandidates] = useState<TalladoTransferLookup[]>([]);
-  const [busyUnit, setBusyUnit] = useState(false);
+  const [confirmingCandidate, setConfirmingCandidate] = useState(false);
   const [otrosNote, setOtrosNote] = useState('');
   const [showOtros, setShowOtros] = useState(false);
   const [pauseBusy, setPauseBusy] = useState(false);
@@ -527,14 +526,14 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
 
   useEffect(() => {
     if (shift && !openPause) focusScanInput(100);
-  }, [shift, openPause, pendingLookup, scanning, focusScanInput]);
+  }, [shift, openPause, scanning, focusScanInput]);
 
   const applyEnteredShift = async (next: TalladoShift, rejoined?: boolean) => {
     setShift(next);
     setGrupo(next.grupo);
     setPeopleCount(next.peopleCount);
     persistTalladoShiftSession(next);
-    setPendingLookup(null);
+    setReceptionCandidates([]);
     if (rejoined) {
       toast({
         title: 'Turno ya activo',
@@ -590,7 +589,6 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     setShift(null);
     setUnits([]);
     setPauses([]);
-    setPendingLookup(null);
     setReceptionCandidates([]);
     void reloadTodayShifts();
   };
@@ -620,19 +618,17 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         if (!res.success) {
           showScanFlash(code, res.error || 'No se pudo leer', 'error');
           toast({ variant: 'destructive', title: 'Escaneo', description: res.error });
-          setPendingLookup(null);
+          setReceptionCandidates([]);
           return;
         }
         if (res.action === 'finished') {
           const finCode = res.unit?.scanCode || code;
-          showScanFlash(finCode, 'FIN registrado', 'fin');
-          setPendingLookup(null);
+          showScanFlash(finCode, 'Cerrada (legado)', 'fin');
           setReceptionCandidates([]);
           toast({
-            title: 'Fin registrado',
-            description: `${finCode} · neto ${fmtDuration(res.unit?.durationNetMs)}`,
+            title: 'Unidad cerrada',
+            description: `${finCode} · se cerró un Inicio pendiente del modelo anterior`,
           });
-          // Patch local (sin esperar listTalladoShiftBundle completo).
           if (res.unit) {
             setUnits((prev) => {
               const idx = prev.findIndex((u) => u.id === res.unit!.id);
@@ -648,33 +644,29 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         }
         if (res.action === 'pick_reception' && res.candidates?.length) {
           setReceptionCandidates(res.candidates);
-          setPendingLookup(null);
           showScanFlash(code, 'Varias RK — elija caja', 'ok');
           toast({
             title: 'Varias recepciones',
-            description: res.error || 'Elija la RK / caja correcta para continuar.',
+            description: res.error || 'Elija la RK / caja: al elegir queda confirmada.',
           });
           return;
         }
-        if (res.lookup) {
-          showScanFlash(res.lookup.scanCode || code, 'Listo — confirme Inicio', 'ok');
-          setPendingLookup(res.lookup);
-          setReceptionCandidates([]);
-          const title =
-            res.lookup.source === 'recepcion'
-              ? 'Caja de recepción'
-              : res.lookup.source === 'catalogo'
+        if (res.action === 'confirmed' && res.unit) {
+          const u = res.unit;
+          const label =
+            u.source === 'recepcion'
+              ? `Caja #${u.unitNumber ?? u.scanCode}`
+              : u.source === 'catalogo'
                 ? 'Catálogo'
-                : 'TF encontrada';
+                : u.numeroTF || u.scanCode;
+          showScanFlash(u.scanCode || code, `Confirmada · ${u.cantidad}`, 'ok');
+          setReceptionCandidates([]);
           toast({
-            title,
-            description:
-              res.lookup.source === 'recepcion'
-                ? `Caja #${res.lookup.unitNumber ?? res.lookup.scanCode}${
-                    res.lookup.yaEtiquetada ? ' · ya etiquetada' : ''
-                  }. Confirme Inicio.`
-                : 'Confirme Inicio para registrar el comienzo.',
+            title: 'Unidad confirmada',
+            description: `${label} · ${u.cantidad} und.${u.yaEtiquetada ? ' · ya etiquetada' : ''}`,
           });
+          setUnits((prev) => [u, ...prev.filter((x) => x.id !== u.id)]);
+          return;
         }
       } finally {
         setScanning(false);
@@ -685,6 +677,37 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     },
     [shift, user, openPause, toast, showScanFlash, focusScanInput]
   );
+
+  const handleConfirmReceptionCandidate = async (lookup: TalladoTransferLookup) => {
+    if (!shift?.id || !user?.uid) return;
+    if (openPause) {
+      toast({ variant: 'destructive', title: 'En pausa', description: 'Reanude la pausa antes de confirmar.' });
+      return;
+    }
+    setConfirmingCandidate(true);
+    const res = await confirmTalladoUnitFromLookup({
+      shiftId: shift.id,
+      lookup,
+      userId: user.uid,
+      userName: user.displayName || user.email || 'Operario',
+      grupo: shift.grupo,
+      skipOpenPauseCheck: true,
+    });
+    setConfirmingCandidate(false);
+    if (!res.success || !res.data) {
+      toast({ variant: 'destructive', title: 'No se confirmó', description: res.error });
+      return;
+    }
+    const u = res.data;
+    setReceptionCandidates([]);
+    showScanFlash(u.scanCode, `Confirmada · ${u.cantidad}`, 'ok');
+    toast({
+      title: 'Unidad confirmada',
+      description: `Caja #${u.unitNumber ?? u.scanCode} · RK ${u.rkIdentifier || '—'} · ${u.cantidad} und.`,
+    });
+    setUnits((prev) => [u, ...prev.filter((x) => x.id !== u.id)]);
+    focusScanInput(80);
+  };
 
   const handleScanSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -697,32 +720,6 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     },
     [processScanCode]
   );
-
-  const handleConfirmStart = async () => {
-    if (!shift?.id || !pendingLookup || !user?.uid) return;
-    setBusyUnit(true);
-    const res = await startTalladoUnit({
-      shiftId: shift.id,
-      lookup: pendingLookup,
-      userId: user.uid,
-      userName: user.displayName || user.email || 'Operario',
-      grupo: shift.grupo,
-      skipOpenPauseCheck: !openPause,
-    });
-    setBusyUnit(false);
-    if (!res.success) {
-      toast({ variant: 'destructive', title: 'Inicio', description: res.error });
-      return;
-    }
-    setPendingLookup(null);
-    showScanFlash(res.data?.scanCode || pendingLookup.scanCode, 'INICIO registrado', 'ok');
-    toast({ title: 'Inicio', description: `${res.data?.scanCode} · cant. ${res.data?.cantidad}` });
-    if (res.data) {
-      setUnits((prev) => [res.data!, ...prev.filter((u) => u.id !== res.data!.id)]);
-    }
-    focusScanInput(80);
-    focusScanInput(300);
-  };
 
   const handleStartPause = async (type: TalladoPauseType) => {
     if (!shift?.id || !user?.uid) return;
@@ -747,7 +744,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     }
     setShowOtros(false);
     setOtrosNote('');
-    setPendingLookup(null);
+    setReceptionCandidates([]);
     toast({ title: 'Pausa iniciada', description: PAUSE_LABELS[type] });
     if (type === 'fin_jornada') {
       clearTalladoShiftSession();
@@ -1187,8 +1184,9 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
               Tallado de mercancía
             </h1>
             <p className="text-sm text-muted-foreground max-w-2xl">
-              Escanee Número TF / Código Alterno (transferencias) o Código de barras de caja (catálogo Excel). Destino
-              del catálogo: <strong>MERCANCIA SIN REMISIONAR</strong>.
+              Un solo escaneo confirma la unidad (TF/alterno, catálogo o # caja de recepción). El tiempo lo marca el
+              grupo; cada lectura suma cantidad al reporte. Catálogo y recepción: destino{' '}
+              <strong>MERCANCIA SIN REMISIONAR</strong>.
             </p>
           </div>
         </div>
@@ -1594,7 +1592,8 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                     <CardHeader className="pb-2">
                       <CardTitle className="text-base">Escanear código</CardTitle>
                       <CardDescription>
-                        Número TF o Código Alterno. Primera vez = preparar Inicio; segunda = Fin automático.
+                        TF, código alterno, catálogo o # caja (1–4 dígitos). Una lectura = unidad confirmada. El ritmo
+                        lo calcula la jornada del grupo × personas (menos pausas).
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
@@ -1631,20 +1630,20 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
 
                       {receptionCandidates.length > 0 ? (
                         <div className="rounded-md border border-amber-600/30 bg-amber-50/50 dark:bg-amber-950/20 p-3 space-y-2">
-                          <div className="font-semibold">Elija la recepción (caja #{receptionCandidates[0]?.unitNumber})</div>
+                          <div className="font-semibold">
+                            Elija la recepción (caja #{receptionCandidates[0]?.unitNumber})
+                          </div>
                           <p className="text-xs text-muted-foreground">
-                            El mismo # de caja existe en varias RK. Seleccione la correcta.
+                            Al elegir la RK la unidad queda confirmada (un solo paso).
                           </p>
                           <div className="space-y-2">
                             {receptionCandidates.map((c) => (
                               <button
                                 key={c.packingUnitId || `${c.receptionOperationId}-${c.scanCode}`}
                                 type="button"
-                                className="w-full text-left rounded-md border bg-background px-3 py-2 text-sm hover:border-sky-600/50"
-                                onClick={() => {
-                                  setPendingLookup(c);
-                                  setReceptionCandidates([]);
-                                }}
+                                disabled={confirmingCandidate || !!openPause}
+                                className="w-full text-left rounded-md border bg-background px-3 py-2 text-sm hover:border-sky-600/50 disabled:opacity-60"
+                                onClick={() => void handleConfirmReceptionCandidate(c)}
                               >
                                 <div className="font-semibold flex flex-wrap items-center gap-2">
                                   RK {c.rkIdentifier || c.receptionOperationId || '—'}
@@ -1665,83 +1664,17 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                             type="button"
                             size="sm"
                             variant="ghost"
+                            disabled={confirmingCandidate}
                             onClick={() => setReceptionCandidates([])}
                           >
                             Cancelar
                           </Button>
-                        </div>
-                      ) : null}
-
-                      {pendingLookup ? (
-                        <div className="rounded-md border border-sky-600/30 bg-sky-50/50 dark:bg-sky-950/20 p-3 space-y-2">
-                          <div className="font-semibold flex flex-wrap items-center gap-2">
-                            {pendingLookup.matchedBy === 'catalogo'
-                              ? 'Catálogo (caja)'
-                              : pendingLookup.matchedBy === 'recepcion_caja'
-                                ? `Caja recepción #${pendingLookup.unitNumber ?? pendingLookup.scanCode}`
-                                : pendingLookup.matchedBy === 'codigoAlterno'
-                                  ? 'Código alterno'
-                                  : 'Número TF'}
-                            : {pendingLookup.scanCode}
-                            {pendingLookup.source === 'catalogo' || pendingLookup.source === 'recepcion' ? (
-                              <Badge className="bg-violet-500/15 text-violet-900">Sin remisión</Badge>
-                            ) : (
-                              <Badge variant="secondary">Transferencias</Badge>
-                            )}
-                            {pendingLookup.yaEtiquetada ? (
-                              <Badge className="bg-emerald-500/15 text-emerald-900">Ya etiquetada</Badge>
-                            ) : null}
-                          </div>
-                          <div className="grid grid-cols-2 gap-2 text-sm">
-                            <div>
-                              <span className="text-muted-foreground">
-                                {pendingLookup.source === 'catalogo' || pendingLookup.source === 'recepcion'
-                                  ? 'Referencia'
-                                  : 'TF'}
-                              </span>
-                              <div className="font-semibold">
-                                {pendingLookup.source === 'catalogo' || pendingLookup.source === 'recepcion'
-                                  ? pendingLookup.referencia || pendingLookup.numeroTF
-                                  : pendingLookup.numeroTF}
-                              </div>
+                          {confirmingCandidate ? (
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              Confirmando…
                             </div>
-                            <div>
-                              <span className="text-muted-foreground">Destino</span>
-                              <div className="font-semibold">{pendingLookup.bodegaDestino}</div>
-                            </div>
-                            <div>
-                              <span className="text-muted-foreground">
-                                {pendingLookup.source === 'recepcion'
-                                  ? 'RK'
-                                  : pendingLookup.source === 'catalogo'
-                                    ? 'Talla'
-                                    : 'Marca'}
-                              </span>
-                              <div className="font-semibold">
-                                {pendingLookup.source === 'recepcion'
-                                  ? pendingLookup.rkIdentifier || '—'
-                                  : pendingLookup.source === 'catalogo'
-                                    ? pendingLookup.talla || '—'
-                                    : pendingLookup.marca || '—'}
-                              </div>
-                            </div>
-                            <div>
-                              <span className="text-muted-foreground">Cantidad</span>
-                              <div className="font-semibold tabular-nums text-lg">{pendingLookup.cantidad}</div>
-                            </div>
-                          </div>
-                          {pendingLookup.source === 'recepcion' && pendingLookup.talla ? (
-                            <p className="text-xs text-muted-foreground">Talla(s): {pendingLookup.talla}</p>
                           ) : null}
-                          {pendingLookup.lineCount > 1 && pendingLookup.source !== 'recepcion' ? (
-                            <p className="text-xs text-muted-foreground">
-                              {pendingLookup.lineCount} líneas de TF agrupadas (suma de cantidades).
-                            </p>
-                          ) : null}
-                          <Button type="button" onClick={() => void handleConfirmStart()} disabled={busyUnit || !!openPause}>
-                            {busyUnit ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <PlayCircle className="mr-2 h-4 w-4" />}
-                            Iniciar unidad
-                          </Button>
                         </div>
                       ) : null}
                     </CardContent>

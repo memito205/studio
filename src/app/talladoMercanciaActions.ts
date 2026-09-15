@@ -770,13 +770,35 @@ export async function listTalladoShiftBundle(shiftId: string): Promise<{
   }
 }
 
-export async function startTalladoUnit(input: {
+function resolveTalladoSource(lookup: TalladoTransferLookup): TalladoUnit['source'] {
+  return (
+    lookup.source ||
+    (lookup.matchedBy === 'catalogo'
+      ? 'catalogo'
+      : lookup.matchedBy === 'recepcion_caja'
+        ? 'recepcion'
+        : 'transfers')
+  );
+}
+
+function isLookupAlreadyDone(prior: TalladoUnit[], lookup: TalladoTransferLookup, scanCode: string) {
+  return prior.find((u) => {
+    if (u.status !== 'done') return false;
+    if (lookup.packingUnitId) return u.packingUnitId === lookup.packingUnitId;
+    return !u.packingUnitId && unitMatchesScanCode(u, scanCode);
+  });
+}
+
+/**
+ * Confirma una unidad en un solo paso (done inmediato).
+ * El ritmo del reporte lo marca la jornada del grupo; aquí solo suma cantidad.
+ */
+export async function confirmTalladoUnitFromLookup(input: {
   shiftId: string;
   lookup: TalladoTransferLookup;
   userId: string;
   userName: string;
   grupo: string;
-  /** Si el cliente ya sabe que no hay pausa abierta, evita 1 lectura. */
   skipOpenPauseCheck?: boolean;
 }): Promise<{ success: boolean; data?: TalladoUnit; error?: string }> {
   try {
@@ -784,7 +806,6 @@ export async function startTalladoUnit(input: {
     const scanCode = normalizeTalladoScanCode(input.lookup.scanCode);
     if (!scanCode) return { success: false, error: 'Código inválido.' };
 
-    // Bloquear si hay pausa abierta (omitible si UI ya lo validó).
     if (!input.skipOpenPauseCheck) {
       const openPause = await getDocs(
         query(
@@ -795,51 +816,27 @@ export async function startTalladoUnit(input: {
         )
       );
       if (!openPause.empty) {
-        return { success: false, error: 'El grupo está en pausa. Reanude antes de iniciar una unidad.' };
+        return { success: false, error: 'El grupo está en pausa. Reanude antes de escanear.' };
       }
     }
 
-    // Una sola búsqueda del código (abiertas + cerradas).
     const prior = await findUnitsMatchingCode(scanCode);
     const openUnits = prior.filter((u) => u.status === 'in_progress');
     if (openUnits.length > 0) {
       const existing = openUnits[0];
-      if (existing.shiftId === input.shiftId) {
-        return {
-          success: false,
-          error: 'Esta unidad ya tiene Inicio. Escanee de nuevo para marcar Fin.',
-        };
-      }
       return {
         success: false,
-        error: `El código ${existing.scanCode} ya está activo desde ${existing.startedAt} (grupo ${existing.grupo}). Cierre Fin antes de reiniciarlo.`,
+        error: `El código ${existing.scanCode} quedó abierto (legado). Escanee de nuevo para cerrarlo y luego registre uno nuevo.`,
       };
     }
 
-    const done = prior.find((u) => u.status === 'done');
-    if (done) {
-      const lookupPackId = input.lookup.packingUnitId;
-      if (lookupPackId) {
-        const doneSamePack = prior.find(
-          (u) => u.status === 'done' && u.packingUnitId === lookupPackId
-        );
-        if (doneSamePack) return { success: false, error: alreadyDoneError(doneSamePack) };
-      } else if (!done.packingUnitId) {
-        return { success: false, error: alreadyDoneError(done) };
-      } else {
-        // Código numérico reutilizado en otra caja de recepción: no bloquear.
-      }
+    const doneSame = isLookupAlreadyDone(prior, input.lookup, scanCode);
+    if (doneSame) {
+      return { success: false, error: alreadyDoneError(doneSame) };
     }
 
     const now = new Date().toISOString();
     const ref = doc(collection(firestore, UNITS_COL));
-    const source: TalladoUnit['source'] =
-      input.lookup.source ||
-      (input.lookup.matchedBy === 'catalogo'
-        ? 'catalogo'
-        : input.lookup.matchedBy === 'recepcion_caja'
-          ? 'recepcion'
-          : 'transfers');
     const row: TalladoUnit = {
       id: ref.id,
       shiftId: input.shiftId,
@@ -852,14 +849,17 @@ export async function startTalladoUnit(input: {
       bodegaOrigen: input.lookup.bodegaOrigen,
       marca: input.lookup.marca,
       grupoMercancia: input.lookup.grupoMercancia,
-      source,
+      source: resolveTalladoSource(input.lookup),
       referencia: input.lookup.referencia,
       talla: input.lookup.talla,
       cantidad: Math.max(0, Number(input.lookup.cantidad) || 0),
       startedAt: now,
+      endedAt: now,
+      durationMs: 0,
+      durationNetMs: 0,
       userId: input.userId,
       userName: input.userName || 'Operario',
-      status: 'in_progress',
+      status: 'done',
       unitNumber: input.lookup.unitNumber,
       packingUnitId: input.lookup.packingUnitId,
       receptionOperationId: input.lookup.receptionOperationId,
@@ -869,9 +869,22 @@ export async function startTalladoUnit(input: {
     await setDoc(ref, stripUndefinedDeep(row) as TalladoUnit);
     return { success: true, data: row };
   } catch (error: any) {
-    console.error('startTalladoUnit:', error);
-    return { success: false, error: error?.message || 'No se pudo iniciar la unidad.' };
+    console.error('confirmTalladoUnitFromLookup:', error);
+    return { success: false, error: error?.message || 'No se pudo confirmar la unidad.' };
   }
+}
+
+export async function startTalladoUnit(input: {
+  shiftId: string;
+  lookup: TalladoTransferLookup;
+  userId: string;
+  userName: string;
+  grupo: string;
+  /** Si el cliente ya sabe que no hay pausa abierta, evita 1 lectura. */
+  skipOpenPauseCheck?: boolean;
+}): Promise<{ success: boolean; data?: TalladoUnit; error?: string }> {
+  // Compat: el flujo operario usa confirmación en un escaneo.
+  return confirmTalladoUnitFromLookup(input);
 }
 
 export async function finishTalladoUnit(input: {
@@ -936,7 +949,7 @@ export async function finishTalladoUnit(input: {
   }
 }
 
-/** Escaneo inteligente: si hay unidad abierta → Fin; si no → deja listo para Inicio (devuelve lookup). */
+/** Escaneo: 1 lectura confirma la unidad (done). Si hay in_progress legado → cierra Fin. */
 export async function scanTalladoCode(input: {
   shiftId: string;
   rawCode: string;
@@ -946,7 +959,7 @@ export async function scanTalladoCode(input: {
   autoStart?: boolean;
 }): Promise<{
   success: boolean;
-  action?: 'finished' | 'ready_to_start' | 'auto_started' | 'pick_reception';
+  action?: 'finished' | 'confirmed' | 'pick_reception' | 'ready_to_start' | 'auto_started';
   lookup?: TalladoTransferLookup;
   candidates?: TalladoTransferLookup[];
   unit?: TalladoUnit;
@@ -956,12 +969,12 @@ export async function scanTalladoCode(input: {
     const scanCode = normalizeTalladoScanCode(input.rawCode);
     if (!scanCode) return { success: false, error: 'Código vacío.' };
 
-    // Una sola búsqueda del código para decidir Fin vs Inicio.
     const prior = await findUnitsMatchingCode(scanCode);
     const openMatches = prior
       .filter((u) => u.status === 'in_progress')
       .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
 
+    // Compat unidades abiertas del modelo Inicio/Fin anterior.
     if (openMatches.length > 0) {
       const fin = await finishTalladoUnit({
         shiftId: input.shiftId,
@@ -987,32 +1000,27 @@ export async function scanTalladoCode(input: {
 
     if (!lookup.data) return { success: false, error: lookup.error || 'Sin datos de lookup.' };
 
-    // Bloquear solo si la misma caja de recepción (o el mismo código no-recepción) ya terminó.
-    const doneSame = prior.find((u) => {
-      if (u.status !== 'done') return false;
-      if (lookup.data!.packingUnitId) {
-        return u.packingUnitId === lookup.data!.packingUnitId;
-      }
-      return !u.packingUnitId && unitMatchesScanCode(u, scanCode);
-    });
+    const doneSame = isLookupAlreadyDone(prior, lookup.data, scanCode);
     if (doneSame) {
       return { success: false, error: alreadyDoneError(doneSame) };
     }
 
-    if (input.autoStart) {
-      const started = await startTalladoUnit({
-        shiftId: input.shiftId,
-        lookup: lookup.data,
-        userId: input.userId,
-        userName: input.userName,
-        grupo: input.grupo,
-        skipOpenPauseCheck: true,
-      });
-      if (!started.success) return { success: false, error: started.error, lookup: lookup.data };
-      return { success: true, action: 'auto_started', lookup: lookup.data, unit: started.data };
+    const confirmed = await confirmTalladoUnitFromLookup({
+      shiftId: input.shiftId,
+      lookup: lookup.data,
+      userId: input.userId,
+      userName: input.userName,
+      grupo: input.grupo,
+    });
+    if (!confirmed.success) {
+      return { success: false, error: confirmed.error, lookup: lookup.data };
     }
-
-    return { success: true, action: 'ready_to_start', lookup: lookup.data };
+    return {
+      success: true,
+      action: 'confirmed',
+      lookup: lookup.data,
+      unit: confirmed.data,
+    };
   } catch (error: any) {
     return { success: false, error: error?.message || 'Error al procesar el escaneo.' };
   }
