@@ -171,21 +171,22 @@ export default function BodegaTvBoard({ mode = 'full' }: { mode?: BodegaTvMode }
 
   return (
     <div
-      className="bodega-tv-root h-[100dvh] w-[100dvw] overflow-hidden bg-slate-950 text-slate-100 font-sans flex flex-col"
-      style={{
+      className={[
+        'bodega-tv-root h-[100dvh] w-[100dvw] bg-slate-950 text-slate-100 font-sans flex flex-col',
+        // Móvil: scroll; PC/TV (≥768px): kiosk fullscreen sin scroll (igual que antes).
+        'overflow-y-auto md:overflow-hidden',
         // Tipografía nítida por viewport (sin transform:scale → evita blur en Chromecast).
-        // Base alta para TV / cast: el contenido llena la pantalla con rem relativos.
-        fontSize: 'clamp(20px, 2.65vmin, 42px)',
-      }}
+        'max-md:[font-size:clamp(13px,3.6vw,16px)] md:[font-size:clamp(20px,2.65vmin,42px)]',
+      ].join(' ')}
     >
-      <header className="flex justify-between items-center shrink-0 px-[2.2vmin] pt-[1.6vmin] pb-[1.2vmin] gap-[2vmin]">
-        <div className="flex items-center gap-[1.4vmin] min-w-0">
+      <header className="flex flex-col md:flex-row md:justify-between md:items-center shrink-0 px-[2.2vmin] pt-[1.6vmin] pb-[1.2vmin] gap-[1vmin] md:gap-[2vmin]">
+        <div className="flex flex-wrap items-center gap-[0.8vmin] md:gap-[1.4vmin] min-w-0">
           {isExternos ? (
-            <h1 className="text-[2.2em] font-black tracking-tight text-white whitespace-nowrap leading-none">
+            <h1 className="text-[1.55em] md:text-[2.2em] font-black tracking-tight text-white whitespace-normal md:whitespace-nowrap leading-none">
               MONITOR LIVE <span className={`${titleAccent} font-black`}>EXTERNOS</span>
             </h1>
           ) : (
-            <h1 className="text-[2.6em] font-black tracking-tight text-emerald-400 whitespace-nowrap leading-none">
+            <h1 className="text-[1.85em] md:text-[2.6em] font-black tracking-tight text-emerald-400 whitespace-normal md:whitespace-nowrap leading-none">
               BODEGA<span className="text-white font-light ml-[0.35em]">LIVE</span>
             </h1>
           )}
@@ -200,7 +201,7 @@ export default function BodegaTvBoard({ mode = 'full' }: { mode?: BodegaTvMode }
         <button
           type="button"
           onClick={() => void fetchSnapshot()}
-          className="flex items-center bg-slate-900/90 px-[1.1em] py-[0.55em] rounded-full border border-slate-700 hover:bg-slate-800 transition-colors shrink-0"
+          className="flex items-center self-stretch md:self-auto justify-center bg-slate-900/90 px-[1.1em] py-[0.55em] rounded-full border border-slate-700 hover:bg-slate-800 transition-colors shrink-0"
         >
           <Clock className="w-[1em] h-[1em] text-slate-400 mr-[0.55em]" />
           <span className="text-[0.95em] font-medium whitespace-nowrap text-slate-300">
@@ -212,7 +213,7 @@ export default function BodegaTvBoard({ mode = 'full' }: { mode?: BodegaTvMode }
         </button>
       </header>
 
-      <main className="flex-1 min-h-0 relative px-[2.2vmin] pb-[0.6vmin]">
+      <main className="flex-1 min-h-0 relative px-[2.2vmin] pb-[0.6vmin] max-md:min-h-[70dvh]">
         {!data && isLoading ? (
           <div className="h-full flex flex-col items-center justify-center gap-[1em] text-slate-400">
             <RefreshCw className={`w-[2em] h-[2em] animate-spin ${syncAccent}`} />
@@ -228,7 +229,7 @@ export default function BodegaTvBoard({ mode = 'full' }: { mode?: BodegaTvMode }
           slides.map((slide, idx) => (
             <div
               key={idx}
-              className={`absolute inset-x-[2.2vmin] inset-y-0 transition-opacity duration-500 ${
+              className={`absolute inset-x-[2.2vmin] inset-y-0 overflow-y-auto md:overflow-hidden transition-opacity duration-500 ${
                 idx === currentSlideIndex ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'
               }`}
             >
@@ -238,8 +239,8 @@ export default function BodegaTvBoard({ mode = 'full' }: { mode?: BodegaTvMode }
         )}
       </main>
 
-      <footer className="shrink-0 flex items-center justify-between px-[2.2vmin] pb-[1.4vmin] pt-[0.8vmin]">
-        <div className="flex gap-[0.55em] flex-wrap max-w-[70%]">
+      <footer className="shrink-0 flex flex-col-reverse gap-[0.6em] md:flex-row md:items-center md:justify-between px-[2.2vmin] pb-[1.4vmin] pt-[0.8vmin]">
+        <div className="flex gap-[0.55em] flex-wrap max-w-full md:max-w-[70%]">
           {slides.map((_, idx) => (
             <div
               key={idx}

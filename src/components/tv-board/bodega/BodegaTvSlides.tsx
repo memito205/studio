@@ -54,59 +54,78 @@ function RankTable({
   }
 
   return (
-    <div className="flex-1 min-h-0 overflow-hidden flex flex-col justify-center gap-[1.1em]">
-      <div className="grid grid-cols-[4.2em_minmax(0,2.6fr)_repeat(3,minmax(5.5em,0.9fr))] gap-x-[1.2em] text-[0.95em] font-bold uppercase tracking-wider text-slate-500 px-[0.4em]">
+    <div className="flex-1 min-h-0 overflow-visible md:overflow-hidden flex flex-col justify-start md:justify-center gap-[0.85em] md:gap-[1.1em] pb-[1em] md:pb-0">
+      <div className="hidden md:grid grid-cols-[4.2em_minmax(0,2.6fr)_repeat(3,minmax(5.5em,0.9fr))] gap-x-[1.2em] text-[0.95em] font-bold uppercase tracking-wider text-slate-500 px-[0.4em]">
         <span>#</span>
         <span>Persona / Grupo</span>
         <span className="text-right">Unidades</span>
         <span className="text-right">U/H</span>
         <span className="text-right">{showCompliance ? 'Cumpl. %' : 'Detalle'}</span>
       </div>
-      <div className="space-y-[1em]">
+      <div className="space-y-[0.75em] md:space-y-[1em]">
         {ranking.map((row, idx) => {
           const rank = rankOffset + idx + 1;
           return (
             <div
               key={`${row.name}-${rank}`}
-              className={`grid grid-cols-[4.2em_minmax(0,2.6fr)_repeat(3,minmax(5.5em,0.9fr))] gap-x-[1.2em] items-center rounded-[1em] px-[1em] py-[1.15em] border ${
+              className={`flex flex-col gap-[0.65em] md:grid md:grid-cols-[4.2em_minmax(0,2.6fr)_repeat(3,minmax(5.5em,0.9fr))] md:gap-x-[1.2em] md:items-center rounded-[1em] px-[1em] py-[0.95em] md:py-[1.15em] border ${
                 rank === 1
                   ? 'bg-amber-500/10 border-amber-500/40'
                   : 'bg-slate-900/80 border-slate-700'
               }`}
             >
-              <span
-                className={`w-[2.6em] h-[2.6em] rounded-full flex items-center justify-center font-black text-[1.25em] shrink-0 ${
-                  rank === 1
-                    ? 'bg-amber-400 text-slate-950'
-                    : rank === 2
-                      ? 'bg-slate-300 text-slate-900'
-                      : rank === 3
-                        ? 'bg-orange-700 text-white'
-                        : 'bg-slate-800 text-slate-300'
-                }`}
-              >
-                {rank}
-              </span>
-              <div className="min-w-0 pr-[0.4em]">
-                <div className="text-[1.85em] font-extrabold text-slate-100 leading-[1.15] break-words whitespace-normal">
-                  {row.name}
-                </div>
-                {row.meta ? (
-                  <div className="text-[0.95em] text-slate-400 font-semibold mt-[0.35em] break-words whitespace-normal leading-snug">
-                    {row.meta}
+              <div className="flex items-start gap-[0.75em] md:contents min-w-0">
+                <span
+                  className={`w-[2.4em] h-[2.4em] md:w-[2.6em] md:h-[2.6em] rounded-full flex items-center justify-center font-black text-[1.15em] md:text-[1.25em] shrink-0 ${
+                    rank === 1
+                      ? 'bg-amber-400 text-slate-950'
+                      : rank === 2
+                        ? 'bg-slate-300 text-slate-900'
+                        : rank === 3
+                          ? 'bg-orange-700 text-white'
+                          : 'bg-slate-800 text-slate-300'
+                  }`}
+                >
+                  {rank}
+                </span>
+                <div className="min-w-0 flex-1 md:pr-[0.4em]">
+                  <div className="text-[1.35em] md:text-[1.85em] font-extrabold text-slate-100 leading-[1.15] break-words whitespace-normal">
+                    {row.name}
                   </div>
-                ) : null}
+                  {row.meta ? (
+                    <div className="text-[0.9em] md:text-[0.95em] text-slate-400 font-semibold mt-[0.35em] break-words whitespace-normal leading-snug">
+                      {row.meta}
+                    </div>
+                  ) : null}
+                </div>
               </div>
-              <div className="text-[2em] font-black text-right tabular-nums leading-none">
-                {fmt(row.units)}
-              </div>
-              <div className="text-[2em] font-black text-right tabular-nums text-sky-300 leading-none">
-                {fmt(row.productivity, 1)}
-              </div>
-              <div className="text-[2em] font-black text-right tabular-nums leading-none">
-                {showCompliance && typeof row.compliance === 'number'
-                  ? `${fmt(row.compliance, 0)}%`
-                  : '—'}
+              <div className="grid grid-cols-3 gap-[0.5em] md:contents">
+                <div className="text-center md:text-right">
+                  <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.2em]">
+                    Und
+                  </div>
+                  <div className="text-[1.55em] md:text-[2em] font-black tabular-nums leading-none">
+                    {fmt(row.units)}
+                  </div>
+                </div>
+                <div className="text-center md:text-right">
+                  <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.2em]">
+                    U/H
+                  </div>
+                  <div className="text-[1.55em] md:text-[2em] font-black tabular-nums text-sky-300 leading-none">
+                    {fmt(row.productivity, 1)}
+                  </div>
+                </div>
+                <div className="text-center md:text-right">
+                  <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.2em]">
+                    {showCompliance ? 'Cumpl.' : 'Det.'}
+                  </div>
+                  <div className="text-[1.55em] md:text-[2em] font-black tabular-nums leading-none">
+                    {showCompliance && typeof row.compliance === 'number'
+                      ? `${fmt(row.compliance, 0)}%`
+                      : '—'}
+                  </div>
+                </div>
               </div>
             </div>
           );
@@ -118,12 +137,16 @@ function RankTable({
 
 export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
   const isExternos = data.mode === 'externos';
-  const areaCols =
-    data.areas.length <= 2 ? 'grid-cols-2' : data.areas.length === 3 ? 'grid-cols-3' : 'grid-cols-4';
+  const areaColsMd =
+    data.areas.length <= 2
+      ? 'md:grid-cols-2'
+      : data.areas.length === 3
+        ? 'md:grid-cols-3'
+        : 'md:grid-cols-4';
 
   return (
-    <div className="w-full h-full flex flex-col min-h-0">
-      <h2 className="text-[1.85em] font-black tracking-tight text-slate-100 mb-[0.35em] flex items-center gap-[0.55em] leading-none">
+    <div className="w-full h-full flex flex-col min-h-0 max-md:h-auto">
+      <h2 className="text-[1.35em] md:text-[1.85em] font-black tracking-tight text-slate-100 mb-[0.35em] flex items-center gap-[0.55em] leading-none">
         <Trophy className="w-[1.1em] h-[1.1em] text-amber-400 shrink-0" />
         {isExternos ? 'Resumen externos · Hoy' : 'Resumen operación bodega · Hoy'}
       </h2>
@@ -133,34 +156,34 @@ export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
           : 'Recursos = personas únicas · Cumplimiento = promedio ponderado por und'}
       </p>
 
-      <div className="grid grid-cols-3 gap-[1.1em] mb-[1.2em] shrink-0">
-        <div className="rounded-[1em] border-2 border-slate-600 bg-slate-900 px-[1.2em] py-[1.3em] text-center">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-[0.85em] md:gap-[1.1em] mb-[1.2em] shrink-0">
+        <div className="rounded-[1em] border-2 border-slate-600 bg-slate-900 px-[1.2em] py-[1em] md:py-[1.3em] text-center">
           <div className="text-[0.8em] uppercase tracking-widest text-slate-400 font-bold mb-[0.4em]">
             Unidades totales
           </div>
-          <div className="text-[3.4em] font-black text-blue-400 leading-none">
+          <div className="text-[2.6em] md:text-[3.4em] font-black text-blue-400 leading-none">
             {fmt(data.summary.totalUnits)}
           </div>
         </div>
-        <div className="rounded-[1em] border-2 border-slate-600 bg-slate-900 px-[1.2em] py-[1.3em] text-center">
+        <div className="rounded-[1em] border-2 border-slate-600 bg-slate-900 px-[1.2em] py-[1em] md:py-[1.3em] text-center">
           <div className="text-[0.8em] uppercase tracking-widest text-slate-400 font-bold mb-[0.4em]">
             Cumplimiento medio
           </div>
-          <div className="text-[3.4em] font-black text-emerald-400 leading-none">
+          <div className="text-[2.6em] md:text-[3.4em] font-black text-emerald-400 leading-none">
             {fmt(data.summary.avgCompliance, 0)}%
           </div>
         </div>
-        <div className="rounded-[1em] border-2 border-slate-600 bg-slate-900 px-[1.2em] py-[1.3em] text-center">
+        <div className="rounded-[1em] border-2 border-slate-600 bg-slate-900 px-[1.2em] py-[1em] md:py-[1.3em] text-center">
           <div className="text-[0.8em] uppercase tracking-widest text-slate-400 font-bold mb-[0.4em]">
             Recursos activos
           </div>
-          <div className="text-[3.4em] font-black text-violet-400 leading-none">
+          <div className="text-[2.6em] md:text-[3.4em] font-black text-violet-400 leading-none">
             {fmt(data.summary.operators)}
           </div>
         </div>
       </div>
 
-      <div className={`grid ${areaCols} gap-[1em] flex-1 min-h-0`}>
+      <div className={`grid grid-cols-1 sm:grid-cols-2 ${areaColsMd} gap-[1em] flex-1 min-h-0 max-md:pb-[1em]`}>
         {data.areas.map((area) => {
           const Icon = AREA_ICON[area.key];
           const etiquetadoExtras = (area.extras || []).filter((ex) =>
@@ -177,7 +200,7 @@ export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
                   {area.title}
                 </span>
               </div>
-              <div className="text-[2.5em] font-black text-slate-100 mb-[0.1em] leading-none shrink-0">
+              <div className="text-[2.1em] md:text-[2.5em] font-black text-slate-100 mb-[0.1em] leading-none shrink-0">
                 {fmt(area.units)}
               </div>
               <div className="text-[0.8em] text-slate-400 font-semibold mb-[0.55em] shrink-0">
@@ -261,13 +284,13 @@ export function BodegaAreaDetailSlide({
   );
 
   return (
-    <div className="w-full h-full flex flex-col min-h-0">
-      <div className="flex items-end justify-between mb-[0.9em] gap-[1em] shrink-0">
+    <div className="w-full h-full flex flex-col min-h-0 max-md:h-auto">
+      <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-[0.9em] gap-[0.75em] md:gap-[1em] shrink-0">
         <div className="min-w-0">
           <div className="flex items-center gap-[0.55em] mb-[0.35em]">
             <Icon className={`w-[1.35em] h-[1.35em] shrink-0 ${AREA_ACCENT[area.key]}`} />
             <h2
-              className={`text-[2.4em] font-black tracking-tight leading-none ${AREA_ACCENT[area.key]}`}
+              className={`text-[1.7em] md:text-[2.4em] font-black tracking-tight leading-none ${AREA_ACCENT[area.key]}`}
             >
               {area.title}
             </h2>
@@ -277,35 +300,35 @@ export function BodegaAreaDetailSlide({
             {pageCount > 1 ? ` · página ${pageIndex + 1}/${pageCount}` : ''}
           </p>
         </div>
-        <div className="flex gap-[0.7em] shrink-0">
-          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+        <div className="flex flex-wrap gap-[0.55em] md:gap-[0.7em] shrink-0">
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[0.85em] md:px-[1em] py-[0.65em] md:py-[0.75em] text-center min-w-[5.2em] md:min-w-[6.5em] flex-1 md:flex-none">
             <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
               Unidades
             </div>
-            <div className="text-[1.7em] font-black text-slate-100 tabular-nums leading-none mt-[0.2em]">
+            <div className="text-[1.45em] md:text-[1.7em] font-black text-slate-100 tabular-nums leading-none mt-[0.2em]">
               {fmt(area.units)}
             </div>
           </div>
-          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[0.85em] md:px-[1em] py-[0.65em] md:py-[0.75em] text-center min-w-[5.2em] md:min-w-[6.5em] flex-1 md:flex-none">
             <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">U/H</div>
-            <div className="text-[1.7em] font-black text-sky-300 tabular-nums leading-none mt-[0.2em]">
+            <div className="text-[1.45em] md:text-[1.7em] font-black text-sky-300 tabular-nums leading-none mt-[0.2em]">
               {fmt(area.productivity, 1)}
             </div>
           </div>
-          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[0.85em] md:px-[1em] py-[0.65em] md:py-[0.75em] text-center min-w-[5.2em] md:min-w-[6.5em] flex-1 md:flex-none">
             <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
               Pers.
             </div>
-            <div className="text-[1.7em] font-black text-violet-300 tabular-nums leading-none mt-[0.2em]">
+            <div className="text-[1.45em] md:text-[1.7em] font-black text-violet-300 tabular-nums leading-none mt-[0.2em]">
               {fmt(area.operators)}
             </div>
           </div>
           {typeof area.compliance === 'number' ? (
-            <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+            <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[0.85em] md:px-[1em] py-[0.65em] md:py-[0.75em] text-center min-w-[5.2em] md:min-w-[6.5em] flex-1 md:flex-none">
               <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
                 Cumpl.
               </div>
-              <div className="text-[1.7em] font-black text-emerald-400 tabular-nums leading-none mt-[0.2em]">
+              <div className="text-[1.45em] md:text-[1.7em] font-black text-emerald-400 tabular-nums leading-none mt-[0.2em]">
                 {fmt(area.compliance, 0)}%
               </div>
             </div>
@@ -350,13 +373,13 @@ export function BodegaRecepcionOpsSlide({
   const Icon = AREA_ICON.recepcion;
 
   return (
-    <div className="w-full h-full flex flex-col min-h-0">
-      <div className="flex items-end justify-between mb-[0.9em] gap-[1em] shrink-0">
+    <div className="w-full h-full flex flex-col min-h-0 max-md:h-auto">
+      <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-[0.9em] gap-[0.75em] md:gap-[1em] shrink-0">
         <div className="min-w-0">
           <div className="flex items-center gap-[0.55em] mb-[0.35em]">
             <Icon className={`w-[1.35em] h-[1.35em] shrink-0 ${AREA_ACCENT.recepcion}`} />
             <h2
-              className={`text-[2.4em] font-black tracking-tight leading-none ${AREA_ACCENT.recepcion}`}
+              className={`text-[1.7em] md:text-[2.4em] font-black tracking-tight leading-none ${AREA_ACCENT.recepcion}`}
             >
               {area.title}
             </h2>
@@ -366,20 +389,20 @@ export function BodegaRecepcionOpsSlide({
             {pageCount > 1 ? ` · página ${pageIndex + 1}/${pageCount}` : ''}
           </p>
         </div>
-        <div className="flex gap-[0.7em] shrink-0">
-          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+        <div className="flex flex-wrap gap-[0.55em] md:gap-[0.7em] shrink-0">
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[0.85em] md:px-[1em] py-[0.65em] md:py-[0.75em] text-center min-w-[5.2em] md:min-w-[6.5em] flex-1 md:flex-none">
             <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
               Ops
             </div>
-            <div className="text-[1.7em] font-black text-amber-300 tabular-nums leading-none mt-[0.2em]">
+            <div className="text-[1.45em] md:text-[1.7em] font-black text-amber-300 tabular-nums leading-none mt-[0.2em]">
               {fmt((area.receptionOps || []).length)}
             </div>
           </div>
-          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[0.85em] md:px-[1em] py-[0.65em] md:py-[0.75em] text-center min-w-[5.2em] md:min-w-[6.5em] flex-1 md:flex-none">
             <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
               Contado
             </div>
-            <div className="text-[1.7em] font-black text-slate-100 tabular-nums leading-none mt-[0.2em]">
+            <div className="text-[1.45em] md:text-[1.7em] font-black text-slate-100 tabular-nums leading-none mt-[0.2em]">
               {fmt(
                 (area.receptionOps || []).reduce(
                   (s, op) => s + (Number(op.unitsCounted ?? op.unitsToday) || 0),
@@ -396,8 +419,8 @@ export function BodegaRecepcionOpsSlide({
           Sin operaciones activas hoy
         </div>
       ) : (
-        <div className="flex-1 min-h-0 overflow-hidden flex flex-col justify-center gap-[0.9em]">
-          <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.6fr)_minmax(5em,0.7fr)_minmax(6em,0.9fr)_minmax(5em,0.7fr)_minmax(5.5em,0.75fr)] gap-x-[0.9em] text-[0.85em] font-bold uppercase tracking-wider text-slate-500 px-[0.4em]">
+        <div className="flex-1 min-h-0 overflow-visible md:overflow-hidden flex flex-col justify-start md:justify-center gap-[0.75em] md:gap-[0.9em] pb-[1em] md:pb-0">
+          <div className="hidden md:grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.6fr)_minmax(5em,0.7fr)_minmax(6em,0.9fr)_minmax(5em,0.7fr)_minmax(5.5em,0.75fr)] gap-x-[0.9em] text-[0.85em] font-bold uppercase tracking-wider text-slate-500 px-[0.4em]">
             <span>RK</span>
             <span>Proveedor</span>
             <span className="text-right">Estado</span>
@@ -405,51 +428,83 @@ export function BodegaRecepcionOpsSlide({
             <span className="text-right">Pers.</span>
             <span className="text-right">Avance</span>
           </div>
-          <div className="space-y-[0.85em]">
+          <div className="space-y-[0.75em] md:space-y-[0.85em]">
             {opsPage.map((op) => {
               const active = op.status === 'in_progress' || op.status === 'paused';
               const counted = Number(op.unitsCounted ?? op.unitsToday) || 0;
               return (
                 <div
                   key={op.id}
-                  className={`grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.6fr)_minmax(5em,0.7fr)_minmax(6em,0.9fr)_minmax(5em,0.7fr)_minmax(5.5em,0.75fr)] gap-x-[0.9em] items-center rounded-[1em] px-[1em] py-[1em] border ${
+                  className={`flex flex-col gap-[0.55em] md:grid md:grid-cols-[minmax(0,1.4fr)_minmax(0,1.6fr)_minmax(5em,0.7fr)_minmax(6em,0.9fr)_minmax(5em,0.7fr)_minmax(5.5em,0.75fr)] md:gap-x-[0.9em] md:items-center rounded-[1em] px-[1em] py-[0.9em] md:py-[1em] border ${
                     active
                       ? 'bg-amber-500/10 border-amber-500/40'
                       : 'bg-slate-900/80 border-slate-700'
                   }`}
                 >
-                  <div className="min-w-0 text-[1.55em] font-black text-slate-100 leading-tight break-words">
-                    {op.rkIdentifier}
+                  <div className="min-w-0">
+                    <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.15em]">
+                      RK
+                    </div>
+                    <div className="text-[1.35em] md:text-[1.55em] font-black text-slate-100 leading-tight break-words">
+                      {op.rkIdentifier}
+                    </div>
                   </div>
-                  <div className="min-w-0 text-[1.25em] font-bold text-slate-300 leading-tight break-words">
-                    {op.supplier}
+                  <div className="min-w-0">
+                    <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.15em]">
+                      Proveedor
+                    </div>
+                    <div className="text-[1.1em] md:text-[1.25em] font-bold text-slate-300 leading-tight break-words">
+                      {op.supplier}
+                    </div>
                   </div>
-                  <div
-                    className={`text-right text-[1.15em] font-extrabold ${
-                      op.status === 'in_progress'
-                        ? 'text-amber-300'
-                        : op.status === 'paused'
-                          ? 'text-orange-300'
-                          : op.status === 'completed'
-                            ? 'text-emerald-400'
-                            : 'text-slate-400'
-                    }`}
-                  >
-                    {op.statusLabel}
+                  <div className="flex items-center justify-between md:block gap-[0.5em]">
+                    <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold">
+                      Estado
+                    </div>
+                    <div
+                      className={`md:text-right text-[1.05em] md:text-[1.15em] font-extrabold ${
+                        op.status === 'in_progress'
+                          ? 'text-amber-300'
+                          : op.status === 'paused'
+                            ? 'text-orange-300'
+                            : op.status === 'completed'
+                              ? 'text-emerald-400'
+                              : 'text-slate-400'
+                      }`}
+                    >
+                      {op.statusLabel}
+                    </div>
                   </div>
-                  <div className="text-right text-[1.7em] font-black tabular-nums leading-none">
-                    {fmt(counted)}
-                    {op.expectedQuantity > 0 ? (
-                      <span className="block text-[0.55em] font-semibold text-slate-500 mt-[0.25em]">
-                        / {fmt(op.expectedQuantity)}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="text-right text-[1.7em] font-black tabular-nums text-violet-300 leading-none">
-                    {fmt(op.operatorsToday)}
-                  </div>
-                  <div className="text-right text-[1.7em] font-black tabular-nums text-sky-300 leading-none">
-                    {typeof op.progressPct === 'number' ? `${fmt(op.progressPct, 0)}%` : '—'}
+                  <div className="grid grid-cols-3 gap-[0.5em] md:contents">
+                    <div className="text-center md:text-right">
+                      <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.15em]">
+                        Contado
+                      </div>
+                      <div className="text-[1.4em] md:text-[1.7em] font-black tabular-nums leading-none">
+                        {fmt(counted)}
+                        {op.expectedQuantity > 0 ? (
+                          <span className="block text-[0.55em] font-semibold text-slate-500 mt-[0.25em]">
+                            / {fmt(op.expectedQuantity)}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="text-center md:text-right">
+                      <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.15em]">
+                        Pers.
+                      </div>
+                      <div className="text-[1.4em] md:text-[1.7em] font-black tabular-nums text-violet-300 leading-none">
+                        {fmt(op.operatorsToday)}
+                      </div>
+                    </div>
+                    <div className="text-center md:text-right">
+                      <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.15em]">
+                        Avance
+                      </div>
+                      <div className="text-[1.4em] md:text-[1.7em] font-black tabular-nums text-sky-300 leading-none">
+                        {typeof op.progressPct === 'number' ? `${fmt(op.progressPct, 0)}%` : '—'}
+                      </div>
+                    </div>
                   </div>
                 </div>
               );
@@ -473,9 +528,9 @@ export function BodegaRemainderAssignmentsSlide({
   pageCount: number;
 }) {
   return (
-    <div className="w-full h-full flex flex-col min-h-0">
+    <div className="w-full h-full flex flex-col min-h-0 max-md:h-auto">
       <div className="shrink-0 mb-[0.75em]">
-        <h2 className="text-[2.4em] font-black tracking-tight text-amber-300 leading-none mb-[0.3em]">
+        <h2 className="text-[1.7em] md:text-[2.4em] font-black tracking-tight text-amber-300 leading-none mb-[0.3em]">
           Físico vs Distribución
         </h2>
         <p className="text-[1.05em] text-slate-400 font-semibold">
@@ -489,27 +544,29 @@ export function BodegaRemainderAssignmentsSlide({
           Sin asignaciones activas
         </div>
       ) : (
-        <div className="flex-1 min-h-0 overflow-hidden flex flex-col justify-center gap-[1.15em]">
+        <div className="flex-1 min-h-0 overflow-visible md:overflow-hidden flex flex-col justify-start md:justify-center gap-[0.9em] md:gap-[1.15em] pb-[1em] md:pb-0">
           {rows.map((row, idx) => {
             const n = pageIndex * REMAINDER_PAGE_SIZE + idx + 1;
             return (
               <div
                 key={`${row.reference}-${row.operatorName}-${idx}`}
-                className="rounded-[1.1em] border-2 border-slate-600 bg-slate-900/95 px-[1.25em] py-[1.2em] grid grid-cols-[3.2em_minmax(0,1.35fr)_minmax(0,1.15fr)_minmax(0,1.2fr)_minmax(7em,0.85fr)] gap-x-[1.1em] items-center"
+                className="rounded-[1.1em] border-2 border-slate-600 bg-slate-900/95 px-[1em] md:px-[1.25em] py-[1em] md:py-[1.2em] flex flex-col gap-[0.75em] md:grid md:grid-cols-[3.2em_minmax(0,1.35fr)_minmax(0,1.15fr)_minmax(0,1.2fr)_minmax(7em,0.85fr)] md:gap-x-[1.1em] md:items-center"
               >
-                <span className="w-[2.8em] h-[2.8em] rounded-full flex items-center justify-center font-black text-[1.35em] shrink-0 bg-amber-400/90 text-slate-950">
-                  {n}
-                </span>
+                <div className="flex items-center gap-[0.75em] md:contents">
+                  <span className="w-[2.5em] h-[2.5em] md:w-[2.8em] md:h-[2.8em] rounded-full flex items-center justify-center font-black text-[1.2em] md:text-[1.35em] shrink-0 bg-amber-400/90 text-slate-950">
+                    {n}
+                  </span>
 
-                <div className="min-w-0">
-                  <div className="text-[0.85em] uppercase tracking-wider text-slate-500 font-bold mb-[0.25em]">
-                    Operario
-                  </div>
-                  <div className="text-[1.95em] font-extrabold text-slate-100 leading-[1.12] break-words whitespace-normal">
-                    {row.operatorName}
-                  </div>
-                  <div className="text-[1.05em] text-slate-400 font-semibold mt-[0.35em] truncate">
-                    {row.rkIdentifier || '—'} · {row.statusLabel}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[0.85em] uppercase tracking-wider text-slate-500 font-bold mb-[0.25em]">
+                      Operario
+                    </div>
+                    <div className="text-[1.45em] md:text-[1.95em] font-extrabold text-slate-100 leading-[1.12] break-words whitespace-normal">
+                      {row.operatorName}
+                    </div>
+                    <div className="text-[1em] md:text-[1.05em] text-slate-400 font-semibold mt-[0.35em] truncate">
+                      {row.rkIdentifier || '—'} · {row.statusLabel}
+                    </div>
                   </div>
                 </div>
 
@@ -517,7 +574,7 @@ export function BodegaRemainderAssignmentsSlide({
                   <div className="text-[0.85em] uppercase tracking-wider text-slate-500 font-bold mb-[0.25em]">
                     Referencia
                   </div>
-                  <div className="text-[2em] font-black text-amber-200 leading-[1.1] break-words whitespace-normal">
+                  <div className="text-[1.55em] md:text-[2em] font-black text-amber-200 leading-[1.1] break-words whitespace-normal">
                     {row.reference}
                   </div>
                 </div>
@@ -526,20 +583,20 @@ export function BodegaRemainderAssignmentsSlide({
                   <div className="text-[0.85em] uppercase tracking-wider text-slate-500 font-bold mb-[0.25em]">
                     Ubicación
                   </div>
-                  <div className="text-[1.85em] font-extrabold text-sky-300 leading-[1.12] break-words whitespace-normal">
+                  <div className="text-[1.4em] md:text-[1.85em] font-extrabold text-sky-300 leading-[1.12] break-words whitespace-normal">
                     {row.locationName || 'Sin ubicación'}
                   </div>
                 </div>
 
-                <div className="min-w-0 text-right">
+                <div className="min-w-0 md:text-right border-t border-slate-700 pt-[0.65em] md:border-0 md:pt-0">
                   <div className="text-[0.85em] uppercase tracking-wider text-slate-500 font-bold mb-[0.25em]">
                     Remanente
                   </div>
-                  <div className="text-[2.6em] font-black tabular-nums text-slate-50 leading-none">
+                  <div className="text-[2.1em] md:text-[2.6em] font-black tabular-nums text-slate-50 leading-none">
                     {fmt(row.expectedRemainderQty)}
                   </div>
                   <div
-                    className={`text-[1.1em] font-bold mt-[0.45em] leading-snug ${
+                    className={`text-[1.05em] md:text-[1.1em] font-bold mt-[0.45em] leading-snug ${
                       row.remainderComplete
                         ? 'text-emerald-300'
                         : row.status === 'submitted'
@@ -583,13 +640,13 @@ export function BodegaAreaHourlySlide({
   const maxUnits = Math.max(1, ...buckets.map((b) => b.units));
 
   return (
-    <div className="w-full h-full flex flex-col min-h-0">
-      <div className="flex items-end justify-between mb-[0.75em] gap-[1em] shrink-0">
+    <div className="w-full h-full flex flex-col min-h-0 max-md:h-auto">
+      <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-[0.75em] gap-[0.75em] md:gap-[1em] shrink-0">
         <div className="min-w-0">
           <div className="flex items-center gap-[0.55em] mb-[0.35em]">
             <Icon className={`w-[1.35em] h-[1.35em] shrink-0 ${AREA_ACCENT[area.key]}`} />
             <h2
-              className={`text-[2.2em] font-black tracking-tight leading-none ${AREA_ACCENT[area.key]}`}
+              className={`text-[1.55em] md:text-[2.2em] font-black tracking-tight leading-none ${AREA_ACCENT[area.key]}`}
             >
               {area.title} · Por horas
             </h2>
@@ -599,20 +656,20 @@ export function BodegaAreaHourlySlide({
             {pageCount > 1 ? ` · página ${pageIndex + 1}/${pageCount}` : ''}
           </p>
         </div>
-        <div className="flex gap-[0.7em] shrink-0">
-          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+        <div className="flex flex-wrap gap-[0.55em] md:gap-[0.7em] shrink-0">
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[0.85em] md:px-[1em] py-[0.65em] md:py-[0.75em] text-center min-w-[5.2em] md:min-w-[6.5em] flex-1 md:flex-none">
             <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
               Und día
             </div>
-            <div className="text-[1.7em] font-black text-slate-100 tabular-nums leading-none mt-[0.2em]">
+            <div className="text-[1.45em] md:text-[1.7em] font-black text-slate-100 tabular-nums leading-none mt-[0.2em]">
               {fmt(area.units)}
             </div>
           </div>
-          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[1em] py-[0.75em] text-center min-w-[6.5em]">
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[0.85em] md:px-[1em] py-[0.65em] md:py-[0.75em] text-center min-w-[5.2em] md:min-w-[6.5em] flex-1 md:flex-none">
             <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
               U/H día
             </div>
-            <div className="text-[1.7em] font-black text-sky-300 tabular-nums leading-none mt-[0.2em]">
+            <div className="text-[1.45em] md:text-[1.7em] font-black text-sky-300 tabular-nums leading-none mt-[0.2em]">
               {fmt(area.productivity, 1)}
             </div>
           </div>
@@ -624,24 +681,29 @@ export function BodegaAreaHourlySlide({
           Sin producción por hora registrada hoy
         </div>
       ) : (
-        <div className="flex-1 min-h-0 flex flex-col">
-          <div className="grid grid-cols-[5.5em_minmax(0,1.4fr)_minmax(5em,0.7fr)_minmax(5em,0.7fr)_minmax(4em,0.55fr)] gap-x-[1em] text-[0.9em] font-bold uppercase tracking-wider text-slate-500 px-[0.4em] mb-[0.55em] shrink-0">
+        <div className="flex-1 min-h-0 flex flex-col pb-[1em] md:pb-0">
+          <div className="hidden md:grid grid-cols-[5.5em_minmax(0,1.4fr)_minmax(5em,0.7fr)_minmax(5em,0.7fr)_minmax(4em,0.55fr)] gap-x-[1em] text-[0.9em] font-bold uppercase tracking-wider text-slate-500 px-[0.4em] mb-[0.55em] shrink-0">
             <span>Hora</span>
             <span>Producción</span>
             <span className="text-right">Unidades</span>
             <span className="text-right">U/H</span>
             <span className="text-right">Pers.</span>
           </div>
-          <div className="flex-1 min-h-0 space-y-[0.55em] overflow-hidden">
+          <div className="flex-1 min-h-0 space-y-[0.55em] overflow-visible md:overflow-hidden">
             {buckets.map((row) => {
               const barPct = Math.max(4, Math.round((row.units / maxUnits) * 100));
               return (
                 <div
                   key={row.hourLabel}
-                  className="grid grid-cols-[5.5em_minmax(0,1.4fr)_minmax(5em,0.7fr)_minmax(5em,0.7fr)_minmax(4em,0.55fr)] gap-x-[1em] items-center rounded-[0.85em] border border-slate-700 bg-slate-900/85 px-[0.9em] py-[0.7em]"
+                  className="flex flex-col gap-[0.45em] md:grid md:grid-cols-[5.5em_minmax(0,1.4fr)_minmax(5em,0.7fr)_minmax(5em,0.7fr)_minmax(4em,0.55fr)] md:gap-x-[1em] md:items-center rounded-[0.85em] border border-slate-700 bg-slate-900/85 px-[0.9em] py-[0.7em]"
                 >
-                  <div className="text-[1.55em] font-black tabular-nums text-slate-100 leading-none">
-                    {row.hourLabel}
+                  <div className="flex items-center justify-between md:block">
+                    <div className="text-[1.35em] md:text-[1.55em] font-black tabular-nums text-slate-100 leading-none">
+                      {row.hourLabel}
+                    </div>
+                    <div className="md:hidden text-[1.2em] font-black tabular-nums text-sky-300">
+                      {fmt(row.productivity, 1)} U/H
+                    </div>
                   </div>
                   <div className="min-w-0">
                     <div className="h-[0.85em] rounded-full bg-slate-800 overflow-hidden">
@@ -653,14 +715,26 @@ export function BodegaAreaHourlySlide({
                       />
                     </div>
                   </div>
-                  <div className="text-[1.7em] font-black tabular-nums text-right leading-none">
-                    {fmt(row.units)}
-                  </div>
-                  <div className="text-[1.7em] font-black tabular-nums text-right text-sky-300 leading-none">
-                    {fmt(row.productivity, 1)}
-                  </div>
-                  <div className="text-[1.45em] font-bold tabular-nums text-right text-slate-300 leading-none">
-                    {row.people != null && row.people > 0 ? fmt(row.people) : '—'}
+                  <div className="grid grid-cols-2 gap-[0.5em] md:contents text-center">
+                    <div>
+                      <div className="md:hidden text-[0.65em] uppercase tracking-wider text-slate-500 font-bold mb-[0.1em]">
+                        Und
+                      </div>
+                      <div className="text-[1.4em] md:text-[1.7em] font-black tabular-nums md:text-right leading-none">
+                        {fmt(row.units)}
+                      </div>
+                    </div>
+                    <div className="hidden md:block text-[1.7em] font-black tabular-nums text-right text-sky-300 leading-none">
+                      {fmt(row.productivity, 1)}
+                    </div>
+                    <div>
+                      <div className="md:hidden text-[0.65em] uppercase tracking-wider text-slate-500 font-bold mb-[0.1em]">
+                        Pers.
+                      </div>
+                      <div className="text-[1.25em] md:text-[1.45em] font-bold tabular-nums md:text-right text-slate-300 leading-none">
+                        {row.people != null && row.people > 0 ? fmt(row.people) : '—'}
+                      </div>
+                    </div>
                   </div>
                 </div>
               );
