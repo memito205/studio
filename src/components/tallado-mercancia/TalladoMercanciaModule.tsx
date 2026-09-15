@@ -21,6 +21,7 @@ import {
   Upload,
   FileSpreadsheet,
   Search,
+  Trash2,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
@@ -54,12 +55,15 @@ import {
   cleanupTalladoDuplicates,
   listTalladoShiftBundle,
   listTalladoActiveShiftsForDay,
+  listTalladoReceptionOptions,
   enterTalladoShift,
   resumeTalladoPause,
   scanTalladoCode,
   startTalladoPause,
   startTalladoShift,
   confirmTalladoUnitFromLookup,
+  adminCloseTalladoShift,
+  adminDeleteTalladoShift,
   updateTalladoShiftPeople,
   updateTalladoShiftProductivityStart,
   importTalladoCatalog,
@@ -91,6 +95,7 @@ const PAUSE_LABELS: Record<TalladoPauseType, string> = {
 
 const TALLADO_SS_SHIFT = 'tallado.activeShiftId';
 const TALLADO_SS_DAY = 'tallado.activeDayKey';
+const TALLADO_SS_RECEPTION = 'tallado.receptionOperationId';
 
 function persistTalladoShiftSession(shift: TalladoShift) {
   try {
@@ -108,6 +113,23 @@ function clearTalladoShiftSession() {
     sessionStorage.removeItem(TALLADO_SS_DAY);
   } catch {
     /* ignore */
+  }
+}
+
+function persistReceptionScope(receptionOperationId: string) {
+  try {
+    if (receptionOperationId) sessionStorage.setItem(TALLADO_SS_RECEPTION, receptionOperationId);
+    else sessionStorage.removeItem(TALLADO_SS_RECEPTION);
+  } catch {
+    /* ignore */
+  }
+}
+
+function readReceptionScope(): string {
+  try {
+    return sessionStorage.getItem(TALLADO_SS_RECEPTION) || '';
+  } catch {
+    return '';
   }
 }
 
@@ -258,6 +280,12 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const [scanning, setScanning] = useState(false);
   const [receptionCandidates, setReceptionCandidates] = useState<TalladoTransferLookup[]>([]);
   const [confirmingCandidate, setConfirmingCandidate] = useState(false);
+  const [receptionScopeId, setReceptionScopeId] = useState(() => readReceptionScope());
+  const [receptionOptions, setReceptionOptions] = useState<
+    Array<{ id: string; rk: string; supplier: string; status: string }>
+  >([]);
+  const [loadingReceptionOptions, setLoadingReceptionOptions] = useState(false);
+  const [deletingShiftId, setDeletingShiftId] = useState<string | null>(null);
   const [otrosNote, setOtrosNote] = useState('');
   const [showOtros, setShowOtros] = useState(false);
   const [pauseBusy, setPauseBusy] = useState(false);
@@ -528,6 +556,31 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     if (shift && !openPause) focusScanInput(100);
   }, [shift, openPause, scanning, focusScanInput]);
 
+  useEffect(() => {
+    if (!shift?.id) return;
+    let cancelled = false;
+    (async () => {
+      setLoadingReceptionOptions(true);
+      const res = await listTalladoReceptionOptions();
+      if (cancelled) return;
+      setLoadingReceptionOptions(false);
+      if (!res.success) {
+        toast({ variant: 'destructive', title: 'Recepciones', description: res.error });
+        return;
+      }
+      const list = res.data || [];
+      setReceptionOptions(list);
+      if (receptionScopeId && !list.some((o) => o.id === receptionScopeId)) {
+        setReceptionScopeId('');
+        persistReceptionScope('');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when entering shift
+  }, [shift?.id, toast]);
+
   const applyEnteredShift = async (next: TalladoShift, rejoined?: boolean) => {
     setShift(next);
     setGrupo(next.grupo);
@@ -613,6 +666,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
           userName: user.displayName || user.email || 'Operario',
           grupo: shift.grupo,
           autoStart: false,
+          receptionOperationId: receptionScopeId || undefined,
         });
         setScanCode('');
         if (!res.success) {
@@ -675,8 +729,57 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         focusScanInput(200);
       }
     },
-    [shift, user, openPause, toast, showScanFlash, focusScanInput]
+    [shift, user, openPause, toast, showScanFlash, focusScanInput, receptionScopeId]
   );
+
+  const handleAdminCloseShift = async (shiftId: string) => {
+    if (!window.confirm('¿Cerrar este turno? Dejará de aparecer para reingreso del día.')) return;
+    setDeletingShiftId(shiftId);
+    const res = await adminCloseTalladoShift(shiftId);
+    setDeletingShiftId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Cerrar turno', description: res.error });
+      return;
+    }
+    toast({ title: 'Turno cerrado' });
+    if (shift?.id === shiftId) {
+      clearTalladoShiftSession();
+      setShift(null);
+      setUnits([]);
+      setPauses([]);
+    }
+    void loadDashboard();
+    void reloadTodayShifts();
+  };
+
+  const handleAdminDeleteShift = async (shiftId: string) => {
+    if (
+      !window.confirm(
+        '¿Eliminar este turno y todas sus unidades/pausas de tallado? Esta acción no se puede deshacer. No afecta recepción.'
+      )
+    ) {
+      return;
+    }
+    setDeletingShiftId(shiftId);
+    const res = await adminDeleteTalladoShift(shiftId);
+    setDeletingShiftId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Eliminar turno', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Turno eliminado',
+      description: `Unidades: ${res.deletedUnits || 0} · Pausas: ${res.deletedPauses || 0}`,
+    });
+    if (shift?.id === shiftId) {
+      clearTalladoShiftSession();
+      setShift(null);
+      setUnits([]);
+      setPauses([]);
+    }
+    void loadDashboard();
+    void reloadTodayShifts();
+  };
 
   const handleConfirmReceptionCandidate = async (lookup: TalladoTransferLookup) => {
     if (!shift?.id || !user?.uid) return;
@@ -1184,9 +1287,8 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
               Tallado de mercancía
             </h1>
             <p className="text-sm text-muted-foreground max-w-2xl">
-              Un solo escaneo confirma la unidad (TF/alterno, catálogo o # caja de recepción). El tiempo lo marca el
-              grupo; cada lectura suma cantidad al reporte. Catálogo y recepción: destino{' '}
-              <strong>MERCANCIA SIN REMISIONAR</strong>.
+              Un solo escaneo confirma (TF/alterno o catálogo). Para cruce recepción: elija la RK y luego el # de
+              caja (el # se reinicia en cada operación). El tiempo lo marca el grupo. Recepción no se modifica.
             </p>
           </div>
         </div>
@@ -1592,11 +1694,42 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                     <CardHeader className="pb-2">
                       <CardTitle className="text-base">Escanear código</CardTitle>
                       <CardDescription>
-                        TF, código alterno, catálogo o # caja (1–4 dígitos). Una lectura = unidad confirmada. El ritmo
-                        lo calcula la jornada del grupo × personas (menos pausas).
+                        TF, código alterno o catálogo: un escaneo confirma. Para # caja de recepción: elija primero la
+                        RK abajo (el # se reinicia en cada recepción).
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
+                      <div className="rounded-md border border-violet-600/25 bg-violet-50/40 dark:bg-violet-950/20 p-3 space-y-2">
+                        <Label>Recepción (RK) para cruce por # caja</Label>
+                        <Select
+                          value={receptionScopeId || '__none__'}
+                          onValueChange={(v) => {
+                            const next = v === '__none__' ? '' : v;
+                            setReceptionScopeId(next);
+                            persistReceptionScope(next);
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue
+                              placeholder={
+                                loadingReceptionOptions ? 'Cargando recepciones…' : 'Seleccione RK / recepción'
+                              }
+                            />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__">Sin recepción (solo TF / catálogo)</SelectItem>
+                            {receptionOptions.map((o) => (
+                              <SelectItem key={o.id} value={o.id}>
+                                {o.rk}
+                                {o.supplier ? ` · ${o.supplier}` : ''} · {o.status}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">
+                          Obligatorio si va a digitar solo el número de caja. No modifica el módulo de recepción.
+                        </p>
+                      </div>
                       <form onSubmit={(e) => void handleScanSubmit(e)} className="flex gap-2">
                         <Input
                           ref={scanRef}
@@ -2390,10 +2523,10 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
 
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-base">Corregir personas por turno</CardTitle>
+                <CardTitle className="text-base">Corregir personas / cerrar o eliminar turno</CardTitle>
                 <CardDescription>
-                  Ajuste la cantidad si el turno se inició mal; el rendimiento neto (cant / persona·h) se recalcula
-                  con este valor.
+                  Ajuste personas si el turno se inició mal. Cerrar quita el reingreso del día. Eliminar borra el
+                  turno y sus unidades de tallado (no toca recepción).
                 </CardDescription>
               </CardHeader>
               <CardContent className="overflow-x-auto">
@@ -2417,6 +2550,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                     ) : (
                       dashShifts.map((s) => {
                         const draft = peopleDrafts[s.id] ?? s.peopleCount;
+                        const busy = deletingShiftId === s.id || savingPeopleId === s.id;
                         return (
                           <TableRow key={s.id}>
                             <TableCell>
@@ -2443,22 +2577,51 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                               />
                             </TableCell>
                             <TableCell className="text-right">
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="secondary"
-                                disabled={savingPeopleId === s.id || draft === s.peopleCount}
-                                onClick={() => void handleAdminUpdatePeople(s.id, draft)}
-                              >
-                                {savingPeopleId === s.id ? (
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                ) : (
-                                  <>
-                                    <Users className="mr-1.5 h-3.5 w-3.5" />
-                                    Guardar
-                                  </>
-                                )}
-                              </Button>
+                              <div className="flex flex-wrap justify-end gap-1.5">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="secondary"
+                                  disabled={busy || draft === s.peopleCount}
+                                  onClick={() => void handleAdminUpdatePeople(s.id, draft)}
+                                >
+                                  {savingPeopleId === s.id ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <>
+                                      <Users className="mr-1.5 h-3.5 w-3.5" />
+                                      Guardar
+                                    </>
+                                  )}
+                                </Button>
+                                {s.status === 'active' ? (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={busy}
+                                    onClick={() => void handleAdminCloseShift(s.id)}
+                                  >
+                                    Cerrar
+                                  </Button>
+                                ) : null}
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="destructive"
+                                  disabled={busy}
+                                  onClick={() => void handleAdminDeleteShift(s.id)}
+                                >
+                                  {deletingShiftId === s.id ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <>
+                                      <Trash2 className="mr-1 h-3.5 w-3.5" />
+                                      Eliminar
+                                    </>
+                                  )}
+                                </Button>
+                              </div>
                             </TableCell>
                           </TableRow>
                         );

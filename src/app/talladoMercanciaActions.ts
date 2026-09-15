@@ -347,10 +347,13 @@ function packingUnitToReceptionLookup(
 }
 
 /**
- * Cruce liviano por # caja de recepción (`packingUnits.id`).
- * Sin colección índice extra: el id secuencial de packingUnits ya es consultable (Fase D no requerida).
+ * Cruce por # caja: exige recepción (RK) elegida.
+ * El # se reinicia en cada recepción; sin RK no se puede asociar.
  */
-async function lookupReceptionBoxForTallado(rawCode: string): Promise<{
+async function lookupReceptionBoxForTallado(
+  rawCode: string,
+  receptionOperationId?: string
+): Promise<{
   success: boolean;
   data?: TalladoTransferLookup;
   candidates?: TalladoTransferLookup[];
@@ -365,109 +368,164 @@ async function lookupReceptionBoxForTallado(rawCode: string): Promise<{
     return { success: false, error: 'Número de caja inválido.' };
   }
 
-  const snap = await getDocs(
-    query(collection(firestore, PACKING_UNITS_COL), where('id', '==', unitNumber), limit(25))
-  );
-  if (snap.empty) {
-    return { success: false, error: `No hay caja #${unitNumber} en recepción.` };
-  }
-
-  type Cand = { lookup: TalladoTransferLookup; closedAt?: string; status?: string };
-  const docs = snap.docs.filter((d) => !!(d.data() as PackingUnit).reception_id);
-  if (docs.length === 0) {
+  const receptionId = String(receptionOperationId || '').trim();
+  if (!receptionId) {
     return {
       success: false,
-      error: `Caja #${unitNumber} encontrada pero sin recepción asociada.`,
+      error:
+        'Para tallar por # de caja elija primero la recepción (RK). El # se reinicia en cada operación (todas empiezan en caja 1).',
     };
   }
 
-  const receptionIds = Array.from(
-    new Set(docs.map((d) => String((d.data() as PackingUnit).reception_id || '').trim()).filter(Boolean))
+  const snap = await getDocs(
+    query(
+      collection(firestore, PACKING_UNITS_COL),
+      where('reception_id', '==', receptionId),
+      where('id', '==', unitNumber),
+      limit(3)
+    )
   );
+  if (snap.empty) {
+    return {
+      success: false,
+      error: `No hay caja #${unitNumber} en la recepción seleccionada.`,
+    };
+  }
 
-  const rkByReception = new Map<string, string>();
-  await Promise.all(
-    receptionIds.map(async (rid) => {
-      try {
-        const opSnap = await getDoc(doc(firestore, RECEPTION_OPS_COL, rid));
-        if (opSnap.exists()) {
-          const op = opSnap.data() as ReceptionOperation;
-          const rk = String(op.rk_identifier || '').trim();
-          if (rk) rkByReception.set(rid, rk);
-        }
-      } catch {
-        /* ignore */
-      }
-    })
-  );
+  const d = snap.docs[0];
+  const raw = d.data() as Omit<PackingUnit, 'firestoreId'>;
+  const unit: PackingUnit = { firestoreId: d.id, ...raw };
 
-  const labelingPlansByReception = new Map<string, LabelingOperation[]>();
-  await Promise.all(
-    receptionIds.map(async (rid) => {
-      try {
-        const snap = await getDocs(
-          query(
-            collection(firestore, LABELING_OPS_COL),
-            where('receptionOperationId', '==', rid),
-            limit(40)
-          )
-        );
-        labelingPlansByReception.set(
-          rid,
-          snap.docs.map((d) => ({ id: d.id, ...d.data() } as LabelingOperation))
-        );
-      } catch {
-        labelingPlansByReception.set(rid, []);
-      }
-    })
-  );
+  let rkIdentifier: string | undefined;
+  try {
+    const opSnap = await getDoc(doc(firestore, RECEPTION_OPS_COL, receptionId));
+    if (opSnap.exists()) {
+      const op = opSnap.data() as ReceptionOperation;
+      rkIdentifier = String(op.rk_identifier || '').trim() || undefined;
+    }
+  } catch {
+    /* ignore */
+  }
 
-  const yaByPackId = new Map<string, boolean>();
-  for (const d of docs) {
-    const rid = String((d.data() as PackingUnit).reception_id || '');
-    const ops = labelingPlansByReception.get(rid) || [];
-    let ya = false;
-    for (const op of ops) {
+  let yaEtiquetada = false;
+  try {
+    const labSnap = await getDocs(
+      query(
+        collection(firestore, LABELING_OPS_COL),
+        where('receptionOperationId', '==', receptionId),
+        limit(40)
+      )
+    );
+    for (const lab of labSnap.docs) {
+      const op = lab.data() as LabelingOperation;
       const plan = op.labelingPackPlan;
       if (!Array.isArray(plan)) continue;
       if (plan.some((u) => u.packingUnitId === d.id && u.confirmed)) {
-        ya = true;
+        yaEtiquetada = true;
         break;
       }
     }
-    yaByPackId.set(d.id, ya);
-  }
-
-  const built: Cand[] = docs.map((d) => {
-    const raw = d.data() as Omit<PackingUnit, 'firestoreId'>;
-    const unit: PackingUnit = { firestoreId: d.id, ...raw };
-    const rid = String(raw.reception_id || '');
-    return {
-      lookup: packingUnitToReceptionLookup(scanCode, {
-        unit,
-        packingUnitFirestoreId: d.id,
-        rkIdentifier: rkByReception.get(rid),
-        yaEtiquetada: yaByPackId.get(d.id) === true,
-      }),
-      closedAt: unit.closed_at,
-      status: unit.status,
-    };
-  });
-
-  // Preferir cajas cerradas; si hay varias, devolver candidatos para elegir RK.
-  const closed = built.filter((c) => c.status === 'closed');
-  const pool = closed.length > 0 ? closed : built;
-  pool.sort((a, b) => String(b.closedAt || '').localeCompare(String(a.closedAt || '')));
-
-  if (pool.length === 1) {
-    return { success: true, data: pool[0].lookup };
+  } catch {
+    /* ignore */
   }
 
   return {
     success: true,
-    candidates: pool.map((c) => c.lookup),
-    error: `Hay ${pool.length} recepciones con caja #${unitNumber}. Elija la RK correcta.`,
+    data: packingUnitToReceptionLookup(scanCode, {
+      unit,
+      packingUnitFirestoreId: d.id,
+      rkIdentifier,
+      yaEtiquetada,
+    }),
   };
+}
+
+/** Opciones livianas de recepción para fijar el contexto de # caja en Tallado. */
+export async function listTalladoReceptionOptions(): Promise<{
+  success: boolean;
+  data?: Array<{ id: string; rk: string; supplier: string; status: string }>;
+  error?: string;
+}> {
+  try {
+    const snap = await getDocs(
+      query(collection(firestore, RECEPTION_OPS_COL), orderBy('created_at', 'desc'), limit(80))
+    );
+    const allowed = new Set(['in_progress', 'completed', 'paused']);
+    const data = snap.docs
+      .map((d) => {
+        const op = d.data() as ReceptionOperation;
+        return {
+          id: d.id,
+          rk: String(op.rk_identifier || d.id).trim() || d.id,
+          supplier: String(op.supplier || '').trim(),
+          status: String(op.status || ''),
+        };
+      })
+      .filter((o) => allowed.has(o.status))
+      .slice(0, 50);
+    return { success: true, data };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'No se pudieron listar recepciones.' };
+  }
+}
+
+/** Admin: cierra un turno activo (deja de aparecer para reingreso del día). */
+export async function adminCloseTalladoShift(shiftId: string): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  try {
+    if (!shiftId) return { success: false, error: 'Turno inválido.' };
+    const snap = await getDoc(doc(firestore, SHIFTS_COL, shiftId));
+    if (!snap.exists()) return { success: false, error: 'El turno no existe.' };
+    const shift = snap.data() as TalladoShift;
+    if (shift.status === 'closed') return { success: true };
+    const now = new Date().toISOString();
+    await updateDoc(doc(firestore, SHIFTS_COL, shiftId), {
+      status: 'closed',
+      endedAt: now,
+      closedReason: 'admin_close',
+    });
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'No se pudo cerrar el turno.' };
+  }
+}
+
+/**
+ * Admin: elimina el turno y sus unidades/pausas.
+ * No toca recepción ni transferencias.
+ */
+export async function adminDeleteTalladoShift(shiftId: string): Promise<{
+  success: boolean;
+  deletedUnits?: number;
+  deletedPauses?: number;
+  error?: string;
+}> {
+  try {
+    if (!shiftId) return { success: false, error: 'Turno inválido.' };
+    const shiftRef = doc(firestore, SHIFTS_COL, shiftId);
+    const snap = await getDoc(shiftRef);
+    if (!snap.exists()) return { success: false, error: 'El turno no existe.' };
+
+    const [unitsSnap, pausesSnap] = await Promise.all([
+      getDocs(query(collection(firestore, UNITS_COL), where('shiftId', '==', shiftId), limit(500))),
+      getDocs(query(collection(firestore, PAUSES_COL), where('shiftId', '==', shiftId), limit(200))),
+    ]);
+
+    await Promise.all(unitsSnap.docs.map((d) => deleteDoc(d.ref)));
+    await Promise.all(pausesSnap.docs.map((d) => deleteDoc(d.ref)));
+    await deleteDoc(shiftRef);
+
+    return {
+      success: true,
+      deletedUnits: unitsSnap.size,
+      deletedPauses: pausesSnap.size,
+    };
+  } catch (error: any) {
+    console.error('adminDeleteTalladoShift:', error);
+    return { success: false, error: error?.message || 'No se pudo eliminar el turno.' };
+  }
 }
 
 async function lookupCatalogForTallado(scanCode: string): Promise<TalladoTransferLookup | null> {
@@ -510,7 +568,8 @@ async function lookupCatalogForTallado(scanCode: string): Promise<TalladoTransfe
 }
 
 export async function lookupTransferForTallado(
-  rawCode: string
+  rawCode: string,
+  opts?: { receptionOperationId?: string }
 ): Promise<{
   success: boolean;
   data?: TalladoTransferLookup;
@@ -566,18 +625,21 @@ export async function lookupTransferForTallado(
       return { success: true, data: fromCatalog };
     }
 
-    // Cruce recepción por # caja (solo dígitos cortos; no pisa TF/catálogo).
+    // Cruce recepción por # caja: solo con RK/recepción elegida (el # se reinicia por operación).
     if (RECEPTION_BOX_NUMBER_RE.test(scanCode)) {
-      const fromReception = await lookupReceptionBoxForTallado(scanCode);
-      if (fromReception.success && (fromReception.data || fromReception.candidates?.length)) {
+      const fromReception = await lookupReceptionBoxForTallado(
+        scanCode,
+        opts?.receptionOperationId
+      );
+      if (fromReception.success && fromReception.data) {
         return fromReception;
       }
-      if (fromReception.error && !fromReception.error.includes('no es un #')) {
-        return {
-          success: false,
-          error: `${fromReception.error} Tampoco en transferencias ni catálogo.`,
-        };
-      }
+      return {
+        success: false,
+        error:
+          fromReception.error ||
+          `No se encontró caja #${scanCode} en la recepción seleccionada (tampoco en TF/catálogo).`,
+      };
     }
 
     return {
@@ -957,6 +1019,8 @@ export async function scanTalladoCode(input: {
   userName: string;
   grupo: string;
   autoStart?: boolean;
+  /** Recepción fija para # caja (obligatoria en cruce recepción). */
+  receptionOperationId?: string;
 }): Promise<{
   success: boolean;
   action?: 'finished' | 'confirmed' | 'pick_reception' | 'ready_to_start' | 'auto_started';
@@ -986,7 +1050,9 @@ export async function scanTalladoCode(input: {
       return { success: true, action: 'finished', unit: fin.data };
     }
 
-    const lookup = await lookupTransferForTallado(scanCode);
+    const lookup = await lookupTransferForTallado(scanCode, {
+      receptionOperationId: input.receptionOperationId,
+    });
     if (!lookup.success) return { success: false, error: lookup.error };
 
     if (lookup.candidates && lookup.candidates.length > 1 && !lookup.data) {
