@@ -361,26 +361,116 @@ function packingUnitToReceptionLookup(
   };
 }
 
-/** Qty + refs de una caja desde referenceStats.packUnitsById (liviano; sin items del doc). */
+/** Misma regla que recepción al cerrar caja: `Number(quantity) || 1`. */
+function receptionScanQty(quantity: unknown): number {
+  return Number(quantity) || 1;
+}
+
+/**
+ * Asegura el Firestore ID de la caja (a veces el tallado guardó el # caja
+ * o un hint inválido en packingUnitId / codigoAlterno).
+ */
+async function resolvePackingUnitIdForTallado(
+  receptionId: string,
+  packingUnitHint: string,
+  unitNumber?: number
+): Promise<{ packingUnitId: string; unitNumber?: number } | null> {
+  const hint = String(packingUnitHint || '').trim();
+  const reception = String(receptionId || '').trim();
+
+  if (hint) {
+    try {
+      const snap = await getDoc(doc(firestore, PACKING_UNITS_COL, hint));
+      if (snap.exists()) {
+        const data = snap.data() as PackingUnit;
+        if (!reception || !data.reception_id || data.reception_id === reception) {
+          return {
+            packingUnitId: snap.id,
+            unitNumber: Number(data.id) || unitNumber,
+          };
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const n =
+    unitNumber != null && Number.isFinite(unitNumber) && unitNumber >= 1
+      ? Number(unitNumber)
+      : RECEPTION_BOX_NUMBER_RE.test(hint)
+        ? Number(hint)
+        : NaN;
+
+  if (reception && Number.isFinite(n) && n >= 1) {
+    try {
+      const snap = await getDocs(
+        query(
+          collection(firestore, PACKING_UNITS_COL),
+          where('reception_id', '==', reception),
+          where('id', '==', n),
+          limit(1)
+        )
+      );
+      if (!snap.empty) {
+        const d = snap.docs[0];
+        const data = d.data() as PackingUnit;
+        return { packingUnitId: d.id, unitNumber: Number(data.id) || n };
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return hint ? { packingUnitId: hint, unitNumber } : null;
+}
+
+/**
+ * Qty + refs de una caja: packUnitsById → escaneos → plan etiquetado → items embebidos.
+ * No escribe ni modifica recepción.
+ */
 async function resolveReceptionBoxQty(
   receptionId: string,
-  packingUnitFirestoreId: string
-): Promise<{ qty: number; refs: string[] }> {
-  const refs: string[] = [];
-  let qty = 0;
+  packingUnitFirestoreId: string,
+  opts?: { unitNumber?: number }
+): Promise<{ qty: number; refs: string[]; packingUnitId?: string }> {
+  const reception = String(receptionId || '').trim();
+  const resolvedUnit = await resolvePackingUnitIdForTallado(
+    reception,
+    packingUnitFirestoreId,
+    opts?.unitNumber
+  );
+  const packingUnitId = resolvedUnit?.packingUnitId || String(packingUnitFirestoreId || '').trim();
+  const unitNumber = resolvedUnit?.unitNumber ?? opts?.unitNumber;
+
+  if (!reception || !packingUnitId) return { qty: 0, refs: [] };
+
+  const matchPackDetail = (u: {
+    qty?: number;
+    packingUnitId?: string;
+    unitNumber?: number;
+  }) =>
+    u?.packingUnitId === packingUnitId ||
+    (unitNumber != null && Number(u?.unitNumber) === Number(unitNumber));
+
+  // 1) referenceStats.packUnitsById (por id o # caja)
   try {
     const statsSnap = await getDocs(
-      collection(firestore, RECEPTION_OPS_COL, receptionId, 'referenceStats')
+      collection(firestore, RECEPTION_OPS_COL, reception, 'referenceStats')
     );
+    const refs: string[] = [];
+    let qty = 0;
     for (const d of statsSnap.docs) {
       const packUnitsById = (d.data() as {
-        packUnitsById?: Record<string, { qty?: number; packingUnitId?: string }>;
+        packUnitsById?: Record<
+          string,
+          { qty?: number; packingUnitId?: string; unitNumber?: number }
+        >;
         reference?: string;
       }).packUnitsById;
       if (!packUnitsById || typeof packUnitsById !== 'object') continue;
       const detail =
-        packUnitsById[packingUnitFirestoreId] ||
-        Object.values(packUnitsById).find((u) => u?.packingUnitId === packingUnitFirestoreId);
+        packUnitsById[packingUnitId] || Object.values(packUnitsById).find(matchPackDetail);
       if (!detail) continue;
       const q = Math.max(0, Number(detail.qty) || 0);
       if (q <= 0) continue;
@@ -388,35 +478,94 @@ async function resolveReceptionBoxQty(
       const ref = String(d.data().reference || d.id || '').trim();
       if (ref) refs.push(ref);
     }
+    if (qty > 0) return { qty, refs, packingUnitId };
   } catch (err) {
     console.warn('resolveReceptionBoxQty stats:', err);
   }
 
-  if (qty > 0) return { qty, refs };
-
-  // Fallback: sumar escaneos de la caja
+  // 2) Escaneos de la caja (misma regla de qty que recepción)
   try {
     const itemsSnap = await getDocs(
-      query(
-        collection(firestore, 'scannedItems'),
-        where('packing_unit_id', '==', packingUnitFirestoreId),
-        limit(500)
-      )
+      query(collection(firestore, 'scannedItems'), where('packing_unit_id', '==', packingUnitId))
     );
-    const refQty = new Map<string, number>();
-    for (const d of itemsSnap.docs) {
-      const data = d.data() as { quantity?: number; reference?: string };
-      const q = Math.max(0, Number(data.quantity) || 0);
-      qty += q;
-      const ref = String(data.reference || '').trim();
-      if (ref) refQty.set(ref, (refQty.get(ref) || 0) + q);
+    if (!itemsSnap.empty) {
+      const refQty = new Map<string, number>();
+      let qty = 0;
+      for (const d of itemsSnap.docs) {
+        const data = d.data() as { quantity?: number; reference?: string };
+        const q = receptionScanQty(data.quantity);
+        qty += q;
+        const ref = String(data.reference || '').trim();
+        if (ref) refQty.set(ref, (refQty.get(ref) || 0) + q);
+      }
+      if (qty > 0) {
+        const sorted = Array.from(refQty.entries()).sort((a, b) => b[1] - a[1]);
+        return { qty, refs: sorted.map(([r]) => r), packingUnitId };
+      }
     }
-    const sorted = Array.from(refQty.entries()).sort((a, b) => b[1] - a[1]);
-    return { qty, refs: sorted.map(([r]) => r) };
   } catch (err) {
     console.warn('resolveReceptionBoxQty scannedItems:', err);
   }
-  return { qty: 0, refs: [] };
+
+  // 3) Plan de etiquetado (cajas ya etiquetadas / prep) — dedupe por ref
+  try {
+    const labSnap = await getDocs(
+      query(
+        collection(firestore, LABELING_OPS_COL),
+        where('receptionOperationId', '==', reception),
+        limit(80)
+      )
+    );
+    const byRef = new Map<string, number>();
+    for (const lab of labSnap.docs) {
+      const op = lab.data() as LabelingOperation;
+      const plan = op.labelingPackPlan;
+      if (!Array.isArray(plan)) continue;
+      const hit = plan.find(matchPackDetail);
+      if (!hit) continue;
+      const q = Math.max(0, Number(hit.qty) || 0);
+      if (q <= 0) continue;
+      const ref = String(op.reference || '').trim() || lab.id;
+      byRef.set(ref, Math.max(byRef.get(ref) || 0, q));
+    }
+    if (byRef.size > 0) {
+      const qty = Array.from(byRef.values()).reduce((a, b) => a + b, 0);
+      if (qty > 0) {
+        const refs = Array.from(byRef.entries())
+          .sort((a, b) => b[1] - a[1])
+          .map(([r]) => r);
+        return { qty, refs, packingUnitId };
+      }
+    }
+  } catch (err) {
+    console.warn('resolveReceptionBoxQty labelingPlan:', err);
+  }
+
+  // 4) Items embebidos en el doc packingUnits (legado)
+  try {
+    const unitSnap = await getDoc(doc(firestore, PACKING_UNITS_COL, packingUnitId));
+    if (unitSnap.exists()) {
+      const unit = unitSnap.data() as PackingUnit;
+      const items =
+        unit.items && typeof unit.items === 'object' ? Object.values(unit.items) : [];
+      const refQty = new Map<string, number>();
+      let qty = 0;
+      for (const row of items) {
+        const q = Math.max(0, Number(row?.packedQuantity) || 0);
+        qty += q;
+        const ref = String(row?.item?.referencia || '').trim();
+        if (ref) refQty.set(ref, (refQty.get(ref) || 0) + q);
+      }
+      if (qty > 0) {
+        const sorted = Array.from(refQty.entries()).sort((a, b) => b[1] - a[1]);
+        return { qty, refs: sorted.map(([r]) => r), packingUnitId };
+      }
+    }
+  } catch (err) {
+    console.warn('resolveReceptionBoxQty packingUnit.items:', err);
+  }
+
+  return { qty: 0, refs: [], packingUnitId };
 }
 
 /**
@@ -502,13 +651,13 @@ async function lookupReceptionBoxForTallado(
     /* ignore */
   }
 
-  const fromStats = await resolveReceptionBoxQty(receptionId, d.id);
+  const fromStats = await resolveReceptionBoxQty(receptionId, d.id, { unitNumber });
 
   return {
     success: true,
     data: packingUnitToReceptionLookup(scanCode, {
       unit,
-      packingUnitFirestoreId: d.id,
+      packingUnitFirestoreId: fromStats.packingUnitId || d.id,
       rkIdentifier,
       yaEtiquetada,
       cantidadOverride: fromStats.qty > 0 ? fromStats.qty : undefined,
@@ -982,6 +1131,42 @@ export async function confirmTalladoUnitFromLookup(input: {
       source
     );
 
+    let cantidad = Math.max(0, Number(input.lookup.cantidad) || 0);
+    let referencia = input.lookup.referencia;
+    let numeroTF = input.lookup.numeroTF;
+    let packingUnitId = input.lookup.packingUnitId;
+    let codigoAlterno = input.lookup.codigoAlterno;
+    const receptionOperationId = input.lookup.receptionOperationId;
+
+    // Re-resuelve qty en servidor si el lookup llegó en 0 (stats incompletos / ID hint).
+    if (
+      source === 'recepcion' &&
+      receptionOperationId &&
+      cantidad <= 0
+    ) {
+      const resolved = await resolveReceptionBoxQty(
+        receptionOperationId,
+        String(packingUnitId || codigoAlterno || '').trim(),
+        {
+          unitNumber:
+            input.lookup.unitNumber != null
+              ? Number(input.lookup.unitNumber)
+              : Number(scanCode) || undefined,
+        }
+      );
+      if (resolved.qty > 0) {
+        cantidad = resolved.qty;
+        if (resolved.refs.length) {
+          referencia = resolved.refs.join(', ');
+          numeroTF = resolved.refs[0] || numeroTF;
+        }
+        if (resolved.packingUnitId) {
+          packingUnitId = resolved.packingUnitId;
+          codigoAlterno = resolved.packingUnitId;
+        }
+      }
+    }
+
     const now = new Date().toISOString();
     const ref = doc(collection(firestore, UNITS_COL));
     const row: TalladoUnit = {
@@ -990,16 +1175,16 @@ export async function confirmTalladoUnitFromLookup(input: {
       grupo: input.grupo,
       scanCode,
       transferIds: input.lookup.transferIds || [],
-      numeroTF: input.lookup.numeroTF,
-      codigoAlterno: input.lookup.codigoAlterno,
+      numeroTF,
+      codigoAlterno,
       bodegaDestino: input.lookup.bodegaDestino || DEFAULT_DESTINO_SIN_REMISION,
       bodegaOrigen: input.lookup.bodegaOrigen,
       marca: input.lookup.marca,
       grupoMercancia: input.lookup.grupoMercancia,
       source,
-      referencia: input.lookup.referencia,
+      referencia,
       talla: input.lookup.talla,
-      cantidad: Math.max(0, Number(input.lookup.cantidad) || 0),
+      cantidad,
       startedAt: now,
       endedAt: now,
       durationMs: 0,
@@ -1008,8 +1193,8 @@ export async function confirmTalladoUnitFromLookup(input: {
       userName: input.userName || 'Operario',
       status: 'done',
       unitNumber: input.lookup.unitNumber,
-      packingUnitId: input.lookup.packingUnitId,
-      receptionOperationId: input.lookup.receptionOperationId,
+      packingUnitId,
+      receptionOperationId,
       rkIdentifier: input.lookup.rkIdentifier,
       yaEtiquetada: input.lookup.yaEtiquetada,
       etiquetadoModo,
@@ -1076,23 +1261,35 @@ export async function repairTalladoUnitReceptionQty(unitId: string): Promise<{
     if (!snap.exists()) return { success: false, error: 'La unidad no existe.' };
     const unit = { id: snap.id, ...snap.data() } as TalladoUnit;
     const receptionId = String(unit.receptionOperationId || '').trim();
-    const packingUnitId = String(unit.packingUnitId || unit.codigoAlterno || '').trim();
-    if (!receptionId || !packingUnitId) {
+    const packingUnitHint = String(unit.packingUnitId || unit.codigoAlterno || '').trim();
+    const unitNumber =
+      unit.unitNumber != null && Number.isFinite(Number(unit.unitNumber))
+        ? Number(unit.unitNumber)
+        : Number(unit.scanCode) || undefined;
+    if (!receptionId || (!packingUnitHint && !(unitNumber && unitNumber >= 1))) {
       return { success: false, error: 'Esta unidad no es de cruce recepción (falta RK/caja).' };
     }
-    const resolved = await resolveReceptionBoxQty(receptionId, packingUnitId);
+    const resolved = await resolveReceptionBoxQty(receptionId, packingUnitHint, { unitNumber });
     if (resolved.qty <= 0) {
       return {
         success: false,
-        error: 'No se encontró cantidad en recepción para esa caja (packUnitsById / escaneos).',
+        error:
+          'No se encontró cantidad en recepción para esa caja (packUnitsById / escaneos / plan etiquetado).',
       };
     }
     const referencia = resolved.refs.length ? resolved.refs.join(', ') : unit.referencia;
     const numeroTF = resolved.refs[0] || unit.numeroTF;
+    const packingUnitId = resolved.packingUnitId || packingUnitHint || unit.packingUnitId;
     await updateDoc(ref, {
       cantidad: resolved.qty,
       ...(referencia ? { referencia } : {}),
       ...(numeroTF ? { numeroTF } : {}),
+      ...(packingUnitId
+        ? { packingUnitId, codigoAlterno: packingUnitId }
+        : {}),
+      ...(unitNumber != null && Number.isFinite(unitNumber) && !unit.unitNumber
+        ? { unitNumber }
+        : {}),
     });
     return {
       success: true,
@@ -1101,6 +1298,9 @@ export async function repairTalladoUnitReceptionQty(unitId: string): Promise<{
         cantidad: resolved.qty,
         referencia: referencia || unit.referencia,
         numeroTF: numeroTF || unit.numeroTF,
+        packingUnitId: packingUnitId || unit.packingUnitId,
+        codigoAlterno: packingUnitId || unit.codigoAlterno,
+        unitNumber: unit.unitNumber ?? unitNumber,
       },
     };
   } catch (error: any) {
