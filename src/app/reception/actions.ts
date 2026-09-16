@@ -1330,6 +1330,20 @@ export async function recordPackUnitDetailOnClose(
     }
     if (ops > 0) await batch.commit();
 
+    // Snapshot en la caja: Tallado/otros módulos leen qty real sin depender solo de stats.
+    const closedQty = Array.from(byRef.values()).reduce((s, a) => s + (Number(a.qty) || 0), 0);
+    const closedRefs = Array.from(byRef.entries())
+      .sort((a, b) => b[1].qty - a[1].qty)
+      .map(([ref]) => ref);
+    await updateDoc(
+      unitRef,
+      stripUndefinedDeep({
+        closedQty,
+        closedRefs,
+        closedSummaryUpdatedAt: now,
+      }) as Record<string, unknown>
+    );
+
     return { success: true, refsUpdated };
   } catch (e: any) {
     console.error('recordPackUnitDetailOnClose:', e);
@@ -1454,6 +1468,42 @@ export async function rebuildReceptionPackSummaries(receptionId: string): Promis
       }
     }
     if (ops > 0) await batch.commit();
+
+    // También snapshot closedQty por caja (para Tallado / cajas ya cerradas).
+    const qtyByUnit = new Map<string, { qty: number; refs: Map<string, number> }>();
+    for (const [ref, packUnitsById] of byRef.entries()) {
+      for (const [unitId, detail] of Object.entries(packUnitsById)) {
+        const prev = qtyByUnit.get(unitId) || { qty: 0, refs: new Map<string, number>() };
+        const q = Math.max(0, Number(detail.qty) || 0);
+        prev.qty += q;
+        prev.refs.set(ref, (prev.refs.get(ref) || 0) + q);
+        qtyByUnit.set(unitId, prev);
+      }
+    }
+    let unitOps = 0;
+    let unitBatch = writeBatch(firestore);
+    for (const [unitId, acc] of qtyByUnit.entries()) {
+      if (acc.qty <= 0) continue;
+      const closedRefs = Array.from(acc.refs.entries())
+        .sort((a, b) => b[1] - a[1])
+        .map(([r]) => r);
+      unitBatch.set(
+        doc(firestore, 'packingUnits', unitId),
+        stripUndefinedDeep({
+          closedQty: acc.qty,
+          closedRefs,
+          closedSummaryUpdatedAt: now,
+        }),
+        { merge: true }
+      );
+      unitOps += 1;
+      if (unitOps >= 400) {
+        await unitBatch.commit();
+        unitBatch = writeBatch(firestore);
+        unitOps = 0;
+      }
+    }
+    if (unitOps > 0) await unitBatch.commit();
 
     return {
       success: true,

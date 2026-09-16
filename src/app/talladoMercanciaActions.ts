@@ -12,6 +12,7 @@ import {
   orderBy,
   query,
   setDoc,
+  startAfter,
   updateDoc,
   where,
 } from 'firebase/firestore';
@@ -435,13 +436,9 @@ async function resolvePackingUnitIdForTallado(
 }
 
 /**
- * Qty + refs de una caja: packUnitsById → escaneos → plan etiquetado → items embebidos.
- * No escribe ni modifica recepción.
- */
-/**
- * Qty + refs de una caja: escaneos (fuente de verdad) → packUnitsById → plan → items.
+ * Qty + refs de una caja: closedQty → escaneos → packUnitsById → plan → items.
  * Solo cuenta esa packingUnit (Firestore ID); no mezcla otras cajas por #.
- * No escribe ni modifica recepción.
+ * No escribe ni modifica recepción (salvo leer).
  */
 async function resolveReceptionBoxQty(
   receptionId: string,
@@ -457,6 +454,29 @@ async function resolveReceptionBoxQty(
   const packingUnitId = resolvedUnit?.packingUnitId || String(packingUnitFirestoreId || '').trim();
 
   if (!reception || !packingUnitId) return { qty: 0, refs: [] };
+
+  // 0) Snapshot al cerrar caja (closedQty / closedRefs) — fuente estable post-cierre
+  try {
+    const unitSnap = await getDoc(doc(firestore, PACKING_UNITS_COL, packingUnitId));
+    if (unitSnap.exists()) {
+      const unit = unitSnap.data() as PackingUnit & {
+        closedQty?: number;
+        closedRefs?: string[];
+      };
+      if (unit.reception_id && String(unit.reception_id) !== reception) {
+        return { qty: 0, refs: [], packingUnitId };
+      }
+      const closedQty = Math.max(0, Number(unit.closedQty) || 0);
+      if (closedQty > 0) {
+        const refs = Array.isArray(unit.closedRefs)
+          ? unit.closedRefs.map((r) => String(r || '').trim()).filter(Boolean)
+          : [];
+        return { qty: closedQty, refs, packingUnitId };
+      }
+    }
+  } catch (err) {
+    console.warn('resolveReceptionBoxQty closedQty:', err);
+  }
 
   // 1) Escaneos reales de ESTA caja (misma regla de qty que recepción)
   try {
@@ -1646,8 +1666,9 @@ async function fetchTalladoShiftsByIds(ids: string[]): Promise<TalladoShift[]> {
 }
 
 /**
- * Carga turnos/unidades/pausas del día por rango Bogotá (no “últimos N globales”).
- * Evita que días anteriores queden vacíos cuando hoy/ayer llenan el limit.
+ * Carga turnos/unidades/pausas del día.
+ * 1) Rango ISO Bogotá (rápido).
+ * 2) Si vacío o falla: pagina por startedAt desc hasta pasar el día (cubre histórico).
  */
 async function loadTalladoCollectionsForDay(dayKey: string): Promise<{
   shifts: TalladoShift[];
@@ -1658,60 +1679,190 @@ async function loadTalladoCollectionsForDay(dayKey: string): Promise<{
   const startIso = new Date(startMs).toISOString();
   const endIso = new Date(endMs).toISOString();
 
-  const emptySnap = { docs: [] as { id: string; data: () => Record<string, unknown> }[] };
+  const toMs = (value: unknown): number => {
+    if (!value) return NaN;
+    if (typeof value === 'string' || typeof value === 'number') {
+      const t = new Date(value).getTime();
+      return Number.isFinite(t) ? t : NaN;
+    }
+    if (value instanceof Date) return value.getTime();
+    if (typeof (value as { toDate?: () => Date }).toDate === 'function') {
+      try {
+        return (value as { toDate: () => Date }).toDate().getTime();
+      } catch {
+        return NaN;
+      }
+    }
+    return NaN;
+  };
 
-  const [shiftsByStart, shiftsByDayKey, unitsByStart, unitsByEnd, pausesSnap] = await Promise.all([
-    getDocs(
-      query(
-        collection(firestore, SHIFTS_COL),
-        where('startedAt', '>=', startIso),
-        where('startedAt', '<=', endIso),
-        limit(500)
-      )
-    ),
-    getDocs(
-      query(collection(firestore, SHIFTS_COL), where('dayKey', '==', dayKey), limit(500))
-    ).catch(() => emptySnap as Awaited<ReturnType<typeof getDocs>>),
-    getDocs(
-      query(
-        collection(firestore, UNITS_COL),
-        where('startedAt', '>=', startIso),
-        where('startedAt', '<=', endIso),
-        limit(3000)
-      )
-    ),
-    getDocs(
-      query(
-        collection(firestore, UNITS_COL),
-        where('endedAt', '>=', startIso),
-        where('endedAt', '<=', endIso),
-        limit(1500)
-      )
-    ).catch(() => emptySnap as Awaited<ReturnType<typeof getDocs>>),
-    getDocs(
-      query(
-        collection(firestore, PAUSES_COL),
-        where('pausedAt', '>=', startIso),
-        where('pausedAt', '<=', endIso),
-        limit(1500)
-      )
-    ),
-  ]);
+  const inDay = (iso: unknown) => {
+    const ms = toMs(iso);
+    return Number.isFinite(ms) && ms >= startMs && ms <= endMs;
+  };
 
+  // --- Fast path: queries por rango ---
+  try {
+    const [shiftsByStart, shiftsByDayKey, unitsByStart, unitsByEnd, pausesSnap] = await Promise.all([
+      getDocs(
+        query(
+          collection(firestore, SHIFTS_COL),
+          where('startedAt', '>=', startIso),
+          where('startedAt', '<=', endIso),
+          limit(500)
+        )
+      ),
+      getDocs(
+        query(collection(firestore, SHIFTS_COL), where('dayKey', '==', dayKey), limit(500))
+      ).catch(() => null),
+      getDocs(
+        query(
+          collection(firestore, UNITS_COL),
+          where('startedAt', '>=', startIso),
+          where('startedAt', '<=', endIso),
+          limit(3000)
+        )
+      ),
+      getDocs(
+        query(
+          collection(firestore, UNITS_COL),
+          where('endedAt', '>=', startIso),
+          where('endedAt', '<=', endIso),
+          limit(1500)
+        )
+      ).catch(() => null),
+      getDocs(
+        query(
+          collection(firestore, PAUSES_COL),
+          where('pausedAt', '>=', startIso),
+          where('pausedAt', '<=', endIso),
+          limit(1500)
+        )
+      ),
+    ]);
+
+    const shiftMap = new Map<string, TalladoShift>();
+    for (const d of shiftsByStart.docs) {
+      shiftMap.set(d.id, { id: d.id, ...d.data() } as TalladoShift);
+    }
+    if (shiftsByDayKey) {
+      for (const d of shiftsByDayKey.docs) {
+        shiftMap.set(d.id, { id: d.id, ...d.data() } as TalladoShift);
+      }
+    }
+    const unitMap = new Map<string, TalladoUnit>();
+    for (const d of unitsByStart.docs) {
+      unitMap.set(d.id, { id: d.id, ...d.data() } as TalladoUnit);
+    }
+    if (unitsByEnd) {
+      for (const d of unitsByEnd.docs) {
+        unitMap.set(d.id, { id: d.id, ...d.data() } as TalladoUnit);
+      }
+    }
+    const pauses = pausesSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoPause));
+
+    if (unitMap.size > 0 || shiftMap.size > 0) {
+      return {
+        shifts: Array.from(shiftMap.values()),
+        units: Array.from(unitMap.values()),
+        pauses,
+      };
+    }
+  } catch (err) {
+    console.warn('loadTalladoCollectionsForDay range failed, paging:', err);
+  }
+
+  // --- Fallback: paginar hacia atrás en el tiempo hasta pasar el día ---
   const shiftMap = new Map<string, TalladoShift>();
-  for (const d of [...shiftsByStart.docs, ...shiftsByDayKey.docs]) {
-    shiftMap.set(d.id, { id: d.id, ...d.data() } as TalladoShift);
-  }
   const unitMap = new Map<string, TalladoUnit>();
-  for (const d of [...unitsByStart.docs, ...unitsByEnd.docs]) {
-    unitMap.set(d.id, { id: d.id, ...d.data() } as TalladoUnit);
-  }
-  const pauses = pausesSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoPause));
+  const pauseMap = new Map<string, TalladoPause>();
+
+  const pageUnits = async () => {
+    let cursor: Awaited<ReturnType<typeof getDocs>>['docs'][number] | null = null;
+    for (let page = 0; page < 50; page++) {
+      const q = cursor
+        ? query(
+            collection(firestore, UNITS_COL),
+            orderBy('startedAt', 'desc'),
+            startAfter(cursor),
+            limit(400)
+          )
+        : query(collection(firestore, UNITS_COL), orderBy('startedAt', 'desc'), limit(400));
+      const snap = await getDocs(q);
+      if (snap.empty) break;
+      for (const d of snap.docs) {
+        const u = { id: d.id, ...d.data() } as TalladoUnit;
+        if (
+          isTalladoSameLocalDay(u.startedAt, dayKey) ||
+          isTalladoSameLocalDay(u.endedAt, dayKey) ||
+          inDay(u.startedAt) ||
+          inDay(u.endedAt)
+        ) {
+          unitMap.set(d.id, u);
+        }
+      }
+      cursor = snap.docs[snap.docs.length - 1];
+      const oldestMs = toMs((cursor.data() as TalladoUnit).startedAt);
+      if (Number.isFinite(oldestMs) && oldestMs < startMs) break;
+    }
+  };
+
+  const pageShifts = async () => {
+    let cursor: Awaited<ReturnType<typeof getDocs>>['docs'][number] | null = null;
+    for (let page = 0; page < 30; page++) {
+      const q = cursor
+        ? query(
+            collection(firestore, SHIFTS_COL),
+            orderBy('startedAt', 'desc'),
+            startAfter(cursor),
+            limit(200)
+          )
+        : query(collection(firestore, SHIFTS_COL), orderBy('startedAt', 'desc'), limit(200));
+      const snap = await getDocs(q);
+      if (snap.empty) break;
+      for (const d of snap.docs) {
+        const s = { id: d.id, ...d.data() } as TalladoShift;
+        if (shiftBelongsToDay(s, dayKey) || isTalladoSameLocalDay(s.startedAt, dayKey) || inDay(s.startedAt)) {
+          shiftMap.set(d.id, s);
+        }
+      }
+      cursor = snap.docs[snap.docs.length - 1];
+      const oldestMs = toMs((cursor.data() as TalladoShift).startedAt);
+      if (Number.isFinite(oldestMs) && oldestMs < startMs) break;
+    }
+  };
+
+  const pagePauses = async () => {
+    let cursor: Awaited<ReturnType<typeof getDocs>>['docs'][number] | null = null;
+    for (let page = 0; page < 30; page++) {
+      const q = cursor
+        ? query(
+            collection(firestore, PAUSES_COL),
+            orderBy('pausedAt', 'desc'),
+            startAfter(cursor),
+            limit(300)
+          )
+        : query(collection(firestore, PAUSES_COL), orderBy('pausedAt', 'desc'), limit(300));
+      const snap = await getDocs(q);
+      if (snap.empty) break;
+      for (const d of snap.docs) {
+        const p = { id: d.id, ...d.data() } as TalladoPause;
+        if (isTalladoSameLocalDay(p.pausedAt, dayKey) || inDay(p.pausedAt)) {
+          pauseMap.set(d.id, p);
+        }
+      }
+      cursor = snap.docs[snap.docs.length - 1];
+      const oldestMs = toMs((cursor.data() as TalladoPause).pausedAt);
+      if (Number.isFinite(oldestMs) && oldestMs < startMs) break;
+    }
+  };
+
+  await Promise.all([pageUnits(), pageShifts(), pagePauses()]);
 
   return {
     shifts: Array.from(shiftMap.values()),
     units: Array.from(unitMap.values()),
-    pauses,
+    pauses: Array.from(pauseMap.values()),
   };
 }
 
@@ -1728,18 +1879,6 @@ export async function listTalladoDashboard(opts?: {
     const dayKey = opts?.dayKey || talladoLocalDayKey();
 
     let { shifts, units, pauses } = await loadTalladoCollectionsForDay(dayKey);
-
-    // Defensa: si el rango no trajo nada (datos legacy / ISO raro), fallback a recientes + filtro.
-    if (units.length === 0 && shifts.length === 0) {
-      const [shiftsSnap, unitsSnap, pausesSnap] = await Promise.all([
-        getDocs(query(collection(firestore, SHIFTS_COL), orderBy('startedAt', 'desc'), limit(500))),
-        getDocs(query(collection(firestore, UNITS_COL), orderBy('startedAt', 'desc'), limit(1500))),
-        getDocs(query(collection(firestore, PAUSES_COL), orderBy('pausedAt', 'desc'), limit(800))),
-      ]);
-      shifts = shiftsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoShift));
-      units = unitsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoUnit));
-      pauses = pausesSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoPause));
-    }
 
     units = units.filter(
       (u) => isTalladoSameLocalDay(u.startedAt, dayKey) || isTalladoSameLocalDay(u.endedAt, dayKey)

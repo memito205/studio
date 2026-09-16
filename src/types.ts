@@ -993,6 +993,10 @@ export interface PackingUnit {
     createdByName?: string | null;
     destination?: string;
     reception_id?: string; // Add this if units can be linked to receptions
+    /** Snapshot al cerrar: suma de escaneos de la caja (para Tallado / reportes). */
+    closedQty?: number;
+    closedRefs?: string[];
+    closedSummaryUpdatedAt?: string;
 }
 
 // NEW TYPE FOR THE RE-ARCHITECTURE
