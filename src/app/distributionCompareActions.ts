@@ -1019,9 +1019,43 @@ export async function listRemainderAssignmentBoard(limitN = 300): Promise<{
   }
 }
 
+/** Estados que cuentan como “trabajo abierto” (aún no envió devolución / no validada). */
+const OPEN_REMAINDER_STATUSES: DistributionRemainderTaskStatus[] = ['assigned', 'rejected'];
+
+async function findOpenRemainderTasksForOperator(
+  operatorId: string,
+  opts?: { excludeTaskId?: string }
+): Promise<DistributionRemainderTask[]> {
+  if (!operatorId) return [];
+  const snap = await getDocs(
+    query(
+      collection(firestore, TASKS_COL),
+      where('assignedOperatorId', '==', operatorId),
+      limit(100)
+    )
+  );
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() } as DistributionRemainderTask))
+    .filter((t) => {
+      if (opts?.excludeTaskId && t.id === opts.excludeTaskId) return false;
+      return OPEN_REMAINDER_STATUSES.includes(t.status);
+    })
+    .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+}
+
+function formatOpenRemainderBlockMessage(open: DistributionRemainderTask[]): string {
+  const first = open[0];
+  const label = first
+    ? `${first.reference}${first.rkIdentifier ? ` · RK ${first.rkIdentifier}` : ''}`
+    : 'una referencia';
+  const extra = open.length > 1 ? ` (+${open.length - 1} más)` : '';
+  return `Ya tiene abierta ${label}${extra}. Debe enviar la devolución o cerrarla antes de tomar/asignar otra (una a la vez).`;
+}
+
 /**
  * Operario toma una referencia sin asignar (self-claim).
  * No roba tareas ya asignadas a otro.
+ * No permite una segunda referencia abierta (assigned/rejected) a la vez.
  */
 export async function claimDistributionRemainder(input: {
   compareId: string;
@@ -1067,6 +1101,11 @@ export async function claimDistributionRemainder(input: {
         success: false,
         error: `Ya está asignada a ${existing.assignedOperatorName || 'otro operario'}.`,
       };
+    }
+
+    const openBlock = await findOpenRemainderTasksForOperator(input.operatorId);
+    if (openBlock.length > 0) {
+      return { success: false, error: formatOpenRemainderBlockMessage(openBlock) };
     }
 
     const loc = await resolveReceptionLocationForReference(
@@ -1163,6 +1202,9 @@ export async function assignDistributionRemainders(input: {
     let updated = 0;
     const resolvedNameByUid = new Map<string, string>();
     const assignedByName = await resolveUserDisplayName(input.assignedBy, input.assignedByName);
+    /** Operarios que ya recibieron una ref nueva/distinta en este lote. */
+    const assignedInThisBatch = new Set<string>();
+    const openCache = new Map<string, DistributionRemainderTask[]>();
 
     for (const a of assignments) {
       const line = lineByRef.get(a.reference);
@@ -1171,6 +1213,38 @@ export async function assignDistributionRemainders(input: {
       const prev = existingByRef.get(a.reference);
       if (prev && (prev.data.status === 'submitted' || prev.data.status === 'validated')) {
         continue;
+      }
+
+      // Misma ref que ya tiene este operario abierta → solo refrescar datos, no es “otra”.
+      const isSameOpenForOperator =
+        !!prev &&
+        prev.data.assignedOperatorId === a.operatorId &&
+        OPEN_REMAINDER_STATUSES.includes(prev.data.status);
+
+      if (!isSameOpenForOperator) {
+        if (assignedInThisBatch.has(a.operatorId)) {
+          return {
+            success: false,
+            error: `No se puede asignar más de una referencia a la vez al mismo operario en este lote (${a.operatorName || a.operatorId}).`,
+          };
+        }
+        let open = openCache.get(a.operatorId);
+        if (!open) {
+          open = await findOpenRemainderTasksForOperator(a.operatorId, {
+            excludeTaskId: prev?.id,
+          });
+          openCache.set(a.operatorId, open);
+        } else if (prev?.id) {
+          open = open.filter((t) => t.id !== prev.id);
+        }
+        // Si se reasigna la tarea abierta de otro operario a este, excludeTaskId ya la quita.
+        // Si el operario tiene OTRA abierta distinta, bloquear.
+        if (open.length > 0) {
+          return {
+            success: false,
+            error: formatOpenRemainderBlockMessage(open),
+          };
+        }
       }
 
       let operatorName = resolvedNameByUid.get(a.operatorId);
@@ -1231,6 +1305,25 @@ export async function assignDistributionRemainders(input: {
         };
         await setDoc(ref, stripUndefinedDeep(payload));
         created += 1;
+      }
+
+      if (!isSameOpenForOperator) {
+        assignedInThisBatch.add(a.operatorId);
+        openCache.set(a.operatorId, [
+          {
+            id: prev?.id || 'batch',
+            compareId: input.compareId,
+            reference: a.reference,
+            rkIdentifier: compare.rkIdentifier,
+            expectedRemainderQty: line.remainderQty,
+            status: 'assigned',
+            assignedOperatorId: a.operatorId,
+            assignedOperatorName: operatorName,
+            assignedAt: now,
+            createdAt: now,
+            updatedAt: now,
+          } as DistributionRemainderTask,
+        ]);
       }
     }
 
