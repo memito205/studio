@@ -195,24 +195,29 @@ export function filterTalladoBundleToDay(
   pauses: TalladoPause[]
 ): { shifts: TalladoShift[]; units: TalladoUnit[]; pauses: TalladoPause[]; dayKey: string } {
   // Unidades del día por startedAt/endedAt (Bogotá), aunque el turno sea multi-día o sin dayKey.
+  // Soft-deleted se excluyen de listas normales (siguen en Firestore + talladoUnitDeletes).
   const dayUnits = units.filter(
-    (u) => isTalladoSameLocalDay(u.startedAt, dayKey) || isTalladoSameLocalDay(u.endedAt, dayKey)
+    (u) =>
+      !u.deletedAt &&
+      (isTalladoSameLocalDay(u.startedAt, dayKey) || isTalladoSameLocalDay(u.endedAt, dayKey))
   );
   const unitShiftIds = new Set(dayUnits.map((u) => u.shiftId).filter(Boolean) as string[]);
 
   const dayShifts = shifts.filter(
     (s) =>
-      (s.dayKey ? s.dayKey === dayKey : isTalladoSameLocalDay(s.startedAt, dayKey)) ||
-      isTalladoSameLocalDay(s.startedAt, dayKey) ||
-      unitShiftIds.has(s.id)
+      !s.deletedAt &&
+      ((s.dayKey ? s.dayKey === dayKey : isTalladoSameLocalDay(s.startedAt, dayKey)) ||
+        isTalladoSameLocalDay(s.startedAt, dayKey) ||
+        unitShiftIds.has(s.id))
   );
   const shiftIds = new Set(dayShifts.map((s) => s.id));
 
   const dayPauses = pauses.filter(
     (p) =>
-      (p.shiftId && shiftIds.has(p.shiftId) && isTalladoSameLocalDay(p.pausedAt, dayKey)) ||
-      isTalladoSameLocalDay(p.pausedAt, dayKey) ||
-      (p.status === 'open' && p.shiftId && shiftIds.has(p.shiftId))
+      !p.deletedAt &&
+      ((p.shiftId && shiftIds.has(p.shiftId) && isTalladoSameLocalDay(p.pausedAt, dayKey)) ||
+        isTalladoSameLocalDay(p.pausedAt, dayKey) ||
+        (p.status === 'open' && p.shiftId && shiftIds.has(p.shiftId)))
   );
 
   return { dayKey, shifts: dayShifts, units: dayUnits, pauses: dayPauses };

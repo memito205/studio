@@ -37,6 +37,8 @@ import { resolveTalladoEtiquetadoModo } from '@/lib/talladoEtiquetado';
 const SHIFTS_COL = 'talladoShifts';
 const UNITS_COL = 'talladoUnits';
 const PAUSES_COL = 'talladoPauses';
+const UNIT_DELETES_COL = 'talladoUnitDeletes';
+const SHIFT_DELETES_COL = 'talladoShiftDeletes';
 const TRANSFERS_COL = 'transfers';
 const CATALOG_COL = 'talladoCatalog';
 const PACKING_UNITS_COL = 'packingUnits';
@@ -46,6 +48,106 @@ const RECEPTION_OPS_COL = 'receptionOperations';
 const DEFAULT_DESTINO_SIN_REMISION = 'MERCANCIA SIN REMISIONAR';
 /** # caja recepción: solo dígitos cortos (no confundir con TF largos). */
 const RECEPTION_BOX_NUMBER_RE = /^\d{1,4}$/;
+
+type TalladoDeleteActor = {
+  deletedBy?: string;
+  deletedByEmail?: string;
+  deletedByName?: string;
+  reason?: string;
+};
+
+type TalladoDeleteSource =
+  | 'admin_delete'
+  | 'admin_delete_shift'
+  | 'cleanup_duplicates'
+  | 'finish_dup_cleanup';
+
+function isTalladoSoftDeleted(doc: { deletedAt?: string | null }): boolean {
+  return !!doc?.deletedAt;
+}
+
+function filterActiveTalladoUnits(units: TalladoUnit[]): TalladoUnit[] {
+  return units.filter((u) => !isTalladoSoftDeleted(u));
+}
+
+function filterActiveTalladoShifts(shifts: TalladoShift[]): TalladoShift[] {
+  return shifts.filter((s) => !isTalladoSoftDeleted(s));
+}
+
+function filterActiveTalladoPauses(pauses: TalladoPause[]): TalladoPause[] {
+  return pauses.filter((p) => !isTalladoSoftDeleted(p));
+}
+
+/**
+ * Archiva snapshot completo y soft-marca la unidad.
+ * NUNCA hard-deleteDoc: el archivo se escribe ANTES del soft-mark.
+ */
+async function archiveAndSoftDeleteUnit(
+  unit: TalladoUnit,
+  meta: TalladoDeleteActor & { source: TalladoDeleteSource }
+): Promise<void> {
+  const deletedAt = new Date().toISOString();
+  const archive = stripUndefinedDeep({
+    id: unit.id,
+    snapshot: { ...unit },
+    deletedAt,
+    deletedBy: meta.deletedBy || unit.userId || 'unknown',
+    deletedByEmail: meta.deletedByEmail,
+    deletedByName: meta.deletedByName || unit.userName,
+    reason: meta.reason,
+    source: meta.source,
+  });
+  await setDoc(doc(firestore, UNIT_DELETES_COL, unit.id), archive as any);
+  const softPatch: Record<string, string> = {
+    deletedAt,
+    deletedBy: meta.deletedBy || unit.userId || 'unknown',
+  };
+  if (meta.deletedByEmail) softPatch.deletedByEmail = meta.deletedByEmail;
+  if (meta.deletedByName) softPatch.deletedByName = meta.deletedByName;
+  await updateDoc(doc(firestore, UNITS_COL, unit.id), softPatch);
+}
+
+/**
+ * Archiva turno (+ pausas en el snapshot) y soft-marca.
+ * Las unidades se archivan por separado vía archiveAndSoftDeleteUnit.
+ */
+async function archiveAndSoftDeleteShift(
+  shift: TalladoShift,
+  pauses: TalladoPause[],
+  meta: TalladoDeleteActor & { source: TalladoDeleteSource; unitIds: string[] }
+): Promise<void> {
+  const deletedAt = new Date().toISOString();
+  const archive = stripUndefinedDeep({
+    id: shift.id,
+    snapshot: { ...shift },
+    pauses: pauses.map((p) => ({ ...p })),
+    unitIds: meta.unitIds,
+    deletedAt,
+    deletedBy: meta.deletedBy || shift.userId || 'unknown',
+    deletedByEmail: meta.deletedByEmail,
+    deletedByName: meta.deletedByName || shift.userName,
+    reason: meta.reason,
+    source: meta.source,
+  });
+  await setDoc(doc(firestore, SHIFT_DELETES_COL, shift.id), archive as any);
+  const softPatch: Record<string, string> = {
+    deletedAt,
+    deletedBy: meta.deletedBy || shift.userId || 'unknown',
+    status: 'closed',
+    endedAt: shift.endedAt || deletedAt,
+    closedReason: shift.closedReason || 'admin_delete',
+  };
+  if (meta.deletedByEmail) softPatch.deletedByEmail = meta.deletedByEmail;
+  if (meta.deletedByName) softPatch.deletedByName = meta.deletedByName;
+  await updateDoc(doc(firestore, SHIFTS_COL, shift.id), softPatch);
+  for (const p of pauses) {
+    if (isTalladoSoftDeleted(p)) continue;
+    await updateDoc(doc(firestore, PAUSES_COL, p.id), {
+      deletedAt,
+      deletedBy: meta.deletedBy || shift.userId || 'unknown',
+    });
+  }
+}
 
 function stripUndefinedDeep(value: unknown): unknown {
   if (value === undefined) return undefined;
@@ -101,7 +203,9 @@ async function listInProgressUnits(): Promise<TalladoUnit[]> {
   const snap = await getDocs(
     query(collection(firestore, UNITS_COL), where('status', '==', 'in_progress'), limit(500))
   );
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoUnit));
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() } as TalladoUnit))
+    .filter((u) => !isTalladoSoftDeleted(u));
 }
 
 function talladoCodeVariants(code: string, rawCode?: string): string[] {
@@ -135,7 +239,7 @@ async function findUnitsMatchingCode(scanCode: string): Promise<TalladoUnit[]> {
       }
     }
     return Array.from(found.values())
-      .filter((u) => unitMatchesScanCode(u, code))
+      .filter((u) => !isTalladoSoftDeleted(u) && unitMatchesScanCode(u, code))
       .sort((a, b) =>
         String(b.endedAt || b.startedAt).localeCompare(String(a.endedAt || a.startedAt))
       );
@@ -208,8 +312,11 @@ export async function validateTalladoDay(opts: {
   bounds?: { startIso: string; endIso: string };
   unitsByStartedAt?: number;
   unitsByEndedAt?: number;
+  unitsActive?: number;
+  unitsSoftDeleted?: number;
   shiftsByStartedAt?: number;
   shiftsByDayKey?: number;
+  shiftsSoftDeleted?: number;
   shiftIdsReferenced?: Record<string, number>;
   shiftsFound?: Array<{
     id: string;
@@ -217,6 +324,7 @@ export async function validateTalladoDay(opts: {
     status?: string;
     startedAt?: string;
     dayKey?: string | null;
+    deletedAt?: string | null;
   }>;
   samples?: TalladoDayValidationSample[];
   shiftAudit?: {
@@ -291,7 +399,12 @@ export async function validateTalladoDay(opts: {
     }
 
     const shiftIdsReferenced: Record<string, number> = {};
+    let unitsSoftDeleted = 0;
     for (const u of unitMap.values()) {
+      if (isTalladoSoftDeleted(u)) {
+        unitsSoftDeleted += 1;
+        continue;
+      }
       const sid = u.shiftId || '(sin shiftId)';
       shiftIdsReferenced[sid] = (shiftIdsReferenced[sid] || 0) + 1;
     }
@@ -306,7 +419,13 @@ export async function validateTalladoDay(opts: {
       }
     }
 
-    const samples = Array.from(unitMap.values())
+    let shiftsSoftDeleted = 0;
+    for (const s of shiftMap.values()) {
+      if (isTalladoSoftDeleted(s)) shiftsSoftDeleted += 1;
+    }
+
+    const activeUnits = Array.from(unitMap.values()).filter((u) => !isTalladoSoftDeleted(u));
+    const samples = activeUnits
       .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)))
       .slice(0, 8)
       .map(toSample);
@@ -353,8 +472,11 @@ export async function validateTalladoDay(opts: {
       bounds: { startIso, endIso },
       unitsByStartedAt: unitsStartSnap.size,
       unitsByEndedAt: unitsEndSnap?.size ?? 0,
+      unitsActive: activeUnits.length,
+      unitsSoftDeleted,
       shiftsByStartedAt: shiftsStartSnap.size,
       shiftsByDayKey: shiftsDayKeySnap?.size ?? 0,
+      shiftsSoftDeleted,
       shiftIdsReferenced,
       shiftsFound: Array.from(shiftMap.values()).map((s) => ({
         id: s.id,
@@ -362,6 +484,7 @@ export async function validateTalladoDay(opts: {
         status: s.status,
         startedAt: s.startedAt,
         dayKey: s.dayKey ?? null,
+        deletedAt: s.deletedAt ?? null,
       })),
       samples,
       shiftAudit,
@@ -389,7 +512,9 @@ async function listActiveShifts(): Promise<TalladoShift[]> {
   const snap = await getDocs(
     query(collection(firestore, SHIFTS_COL), where('status', '==', 'active'), limit(200))
   );
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoShift));
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() } as TalladoShift))
+    .filter((s) => !isTalladoSoftDeleted(s));
 }
 
 /** Turno pertenece al día (dayKey explícito o startedAt en Bogotá). */
@@ -1039,13 +1164,18 @@ export async function adminCloseTalladoShift(shiftId: string): Promise<{
 }
 
 /**
- * Admin: elimina el turno y sus unidades/pausas.
+ * Admin: soft-elimina el turno y sus unidades/pausas.
+ * Archiva snapshots en talladoShiftDeletes / talladoUnitDeletes antes de marcar deletedAt.
  * No toca recepción ni transferencias.
  */
-export async function adminDeleteTalladoShift(shiftId: string): Promise<{
+export async function adminDeleteTalladoShift(
+  shiftId: string,
+  actor?: TalladoDeleteActor
+): Promise<{
   success: boolean;
   deletedUnits?: number;
   deletedPauses?: number;
+  archived?: boolean;
   error?: string;
 }> {
   try {
@@ -1053,20 +1183,44 @@ export async function adminDeleteTalladoShift(shiftId: string): Promise<{
     const shiftRef = doc(firestore, SHIFTS_COL, shiftId);
     const snap = await getDoc(shiftRef);
     if (!snap.exists()) return { success: false, error: 'El turno no existe.' };
+    const shift = { id: snap.id, ...snap.data() } as TalladoShift;
+    if (isTalladoSoftDeleted(shift)) {
+      return { success: true, deletedUnits: 0, deletedPauses: 0, archived: true };
+    }
 
     const [unitsSnap, pausesSnap] = await Promise.all([
-      getDocs(query(collection(firestore, UNITS_COL), where('shiftId', '==', shiftId), limit(500))),
-      getDocs(query(collection(firestore, PAUSES_COL), where('shiftId', '==', shiftId), limit(200))),
+      getDocs(query(collection(firestore, UNITS_COL), where('shiftId', '==', shiftId), limit(1000))),
+      getDocs(query(collection(firestore, PAUSES_COL), where('shiftId', '==', shiftId), limit(500))),
     ]);
+    const units = unitsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoUnit));
+    const pauses = pausesSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoPause));
 
-    await Promise.all(unitsSnap.docs.map((d) => deleteDoc(d.ref)));
-    await Promise.all(pausesSnap.docs.map((d) => deleteDoc(d.ref)));
-    await deleteDoc(shiftRef);
+    const meta = {
+      deletedBy: actor?.deletedBy,
+      deletedByEmail: actor?.deletedByEmail,
+      deletedByName: actor?.deletedByName,
+      reason: actor?.reason || 'Eliminación admin de turno',
+      source: 'admin_delete_shift' as const,
+    };
+
+    // Archivar CADA unidad antes de soft-marcar el turno (nunca drop silencioso).
+    let deletedUnits = 0;
+    for (const u of units) {
+      if (isTalladoSoftDeleted(u)) continue;
+      await archiveAndSoftDeleteUnit(u, meta);
+      deletedUnits += 1;
+    }
+
+    await archiveAndSoftDeleteShift(shift, pauses, {
+      ...meta,
+      unitIds: units.map((u) => u.id),
+    });
 
     return {
       success: true,
-      deletedUnits: unitsSnap.size,
-      deletedPauses: pausesSnap.size,
+      deletedUnits,
+      deletedPauses: pauses.filter((p) => !isTalladoSoftDeleted(p)).length,
+      archived: true,
     };
   } catch (error: any) {
     console.error('adminDeleteTalladoShift:', error);
@@ -1267,7 +1421,15 @@ export async function startTalladoShift(input: {
       dayKey: todayKey,
       status: 'active',
     };
-    await setDoc(ref, stripUndefinedDeep(row) as TalladoShift);
+    try {
+      await setDoc(ref, stripUndefinedDeep(row) as TalladoShift);
+    } catch (writeErr: any) {
+      console.error('startTalladoShift write failed:', writeErr);
+      return {
+        success: false,
+        error: writeErr?.message || 'Error al guardar el turno en Firestore. Reintente.',
+      };
+    }
     return { success: true, data: row, rejoined: false };
   } catch (error: any) {
     return { success: false, error: error?.message || 'No se pudo iniciar el turno.' };
@@ -1378,14 +1540,21 @@ export async function listTalladoShiftBundle(shiftId: string): Promise<{
 
     const units = unitsSnap.docs
       .map((d) => ({ id: d.id, ...d.data() } as TalladoUnit))
+      .filter((u) => !isTalladoSoftDeleted(u))
       .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
     const pauses = pausesSnap.docs
       .map((d) => ({ id: d.id, ...d.data() } as TalladoPause))
+      .filter((p) => !isTalladoSoftDeleted(p))
       .sort((a, b) => String(b.pausedAt).localeCompare(String(a.pausedAt)));
+
+    const shiftData = { id: shiftSnap.id, ...shiftSnap.data() } as TalladoShift;
+    if (isTalladoSoftDeleted(shiftData)) {
+      return { success: true, shift: null, units: [], pauses: [] };
+    }
 
     return {
       success: true,
-      shift: { id: shiftSnap.id, ...shiftSnap.data() } as TalladoShift,
+      shift: shiftData,
       units,
       pauses,
     };
@@ -1507,6 +1676,7 @@ export async function confirmTalladoUnitFromLookup(input: {
     }
 
     const now = new Date().toISOString();
+    const dayKey = talladoLocalDayKey(new Date(now));
     const ref = doc(collection(firestore, UNITS_COL));
     const row: TalladoUnit = {
       id: ref.id,
@@ -1526,6 +1696,7 @@ export async function confirmTalladoUnitFromLookup(input: {
       cantidad,
       startedAt: now,
       endedAt: now,
+      dayKey,
       durationMs: 0,
       durationNetMs: 0,
       userId: input.userId,
@@ -1538,7 +1709,17 @@ export async function confirmTalladoUnitFromLookup(input: {
       yaEtiquetada: input.lookup.yaEtiquetada,
       etiquetadoModo,
     };
-    await setDoc(ref, stripUndefinedDeep(row) as TalladoUnit);
+    try {
+      await setDoc(ref, stripUndefinedDeep(row) as TalladoUnit);
+    } catch (writeErr: any) {
+      console.error('confirmTalladoUnitFromLookup write failed:', writeErr);
+      return {
+        success: false,
+        error:
+          writeErr?.message ||
+          'Error al guardar la lectura en Firestore. No se confirmó el escaneo; reintente.',
+      };
+    }
     return { success: true, data: row };
   } catch (error: any) {
     console.error('confirmTalladoUnitFromLookup:', error);
@@ -1701,10 +1882,15 @@ export async function adminUpdateTalladoUnitCantidad(input: {
 }
 
 /**
- * Admin/supervisor: elimina un registro de unidad de tallado (no toca recepción).
+ * Admin/supervisor: soft-elimina un registro de unidad (archiva en talladoUnitDeletes).
+ * No toca recepción.
  */
-export async function adminDeleteTalladoUnit(unitId: string): Promise<{
+export async function adminDeleteTalladoUnit(
+  unitId: string,
+  actor?: TalladoDeleteActor
+): Promise<{
   success: boolean;
+  archived?: boolean;
   error?: string;
 }> {
   try {
@@ -1712,9 +1898,18 @@ export async function adminDeleteTalladoUnit(unitId: string): Promise<{
     const ref = doc(firestore, UNITS_COL, unitId);
     const snap = await getDoc(ref);
     if (!snap.exists()) return { success: false, error: 'La unidad no existe.' };
-    await deleteDoc(ref);
-    return { success: true };
+    const unit = { id: snap.id, ...snap.data() } as TalladoUnit;
+    if (isTalladoSoftDeleted(unit)) return { success: true, archived: true };
+    await archiveAndSoftDeleteUnit(unit, {
+      deletedBy: actor?.deletedBy,
+      deletedByEmail: actor?.deletedByEmail,
+      deletedByName: actor?.deletedByName,
+      reason: actor?.reason || 'Eliminación admin de unidad',
+      source: 'admin_delete',
+    });
+    return { success: true, archived: true };
   } catch (error: any) {
+    console.error('adminDeleteTalladoUnit:', error);
     return { success: false, error: error?.message || 'No se pudo eliminar el registro.' };
   }
 }
@@ -1732,9 +1927,9 @@ export async function finishTalladoUnit(input: {
 
     const matches =
       input.openMatches && input.openMatches.length > 0
-        ? input.openMatches
+        ? input.openMatches.filter((u) => !isTalladoSoftDeleted(u))
         : input.unit
-          ? [input.unit]
+          ? [input.unit].filter((u) => !isTalladoSoftDeleted(u))
           : await findInProgressUnitsByCode(scanCode);
 
     if (matches.length === 0) {
@@ -1743,11 +1938,12 @@ export async function finishTalladoUnit(input: {
 
     // Preferir unidad del turno actual; si no, la más antigua
     const unit =
-      input.unit ||
-      matches.find((u) => u.shiftId === input.shiftId) ||
-      matches[0];
+      input.unit && !isTalladoSoftDeleted(input.unit)
+        ? input.unit
+        : matches.find((u) => u.shiftId === input.shiftId) || matches[0];
     const endedAt = new Date().toISOString();
     const durationMs = Math.max(0, new Date(endedAt).getTime() - new Date(unit.startedAt).getTime());
+    const dayKey = unit.dayKey || talladoLocalDayKey(new Date(unit.startedAt));
 
     // Pausas: solo las del turno de la unidad (límite bajo para no colgar el cierre).
     const pausesSnap = await getDocs(
@@ -1757,7 +1953,9 @@ export async function finishTalladoUnit(input: {
         limit(80)
       )
     );
-    const pauses = pausesSnap.docs.map((d) => d.data() as TalladoPause);
+    const pauses = pausesSnap.docs
+      .map((d) => d.data() as TalladoPause)
+      .filter((p) => !isTalladoSoftDeleted(p));
     const durationNetMs = computeNetDurationMs(unit.startedAt, endedAt, pauses);
 
     const patch = {
@@ -1765,13 +1963,35 @@ export async function finishTalladoUnit(input: {
       durationMs,
       durationNetMs,
       status: 'done' as const,
+      dayKey,
+      shiftId: unit.shiftId || input.shiftId,
+      startedAt: unit.startedAt,
     };
-    await updateDoc(doc(firestore, UNITS_COL, unit.id), patch);
+    try {
+      await updateDoc(doc(firestore, UNITS_COL, unit.id), patch);
+    } catch (writeErr: any) {
+      console.error('finishTalladoUnit write failed:', writeErr);
+      return {
+        success: false,
+        error:
+          writeErr?.message ||
+          'Error al guardar el cierre en Firestore. No se confirmó el Fin; reintente.',
+      };
+    }
 
-    // Si quedaron duplicados abiertos del mismo código, borrarlos (deja cerrado el más viejo)
-    const dups = matches.filter((dup) => dup.id !== unit.id);
-    if (dups.length > 0) {
-      await Promise.all(dups.map((dup) => deleteDoc(doc(firestore, UNITS_COL, dup.id))));
+    // Duplicados abiertos del mismo código: solo in_progress; archivar antes de soft-borrar.
+    const dups = matches.filter((dup) => dup.id !== unit.id && dup.status === 'in_progress');
+    for (const dup of dups) {
+      try {
+        await archiveAndSoftDeleteUnit(dup, {
+          source: 'finish_dup_cleanup',
+          reason: `Duplicado in_progress al cerrar ${unit.scanCode}`,
+          deletedBy: unit.userId,
+          deletedByName: unit.userName,
+        });
+      } catch (dupErr) {
+        console.error('finishTalladoUnit dup archive failed:', dupErr);
+      }
     }
 
     return { success: true, data: { ...unit, ...patch } };
@@ -2069,7 +2289,7 @@ async function loadTalladoCollectionsForDay(dayKey: string): Promise<{
     // Turnos multi-día (sin dayKey / startedAt de otro día) se recuperan por shiftId
     // de las unidades: el dashboard no depende de dayKey del turno.
     if (unitMap.size > 0) {
-      const units = Array.from(unitMap.values());
+      const units = filterActiveTalladoUnits(Array.from(unitMap.values()));
       const missingIds = Array.from(
         new Set(
           units
@@ -2083,9 +2303,9 @@ async function loadTalladoCollectionsForDay(dayKey: string): Promise<{
         }
       }
       return {
-        shifts: Array.from(shiftMap.values()),
+        shifts: filterActiveTalladoShifts(Array.from(shiftMap.values())),
         units,
-        pauses,
+        pauses: filterActiveTalladoPauses(pauses),
       };
     }
   } catch (err) {
@@ -2192,9 +2412,9 @@ async function loadTalladoCollectionsForDay(dayKey: string): Promise<{
   }
 
   return {
-    shifts: Array.from(shiftMap.values()),
-    units,
-    pauses: Array.from(pauseMap.values()),
+    shifts: filterActiveTalladoShifts(Array.from(shiftMap.values())),
+    units: filterActiveTalladoUnits(units),
+    pauses: filterActiveTalladoPauses(Array.from(pauseMap.values())),
   };
 }
 
@@ -2319,6 +2539,7 @@ export async function listTalladoLiveMonitor(opts?: {
         const byId = new Map(shifts.map((s) => [s.id, s]));
         for (const d of activeSnap.docs) {
           const s = { id: d.id, ...d.data() } as TalladoShift;
+          if (isTalladoSoftDeleted(s)) continue;
           if (shiftBelongsToDay(s, dayKey) || isTalladoSameLocalDay(s.startedAt, dayKey)) {
             byId.set(s.id, s);
           }
@@ -2328,15 +2549,18 @@ export async function listTalladoLiveMonitor(opts?: {
     }
 
     units = units.filter(
-      (u) => isTalladoSameLocalDay(u.startedAt, dayKey) || isTalladoSameLocalDay(u.endedAt, dayKey)
+      (u) =>
+        !isTalladoSoftDeleted(u) &&
+        (isTalladoSameLocalDay(u.startedAt, dayKey) || isTalladoSameLocalDay(u.endedAt, dayKey))
     );
     const unitShiftIds = new Set(units.map((u) => u.shiftId).filter(Boolean) as string[]);
     shifts = shifts.filter(
       (s) =>
-        s.status === 'active' ||
-        shiftBelongsToDay(s, dayKey) ||
-        isTalladoSameLocalDay(s.startedAt, dayKey) ||
-        unitShiftIds.has(s.id)
+        !isTalladoSoftDeleted(s) &&
+        (s.status === 'active' ||
+          shiftBelongsToDay(s, dayKey) ||
+          isTalladoSameLocalDay(s.startedAt, dayKey) ||
+          unitShiftIds.has(s.id))
     );
 
     const known = new Set(shifts.map((s) => s.id));
@@ -2392,10 +2616,11 @@ export async function listTalladoLiveMonitor(opts?: {
 }
 
 /**
- * Borra unidades in_progress duplicadas (mismo código) dejando la lectura más antigua.
+ * Soft-borra solo unidades in_progress duplicadas (mismo código) dejando la lectura más antigua.
+ * NUNCA toca unidades finished/done. Siempre archiva en talladoUnitDeletes.
  * Cierra turnos activos duplicados del mismo grupo dejando el más antiguo.
  */
-export async function cleanupTalladoDuplicates(): Promise<{
+export async function cleanupTalladoDuplicates(actor?: TalladoDeleteActor): Promise<{
   success: boolean;
   deletedUnits?: number;
   closedShifts?: number;
@@ -2407,10 +2632,19 @@ export async function cleanupTalladoDuplicates(): Promise<{
     let closedShifts = 0;
     let reassignedUnits = 0;
 
-    // --- Unidades activas duplicadas por código ---
+    const deleteMeta = {
+      deletedBy: actor?.deletedBy || 'system',
+      deletedByEmail: actor?.deletedByEmail,
+      deletedByName: actor?.deletedByName || 'cleanup',
+      reason: actor?.reason || 'Limpieza de duplicados in_progress',
+      source: 'cleanup_duplicates' as const,
+    };
+
+    // --- Unidades activas duplicadas por código (solo in_progress) ---
     const openUnits = await listInProgressUnits();
     const byCode = new Map<string, TalladoUnit[]>();
     for (const u of openUnits) {
+      if (u.status !== 'in_progress') continue;
       const key = normalizeTalladoScanCode(u.scanCode) || normalizeTalladoScanCode(u.numeroTF) || u.id;
       const list = byCode.get(key) || [];
       list.push(u);
@@ -2421,7 +2655,8 @@ export async function cleanupTalladoDuplicates(): Promise<{
       list.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
       const [, ...dups] = list;
       for (const dup of dups) {
-        await deleteDoc(doc(firestore, UNITS_COL, dup.id));
+        if (dup.status !== 'in_progress') continue;
+        await archiveAndSoftDeleteUnit(dup, deleteMeta);
         deletedUnits += 1;
       }
     }
@@ -2437,7 +2672,9 @@ export async function cleanupTalladoDuplicates(): Promise<{
     }
 
     const allUnitsSnap = await getDocs(query(collection(firestore, UNITS_COL), limit(1000)));
-    const allUnits = allUnitsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoUnit));
+    const allUnits = allUnitsSnap.docs
+      .map((d) => ({ id: d.id, ...d.data() } as TalladoUnit))
+      .filter((u) => !isTalladoSoftDeleted(u));
 
     for (const list of byGrupo.values()) {
       if (list.length < 2) continue;
@@ -2456,7 +2693,11 @@ export async function cleanupTalladoDuplicates(): Promise<{
                 unitMatchesScanCode(x, u.scanCode)
             );
             if (keptOpen) {
-              await deleteDoc(doc(firestore, UNITS_COL, u.id));
+              // Solo soft-delete del duplicado in_progress; nunca finished.
+              await archiveAndSoftDeleteUnit(u, {
+                ...deleteMeta,
+                reason: `Duplicado in_progress al consolidar turno ${dup.id} → ${kept.id}`,
+              });
               deletedUnits += 1;
             } else {
               await updateDoc(doc(firestore, UNITS_COL, u.id), { shiftId: kept.id, grupo: kept.grupo });
@@ -2464,6 +2705,7 @@ export async function cleanupTalladoDuplicates(): Promise<{
               u.shiftId = kept.id;
             }
           } else {
+            // Finished: solo reasignar shiftId, NUNCA borrar.
             await updateDoc(doc(firestore, UNITS_COL, u.id), { shiftId: kept.id, grupo: kept.grupo });
             reassignedUnits += 1;
           }
@@ -2474,6 +2716,8 @@ export async function cleanupTalladoDuplicates(): Promise<{
           query(collection(firestore, PAUSES_COL), where('shiftId', '==', dup.id), limit(100))
         );
         for (const p of pausesSnap.docs) {
+          const pdata = p.data() as TalladoPause;
+          if (isTalladoSoftDeleted(pdata)) continue;
           await updateDoc(p.ref, { shiftId: kept.id, grupo: kept.grupo });
         }
 

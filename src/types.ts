@@ -1594,6 +1594,11 @@ export interface TalladoShift {
    * Si existe, la jornada del día usa este valor en lugar de startedAt / primera lectura.
    */
   productivityStartedAt?: string;
+  /** Soft-delete: presente = oculto en listas normales; snapshot en talladoShiftDeletes. */
+  deletedAt?: string;
+  deletedBy?: string;
+  deletedByEmail?: string;
+  deletedByName?: string;
 }
 
 /** Declaración del operario en Tallado para costos (no viene de Etiquetado). */
@@ -1640,6 +1645,13 @@ export interface TalladoUnit {
    * Ausente = lectura normal (sin nada).
    */
   etiquetadoModo?: TalladoEtiquetadoModo;
+  /** Día Bogotá de startedAt (YYYY-MM-DD) para consultas resilientes. */
+  dayKey?: string;
+  /** Soft-delete: presente = oculto en listas; snapshot en talladoUnitDeletes. */
+  deletedAt?: string;
+  deletedBy?: string;
+  deletedByEmail?: string;
+  deletedByName?: string;
 }
 
 export interface TalladoPause {
@@ -1654,6 +1666,9 @@ export interface TalladoPause {
   userId: string;
   userName: string;
   status: 'open' | 'closed';
+  /** Soft-delete junto con el turno/unidad. */
+  deletedAt?: string;
+  deletedBy?: string;
 }
 
 /**

@@ -777,21 +777,26 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const handleAdminDeleteShift = async (shiftId: string) => {
     if (
       !window.confirm(
-        '¿Eliminar este turno y todas sus unidades/pausas de tallado? Esta acción no se puede deshacer. No afecta recepción.'
+        '¿Archivar y ocultar este turno y todas sus unidades/pausas de tallado?\nLos datos quedan en auditoría (recuperables). No afecta recepción.'
       )
     ) {
       return;
     }
     setDeletingShiftId(shiftId);
-    const res = await adminDeleteTalladoShift(shiftId);
+    const res = await adminDeleteTalladoShift(shiftId, {
+      deletedBy: user?.uid,
+      deletedByEmail: user?.email || undefined,
+      deletedByName: user?.displayName || user?.email || undefined,
+      reason: 'Eliminación admin de turno',
+    });
     setDeletingShiftId(null);
     if (!res.success) {
       toast({ variant: 'destructive', title: 'Eliminar turno', description: res.error });
       return;
     }
     toast({
-      title: 'Turno eliminado',
-      description: `Unidades: ${res.deletedUnits || 0} · Pausas: ${res.deletedPauses || 0}`,
+      title: 'Turno archivado',
+      description: `Unidades: ${res.deletedUnits || 0} · Pausas: ${res.deletedPauses || 0}. Snapshot en talladoShiftDeletes / talladoUnitDeletes.`,
     });
     if (shift?.id === shiftId) {
       clearTalladoShiftSession();
@@ -890,20 +895,28 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         : unit.scanCode;
     if (
       !window.confirm(
-        `¿Eliminar el registro ${label} (${unit.cantidad} und.)?\nNo se puede deshacer. No modifica recepción.`
+        `¿Archivar y ocultar el registro ${label} (${unit.cantidad} und.)?\nQueda en talladoUnitDeletes (recuperable). No modifica recepción.`
       )
     ) {
       return;
     }
     setUpdatingUnitId(unit.id);
-    const res = await adminDeleteTalladoUnit(unit.id);
+    const res = await adminDeleteTalladoUnit(unit.id, {
+      deletedBy: user?.uid,
+      deletedByEmail: user?.email || undefined,
+      deletedByName: user?.displayName || user?.email || undefined,
+      reason: 'Eliminación admin de unidad',
+    });
     setUpdatingUnitId(null);
     if (!res.success) {
       toast({ variant: 'destructive', title: 'Eliminar', description: res.error });
       return;
     }
     setUnits((prev) => prev.filter((u) => u.id !== unit.id));
-    toast({ title: 'Registro eliminado', description: label });
+    toast({
+      title: 'Registro archivado',
+      description: `${label} · snapshot en talladoUnitDeletes/${unit.id}`,
+    });
   };
 
   const handleConfirmReceptionCandidate = async (lookup: TalladoTransferLookup) => {
@@ -1262,18 +1275,18 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       .join('\n');
     const text = [
       `Día ${res.dayKey} (Bogotá ${res.bounds?.startIso} → ${res.bounds?.endIso})`,
-      `Unidades por startedAt: ${res.unitsByStartedAt ?? 0}`,
+      `Unidades por startedAt: ${res.unitsByStartedAt ?? 0} (activas: ${res.unitsActive ?? 0}, soft-deleted: ${res.unitsSoftDeleted ?? 0})`,
       `Unidades por endedAt: ${res.unitsByEndedAt ?? 0}`,
-      `Turnos por startedAt: ${res.shiftsByStartedAt ?? 0} · por dayKey: ${res.shiftsByDayKey ?? 0}`,
+      `Turnos por startedAt: ${res.shiftsByStartedAt ?? 0} · por dayKey: ${res.shiftsByDayKey ?? 0} · soft-deleted: ${res.shiftsSoftDeleted ?? 0}`,
       `Dashboard cargaría: ${res.dashboardLoad?.units ?? 0} und / ${res.dashboardLoad?.shifts ?? 0} turnos / ${res.dashboardLoad?.pauses ?? 0} pausas`,
       shiftLines ? `shiftIds: ${shiftLines}` : 'shiftIds: (ninguno)',
       sampleLines ? `Muestras:\n${sampleLines}` : 'Muestras: (ninguna)',
     ].join('\n');
     setDayValidationText(text);
-    const exists = (res.unitsByStartedAt || 0) > 0 || (res.dashboardLoad?.units || 0) > 0;
+    const exists = (res.unitsActive || 0) > 0 || (res.dashboardLoad?.units || 0) > 0;
     toast({
       title: exists ? `Datos SÍ existen (${res.dayKey})` : `Datos NO existen (${res.dayKey})`,
-      description: `Unidades startedAt: ${res.unitsByStartedAt ?? 0}. Dashboard: ${res.dashboardLoad?.units ?? 0} und.`,
+      description: `Activas: ${res.unitsActive ?? 0}. Soft-deleted: ${res.unitsSoftDeleted ?? 0}. Dashboard: ${res.dashboardLoad?.units ?? 0} und.`,
       variant: exists ? 'default' : 'destructive',
     });
   };
@@ -1293,14 +1306,19 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     if (res.cleanup && (res.cleanup.deletedUnits > 0 || res.cleanup.closedShifts > 0)) {
       toast({
         title: 'Duplicados limpiados',
-        description: `Unidades borradas: ${res.cleanup.deletedUnits}. Turnos cerrados: ${res.cleanup.closedShifts}. Se dejó la hora más antigua.`,
+        description: `Unidades in_progress archivadas: ${res.cleanup.deletedUnits}. Turnos cerrados: ${res.cleanup.closedShifts}. Se dejó la hora más antigua.`,
       });
     }
   }, [toast]);
 
   const handleCleanupDuplicates = async () => {
     setLiveLoading(true);
-    const res = await cleanupTalladoDuplicates();
+    const res = await cleanupTalladoDuplicates({
+      deletedBy: user?.uid || 'system',
+      deletedByEmail: user?.email || undefined,
+      deletedByName: user?.displayName || user?.email || 'admin',
+      reason: 'Limpieza manual de duplicados',
+    });
     if (!res.success) {
       setLiveLoading(false);
       toast({ variant: 'destructive', title: 'Limpieza', description: res.error });
@@ -1308,7 +1326,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     }
     toast({
       title: 'Limpieza hecha',
-      description: `Unidades borradas: ${res.deletedUnits || 0}. Turnos cerrados: ${res.closedShifts || 0}. Reasignadas: ${res.reassignedUnits || 0}.`,
+      description: `In_progress archivadas: ${res.deletedUnits || 0}. Turnos cerrados: ${res.closedShifts || 0}. Reasignadas: ${res.reassignedUnits || 0}.`,
     });
     await loadLiveMonitor(false);
   };
