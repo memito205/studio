@@ -206,12 +206,64 @@ function shiftBelongsToDay(shift: TalladoShift, dayKey: string): boolean {
   return isTalladoSameLocalDay(shift.startedAt, dayKey);
 }
 
-async function closeShiftAsDayRollover(shiftId: string, endedAt: string): Promise<void> {
-  await updateDoc(doc(firestore, SHIFTS_COL, shiftId), {
+/**
+ * Cierra un turno activo de un día anterior (rollover Bogotá).
+ * - NO borra unidades ni pausas.
+ * - Asigna dayKey del día en que inició el turno (si faltaba).
+ * - endedAt = fin del día Bogotá anterior a hoy (límite de jornada), no deja el turno “abierto” multi-día.
+ */
+async function closeShiftAsDayRollover(shift: TalladoShift): Promise<void> {
+  const todayKey = talladoLocalDayKey();
+  const shiftDayKey = shift.dayKey || talladoLocalDayKey(new Date(shift.startedAt));
+  const { startMs: todayStart } = talladoBogotaDayBounds(todayKey);
+  const startedMs = new Date(shift.startedAt).getTime();
+  const boundaryMs = Number.isFinite(startedMs)
+    ? Math.max(todayStart - 1, startedMs)
+    : todayStart - 1;
+  const endedAt = new Date(boundaryMs).toISOString();
+  await updateDoc(doc(firestore, SHIFTS_COL, shift.id), {
     status: 'closed',
     endedAt,
     closedReason: 'day_rollover',
+    dayKey: shiftDayKey,
   });
+}
+
+/**
+ * Garantiza que el shiftId sea un turno activo del día Bogotá actual.
+ * Si es de otro día, lo cierra con day_rollover (sin borrar datos) y pide uno nuevo.
+ */
+async function requireActiveShiftForToday(
+  shiftId: string
+): Promise<{ ok: true; shift: TalladoShift } | { ok: false; error: string }> {
+  if (!shiftId) return { ok: false, error: 'Sin turno activo.' };
+  const snap = await getDoc(doc(firestore, SHIFTS_COL, shiftId));
+  if (!snap.exists()) return { ok: false, error: 'El turno no existe.' };
+  const shift = { id: snap.id, ...snap.data() } as TalladoShift;
+  if (shift.status !== 'active') {
+    return {
+      ok: false,
+      error: 'Ese turno ya no está activo. Inicie un turno nuevo para hoy.',
+    };
+  }
+  const todayKey = talladoLocalDayKey();
+  if (!shiftBelongsToDay(shift, todayKey)) {
+    try {
+      await closeShiftAsDayRollover(shift);
+    } catch {
+      // Igual bloqueamos el escaneo aunque el cierre falle
+    }
+    return {
+      ok: false,
+      error:
+        'El turno era de otro día y se cerró automáticamente (cambio de día Bogotá). Cree un turno nuevo para hoy.',
+    };
+  }
+  if (!shift.dayKey) {
+    await updateDoc(doc(firestore, SHIFTS_COL, shift.id), { dayKey: todayKey });
+    shift.dayKey = todayKey;
+  }
+  return { ok: true, shift };
 }
 
 function alreadyDoneError(unit: TalladoUnit): string {
@@ -982,9 +1034,9 @@ export async function startTalladoShift(input: {
     const active = await listActiveShifts();
     const sameGrupo = active.filter((s) => normalizeGrupoKey(s.grupo) === grupoKey);
 
-    // Turnos activos de días anteriores: cerrar; no reanudar.
+    // Turnos activos de días anteriores: cerrar con dayKey; no reanudar ni borrar unidades.
     for (const stale of sameGrupo.filter((s) => !shiftBelongsToDay(s, todayKey))) {
-      await closeShiftAsDayRollover(stale.id, now);
+      await closeShiftAsDayRollover(stale);
     }
 
     const sameGrupoToday = sameGrupo
@@ -1038,15 +1090,22 @@ export async function listTalladoActiveShiftsForDay(dayKey?: string): Promise<{
 }> {
   try {
     const key = dayKey || talladoLocalDayKey();
-    const now = new Date().toISOString();
     const active = await listActiveShifts();
     const today: TalladoShift[] = [];
     for (const s of active) {
       if (shiftBelongsToDay(s, key)) {
+        if (!s.dayKey) {
+          try {
+            await updateDoc(doc(firestore, SHIFTS_COL, s.id), { dayKey: key });
+            s.dayKey = key;
+          } catch {
+            // Seguir listando aunque el backfill falle
+          }
+        }
         today.push(s);
       } else {
         try {
-          await closeShiftAsDayRollover(s.id, now);
+          await closeShiftAsDayRollover(s);
         } catch {
           // No bloquear el listado si un cierre falla
         }
@@ -1080,7 +1139,7 @@ export async function enterTalladoShift(shiftId: string): Promise<{
       return { success: false, error: 'Ese turno ya no está activo.' };
     }
     if (!shiftBelongsToDay(shift, todayKey)) {
-      await closeShiftAsDayRollover(shift.id, new Date().toISOString());
+      await closeShiftAsDayRollover(shift);
       return { success: false, error: 'Ese turno es de otro día. Cree uno nuevo para hoy.' };
     }
     if (!shift.dayKey) {
@@ -1179,6 +1238,8 @@ export async function confirmTalladoUnitFromLookup(input: {
 }): Promise<{ success: boolean; data?: TalladoUnit; error?: string }> {
   try {
     if (!input.shiftId) return { success: false, error: 'Sin turno activo.' };
+    const gate = await requireActiveShiftForToday(input.shiftId);
+    if (!gate.ok) return { success: false, error: gate.error };
     const scanCode = normalizeTalladoScanCode(input.lookup.scanCode);
     if (!scanCode) return { success: false, error: 'Código inválido.' };
 
@@ -1622,6 +1683,8 @@ export async function startTalladoPause(input: {
 }): Promise<{ success: boolean; data?: TalladoPause; error?: string }> {
   try {
     if (!input.shiftId) return { success: false, error: 'Sin turno activo.' };
+    const gate = await requireActiveShiftForToday(input.shiftId);
+    if (!gate.ok) return { success: false, error: gate.error };
     if (input.type === 'otros' && !String(input.note || '').trim()) {
       return { success: false, error: 'En “Otros” indique el motivo de la pausa.' };
     }
@@ -1654,9 +1717,12 @@ export async function startTalladoPause(input: {
     await setDoc(ref, stripUndefinedDeep(row) as TalladoPause);
 
     if (input.type === 'fin_jornada') {
+      const todayKey = talladoLocalDayKey();
       await updateDoc(doc(firestore, SHIFTS_COL, input.shiftId), {
         endedAt: now,
         status: 'closed',
+        dayKey: gate.shift.dayKey || todayKey,
+        closedReason: 'fin_jornada',
       });
     }
 
@@ -1808,10 +1874,25 @@ async function loadTalladoCollectionsForDay(dayKey: string): Promise<{
     // Solo cortocircuitar si ya hay unidades del día. Si solo llegaron turnos
     // (p.ej. por dayKey) pero 0 units, hay que paginar: el rango por startedAt
     // a veces no matchea ISO legacy y el dashboard quedaba en 0 und (días 12/14).
+    // Turnos multi-día (sin dayKey / startedAt de otro día) se recuperan por shiftId
+    // de las unidades: el dashboard no depende de dayKey del turno.
     if (unitMap.size > 0) {
+      const units = Array.from(unitMap.values());
+      const missingIds = Array.from(
+        new Set(
+          units
+            .map((u) => u.shiftId)
+            .filter((id): id is string => !!id && !shiftMap.has(id))
+        )
+      );
+      if (missingIds.length > 0) {
+        for (const s of await fetchTalladoShiftsByIds(missingIds)) {
+          shiftMap.set(s.id, s);
+        }
+      }
       return {
         shifts: Array.from(shiftMap.values()),
-        units: Array.from(unitMap.values()),
+        units,
         pauses,
       };
     }
@@ -1906,9 +1987,21 @@ async function loadTalladoCollectionsForDay(dayKey: string): Promise<{
 
   await Promise.all([pageUnits(), pageShifts(), pagePauses()]);
 
+  const units = Array.from(unitMap.values());
+  const missingIds = Array.from(
+    new Set(
+      units.map((u) => u.shiftId).filter((id): id is string => !!id && !shiftMap.has(id))
+    )
+  );
+  if (missingIds.length > 0) {
+    for (const s of await fetchTalladoShiftsByIds(missingIds)) {
+      shiftMap.set(s.id, s);
+    }
+  }
+
   return {
     shifts: Array.from(shiftMap.values()),
-    units: Array.from(unitMap.values()),
+    units,
     pauses: Array.from(pauseMap.values()),
   };
 }

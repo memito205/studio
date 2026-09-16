@@ -106,7 +106,8 @@ const TALLADO_SS_RECEPTION = 'tallado.receptionOperationId';
 
 function persistTalladoShiftSession(shift: TalladoShift) {
   try {
-    const day = shift.dayKey || talladoLocalDayKey(new Date(shift.startedAt));
+    // Siempre el día Bogotá de HOY: al cambiar la fecha local la sesión no rehidrata un turno viejo.
+    const day = talladoLocalDayKey();
     sessionStorage.setItem(TALLADO_SS_SHIFT, shift.id);
     sessionStorage.setItem(TALLADO_SS_DAY, day);
   } catch {
@@ -530,18 +531,12 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         const sid = sessionStorage.getItem(TALLADO_SS_SHIFT);
         const sday = sessionStorage.getItem(TALLADO_SS_DAY);
         if (sid && sday === dayKey) {
-          const bundle = await listTalladoShiftBundle(sid);
-          if (
-            !cancelled &&
-            bundle.success &&
-            bundle.shift?.status === 'active' &&
-            (bundle.shift.dayKey ? bundle.shift.dayKey === dayKey : true)
-          ) {
-            const s = bundle.shift;
-            const sameDay =
-              s.dayKey === dayKey ||
-              talladoLocalDayKey(new Date(s.startedAt)) === dayKey;
-            if (sameDay) {
+          // enterTalladoShift cierra day_rollover si el turno es de otro día
+          const entered = await enterTalladoShift(sid);
+          if (!cancelled && entered.success && entered.data) {
+            const bundle = await listTalladoShiftBundle(entered.data.id);
+            if (!cancelled && bundle.success && bundle.shift?.status === 'active') {
+              const s = bundle.shift;
               setShift(s);
               setUnits(bundle.units || []);
               setPauses(bundle.pauses || []);

@@ -194,13 +194,17 @@ export function filterTalladoBundleToDay(
   units: TalladoUnit[],
   pauses: TalladoPause[]
 ): { shifts: TalladoShift[]; units: TalladoUnit[]; pauses: TalladoPause[]; dayKey: string } {
+  // Unidades del día por startedAt/endedAt (Bogotá), aunque el turno sea multi-día o sin dayKey.
   const dayUnits = units.filter(
     (u) => isTalladoSameLocalDay(u.startedAt, dayKey) || isTalladoSameLocalDay(u.endedAt, dayKey)
   );
   const unitShiftIds = new Set(dayUnits.map((u) => u.shiftId).filter(Boolean) as string[]);
 
   const dayShifts = shifts.filter(
-    (s) => isTalladoSameLocalDay(s.startedAt, dayKey) || unitShiftIds.has(s.id)
+    (s) =>
+      (s.dayKey ? s.dayKey === dayKey : isTalladoSameLocalDay(s.startedAt, dayKey)) ||
+      isTalladoSameLocalDay(s.startedAt, dayKey) ||
+      unitShiftIds.has(s.id)
   );
   const shiftIds = new Set(dayShifts.map((s) => s.id));
 
