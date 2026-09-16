@@ -76,6 +76,7 @@ import {
   getTalladoCatalogStats,
   clearTalladoCatalog,
   auditTalladoUnitsByCode,
+  validateTalladoDay,
 } from '@/app/talladoMercanciaActions';
 import { talladoEtiquetadoModoLabel } from '@/lib/talladoEtiquetado';
 import {
@@ -332,6 +333,8 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditUnits, setAuditUnits] = useState<TalladoUnit[] | null>(null);
   const [auditQueriedCode, setAuditQueriedCode] = useState('');
+  const [dayValidating, setDayValidating] = useState(false);
+  const [dayValidationText, setDayValidationText] = useState<string | null>(null);
   const [scanFlash, setScanFlash] = useState<{
     code: string;
     label: string;
@@ -1234,6 +1237,46 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     setDashUnits(res.units || []);
     setDashPauses(res.pauses || []);
   }, [toast, dashDayKey]);
+
+  const handleValidateDay = async () => {
+    if (!canAdmin) return;
+    setDayValidating(true);
+    setDayValidationText(null);
+    const res = await validateTalladoDay({ dayKey: dashDayKey });
+    setDayValidating(false);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Validar día', description: res.error });
+      return;
+    }
+    const shiftLines = Object.entries(res.shiftIdsReferenced || {})
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([id, n]) => `${id}: ${n}`)
+      .join(' · ');
+    const sampleLines = (res.samples || [])
+      .slice(0, 5)
+      .map(
+        (s) =>
+          `${s.scanCode || s.id} | ${s.startedAt || '—'} | cant ${s.cantidad ?? '—'} | shift ${s.shiftId || '—'}`
+      )
+      .join('\n');
+    const text = [
+      `Día ${res.dayKey} (Bogotá ${res.bounds?.startIso} → ${res.bounds?.endIso})`,
+      `Unidades por startedAt: ${res.unitsByStartedAt ?? 0}`,
+      `Unidades por endedAt: ${res.unitsByEndedAt ?? 0}`,
+      `Turnos por startedAt: ${res.shiftsByStartedAt ?? 0} · por dayKey: ${res.shiftsByDayKey ?? 0}`,
+      `Dashboard cargaría: ${res.dashboardLoad?.units ?? 0} und / ${res.dashboardLoad?.shifts ?? 0} turnos / ${res.dashboardLoad?.pauses ?? 0} pausas`,
+      shiftLines ? `shiftIds: ${shiftLines}` : 'shiftIds: (ninguno)',
+      sampleLines ? `Muestras:\n${sampleLines}` : 'Muestras: (ninguna)',
+    ].join('\n');
+    setDayValidationText(text);
+    const exists = (res.unitsByStartedAt || 0) > 0 || (res.dashboardLoad?.units || 0) > 0;
+    toast({
+      title: exists ? `Datos SÍ existen (${res.dayKey})` : `Datos NO existen (${res.dayKey})`,
+      description: `Unidades startedAt: ${res.unitsByStartedAt ?? 0}. Dashboard: ${res.dashboardLoad?.units ?? 0} und.`,
+      variant: exists ? 'default' : 'destructive',
+    });
+  };
 
   const loadLiveMonitor = useCallback(async (withCleanup = false) => {
     setLiveLoading(true);
@@ -2562,11 +2605,30 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                 {dashLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Actualizar
               </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={dayValidating}
+                onClick={() => void handleValidateDay()}
+              >
+                {dayValidating ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <Search className="mr-1.5 h-4 w-4" />
+                )}
+                Validar día
+              </Button>
             </div>
             <p className="text-sm text-muted-foreground">
               Mostrando solo el día <span className="font-semibold text-foreground">{dashDayKey}</span> (Colombia).
               Bodega LIVE siempre usa el día de hoy.
             </p>
+            {dayValidationText ? (
+              <pre className="text-xs whitespace-pre-wrap rounded-md border bg-muted/30 p-3 font-mono text-foreground">
+                {dayValidationText}
+              </pre>
+            ) : null}
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <Card>
                 <CardHeader className="py-3">

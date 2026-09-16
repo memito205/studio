@@ -185,6 +185,198 @@ export async function auditTalladoUnitsByCode(rawCode: string): Promise<{
   }
 }
 
+export type TalladoDayValidationSample = {
+  id: string;
+  scanCode: string;
+  startedAt: string;
+  cantidad?: number;
+  shiftId?: string;
+  status?: string;
+};
+
+/**
+ * Admin: validación dura de un día Bogotá.
+ * Cuenta unidades por rango startedAt, turnos, shiftIds referenciados y muestra muestras.
+ * Opcionalmente audita un shiftId concreto (conteo total + por día).
+ */
+export async function validateTalladoDay(opts: {
+  dayKey: string;
+  shiftId?: string;
+}): Promise<{
+  success: boolean;
+  dayKey?: string;
+  bounds?: { startIso: string; endIso: string };
+  unitsByStartedAt?: number;
+  unitsByEndedAt?: number;
+  shiftsByStartedAt?: number;
+  shiftsByDayKey?: number;
+  shiftIdsReferenced?: Record<string, number>;
+  shiftsFound?: Array<{
+    id: string;
+    grupo?: string;
+    status?: string;
+    startedAt?: string;
+    dayKey?: string | null;
+  }>;
+  samples?: TalladoDayValidationSample[];
+  shiftAudit?: {
+    shiftId: string;
+    exists: boolean;
+    unitCount: number;
+    unitsByBogotaDay: Record<string, number>;
+    samples: TalladoDayValidationSample[];
+  };
+  dashboardLoad?: { shifts: number; units: number; pauses: number };
+  error?: string;
+}> {
+  try {
+    const dayKey = String(opts?.dayKey || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) {
+      return { success: false, error: 'Indique una fecha válida (YYYY-MM-DD).' };
+    }
+
+    const { startMs, endMs } = talladoBogotaDayBounds(dayKey);
+    const startIso = new Date(startMs).toISOString();
+    const endIso = new Date(endMs).toISOString();
+
+    const toSample = (u: TalladoUnit): TalladoDayValidationSample => ({
+      id: u.id,
+      scanCode: String(u.scanCode || u.numeroTF || ''),
+      startedAt: String(u.startedAt || ''),
+      cantidad: u.cantidad,
+      shiftId: u.shiftId,
+      status: u.status,
+    });
+
+    const [unitsStartSnap, unitsEndSnap, shiftsStartSnap, shiftsDayKeySnap] = await Promise.all([
+      getDocs(
+        query(
+          collection(firestore, UNITS_COL),
+          where('startedAt', '>=', startIso),
+          where('startedAt', '<=', endIso),
+          limit(3000)
+        )
+      ),
+      getDocs(
+        query(
+          collection(firestore, UNITS_COL),
+          where('endedAt', '>=', startIso),
+          where('endedAt', '<=', endIso),
+          limit(1500)
+        )
+      ).catch(() => null),
+      getDocs(
+        query(
+          collection(firestore, SHIFTS_COL),
+          where('startedAt', '>=', startIso),
+          where('startedAt', '<=', endIso),
+          limit(500)
+        )
+      ),
+      getDocs(query(collection(firestore, SHIFTS_COL), where('dayKey', '==', dayKey), limit(500))).catch(
+        () => null
+      ),
+    ]);
+
+    const unitMap = new Map<string, TalladoUnit>();
+    for (const d of unitsStartSnap.docs) {
+      unitMap.set(d.id, { id: d.id, ...d.data() } as TalladoUnit);
+    }
+    if (unitsEndSnap) {
+      for (const d of unitsEndSnap.docs) {
+        if (!unitMap.has(d.id)) {
+          unitMap.set(d.id, { id: d.id, ...d.data() } as TalladoUnit);
+        }
+      }
+    }
+
+    const shiftIdsReferenced: Record<string, number> = {};
+    for (const u of unitMap.values()) {
+      const sid = u.shiftId || '(sin shiftId)';
+      shiftIdsReferenced[sid] = (shiftIdsReferenced[sid] || 0) + 1;
+    }
+
+    const shiftMap = new Map<string, TalladoShift>();
+    for (const d of shiftsStartSnap.docs) {
+      shiftMap.set(d.id, { id: d.id, ...d.data() } as TalladoShift);
+    }
+    if (shiftsDayKeySnap) {
+      for (const d of shiftsDayKeySnap.docs) {
+        shiftMap.set(d.id, { id: d.id, ...d.data() } as TalladoShift);
+      }
+    }
+
+    const samples = Array.from(unitMap.values())
+      .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)))
+      .slice(0, 8)
+      .map(toSample);
+
+    let shiftAudit:
+      | {
+          shiftId: string;
+          exists: boolean;
+          unitCount: number;
+          unitsByBogotaDay: Record<string, number>;
+          samples: TalladoDayValidationSample[];
+        }
+      | undefined;
+
+    const shiftId = String(opts?.shiftId || '').trim();
+    if (shiftId) {
+      const shiftSnap = await getDoc(doc(firestore, SHIFTS_COL, shiftId));
+      const unitsByShift = await getDocs(
+        query(collection(firestore, UNITS_COL), where('shiftId', '==', shiftId), limit(3000))
+      );
+      const unitsByBogotaDay: Record<string, number> = {};
+      const shiftSamples: TalladoDayValidationSample[] = [];
+      for (const d of unitsByShift.docs) {
+        const u = { id: d.id, ...d.data() } as TalladoUnit;
+        const day = u.startedAt ? talladoLocalDayKey(new Date(u.startedAt)) : 'sin-startedAt';
+        unitsByBogotaDay[day] = (unitsByBogotaDay[day] || 0) + 1;
+        if (shiftSamples.length < 8) shiftSamples.push(toSample(u));
+      }
+      shiftAudit = {
+        shiftId,
+        exists: shiftSnap.exists(),
+        unitCount: unitsByShift.size,
+        unitsByBogotaDay,
+        samples: shiftSamples,
+      };
+    }
+
+    const dash = await loadTalladoCollectionsForDay(dayKey);
+    const filtered = filterTalladoBundleToDay(dayKey, dash.shifts, dash.units, dash.pauses);
+
+    return {
+      success: true,
+      dayKey,
+      bounds: { startIso, endIso },
+      unitsByStartedAt: unitsStartSnap.size,
+      unitsByEndedAt: unitsEndSnap?.size ?? 0,
+      shiftsByStartedAt: shiftsStartSnap.size,
+      shiftsByDayKey: shiftsDayKeySnap?.size ?? 0,
+      shiftIdsReferenced,
+      shiftsFound: Array.from(shiftMap.values()).map((s) => ({
+        id: s.id,
+        grupo: s.grupo,
+        status: s.status,
+        startedAt: s.startedAt,
+        dayKey: s.dayKey ?? null,
+      })),
+      samples,
+      shiftAudit,
+      dashboardLoad: {
+        shifts: filtered.shifts.length,
+        units: filtered.units.length,
+        pauses: filtered.pauses.length,
+      },
+    };
+  } catch (error: any) {
+    console.error('validateTalladoDay:', error);
+    return { success: false, error: error?.message || 'No se pudo validar el día.' };
+  }
+}
+
 /** Unidades abiertas que coinciden con el código (sin listar las 500 in_progress). */
 async function findInProgressUnitsByCode(scanCode: string): Promise<TalladoUnit[]> {
   const matches = await findUnitsMatchingCode(scanCode);
