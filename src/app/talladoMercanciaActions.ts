@@ -405,16 +405,33 @@ async function resolvePackingUnitIdForTallado(
 
   if (reception && Number.isFinite(n) && n >= 1) {
     try {
-      const snap = await getDocs(
-        query(
-          collection(firestore, PACKING_UNITS_COL),
-          where('reception_id', '==', reception),
-          where('id', '==', n),
-          limit(10)
-        )
-      );
-      if (!snap.empty) {
-        const ranked = [...snap.docs].sort((a, b) => {
+      // `id` histórico a veces number y a veces string; probar ambos.
+      const snaps = await Promise.all([
+        getDocs(
+          query(
+            collection(firestore, PACKING_UNITS_COL),
+            where('reception_id', '==', reception),
+            where('id', '==', n),
+            limit(10)
+          )
+        ),
+        getDocs(
+          query(
+            collection(firestore, PACKING_UNITS_COL),
+            where('reception_id', '==', reception),
+            where('id', '==', String(n)),
+            limit(10)
+          )
+        ),
+      ]);
+      const seen = new Set<string>();
+      const docs = snaps.flatMap((s) => s.docs).filter((d) => {
+        if (seen.has(d.id)) return false;
+        seen.add(d.id);
+        return true;
+      });
+      if (docs.length > 0) {
+        const ranked = [...docs].sort((a, b) => {
           const da = a.data() as PackingUnit;
           const db = b.data() as PackingUnit;
           const closed = Number(db.status === 'closed') - Number(da.status === 'closed');
@@ -436,7 +453,7 @@ async function resolvePackingUnitIdForTallado(
 }
 
 /**
- * Qty + refs de una caja: closedQty → escaneos → packUnitsById → plan → items.
+ * Qty + refs de una caja: escaneos (verdad) → closedQty → packUnitsById → plan → items.
  * Solo cuenta esa packingUnit (Firestore ID); no mezcla otras cajas por #.
  * No escribe ni modifica recepción (salvo leer).
  */
@@ -455,30 +472,7 @@ async function resolveReceptionBoxQty(
 
   if (!reception || !packingUnitId) return { qty: 0, refs: [] };
 
-  // 0) Snapshot al cerrar caja (closedQty / closedRefs) — fuente estable post-cierre
-  try {
-    const unitSnap = await getDoc(doc(firestore, PACKING_UNITS_COL, packingUnitId));
-    if (unitSnap.exists()) {
-      const unit = unitSnap.data() as PackingUnit & {
-        closedQty?: number;
-        closedRefs?: string[];
-      };
-      if (unit.reception_id && String(unit.reception_id) !== reception) {
-        return { qty: 0, refs: [], packingUnitId };
-      }
-      const closedQty = Math.max(0, Number(unit.closedQty) || 0);
-      if (closedQty > 0) {
-        const refs = Array.isArray(unit.closedRefs)
-          ? unit.closedRefs.map((r) => String(r || '').trim()).filter(Boolean)
-          : [];
-        return { qty: closedQty, refs, packingUnitId };
-      }
-    }
-  } catch (err) {
-    console.warn('resolveReceptionBoxQty closedQty:', err);
-  }
-
-  // 1) Escaneos reales de ESTA caja (misma regla de qty que recepción)
+  // 1) Escaneos reales de ESTA caja (fuente de verdad; no confiar solo en snapshot)
   try {
     const itemsSnap = await getDocs(
       query(collection(firestore, 'scannedItems'), where('packing_unit_id', '==', packingUnitId))
@@ -504,7 +498,30 @@ async function resolveReceptionBoxQty(
     console.warn('resolveReceptionBoxQty scannedItems:', err);
   }
 
-  // 2) referenceStats.packUnitsById — solo esta packingUnitId (puede partir qty por ref)
+  // 2) Snapshot al cerrar / rebuild (closedQty / closedRefs) si ya no hay escaneos
+  try {
+    const unitSnap = await getDoc(doc(firestore, PACKING_UNITS_COL, packingUnitId));
+    if (unitSnap.exists()) {
+      const unit = unitSnap.data() as PackingUnit & {
+        closedQty?: number;
+        closedRefs?: string[];
+      };
+      if (unit.reception_id && String(unit.reception_id) !== reception) {
+        return { qty: 0, refs: [], packingUnitId };
+      }
+      const closedQty = Math.max(0, Number(unit.closedQty) || 0);
+      if (closedQty > 0) {
+        const refs = Array.isArray(unit.closedRefs)
+          ? unit.closedRefs.map((r) => String(r || '').trim()).filter(Boolean)
+          : [];
+        return { qty: closedQty, refs, packingUnitId };
+      }
+    }
+  } catch (err) {
+    console.warn('resolveReceptionBoxQty closedQty:', err);
+  }
+
+  // 3) referenceStats.packUnitsById — solo esta packingUnitId (puede partir qty por ref)
   try {
     const statsSnap = await getDocs(
       collection(firestore, RECEPTION_OPS_COL, reception, 'referenceStats')
@@ -536,7 +553,7 @@ async function resolveReceptionBoxQty(
     console.warn('resolveReceptionBoxQty stats:', err);
   }
 
-  // 3) Plan de etiquetado — solo packingUnitId exacto
+  // 4) Plan de etiquetado — solo packingUnitId exacto
   try {
     const labSnap = await getDocs(
       query(
@@ -570,7 +587,7 @@ async function resolveReceptionBoxQty(
     console.warn('resolveReceptionBoxQty labelingPlan:', err);
   }
 
-  // 4) Items embebidos en el doc packingUnits (legado)
+  // 5) Items embebidos en el doc packingUnits (legado)
   try {
     const unitSnap = await getDoc(doc(firestore, PACKING_UNITS_COL, packingUnitId));
     if (unitSnap.exists()) {
@@ -631,15 +648,32 @@ async function lookupReceptionBoxForTallado(
     };
   }
 
-  const snap = await getDocs(
-    query(
-      collection(firestore, PACKING_UNITS_COL),
-      where('reception_id', '==', receptionId),
-      where('id', '==', unitNumber),
-      limit(10)
-    )
-  );
-  if (snap.empty) {
+  // `id` puede ser number o string según legado; no mezclar con TF/alternos.
+  const unitSnaps = await Promise.all([
+    getDocs(
+      query(
+        collection(firestore, PACKING_UNITS_COL),
+        where('reception_id', '==', receptionId),
+        where('id', '==', unitNumber),
+        limit(10)
+      )
+    ),
+    getDocs(
+      query(
+        collection(firestore, PACKING_UNITS_COL),
+        where('reception_id', '==', receptionId),
+        where('id', '==', String(unitNumber)),
+        limit(10)
+      )
+    ),
+  ]);
+  const seenUnitIds = new Set<string>();
+  const unitDocs = unitSnaps.flatMap((s) => s.docs).filter((d) => {
+    if (seenUnitIds.has(d.id)) return false;
+    seenUnitIds.add(d.id);
+    return true;
+  });
+  if (unitDocs.length === 0) {
     return {
       success: false,
       error: `No hay caja #${unitNumber} en la recepción seleccionada.`,
@@ -647,7 +681,7 @@ async function lookupReceptionBoxForTallado(
   }
 
   // Si hay más de un doc con el mismo #, preferir cerrada y la más reciente.
-  const ranked = [...snap.docs].sort((a, b) => {
+  const ranked = [...unitDocs].sort((a, b) => {
     const da = a.data() as PackingUnit;
     const db = b.data() as PackingUnit;
     const closed = Number(db.status === 'closed') - Number(da.status === 'closed');
@@ -848,6 +882,24 @@ export async function lookupTransferForTallado(
     const scanCode = normalizeTalladoScanCode(rawCode);
     if (!scanCode) return { success: false, error: 'Escanee un código válido.' };
 
+    const receptionScope = String(opts?.receptionOperationId || '').trim();
+
+    // Con RK elegida + # caja corto: SOLO cruce recepción.
+    // Si no, TF/alternos con el mismo número (p.ej. 625) agregaban marcas ajenas
+    // (NIKE+ADIDAS / FILA+ADIDAS) y el banner de caja correcta no aparecía.
+    if (receptionScope && RECEPTION_BOX_NUMBER_RE.test(scanCode)) {
+      const fromReception = await lookupReceptionBoxForTallado(scanCode, receptionScope);
+      if (fromReception.success && fromReception.data) {
+        return fromReception;
+      }
+      return {
+        success: false,
+        error:
+          fromReception.error ||
+          `No se encontró caja #${scanCode} en la recepción seleccionada.`,
+      };
+    }
+
     const col = collection(firestore, TRANSFERS_COL);
     const digits = scanCode.replace(/\D/g, '');
     const altVariants = talladoCodeVariants(scanCode, rawCode).filter((v) => v !== scanCode);
@@ -893,20 +945,12 @@ export async function lookupTransferForTallado(
       return { success: true, data: fromCatalog };
     }
 
-    // Cruce recepción por # caja: solo con RK/recepción elegida (el # se reinicia por operación).
+    // # caja sin RK: pedir recepción (no inventar match TF ya descartado arriba).
     if (RECEPTION_BOX_NUMBER_RE.test(scanCode)) {
-      const fromReception = await lookupReceptionBoxForTallado(
-        scanCode,
-        opts?.receptionOperationId
-      );
-      if (fromReception.success && fromReception.data) {
-        return fromReception;
-      }
       return {
         success: false,
         error:
-          fromReception.error ||
-          `No se encontró caja #${scanCode} en la recepción seleccionada (tampoco en TF/catálogo).`,
+          'Para tallar por # de caja elija primero la recepción (RK). El # se reinicia en cada operación.',
       };
     }
 
@@ -1761,7 +1805,10 @@ async function loadTalladoCollectionsForDay(dayKey: string): Promise<{
     }
     const pauses = pausesSnap.docs.map((d) => ({ id: d.id, ...d.data() } as TalladoPause));
 
-    if (unitMap.size > 0 || shiftMap.size > 0) {
+    // Solo cortocircuitar si ya hay unidades del día. Si solo llegaron turnos
+    // (p.ej. por dayKey) pero 0 units, hay que paginar: el rango por startedAt
+    // a veces no matchea ISO legacy y el dashboard quedaba en 0 und (días 12/14).
+    if (unitMap.size > 0) {
       return {
         shifts: Array.from(shiftMap.values()),
         units: Array.from(unitMap.values()),

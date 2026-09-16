@@ -209,6 +209,12 @@ function isTalladoSinRemision(u: Pick<TalladoUnit, 'source' | 'bodegaDestino' | 
 }
 
 function displayTalladoMarca(u: TalladoUnit): string {
+  // En cruce recepción mostrar refs de la caja (no marcas TF ajenas).
+  if (u.source === 'recepcion') {
+    const refs = String(u.referencia || '').trim();
+    if (refs) return refs;
+    return TALLADO_DEFAULT_DESTINO;
+  }
   if (isTalladoSinRemision(u)) return TALLADO_DEFAULT_DESTINO;
   return u.marca || '—';
 }
@@ -359,7 +365,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   );
 
   const showScanFlash = useCallback(
-    (code: string, label: string, variant: 'ok' | 'fin' | 'error' = 'ok') => {
+    (code: string, label: string, variant: 'ok' | 'fin' | 'error' = 'ok', holdMs = 2000) => {
       if (scanFlashTimerRef.current) clearTimeout(scanFlashTimerRef.current);
       setScanFlash({ code: displayScanCode(code) || code, label, variant });
       focusScanInput(30);
@@ -367,7 +373,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         setScanFlash(null);
         scanFlashTimerRef.current = null;
         focusScanInput(30);
-      }, 2000);
+      }, Math.max(1200, holdMs));
     },
     [focusScanInput]
   );
@@ -720,15 +726,22 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
           const u = res.unit;
           const label =
             u.source === 'recepcion'
-              ? `Caja #${u.unitNumber ?? u.scanCode}`
+              ? `Caja #${u.unitNumber ?? u.scanCode} confirmada · ${u.cantidad} und.`
               : u.source === 'catalogo'
-                ? 'Catálogo'
-                : u.numeroTF || u.scanCode;
-          showScanFlash(u.scanCode || code, `Confirmada · ${u.cantidad}`, 'ok');
+                ? `Catálogo confirmado · ${u.cantidad} und.`
+                : `Confirmada · ${u.cantidad} und.`;
+          // Banner de éxito más visible/largo (lookups de recepción pueden tardar >2s).
+          showScanFlash(u.scanCode || code, label, 'ok', 3200);
           setReceptionCandidates([]);
           toast({
             title: 'Unidad confirmada',
-            description: `${label} · ${u.cantidad} und. · ${talladoEtiquetadoModoLabel(u.etiquetadoModo)}`,
+            description: `${
+              u.source === 'recepcion'
+                ? `Caja #${u.unitNumber ?? u.scanCode}`
+                : u.source === 'catalogo'
+                  ? 'Catálogo'
+                  : u.numeroTF || u.scanCode
+            } · ${u.cantidad} und. · ${talladoEtiquetadoModoLabel(u.etiquetadoModo)}`,
           });
           setUnits((prev) => [u, ...prev.filter((x) => x.id !== u.id)]);
           return;
@@ -918,7 +931,12 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     }
     const u = res.data;
     setReceptionCandidates([]);
-    showScanFlash(u.scanCode, `Confirmada · ${u.cantidad}`, 'ok');
+    showScanFlash(
+      u.scanCode,
+      `Caja #${u.unitNumber ?? u.scanCode} confirmada · ${u.cantidad} und.`,
+      'ok',
+      3200
+    );
     toast({
       title: 'Unidad confirmada',
       description: `Caja #${u.unitNumber ?? u.scanCode} · RK ${u.rkIdentifier || '—'} · ${u.cantidad} und. · ${talladoEtiquetadoModoLabel(u.etiquetadoModo)}`,
