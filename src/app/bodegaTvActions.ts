@@ -1,7 +1,14 @@
 'use server';
 
 import { format } from 'date-fns';
-import { loadHistoricalReports, loadOperatorMappings } from '@/app/actions';
+import {
+  getGlobalPulsesForDay,
+  getPackedItemsForDate,
+  getUserPulsesForUserDay,
+  loadAllPackingSessions,
+  loadHistoricalReports,
+  loadOperatorMappings,
+} from '@/app/actions';
 import { listTalladoDashboard } from '@/app/talladoMercanciaActions';
 import {
   getAllUserProfiles,
@@ -34,7 +41,16 @@ import {
   talladoRankingByGrupo,
   talladoShiftDayWindow,
 } from '@/lib/talladoProductivity';
-import type { LabelingActivityLog, LabelingOperation, TalladoPause, TalladoShift, TalladoUnit } from '@/types';
+import type {
+  LabelingActivityLog,
+  LabelingOperation,
+  OperationPulse,
+  PackedItem,
+  PackingSession,
+  TalladoPause,
+  TalladoShift,
+  TalladoUnit,
+} from '@/types';
 
 function todayKeyLocal(): string {
   return format(new Date(), 'yyyy-MM-dd');
@@ -951,6 +967,225 @@ async function buildTallado(
   return area;
 }
 
+function tsToMs(value: unknown): number {
+  if (!value) return NaN;
+  if (value instanceof Date) return value.getTime();
+  if (typeof (value as { toDate?: () => Date }).toDate === 'function') {
+    try {
+      return (value as { toDate: () => Date }).toDate().getTime();
+    } catch {
+      return NaN;
+    }
+  }
+  const t = new Date(value as string | number).getTime();
+  return Number.isFinite(t) ? t : NaN;
+}
+
+/**
+ * Productividad del módulo Ventas por mayor (packedItems + pausas wholesale).
+ * Misma base que el reporte de productividad del dashboard mayorista.
+ */
+async function buildVentasMayor(
+  dayKey: string,
+  nameByUid: Map<string, string>,
+  uidByNormName: Map<string, string>
+): Promise<BodegaTvAreaSnapshot> {
+  const area = emptyArea('ventas_mayor', 'Ventas x Mayor');
+  try {
+    const [itemsRes, sessionsRes, mappingsRes, globalPulsesRes] = await Promise.all([
+      getPackedItemsForDate(dayKey),
+      loadAllPackingSessions(),
+      loadOperatorMappings(),
+      getGlobalPulsesForDay(dayKey),
+    ]);
+    if (itemsRes.error || !itemsRes.data?.length) return area;
+
+    const items = itemsRes.data;
+    const sessions = sessionsRes.data || [];
+    const mappings = (mappingsRes.data || {}) as Record<string, string>;
+    const cachedGlobalPulses = globalPulsesRes.data || [];
+    const dayStart = new Date(`${dayKey}T00:00:00`).getTime();
+    const dayEnd = new Date(`${dayKey}T23:59:59.999`).getTime();
+    const nowMs = Date.now();
+
+    const packerMap = new Map<
+      string,
+      { id: string; name: string; items: PackedItem[]; sessions: PackingSession[] }
+    >();
+
+    for (const s of sessions) {
+      if (!s.packerId) continue;
+      if (!packerMap.has(s.packerId)) {
+        packerMap.set(s.packerId, {
+          id: s.packerId,
+          name: s.packerName || 'Operario',
+          items: [],
+          sessions: [],
+        });
+      }
+      packerMap.get(s.packerId)!.sessions.push(s);
+    }
+    for (const it of items) {
+      if (!it.packerId) continue;
+      if (!packerMap.has(it.packerId)) {
+        packerMap.set(it.packerId, {
+          id: it.packerId,
+          name: 'Operario',
+          items: [],
+          sessions: [],
+        });
+      }
+      packerMap.get(it.packerId)!.items.push(it);
+    }
+
+    const packerIds = [...packerMap.keys()].filter((id) => (packerMap.get(id)?.items.length || 0) > 0);
+    const pulsesByPacker = await Promise.all(
+      packerIds.map(async (packerId) => {
+        const userRes = await getUserPulsesForUserDay(packerId, dayKey, 'wholesale');
+        const users = userRes.data || [];
+        const globals = cachedGlobalPulses.filter((p) => p.isGlobal);
+        const seen = new Set<string>();
+        const merged: OperationPulse[] = [];
+        for (const p of [...globals, ...users]) {
+          const key = p.id ?? `noid-${p.userId}-${String(p.startTime)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          if (!(p.isGlobal || p.userId === packerId)) continue;
+          if (!p.isGlobal && p.moduleContext && p.moduleContext !== 'wholesale') continue;
+          merged.push(p);
+        }
+        return { packerId, pulses: merged };
+      })
+    );
+    const pulsesMap = new Map(pulsesByPacker.map((row) => [row.packerId, row.pulses]));
+
+    const rankingRows: {
+      name: string;
+      units: number;
+      productivity: number;
+      packerId: string;
+    }[] = [];
+
+    for (const packerId of packerIds) {
+      const data = packerMap.get(packerId)!;
+      const pulses = pulsesMap.get(packerId) || [];
+
+      let bestName = data.name;
+      if (mappings[packerId]) bestName = mappings[packerId];
+      else if (nameByUid.get(packerId) && !looksLikeEmail(nameByUid.get(packerId)!)) {
+        bestName = nameByUid.get(packerId)!;
+      } else if (bestName === 'Operario' || looksLikeEmail(bestName)) {
+        const pulseWithName = pulses.find(
+          (p) => p.userName && p.userName !== 'Operario' && !looksLikeEmail(p.userName)
+        );
+        if (pulseWithName?.userName) bestName = pulseWithName.userName;
+      }
+
+      const scanTimes = data.items
+        .map((i) => tsToMs(i.scannedAt))
+        .filter((t) => Number.isFinite(t) && t >= dayStart && t <= dayEnd);
+      const sessionTimes = data.sessions
+        .flatMap((s) => (s.units || []).map((u) => tsToMs(u.createdAt)))
+        .filter((t) => Number.isFinite(t) && t >= dayStart && t <= dayEnd);
+      if (scanTimes.length === 0 && sessionTimes.length === 0) continue;
+
+      const firstActivityTime = Math.min(...scanTimes, ...sessionTimes);
+      const lastActivityTime = Math.max(
+        ...scanTimes,
+        ...sessionTimes,
+        firstActivityTime + 1000
+      );
+      const sessionEnd =
+        nowMs - lastActivityTime < 1800000 ? Math.min(nowMs, dayEnd) : lastActivityTime;
+
+      const pauseIntervals = [
+        ...data.sessions
+          .flatMap((s) => s.pauses || [])
+          .filter((p) => p.userId === packerId)
+          .map((p) => ({
+            start: tsToMs(p.startTime),
+            end: p.endTime ? tsToMs(p.endTime) : nowMs,
+          })),
+        ...pulses
+          .filter((p) => p.type === 'pause' || p.status === 'Pausado' || p.status === 'En Remisión')
+          .map((p) => ({
+            start: tsToMs(p.startTime),
+            end: p.endTime ? tsToMs(p.endTime) : nowMs,
+          })),
+      ].filter((p) => Number.isFinite(p.start) && Number.isFinite(p.end) && p.end > p.start);
+
+      pauseIntervals.sort((a, b) => a.start - b.start);
+      const mergedPauses: { start: number; end: number }[] = [];
+      if (pauseIntervals.length > 0) {
+        let current = { ...pauseIntervals[0] };
+        for (let i = 1; i < pauseIntervals.length; i++) {
+          if (pauseIntervals[i].start <= current.end) {
+            current.end = Math.max(current.end, pauseIntervals[i].end);
+          } else {
+            mergedPauses.push(current);
+            current = { ...pauseIntervals[i] };
+          }
+        }
+        mergedPauses.push(current);
+      }
+
+      let totalPauseMs = 0;
+      for (const p of mergedPauses) {
+        const start = Math.max(p.start, firstActivityTime);
+        const end = Math.min(p.end, sessionEnd);
+        if (end > start) totalPauseMs += end - start;
+      }
+
+      const totalEffectiveMs = Math.max(0, sessionEnd - firstActivityTime - totalPauseMs);
+      const units = data.items.reduce((sum, i) => sum + (Number(i.quantity) || 1), 0);
+      if (units <= 0) continue;
+      const uph = totalEffectiveMs > 0 ? (units / (totalEffectiveMs / 1000)) * 3600 : 0;
+
+      rankingRows.push({
+        packerId,
+        name: bestName,
+        units,
+        productivity: uph,
+      });
+    }
+
+    rankingRows.sort((a, b) => b.units - a.units || b.productivity - a.productivity);
+
+    const totalUnits = rankingRows.reduce((s, r) => s + r.units, 0);
+    const totalEffHours = rankingRows.reduce((s, r) => {
+      // Recompute hours from productivity: units/uph
+      if (r.productivity > 0) return s + r.units / r.productivity;
+      return s;
+    }, 0);
+
+    area.units = totalUnits;
+    area.operators = rankingRows.length;
+    area.productivity =
+      rankingRows.length > 0
+        ? rankingRows.reduce((s, r) => s + r.productivity, 0) / rankingRows.length
+        : totalEffHours > 0
+          ? totalUnits / totalEffHours
+          : 0;
+    area.compliance = undefined;
+    area.ranking = rankingRows.map((r) => ({
+      name: r.name,
+      units: r.units,
+      productivity: r.productivity,
+    }));
+    area.peopleKeys = rankingRows.map((r) =>
+      r.packerId ? personKeyFromUid(r.packerId) : personKeyFromName(r.name, uidByNormName)
+    );
+    area.extras = [
+      { label: 'Operarios', value: String(rankingRows.length) },
+      { label: 'Und hoy', value: String(totalUnits) },
+      { label: 'Fuente', value: 'Módulo Ventas x Mayor' },
+    ];
+  } catch (e) {
+    console.error('bodegaTv ventas_mayor:', e);
+  }
+  return area;
+}
+
 async function buildRecepcion(
   dayKey: string,
   nameByUid: Map<string, string>
@@ -1374,14 +1609,16 @@ export async function getBodegaTvSnapshot(options?: {
       areas = [tallado, etiquetado];
       remainderAssignments = undefined;
     } else {
-      const [empaque, etiquetado, tallado, recepcion, remainders] = await Promise.all([
+      const [empaque, etiquetado, tallado, recepcion, ventasMayor, remainders] = await Promise.all([
         buildEmpaque(dayKey, uidByNormName),
         buildEtiquetado(dayKey, nameByUid, uidByNormName, 'all'),
         buildTallado(dayKey, uidByNormName),
         buildRecepcion(dayKey, nameByUid),
+        buildVentasMayor(dayKey, nameByUid, uidByNormName),
         buildRemainderAssignments(dayKey, nameByUid),
       ]);
-      areas = [empaque, etiquetado, tallado, recepcion];
+      // Core overview: 4 áreas. Ventas x Mayor va al slide complementario + ranking.
+      areas = [empaque, etiquetado, tallado, recepcion, ventasMayor];
       remainderAssignments = remainders;
     }
 

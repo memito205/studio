@@ -12,6 +12,7 @@ import {
   BodegaOverviewSlide,
   BodegaRecepcionOpsSlide,
   BodegaRemainderAssignmentsSlide,
+  BODEGA_TV_CORE_AREA_KEYS,
   BODEGA_TV_PAGE_SIZE,
   HOURLY_PAGE_SIZE,
   RECEPTION_OPS_PAGE_SIZE,
@@ -55,7 +56,32 @@ export default function BodegaTvBoard({ mode = 'full' }: { mode?: BodegaTvMode }
 
   const slides = useMemo(() => {
     if (!data) return [] as React.ReactNode[];
-    const nodes: React.ReactNode[] = [<BodegaOverviewSlide key="overview" data={data} />];
+    const coreKeySet = new Set<string>(BODEGA_TV_CORE_AREA_KEYS);
+    const coreAreas = data.areas.filter((a) => coreKeySet.has(a.key));
+    const extraAreas = data.areas.filter((a) => !coreKeySet.has(a.key));
+
+    const nodes: React.ReactNode[] = [
+      <BodegaOverviewSlide
+        key="overview"
+        data={data}
+        areas={mode === 'externos' ? data.areas : coreAreas}
+        summaryMode={mode === 'externos' ? 'global' : 'local'}
+      />,
+    ];
+
+    // Slide complementario (Ventas x Mayor, etc.) — solo TV completa.
+    if (mode === 'full' && extraAreas.length > 0) {
+      nodes.push(
+        <BodegaOverviewSlide
+          key="overview-extra"
+          data={data}
+          areas={extraAreas}
+          title="Resumen · Ventas y otros · Hoy"
+          subtitle="Módulos complementarios · misma jornada · sin mezclar con el resumen principal"
+          summaryMode="local"
+        />
+      );
+    }
 
     // Remanentes solo en TV completa (no en monitor de externos).
     if (mode === 'full') {

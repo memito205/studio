@@ -22,7 +22,12 @@ export type BodegaTvReceptionOpSummary = {
   operatorsToday: number;
 };
 
-export type BodegaTvAreaKey = 'empaque' | 'etiquetado' | 'tallado' | 'recepcion';
+export type BodegaTvAreaKey =
+  | 'empaque'
+  | 'etiquetado'
+  | 'tallado'
+  | 'recepcion'
+  | 'ventas_mayor';
 
 /** full = TV bodega completa; externos = Tallado + Etiquetado Externo (kiosk). */
 export type BodegaTvMode = 'full' | 'externos';

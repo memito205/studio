@@ -8,13 +8,17 @@ import type {
   BodegaTvReceptionOpSummary,
   BodegaTvSnapshot,
 } from '@/lib/bodegaTvTypes';
-import { Package, Tags, ScanLine, Warehouse, Trophy, Users, Gauge } from 'lucide-react';
+import { Package, Tags, ScanLine, Warehouse, Trophy, Users, Gauge, ShoppingCart } from 'lucide-react';
+
+/** Áreas del resumen principal (slide 1). El resto va al resumen complementario. */
+export const BODEGA_TV_CORE_AREA_KEYS = ['empaque', 'etiquetado', 'tallado', 'recepcion'] as const;
 
 const AREA_ACCENT: Record<string, string> = {
   empaque: 'text-sky-400',
   etiquetado: 'text-violet-400',
   tallado: 'text-emerald-400',
   recepcion: 'text-amber-400',
+  ventas_mayor: 'text-rose-400',
 };
 
 const AREA_ICON = {
@@ -22,6 +26,7 @@ const AREA_ICON = {
   etiquetado: Tags,
   tallado: ScanLine,
   recepcion: Warehouse,
+  ventas_mayor: ShoppingCart,
 } as const;
 
 export const BODEGA_TV_PAGE_SIZE = 2;
@@ -135,26 +140,67 @@ function RankTable({
   );
 }
 
-export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
+export function BodegaOverviewSlide({
+  data,
+  areas: areasProp,
+  title,
+  subtitle,
+  summaryMode = 'global',
+}: {
+  data: BodegaTvSnapshot;
+  /** Si se pasa, solo se muestran estas áreas (p. ej. core o complementarias). */
+  areas?: BodegaTvAreaSnapshot[];
+  title?: string;
+  subtitle?: string;
+  /** global = KPIs del snapshot; local = KPIs solo de las áreas mostradas. */
+  summaryMode?: 'global' | 'local';
+}) {
   const isExternos = data.mode === 'externos';
+  const areas = areasProp ?? data.areas;
   const areaColsMd =
-    data.areas.length <= 2
-      ? 'md:grid-cols-2'
-      : data.areas.length === 3
-        ? 'md:grid-cols-3'
-        : 'md:grid-cols-4';
+    areas.length <= 1
+      ? 'md:grid-cols-1'
+      : areas.length === 2
+        ? 'md:grid-cols-2'
+        : areas.length === 3
+          ? 'md:grid-cols-3'
+          : 'md:grid-cols-4';
+
+  const localUnits = areas.reduce((s, a) => s + (Number(a.units) || 0), 0);
+  const localOps = areas.reduce((s, a) => s + (Number(a.operators) || 0), 0);
+  let localCompSum = 0;
+  let localCompW = 0;
+  for (const a of areas) {
+    if (typeof a.compliance === 'number' && Number.isFinite(a.compliance) && a.units > 0) {
+      localCompSum += a.compliance * a.units;
+      localCompW += a.units;
+    }
+  }
+  const summaryUnits = summaryMode === 'local' ? localUnits : data.summary.totalUnits;
+  const summaryOps = summaryMode === 'local' ? localOps : data.summary.operators;
+  const summaryComp =
+    summaryMode === 'local'
+      ? localCompW > 0
+        ? localCompSum / localCompW
+        : 0
+      : data.summary.avgCompliance;
+
+  const heading =
+    title ||
+    (isExternos ? 'Resumen externos · Hoy' : 'Resumen operación bodega · Hoy');
+  const sub =
+    subtitle ||
+    (isExternos
+      ? 'Tallado + Etiquetado Externo · Recursos = personas únicas'
+      : 'Recursos = personas únicas · Cumplimiento = promedio ponderado por und');
 
   return (
     <div className="w-full h-full flex flex-col min-h-0 max-md:h-auto">
       <h2 className="text-[1.35em] md:text-[1.85em] font-black tracking-tight text-slate-100 mb-[0.35em] flex items-center gap-[0.55em] leading-none">
         <Trophy className="w-[1.1em] h-[1.1em] text-amber-400 shrink-0" />
-        {isExternos ? 'Resumen externos · Hoy' : 'Resumen operación bodega · Hoy'}
+        {heading}
       </h2>
-      <p className="text-[0.85em] text-slate-500 font-semibold mb-[1em] leading-snug">
-        {isExternos
-          ? 'Tallado + Etiquetado Externo · Recursos = personas únicas'
-          : 'Recursos = personas únicas · Cumplimiento = promedio ponderado por und'}
-      </p>
+      <p className="text-[0.85em] text-slate-500 font-semibold mb-[1em] leading-snug">{sub}</p>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-[0.85em] md:gap-[1.1em] mb-[1.2em] shrink-0">
         <div className="rounded-[1em] border-2 border-slate-600 bg-slate-900 px-[1.2em] py-[1em] md:py-[1.3em] text-center">
@@ -162,7 +208,7 @@ export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
             Unidades totales
           </div>
           <div className="text-[2.6em] md:text-[3.4em] font-black text-blue-400 leading-none">
-            {fmt(data.summary.totalUnits)}
+            {fmt(summaryUnits)}
           </div>
         </div>
         <div className="rounded-[1em] border-2 border-slate-600 bg-slate-900 px-[1.2em] py-[1em] md:py-[1.3em] text-center">
@@ -170,7 +216,7 @@ export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
             Cumplimiento medio
           </div>
           <div className="text-[2.6em] md:text-[3.4em] font-black text-emerald-400 leading-none">
-            {fmt(data.summary.avgCompliance, 0)}%
+            {fmt(summaryComp, 0)}%
           </div>
         </div>
         <div className="rounded-[1em] border-2 border-slate-600 bg-slate-900 px-[1.2em] py-[1em] md:py-[1.3em] text-center">
@@ -178,14 +224,14 @@ export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
             Recursos activos
           </div>
           <div className="text-[2.6em] md:text-[3.4em] font-black text-violet-400 leading-none">
-            {fmt(data.summary.operators)}
+            {fmt(summaryOps)}
           </div>
         </div>
       </div>
 
       <div className={`grid grid-cols-1 sm:grid-cols-2 ${areaColsMd} gap-[1em] flex-1 min-h-0 max-md:pb-[1em]`}>
-        {data.areas.map((area) => {
-          const Icon = AREA_ICON[area.key];
+        {areas.map((area) => {
+          const Icon = AREA_ICON[area.key as keyof typeof AREA_ICON] || Package;
           const etiquetadoExtras = (area.extras || []).filter((ex) =>
             ['Und LIVE', 'Cajas', 'Refs finalizadas'].includes(ex.label)
           );
@@ -195,8 +241,12 @@ export function BodegaOverviewSlide({ data }: { data: BodegaTvSnapshot }) {
               className="rounded-[1em] border-2 border-slate-700 bg-slate-900/90 px-[1em] py-[1em] flex flex-col min-h-0 overflow-hidden"
             >
               <div className="flex items-center gap-[0.45em] mb-[0.55em] shrink-0">
-                <Icon className={`w-[1.05em] h-[1.05em] shrink-0 ${AREA_ACCENT[area.key]}`} />
-                <span className={`text-[1.25em] font-black leading-tight ${AREA_ACCENT[area.key]}`}>
+                <Icon
+                  className={`w-[1.05em] h-[1.05em] shrink-0 ${AREA_ACCENT[area.key] || 'text-slate-300'}`}
+                />
+                <span
+                  className={`text-[1.25em] font-black leading-tight ${AREA_ACCENT[area.key] || 'text-slate-200'}`}
+                >
                   {area.title}
                 </span>
               </div>
@@ -258,7 +308,7 @@ export function BodegaAreaDetailSlide({
   pageIndex: number;
   pageCount: number;
 }) {
-  const Icon = AREA_ICON[area.key];
+  const Icon = AREA_ICON[area.key as keyof typeof AREA_ICON] || Package;
   const showCompliance =
     area.key === 'empaque' ||
     area.key === 'etiquetado' ||
@@ -636,7 +686,7 @@ export function BodegaAreaHourlySlide({
   pageIndex: number;
   pageCount: number;
 }) {
-  const Icon = AREA_ICON[area.key];
+  const Icon = AREA_ICON[area.key as keyof typeof AREA_ICON] || Package;
   const maxUnits = Math.max(1, ...buckets.map((b) => b.units));
 
   return (
