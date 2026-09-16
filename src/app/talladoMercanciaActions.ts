@@ -30,7 +30,7 @@ import type {
   LabelingOperation,
   ReceptionOperation,
 } from '@/types';
-import { isTalladoSameLocalDay, talladoLocalDayKey, filterTalladoBundleToDay } from '@/lib/talladoProductivity';
+import { isTalladoSameLocalDay, talladoLocalDayKey, filterTalladoBundleToDay, talladoBogotaDayBounds } from '@/lib/talladoProductivity';
 import { resolveTalladoEtiquetadoModo } from '@/lib/talladoEtiquetado';
 
 const SHIFTS_COL = 'talladoShifts';
