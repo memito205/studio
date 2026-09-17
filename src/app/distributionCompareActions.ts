@@ -2,6 +2,7 @@
 
 import {
   collection,
+  deleteDoc,
   deleteField,
   doc,
   getDoc,
@@ -21,6 +22,9 @@ import type {
   DistributionCompareLine,
   DistributionCompareOperation,
   DistributionComparePhysicalSource,
+  DistributionComparePlanDetail,
+  DistributionComparePlanDetailRow,
+  DistributionComparePlanDetailSource,
   DistributionCompareTotals,
   DistributionRemainderTask,
   DistributionRemainderTaskStatus,
@@ -33,6 +37,8 @@ const SUMMARY_COL = 'distributionCompareSummaries';
 const TASKS_COL = 'distributionRemainderTasks';
 const RECEPTION_COL = 'receptionOperations';
 const USERS_COL = 'users';
+/** Detalle aditivo bodega+talla (no afecta remanente / byBodega). */
+const PLAN_DETAIL_SUB = 'planDetail';
 
 async function upsertCompareSummary(data: DistributionCompareOperation): Promise<void> {
   const payload = stripUndefinedDeep({
@@ -111,8 +117,12 @@ function toNumber(value: unknown): number {
 export type DistributionPlanRowInput = {
   REFERENCIA: string;
   BODEGA?: string;
+  /** Opcional: si falta se guarda como SIN_TALLA en planDetail (no afecta byBodega). */
+  TALLA?: string;
+  Talla?: string;
   CANT?: number | string;
   CANTIDAD?: number | string;
+  [key: string]: unknown;
 };
 
 export type DistributionStockRowInput = {
@@ -210,6 +220,138 @@ async function deleteCompareLinesSubcollection(compareId: string): Promise<numbe
   }
   if (ops > 0) await batch.commit();
   return deleted;
+}
+
+function readPlanBodegaForDetail(row: DistributionPlanRowInput): string {
+  const anyRow = row as Record<string, unknown>;
+  const raw = String(anyRow.BODEGA ?? anyRow.Bodega ?? anyRow.bodega ?? '').trim();
+  return raw || 'SIN_BODEGA';
+}
+
+function readPlanTallaForDetail(row: DistributionPlanRowInput): string {
+  const anyRow = row as Record<string, unknown>;
+  const raw = String(
+    anyRow.TALLA ?? anyRow.Talla ?? anyRow.talla ?? anyRow.SIZE ?? anyRow.Size ?? ''
+  ).trim();
+  return raw || 'SIN_TALLA';
+}
+
+/** Agrega detalle por (referencia, bodega, talla). Independiente de byBodega/TOTAL. */
+function aggregatePlanDetailFromRows(
+  rows: DistributionPlanRowInput[]
+): Map<string, DistributionComparePlanDetailRow[]> {
+  const byRef = new Map<string, Map<string, DistributionComparePlanDetailRow>>();
+  for (const row of rows || []) {
+    const reference = normRef(row.REFERENCIA);
+    const qty = toNumber(row.CANT) || toNumber(row.CANTIDAD);
+    if (!reference || qty === 0) continue;
+    const bodega = readPlanBodegaForDetail(row);
+    const talla = readPlanTallaForDetail(row);
+    const key = `${bodega}\u0000${talla}`;
+    if (!byRef.has(reference)) byRef.set(reference, new Map());
+    const rowMap = byRef.get(reference)!;
+    const prev = rowMap.get(key);
+    if (prev) prev.qty += qty;
+    else rowMap.set(key, { bodega, talla, qty });
+  }
+  const out = new Map<string, DistributionComparePlanDetailRow[]>();
+  for (const [reference, rowMap] of byRef) {
+    const sorted = [...rowMap.values()].sort((a, b) => {
+      const bodegaCmp = a.bodega.localeCompare(b.bodega, 'es');
+      if (bodegaCmp !== 0) return bodegaCmp;
+      return a.talla.localeCompare(b.talla, 'es');
+    });
+    out.set(reference, sorted);
+  }
+  return out;
+}
+
+async function writePlanDetailSubcollection(
+  compareId: string,
+  byRefRows: Map<string, DistributionComparePlanDetailRow[]>,
+  opts: {
+    source: DistributionComparePlanDetailSource;
+    planFileName?: string;
+    uploadedBy?: string;
+    /** Si true, conserva createdAt de docs existentes al reemplazar (retrofit). */
+    preserveCreatedAt?: boolean;
+  }
+): Promise<number> {
+  if (byRefRows.size === 0) return 0;
+  const now = new Date().toISOString();
+  let batch = writeBatch(firestore);
+  let ops = 0;
+  let written = 0;
+
+  for (const [reference, rows] of byRefRows) {
+    if (!rows.length) continue;
+    const refDocId = lineDocId(reference);
+    const detailRef = doc(firestore, COL, compareId, PLAN_DETAIL_SUB, refDocId);
+    let createdAt = now;
+    if (opts.preserveCreatedAt) {
+      try {
+        const existing = await getDoc(detailRef);
+        if (existing.exists()) {
+          const prev = existing.data() as DistributionComparePlanDetail;
+          if (prev.createdAt) createdAt = prev.createdAt;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    const payload: DistributionComparePlanDetail = stripUndefinedDeep({
+      reference,
+      rows,
+      rowCount: rows.length,
+      source: opts.source,
+      planFileName: opts.planFileName,
+      createdAt,
+      updatedAt: now,
+      uploadedBy: opts.uploadedBy,
+    }) as DistributionComparePlanDetail;
+    batch.set(detailRef, payload);
+    ops += 1;
+    written += 1;
+    if (ops >= 400) {
+      await batch.commit();
+      batch = writeBatch(firestore);
+      ops = 0;
+    }
+  }
+  if (ops > 0) await batch.commit();
+  return written;
+}
+
+async function deletePlanDetailSubcollection(compareId: string): Promise<number> {
+  const sub = await getDocs(collection(firestore, COL, compareId, PLAN_DETAIL_SUB));
+  if (sub.empty) return 0;
+  let batch = writeBatch(firestore);
+  let ops = 0;
+  let deleted = 0;
+  for (const d of sub.docs) {
+    batch.delete(d.ref);
+    ops += 1;
+    deleted += 1;
+    if (ops >= 400) {
+      await batch.commit();
+      batch = writeBatch(firestore);
+      ops = 0;
+    }
+  }
+  if (ops > 0) await batch.commit();
+  return deleted;
+}
+
+async function deletePlanDetailForReference(
+  compareId: string,
+  reference: string
+): Promise<void> {
+  if (!compareId || !reference) return;
+  try {
+    await deleteDoc(doc(firestore, COL, compareId, PLAN_DETAIL_SUB, lineDocId(reference)));
+  } catch (e) {
+    console.warn('deletePlanDetailForReference:', e);
+  }
 }
 
 /** Migra líneas embebidas a subcolección para que el listado deje de bajar docs gigantes. */
@@ -464,6 +606,13 @@ export async function createDistributionCompare(input: {
 
     await setDoc(ref, stripUndefinedDeep({ ...payload, lines: undefined }));
     await writeCompareLinesSubcollection(ref.id, lines);
+    // Capa aditiva: detalle bodega+talla (no altera lines / remanente).
+    const planDetailByRef = aggregatePlanDetailFromRows(input.planRows);
+    await writePlanDetailSubcollection(ref.id, planDetailByRef, {
+      source: 'create_compare',
+      planFileName: input.planFileName,
+      uploadedBy: input.createdBy,
+    });
     await upsertCompareSummary(payload);
     return { success: true, id: ref.id, data: { ...payload, lines } };
   } catch (e: any) {
@@ -570,17 +719,24 @@ export async function archiveDistributionCompare(
   }
 }
 
-/** Elimina comparación, líneas y tareas. No toca recepción. */
+/** Elimina comparación, líneas, planDetail y tareas. No toca recepción. */
 export async function deleteDistributionCompare(
   id: string
-): Promise<{ success: boolean; deletedTasks?: number; deletedLines?: number; error?: string }> {
+): Promise<{
+  success: boolean;
+  deletedTasks?: number;
+  deletedLines?: number;
+  deletedPlanDetail?: number;
+  error?: string;
+}> {
   try {
     if (!id) return { success: false, error: 'ID requerido.' };
 
-    // Borrar subtareas y líneas en paralelo (docs livianos).
-    const [tasksSnap, deletedLines] = await Promise.all([
+    // Borrar subtareas, líneas y planDetail en paralelo (docs livianos).
+    const [tasksSnap, deletedLines, deletedPlanDetail] = await Promise.all([
       getDocs(query(collection(firestore, TASKS_COL), where('compareId', '==', id), limit(500))),
       deleteCompareLinesSubcollection(id),
+      deletePlanDetailSubcollection(id),
     ]);
 
     let deletedTasks = 0;
@@ -599,7 +755,7 @@ export async function deleteDistributionCompare(
     batch.delete(doc(firestore, COL, id));
     batch.delete(doc(firestore, SUMMARY_COL, id));
     await batch.commit();
-    return { success: true, deletedTasks, deletedLines };
+    return { success: true, deletedTasks, deletedLines, deletedPlanDetail };
   } catch (e: any) {
     console.error('deleteDistributionCompare:', e);
     return { success: false, error: e?.message || 'No se pudo eliminar.' };
@@ -1416,6 +1572,8 @@ export async function validateRemainderTask(input: {
       rejectionReason: null,
       updatedAt: now,
     });
+    // Ciclo de vida: al validar se elimina el detalle de esa referencia.
+    await deletePlanDetailForReference(task.compareId, task.reference);
     await refreshCompareWorkflowStatus(task.compareId);
     return { success: true };
   } catch (e: any) {
@@ -1576,6 +1734,8 @@ export async function supervisorConfirmRemaindersDirect(input: {
         };
         await setDoc(ref, stripUndefinedDeep(payload));
       }
+      // Ciclo de vida: validación (directa o por tarea) borra planDetail de la ref.
+      await deletePlanDetailForReference(input.compareId, item.reference);
       confirmed += 1;
     }
 
@@ -1591,5 +1751,74 @@ export async function supervisorConfirmRemaindersDirect(input: {
   } catch (e: any) {
     console.error('supervisorConfirmRemaindersDirect:', e);
     return { success: false, error: e?.message || 'No se pudo confirmar.' };
+  }
+}
+
+/** Lee detalle bodega+talla de una referencia (capa planDetail). */
+export async function getPlanDetail(
+  compareId: string,
+  reference: string
+): Promise<{
+  success: boolean;
+  data?: DistributionComparePlanDetail | null;
+  error?: string;
+}> {
+  try {
+    if (!compareId || !reference) {
+      return { success: false, error: 'Faltan compareId o referencia.' };
+    }
+    const snap = await getDoc(
+      doc(firestore, COL, compareId, PLAN_DETAIL_SUB, lineDocId(reference))
+    );
+    if (!snap.exists()) {
+      return { success: true, data: null };
+    }
+    return {
+      success: true,
+      data: { ...(snap.data() as DistributionComparePlanDetail), reference: normRef(reference) },
+    };
+  } catch (e: any) {
+    console.error('getPlanDetail:', e);
+    return { success: false, error: e?.message || 'No se pudo cargar el detalle.' };
+  }
+}
+
+/**
+ * Retrofit: escribe solo planDetail (merge/replace por ref del archivo).
+ * NO recalcula lines / remanentes / byBodega.
+ */
+export async function uploadPlanDetailRetrofit(input: {
+  compareId: string;
+  planRows: DistributionPlanRowInput[];
+  planFileName?: string;
+  uploadedBy?: string;
+}): Promise<{ success: boolean; refsUpdated?: number; error?: string }> {
+  try {
+    if (!input.compareId) return { success: false, error: 'ID de comparación requerido.' };
+    if (!input.planRows?.length) {
+      return { success: false, error: 'Suba un Excel con REFERENCIA y CANT (BODEGA/TALLA opcionales).' };
+    }
+
+    const compareSnap = await getDoc(doc(firestore, COL, input.compareId));
+    if (!compareSnap.exists()) {
+      return { success: false, error: 'Comparación no encontrada.' };
+    }
+
+    const byRef = aggregatePlanDetailFromRows(input.planRows);
+    if (byRef.size === 0) {
+      return { success: false, error: 'El archivo no tiene cantidades válidas para detalle.' };
+    }
+
+    const refsUpdated = await writePlanDetailSubcollection(input.compareId, byRef, {
+      source: 'retrofit_upload',
+      planFileName: input.planFileName,
+      uploadedBy: input.uploadedBy,
+      preserveCreatedAt: true,
+    });
+
+    return { success: true, refsUpdated };
+  } catch (e: any) {
+    console.error('uploadPlanDetailRetrofit:', e);
+    return { success: false, error: e?.message || 'No se pudo subir el detalle.' };
   }
 }

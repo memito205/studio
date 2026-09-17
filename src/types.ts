@@ -1167,6 +1167,31 @@ export interface DistributionCompareBodegaQty {
   qty: number;
 }
 
+/** Fila de detalle de plan (bodega + talla). Capa aditiva; no afecta remanente. */
+export interface DistributionComparePlanDetailRow {
+  bodega: string;
+  talla: string;
+  qty: number;
+}
+
+export type DistributionComparePlanDetailSource = 'create_compare' | 'retrofit_upload';
+
+/**
+ * Detalle de distribución por referencia (bodega + talla).
+ * Subcolección: `distributionCompares/{compareId}/planDetail/{refDocId}`
+ * Independiente de `lines` (physicalQty / distributedQty / remainderQty / byBodega).
+ */
+export interface DistributionComparePlanDetail {
+  reference: string;
+  rows: DistributionComparePlanDetailRow[];
+  rowCount: number;
+  source: DistributionComparePlanDetailSource;
+  planFileName?: string;
+  createdAt: string;
+  updatedAt: string;
+  uploadedBy?: string;
+}
+
 export interface DistributionCompareLine {
   reference: string;
   physicalQty: number;
@@ -1186,6 +1211,7 @@ export interface DistributionCompareTotals {
 /**
  * Comparación guardada (fase 1).
  * Colección Firestore: `distributionCompares` (detalle / subcolección `lines`)
+ * Detalle opcional bodega+talla: subcolección `planDetail`
  * Espejo liviano de listado: `distributionCompareSummaries`
  * No modifica recepción ni el Distribuidor IA.
  */

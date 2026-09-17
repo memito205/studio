@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Scale,
   Trash2,
+  Upload,
   UserCheck,
   XCircle,
   Search,
@@ -20,6 +21,13 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   Select,
   SelectContent,
@@ -43,6 +51,7 @@ import {
   createDistributionCompare,
   deleteDistributionCompare,
   getDistributionCompare,
+  getPlanDetail,
   listAssignableOperatorsForRemainders,
   listAvailableRemainderClaims,
   listMyRemainderTasks,
@@ -52,12 +61,14 @@ import {
   rejectRemainderTask,
   submitRemainderReturn,
   supervisorConfirmRemaindersDirect,
+  uploadPlanDetailRetrofit,
   validateRemainderTask,
   type DistributionPlanRowInput,
   type DistributionStockRowInput,
 } from '@/app/distributionCompareActions';
 import type {
   DistributionCompareOperation,
+  DistributionComparePlanDetailRow,
   DistributionRemainderAvailableClaim,
   DistributionRemainderTask,
 } from '@/types';
@@ -75,7 +86,7 @@ interface Props {
   onReturnToSuite: () => void;
 }
 
-/** Plan de cruce: REFERENCIA + CANT (BODEGA opcional). No altera el validador del Distribuidor IA. */
+/** Plan de cruce: REFERENCIA + CANT (BODEGA/TALLA opcionales). No altera el validador del Distribuidor IA. */
 function validateComparePlanData(data: any[]): data is DistributionPlanRowInput[] {
   if (!data || data.length === 0) return true;
   const first = data[0] || {};
@@ -173,6 +184,13 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [retrofitUploading, setRetrofitUploading] = useState(false);
+  const retrofitInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [planDetailOpen, setPlanDetailOpen] = useState(false);
+  const [planDetailLoading, setPlanDetailLoading] = useState(false);
+  const [planDetailReference, setPlanDetailReference] = useState('');
+  const [planDetailRows, setPlanDetailRows] = useState<DistributionComparePlanDetailRow[]>([]);
+  const [planDetailEmpty, setPlanDetailEmpty] = useState(false);
   const receptionsLoadedRef = React.useRef(false);
   const operatorsLoadedRef = React.useRef(false);
   const loadGenRef = React.useRef(0);
@@ -359,7 +377,9 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     try {
       const data = await parseExcelFile<DistributionPlanRowInput>(file);
       if (!validateComparePlanData(data as any[])) {
-        throw new Error('Columnas requeridas: REFERENCIA y CANT (o CANTIDAD). BODEGA es opcional.');
+        throw new Error(
+          'Columnas requeridas: REFERENCIA y CANT (o CANTIDAD). BODEGA y TALLA son opcionales.'
+        );
       }
       setPlanRows(data);
       setPlanFileName(file.name);
@@ -702,6 +722,75 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     if (selected) await loadDetailTasks(selected.id);
   };
 
+  const openPlanDetail = async (compareId: string, reference: string) => {
+    setPlanDetailReference(reference);
+    setPlanDetailRows([]);
+    setPlanDetailEmpty(false);
+    setPlanDetailOpen(true);
+    setPlanDetailLoading(true);
+    try {
+      const res = await getPlanDetail(compareId, reference);
+      if (!res.success) {
+        toast({
+          variant: 'destructive',
+          title: 'Detalle',
+          description: res.error || 'No se pudo cargar el detalle.',
+        });
+        setPlanDetailEmpty(true);
+        return;
+      }
+      if (!res.data || !res.data.rows?.length) {
+        setPlanDetailEmpty(true);
+        setPlanDetailRows([]);
+        return;
+      }
+      setPlanDetailEmpty(false);
+      setPlanDetailRows(res.data.rows);
+    } finally {
+      setPlanDetailLoading(false);
+    }
+  };
+
+  const onRetrofitPlanDetailFile = async (file: File | null) => {
+    if (!file || !selected?.id || !isManager) return;
+    try {
+      const data = await parseExcelFile<DistributionPlanRowInput>(file);
+      if (!validateComparePlanData(data as any[])) {
+        throw new Error(
+          'Columnas requeridas: REFERENCIA y CANT (o CANTIDAD). BODEGA y TALLA son opcionales.'
+        );
+      }
+      setRetrofitUploading(true);
+      const res = await uploadPlanDetailRetrofit({
+        compareId: selected.id,
+        planRows: data,
+        planFileName: file.name,
+        uploadedBy: user?.uid,
+      });
+      if (!res.success) {
+        toast({
+          variant: 'destructive',
+          title: 'Detalle de distribución',
+          description: res.error || 'No se pudo subir.',
+        });
+        return;
+      }
+      toast({
+        title: 'Detalle cargado',
+        description: `${res.refsUpdated || 0} referencia(s) actualizadas (sin recalcular remanente).`,
+      });
+    } catch (e: any) {
+      toast({
+        variant: 'destructive',
+        title: 'Detalle de distribución',
+        description: e?.message || 'No se pudo leer el Excel.',
+      });
+    } finally {
+      setRetrofitUploading(false);
+      if (retrofitInputRef.current) retrofitInputRef.current.value = '';
+    }
+  };
+
   const handleValidate = async (task: DistributionRemainderTask) => {
     if (!user?.uid) return;
     setBusyTaskId(task.id);
@@ -1031,22 +1120,35 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                         {task.claimedBySelf ? 'Tomada por usted' : 'Asignada'}
                       </TableCell>
                       <TableCell className="text-right">
-                        {task.status === 'assigned' || task.status === 'rejected' ? (
+                        <div className="flex flex-wrap justify-end gap-2">
                           <Button
                             type="button"
                             size="sm"
-                            disabled={busyTaskId === task.id}
-                            onClick={() => void handleSubmitReturn(task)}
+                            variant="outline"
+                            disabled={planDetailLoading && planDetailReference === task.reference}
+                            onClick={() => void openPlanDetail(task.compareId, task.reference)}
                           >
-                            {busyTaskId === task.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              'Enviar devolución'
-                            )}
+                            Ver detalle
                           </Button>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">En revisión</span>
-                        )}
+                          {task.status === 'assigned' || task.status === 'rejected' ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              disabled={busyTaskId === task.id}
+                              onClick={() => void handleSubmitReturn(task)}
+                            >
+                              {busyTaskId === task.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                'Enviar devolución'
+                              )}
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground self-center">
+                              En revisión
+                            </span>
+                          )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -1343,7 +1445,8 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
               <CardTitle>2. Distribución comercial</CardTitle>
               <CardDescription>
                 Excel mínimo: <strong>REFERENCIA</strong> + <strong>CANT</strong> (o CANTIDAD).{' '}
-                <strong>BODEGA</strong> es opcional.
+                <strong>BODEGA</strong> y <strong>TALLA</strong> son opcionales (detalle para
+                operarios).
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -1488,10 +1591,31 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                     )}
                     Eliminar comparación
                   </Button>
+                  <input
+                    ref={retrofitInputRef}
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    className="hidden"
+                    onChange={(e) => void onRetrofitPlanDetailFile(e.target.files?.[0] || null)}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={retrofitUploading}
+                    onClick={() => retrofitInputRef.current?.click()}
+                  >
+                    {retrofitUploading ? (
+                      <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                    ) : (
+                      <Upload className="h-4 w-4 mr-1" />
+                    )}
+                    Subir detalle de distribución
+                  </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
                   Puede asignar remanente &gt; 0 o = 0 (el operario reporta 0). Elija operario por fila o
-                  &quot;Asignar configuradas&quot;.
+                  &quot;Asignar configuradas&quot;. El detalle bodega+talla es opcional y no recalcula
+                  remanentes.
                 </p>
               </CardContent>
             </Card>
@@ -1724,6 +1848,49 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
           </Card>
         </div>
       ) : null}
+
+      <Dialog open={planDetailOpen} onOpenChange={setPlanDetailOpen}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Detalle de distribución</DialogTitle>
+            <DialogDescription>
+              {planDetailReference
+                ? `Referencia ${planDetailReference}`
+                : 'Desglose por bodega y talla'}
+            </DialogDescription>
+          </DialogHeader>
+          {planDetailLoading ? (
+            <div className="flex justify-center py-8 text-muted-foreground">
+              <Loader2 className="h-6 w-6 animate-spin" />
+            </div>
+          ) : planDetailEmpty ? (
+            <p className="text-sm text-muted-foreground py-4">
+              No hay detalle de distribución cargado para esta referencia.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Bodega</TableHead>
+                    <TableHead className="text-right">Cantidad</TableHead>
+                    <TableHead>Talla</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {planDetailRows.map((row, idx) => (
+                    <TableRow key={`${row.bodega}-${row.talla}-${idx}`}>
+                      <TableCell>{row.bodega}</TableCell>
+                      <TableCell className="text-right tabular-nums">{fmt(row.qty)}</TableCell>
+                      <TableCell>{row.talla}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
