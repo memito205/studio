@@ -99,6 +99,75 @@ function fmt(n: number) {
   return (Number(n) || 0).toLocaleString('es-CO');
 }
 
+/** Orden legible de tallas (letras comunes + numéricas; resto alfabético). */
+const TALLA_RANK: Record<string, number> = {
+  XXS: 10,
+  XS: 20,
+  S: 30,
+  M: 40,
+  L: 50,
+  XL: 60,
+  XXL: 70,
+  XXXL: 80,
+  '2XL': 70,
+  '3XL': 80,
+  '4XL': 90,
+  ÚNICA: 5,
+  UNICA: 5,
+  U: 5,
+  SIN_TALLA: 9999,
+};
+
+function tallaSortKey(talla: string): [number, number | string] {
+  const raw = String(talla || '').trim();
+  const upper = raw.toUpperCase();
+  if (upper in TALLA_RANK) return [0, TALLA_RANK[upper]];
+  const num = Number(raw.replace(',', '.'));
+  if (raw !== '' && Number.isFinite(num)) return [1, num];
+  return [2, upper];
+}
+
+function compareTallas(a: string, b: string) {
+  const [ka, va] = tallaSortKey(a);
+  const [kb, vb] = tallaSortKey(b);
+  if (ka !== kb) return ka - kb;
+  if (typeof va === 'number' && typeof vb === 'number') return va - vb;
+  return String(va).localeCompare(String(vb), 'es', { numeric: true, sensitivity: 'base' });
+}
+
+type PlanDetailBodegaGroup = {
+  bodega: string;
+  totalQty: number;
+  sizes: { talla: string; qty: number }[];
+};
+
+function groupPlanDetailByBodega(rows: DistributionComparePlanDetailRow[]): PlanDetailBodegaGroup[] {
+  const map = new Map<string, Map<string, number>>();
+  for (const row of rows) {
+    const bodega = String(row.bodega || '').trim() || '—';
+    const talla = String(row.talla || '').trim() || 'SIN_TALLA';
+    const qty = Number(row.qty) || 0;
+    let sizes = map.get(bodega);
+    if (!sizes) {
+      sizes = new Map();
+      map.set(bodega, sizes);
+    }
+    sizes.set(talla, (sizes.get(talla) || 0) + qty);
+  }
+  return Array.from(map.entries())
+    .map(([bodega, sizes]) => {
+      const sizeList = Array.from(sizes.entries())
+        .map(([talla, qty]) => ({ talla, qty }))
+        .sort((a, b) => compareTallas(a.talla, b.talla));
+      return {
+        bodega,
+        totalQty: sizeList.reduce((s, x) => s + x.qty, 0),
+        sizes: sizeList,
+      };
+    })
+    .sort((a, b) => a.bodega.localeCompare(b.bodega, 'es', { numeric: true }));
+}
+
 function taskStatusLabel(status: DistributionRemainderTask['status']) {
   switch (status) {
     case 'assigned':
@@ -191,6 +260,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const [planDetailReference, setPlanDetailReference] = useState('');
   const [planDetailRows, setPlanDetailRows] = useState<DistributionComparePlanDetailRow[]>([]);
   const [planDetailEmpty, setPlanDetailEmpty] = useState(false);
+  const [planDetailBodegaFilter, setPlanDetailBodegaFilter] = useState('all');
   const receptionsLoadedRef = React.useRef(false);
   const operatorsLoadedRef = React.useRef(false);
   const loadGenRef = React.useRef(0);
@@ -722,10 +792,24 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     if (selected) await loadDetailTasks(selected.id);
   };
 
+  const planDetailGroups = useMemo(
+    () => groupPlanDetailByBodega(planDetailRows),
+    [planDetailRows]
+  );
+  const planDetailTotals = useMemo(() => {
+    const totalQty = planDetailGroups.reduce((s, g) => s + g.totalQty, 0);
+    return { totalQty, bodegaCount: planDetailGroups.length };
+  }, [planDetailGroups]);
+  const filteredPlanDetailGroups = useMemo(() => {
+    if (planDetailBodegaFilter === 'all') return planDetailGroups;
+    return planDetailGroups.filter((g) => g.bodega === planDetailBodegaFilter);
+  }, [planDetailGroups, planDetailBodegaFilter]);
+
   const openPlanDetail = async (compareId: string, reference: string) => {
     setPlanDetailReference(reference);
     setPlanDetailRows([]);
     setPlanDetailEmpty(false);
+    setPlanDetailBodegaFilter('all');
     setPlanDetailOpen(true);
     setPlanDetailLoading(true);
     try {
@@ -1862,8 +1946,8 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       ) : null}
 
       <Dialog open={planDetailOpen} onOpenChange={setPlanDetailOpen}>
-        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
+        <DialogContent className="max-w-lg max-h-[85vh] p-0 gap-0 flex flex-col overflow-hidden sm:rounded-lg">
+          <DialogHeader className="px-6 pt-6 pb-3 shrink-0 pr-12 text-left">
             <DialogTitle>Detalle de distribución</DialogTitle>
             <DialogDescription>
               {planDetailReference
@@ -1871,35 +1955,102 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                 : 'Desglose por bodega y talla'}
             </DialogDescription>
           </DialogHeader>
+
           {planDetailLoading ? (
-            <div className="flex justify-center py-8 text-muted-foreground">
+            <div className="flex justify-center py-10 text-muted-foreground px-6 pb-6">
               <Loader2 className="h-6 w-6 animate-spin" />
             </div>
           ) : planDetailEmpty ? (
-            <p className="text-sm text-muted-foreground py-4">
+            <p className="text-sm text-muted-foreground px-6 pb-6">
               No hay detalle de distribución cargado para esta referencia.
             </p>
           ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Bodega</TableHead>
-                    <TableHead className="text-right">Cantidad</TableHead>
-                    <TableHead>Talla</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {planDetailRows.map((row, idx) => (
-                    <TableRow key={`${row.bodega}-${row.talla}-${idx}`}>
-                      <TableCell>{row.bodega}</TableCell>
-                      <TableCell className="text-right tabular-nums">{fmt(row.qty)}</TableCell>
-                      <TableCell>{row.talla}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+            <>
+              <div className="px-6 pb-3 space-y-3 shrink-0 border-b bg-muted/30">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  <span>
+                    <span className="font-semibold tabular-nums text-foreground">
+                      {fmt(planDetailTotals.totalQty)}
+                    </span>{' '}
+                    und. total
+                  </span>
+                  <span className="text-border">·</span>
+                  <span>
+                    <span className="font-semibold tabular-nums text-foreground">
+                      {fmt(planDetailTotals.bodegaCount)}
+                    </span>{' '}
+                    bodega{planDetailTotals.bodegaCount === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="plan-detail-bodega-filter" className="text-xs">
+                    Filtrar bodega
+                  </Label>
+                  <Select
+                    value={planDetailBodegaFilter}
+                    onValueChange={setPlanDetailBodegaFilter}
+                  >
+                    <SelectTrigger id="plan-detail-bodega-filter" className="h-9 bg-background">
+                      <SelectValue placeholder="Todas" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Todas</SelectItem>
+                      {planDetailGroups.map((g) => (
+                        <SelectItem key={g.bodega} value={g.bodega}>
+                          {g.bodega} · {fmt(g.totalQty)} und.
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 py-4 space-y-3">
+                {filteredPlanDetailGroups.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-8">
+                    No hay bodegas que coincidan con el filtro.
+                  </p>
+                ) : (
+                  filteredPlanDetailGroups.map((group) => (
+                    <div
+                      key={group.bodega}
+                      className="rounded-lg border border-border/80 bg-card p-3.5 shadow-sm"
+                    >
+                      <div className="flex items-start justify-between gap-3 mb-3">
+                        <div>
+                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                            Bodega
+                          </div>
+                          <div className="text-lg font-semibold tracking-tight tabular-nums leading-tight">
+                            {group.bodega}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                            Total
+                          </div>
+                          <div className="text-xl font-bold tabular-nums text-primary leading-tight">
+                            {fmt(group.totalQty)}
+                          </div>
+                          <div className="text-[11px] text-muted-foreground">und.</div>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {group.sizes.map((s) => (
+                          <span
+                            key={`${group.bodega}-${s.talla}`}
+                            className="inline-flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1 text-xs"
+                          >
+                            <span className="font-medium text-foreground">{s.talla}</span>
+                            <span className="tabular-nums text-muted-foreground">{fmt(s.qty)}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </>
           )}
         </DialogContent>
       </Dialog>
