@@ -1262,6 +1262,10 @@ export interface DistributionRemainderTask {
   compareId: string;
   rkIdentifier?: string;
   reference: string;
+  /** Cantidad leída (físico) de la línea de comparación. */
+  physicalQty?: number;
+  /** Cantidad distribución de la línea de comparación. */
+  distributedQty?: number;
   /** Cantidad esperada a devolver a bodega (remanente). Puede ser 0 (confirmar sin sobrante). */
   expectedRemainderQty: number;
   /** Cantidad que el operario declara haber devuelto. */

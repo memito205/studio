@@ -1081,6 +1081,46 @@ export async function listRemainderTasksByCompare(compareId: string): Promise<{
   }
 }
 
+/** Rellena physicalQty/distributedQty desde la línea de comparación si faltan (tareas antiguas). */
+async function enrichRemainderTasksWithLineQtys(
+  tasks: DistributionRemainderTask[]
+): Promise<DistributionRemainderTask[]> {
+  const missing = tasks.filter(
+    (t) =>
+      typeof t.physicalQty !== 'number' ||
+      !Number.isFinite(t.physicalQty) ||
+      typeof t.distributedQty !== 'number' ||
+      !Number.isFinite(t.distributedQty)
+  );
+  if (missing.length === 0) return tasks;
+
+  const compareIds = [...new Set(missing.map((t) => t.compareId).filter(Boolean))];
+  const linesByCompare = new Map<string, Map<string, DistributionCompareLine>>();
+  await Promise.all(
+    compareIds.map(async (compareId) => {
+      const lines = await loadCompareLines(compareId);
+      linesByCompare.set(
+        compareId,
+        new Map(lines.map((l) => [l.reference, l]))
+      );
+    })
+  );
+
+  return tasks.map((t) => {
+    const hasPhysical = typeof t.physicalQty === 'number' && Number.isFinite(t.physicalQty);
+    const hasDistributed =
+      typeof t.distributedQty === 'number' && Number.isFinite(t.distributedQty);
+    if (hasPhysical && hasDistributed) return t;
+    const line = linesByCompare.get(t.compareId)?.get(t.reference);
+    if (!line) return t;
+    return {
+      ...t,
+      physicalQty: hasPhysical ? t.physicalQty : line.physicalQty,
+      distributedQty: hasDistributed ? t.distributedQty : line.distributedQty,
+    };
+  });
+}
+
 export async function listMyRemainderTasks(operatorId: string): Promise<{
   success: boolean;
   data?: DistributionRemainderTask[];
@@ -1095,10 +1135,11 @@ export async function listMyRemainderTasks(operatorId: string): Promise<{
         limit(200)
       )
     );
-    const data = snap.docs
+    const raw = snap.docs
       .map((d) => ({ id: d.id, ...d.data() } as DistributionRemainderTask))
       .filter((t) => t.status === 'assigned' || t.status === 'submitted' || t.status === 'rejected')
       .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    const data = await enrichRemainderTasksWithLineQtys(raw);
     return { success: true, data };
   } catch (e: any) {
     return { success: false, error: e?.message || 'No se pudieron cargar sus tareas.' };
@@ -1333,6 +1374,8 @@ export async function claimDistributionRemainder(input: {
       compareId: input.compareId,
       rkIdentifier: compare.rkIdentifier,
       reference: input.reference,
+      physicalQty: line.physicalQty,
+      distributedQty: line.distributedQty,
       expectedRemainderQty: line.remainderQty,
       status: 'assigned',
       assignedOperatorId: input.operatorId,
@@ -1479,6 +1522,8 @@ export async function assignDistributionRemainders(input: {
 
       if (prev) {
         await updateDoc(doc(firestore, TASKS_COL, prev.id), {
+          physicalQty: line.physicalQty,
+          distributedQty: line.distributedQty,
           expectedRemainderQty: line.remainderQty,
           status: 'assigned' satisfies DistributionRemainderTaskStatus,
           assignedOperatorId: a.operatorId,
@@ -1508,6 +1553,8 @@ export async function assignDistributionRemainders(input: {
           compareId: input.compareId,
           rkIdentifier: compare.rkIdentifier,
           reference: a.reference,
+          physicalQty: line.physicalQty,
+          distributedQty: line.distributedQty,
           expectedRemainderQty: line.remainderQty,
           status: 'assigned',
           assignedOperatorId: a.operatorId,
@@ -1767,6 +1814,8 @@ export async function supervisorConfirmRemaindersDirect(input: {
 
       if (prev) {
         await updateDoc(doc(firestore, TASKS_COL, prev.id), {
+          physicalQty: line.physicalQty,
+          distributedQty: line.distributedQty,
           expectedRemainderQty: line.remainderQty,
           returnedQty: qty,
           status: 'validated',
@@ -1795,6 +1844,8 @@ export async function supervisorConfirmRemaindersDirect(input: {
           compareId: input.compareId,
           rkIdentifier: compare.rkIdentifier,
           reference: item.reference,
+          physicalQty: line.physicalQty,
+          distributedQty: line.distributedQty,
           expectedRemainderQty: line.remainderQty,
           returnedQty: qty,
           status: 'validated',
@@ -1945,6 +1996,8 @@ export async function closeDistributionCompareOperation(input: {
         compareId: input.compareId,
         rkIdentifier: compare.rkIdentifier,
         reference: line.reference,
+        physicalQty: line.physicalQty,
+        distributedQty: line.distributedQty,
         expectedRemainderQty: line.remainderQty,
         returnedQty: line.remainderQty,
         status: 'validated' as DistributionRemainderTaskStatus,

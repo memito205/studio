@@ -1238,6 +1238,12 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   <TableRow>
                     <TableHead>RK</TableHead>
                     <TableHead>Referencia</TableHead>
+                    <TableHead className="hidden text-right whitespace-nowrap sm:table-cell">
+                      Leída
+                    </TableHead>
+                    <TableHead className="hidden text-right whitespace-nowrap sm:table-cell">
+                      Distribución
+                    </TableHead>
                     <TableHead className="text-right">Esperado</TableHead>
                     <TableHead>Devuelto</TableHead>
                     <TableHead>Estado</TableHead>
@@ -1249,7 +1255,31 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   {filteredMyTasks.map((task) => (
                     <TableRow key={task.id}>
                       <TableCell className="text-sm">{task.rkIdentifier || '—'}</TableCell>
-                      <TableCell className="font-medium">{task.reference}</TableCell>
+                      <TableCell className="font-medium">
+                        <div>{task.reference}</div>
+                        <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground sm:hidden">
+                          <span>
+                            Leída{' '}
+                            <span className="tabular-nums text-foreground">
+                              {typeof task.physicalQty === 'number' ? fmt(task.physicalQty) : '—'}
+                            </span>
+                          </span>
+                          <span>
+                            Distribución{' '}
+                            <span className="tabular-nums text-foreground">
+                              {typeof task.distributedQty === 'number'
+                                ? fmt(task.distributedQty)
+                                : '—'}
+                            </span>
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="hidden text-right tabular-nums sm:table-cell">
+                        {typeof task.physicalQty === 'number' ? fmt(task.physicalQty) : '—'}
+                      </TableCell>
+                      <TableCell className="hidden text-right tabular-nums sm:table-cell">
+                        {typeof task.distributedQty === 'number' ? fmt(task.distributedQty) : '—'}
+                      </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {fmt(task.expectedRemainderQty)}
                       </TableCell>
