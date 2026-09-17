@@ -74,6 +74,7 @@ import {
   rejectRemainderTask,
   submitRemainderReturn,
   supervisorConfirmRemaindersDirect,
+  unassignDistributionRemainderTask,
   uploadPlanDetailRetrofit,
   validateRemainderTask,
   type DistributionPlanRowInput,
@@ -280,6 +281,9 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   );
   const [closingCompareId, setClosingCompareId] = useState<string | null>(null);
   const [closeConfirmId, setCloseConfirmId] = useState<string | null>(null);
+  const [unassignConfirmTask, setUnassignConfirmTask] = useState<DistributionRemainderTask | null>(
+    null
+  );
   const receptionsLoadedRef = React.useRef(false);
   const operatorsLoadedRef = React.useRef(false);
   const loadGenRef = React.useRef(0);
@@ -977,6 +981,28 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     if (selected) await loadDetailTasks(selected.id);
   };
 
+  const handleUnassign = async (task: DistributionRemainderTask) => {
+    if (!user?.uid || !isManager) return;
+    setBusyTaskId(task.id);
+    const res = await unassignDistributionRemainderTask({
+      taskId: task.id,
+      unassignedBy: user.uid,
+      unassignedByName: user.displayName || user.email || user.uid,
+    });
+    setBusyTaskId(null);
+    setUnassignConfirmTask(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Desasignar', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Desasignada',
+      description: `${task.reference} volvió a Disponibles.`,
+    });
+    if (selected) await loadDetailTasks(selected.id);
+    await reloadList();
+  };
+
   const resetNewForm = () => {
     setReceptionId('');
     setPlanRows(null);
@@ -1370,6 +1396,13 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                     <TableHead>RK</TableHead>
                     <TableHead>Referencia</TableHead>
                     <TableHead>Ubicación</TableHead>
+                    <TableHead className="hidden text-right whitespace-nowrap sm:table-cell">
+                      Leída
+                    </TableHead>
+                    <TableHead className="hidden text-right whitespace-nowrap sm:table-cell">
+                      Distribución
+                    </TableHead>
+                    <TableHead className="text-right whitespace-nowrap">U. empaque</TableHead>
                     <TableHead className="text-right">Remanente</TableHead>
                     <TableHead>Comparación</TableHead>
                     <TableHead />
@@ -1381,13 +1414,40 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                     return (
                       <TableRow key={key}>
                         <TableCell className="text-sm">{row.rkIdentifier || '—'}</TableCell>
-                        <TableCell className="font-medium">{row.reference}</TableCell>
+                        <TableCell className="font-medium">
+                          <div>{row.reference}</div>
+                          <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground sm:hidden">
+                            <span>
+                              Leída{' '}
+                              <span className="tabular-nums text-foreground">
+                                {fmt(row.physicalQty)}
+                              </span>
+                            </span>
+                            <span>
+                              Distribución{' '}
+                              <span className="tabular-nums text-foreground">
+                                {fmt(row.distributedQty)}
+                              </span>
+                            </span>
+                          </div>
+                        </TableCell>
                         <TableCell className="text-sm">
                           {row.locationName ? (
                             <span className="font-medium text-foreground">{row.locationName}</span>
                           ) : (
                             <span className="text-muted-foreground">Sin ubicación</span>
                           )}
+                        </TableCell>
+                        <TableCell className="hidden text-right tabular-nums sm:table-cell">
+                          {fmt(row.physicalQty)}
+                        </TableCell>
+                        <TableCell className="hidden text-right tabular-nums sm:table-cell">
+                          {fmt(row.distributedQty)}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {typeof row.packingUnitCount === 'number'
+                            ? fmt(row.packingUnitCount)
+                            : '—'}
                         </TableCell>
                         <TableCell className="text-right tabular-nums text-amber-600">
                           {fmt(row.remainderQty)}
@@ -1446,6 +1506,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                     <TableHead>Estado</TableHead>
                     <TableHead>Validado</TableHead>
                     <TableHead>Origen</TableHead>
+                    <TableHead />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1479,6 +1540,19 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
                         {task.claimedBySelf ? 'Auto' : 'Supervisor'}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {task.status === 'assigned' || task.status === 'rejected' ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={busyTaskId === task.id}
+                            onClick={() => setUnassignConfirmTask(task)}
+                          >
+                            Desasignar
+                          </Button>
+                        ) : null}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -2076,6 +2150,20 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                                   </Button>
                                 </div>
                               ) : null}
+                              {isManager &&
+                              (task.status === 'assigned' || task.status === 'rejected') ? (
+                                <div className="pt-1">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={busyTaskId === task.id}
+                                    onClick={() => setUnassignConfirmTask(task)}
+                                  >
+                                    Desasignar
+                                  </Button>
+                                </div>
+                              ) : null}
                             </div>
                           )}
                         </TableCell>
@@ -2234,6 +2322,38 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
               }}
             >
               Cerrar operación
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={!!unassignConfirmTask}
+        onOpenChange={(open) => {
+          if (!open) setUnassignConfirmTask(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Desasignar esta referencia?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {unassignConfirmTask
+                ? `Se liberará ${unassignConfirmTask.reference}${
+                    unassignConfirmTask.assignedOperatorName
+                      ? ` (ahora de ${unassignConfirmTask.assignedOperatorName})`
+                      : ''
+                  }. Volverá a Disponibles para que otro operario la tome. No se valida ni se borra el detalle de distribución.`
+                : 'La referencia volverá a Disponibles.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (unassignConfirmTask) void handleUnassign(unassignConfirmTask);
+              }}
+            >
+              Desasignar
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

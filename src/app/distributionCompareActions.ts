@@ -1165,6 +1165,45 @@ export async function listPendingValidationRemainderTasks(): Promise<{
 }
 
 /**
+ * Cantidad de unidades de empaque por referencia en recepción
+ * (`referenceStats/{ref}.packUnitsById` o `packingUnits[]`).
+ */
+async function resolvePackingUnitCountsForReferences(
+  receptionOperationId: string | undefined,
+  references: string[]
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (!receptionOperationId || !references.length) return out;
+
+  const uniqueRefs = [...new Set(references.map((r) => String(r || '').trim()).filter(Boolean))];
+  await Promise.all(
+    uniqueRefs.map(async (reference) => {
+      const safeRef = normalizeReceptionReference(reference);
+      try {
+        const statsSnap = await getDoc(
+          doc(firestore, RECEPTION_COL, receptionOperationId, 'referenceStats', safeRef)
+        );
+        if (!statsSnap.exists()) return;
+        const data = statsSnap.data() as {
+          packUnitsById?: Record<string, unknown>;
+          packingUnits?: unknown;
+        };
+        if (data.packUnitsById && typeof data.packUnitsById === 'object') {
+          out.set(reference, Object.keys(data.packUnitsById).length);
+          return;
+        }
+        if (Array.isArray(data.packingUnits)) {
+          out.set(reference, data.packingUnits.length);
+        }
+      } catch {
+        // ignore per-ref
+      }
+    })
+  );
+  return out;
+}
+
+/**
  * Remanentes ≥0 sin tarea activa (para que el operario tome la referencia).
  * Incluye ubicación de recepción para no buscar a ciegas.
  */
@@ -1200,18 +1239,23 @@ export async function listAvailableRemainderClaims(limitCompares = 25): Promise<
         );
         if (availableLines.length === 0) return;
 
-        const locByRef = await resolveReceptionLocationsForReferences(
-          c.receptionOperationId,
-          availableLines.map((l) => l.reference)
-        );
+        const refs = availableLines.map((l) => l.reference);
+        const [locByRef, packCountByRef] = await Promise.all([
+          resolveReceptionLocationsForReferences(c.receptionOperationId, refs),
+          resolvePackingUnitCountsForReferences(c.receptionOperationId, refs),
+        ]);
 
         for (const line of availableLines) {
           const loc = locByRef.get(line.reference);
+          const packingUnitCount = packCountByRef.get(line.reference);
           out.push({
             compareId: c.id,
             rkIdentifier: c.rkIdentifier,
             reference: line.reference,
+            physicalQty: line.physicalQty,
+            distributedQty: line.distributedQty,
             remainderQty: line.remainderQty,
+            packingUnitCount,
             compareStatus: c.status,
             updatedAt: c.updatedAt,
             locationId: loc?.locationId,
@@ -1742,6 +1786,40 @@ export async function rejectRemainderTask(input: {
   } catch (e: any) {
     console.error('rejectRemainderTask:', e);
     return { success: false, error: e?.message || 'No se pudo rechazar.' };
+  }
+}
+
+/**
+ * Admin/supervisor libera una referencia tomada/asignada (o rechazada) para que vuelva a Disponibles.
+ * Borra solo la tarea de remanente; no toca planDetail ni valida.
+ */
+export async function unassignDistributionRemainderTask(input: {
+  taskId: string;
+  unassignedBy: string;
+  unassignedByName?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!input.taskId || !input.unassignedBy) {
+      return { success: false, error: 'Faltan datos para desasignar.' };
+    }
+    const snap = await getDoc(doc(firestore, TASKS_COL, input.taskId));
+    if (!snap.exists()) return { success: false, error: 'Tarea no encontrada.' };
+    const task = { id: snap.id, ...snap.data() } as DistributionRemainderTask;
+
+    if (task.status !== 'assigned' && task.status !== 'rejected') {
+      return {
+        success: false,
+        error:
+          'Solo se pueden desasignar referencias tomadas/asignadas o rechazadas (no enviadas ni validadas).',
+      };
+    }
+
+    await deleteDoc(doc(firestore, TASKS_COL, input.taskId));
+    await refreshCompareWorkflowStatus(task.compareId);
+    return { success: true };
+  } catch (e: any) {
+    console.error('unassignDistributionRemainderTask:', e);
+    return { success: false, error: e?.message || 'No se pudo desasignar.' };
   }
 }
 

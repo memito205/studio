@@ -1299,7 +1299,16 @@ export interface DistributionRemainderAvailableClaim {
   compareId: string;
   rkIdentifier?: string;
   reference: string;
+  /** Cantidad leída (físico) de la línea de comparación. */
+  physicalQty: number;
+  /** Cantidad distribución de la línea de comparación. */
+  distributedQty: number;
   remainderQty: number;
+  /**
+   * Cantidad de unidades de empaque de la ref en recepción
+   * (`referenceStats.packUnitsById` / `packingUnits`), si hay recepción vinculada.
+   */
+  packingUnitCount?: number;
   compareStatus: DistributionCompareOperation['status'];
   updatedAt?: string;
   /** Ubicación en recepción de mercancía (si se pudo resolver). */
