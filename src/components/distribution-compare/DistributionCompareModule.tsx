@@ -1661,6 +1661,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                     <TableHead className="text-right">Distribuido</TableHead>
                     <TableHead className="text-right">Remanente</TableHead>
                     <TableHead>Asignación / validación</TableHead>
+                    <TableHead className="text-right">Detalle</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1838,6 +1839,17 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                               ) : null}
                             </div>
                           )}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={planDetailLoading && planDetailReference === line.reference}
+                            onClick={() => void openPlanDetail(selected.id, line.reference)}
+                          >
+                            Ver detalle
+                          </Button>
                         </TableCell>
                       </TableRow>
                     );
