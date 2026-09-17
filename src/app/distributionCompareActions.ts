@@ -457,6 +457,42 @@ function buildCompareLines(opts: {
   return lines;
 }
 
+/** Refs donde el plan reparte más que el físico (bloquea crear comparación). */
+export type OverDistributedRef = {
+  reference: string;
+  physicalQty: number;
+  distributedQty: number;
+  /** distributedQty - physicalQty (> 0). */
+  excessQty: number;
+};
+
+function findOverDistributedRefs(lines: DistributionCompareLine[]): OverDistributedRef[] {
+  return lines
+    .filter((l) => l.distributedQty > l.physicalQty)
+    .map((l) => ({
+      reference: l.reference,
+      physicalQty: l.physicalQty,
+      distributedQty: l.distributedQty,
+      excessQty: l.distributedQty - l.physicalQty,
+    }));
+}
+
+function formatOverDistributedError(refs: OverDistributedRef[]): string {
+  const header = `No se puede crear la comparación: ${refs.length} referencia(s) con distribuido > físico.`;
+  const lines = refs.map(
+    (r) =>
+      `· ${r.reference}: físico ${r.physicalQty}, distribuido ${r.distributedQty}, exceso ${r.excessQty}`
+  );
+  return [header, ...lines].join('\n');
+}
+
+/** Comparación ya no admite trabajo de remanentes. */
+function isCompareClosedForWork(
+  status: DistributionCompareOperation['status'] | undefined
+): boolean {
+  return status === 'archived' || status === 'completed';
+}
+
 /** Solo metadatos de la operación (nombre RK / proveedor). No lee escaneos. */
 async function getReceptionMetaForCompare(receptionOperationId: string): Promise<{
   success: boolean;
@@ -526,7 +562,13 @@ export async function createDistributionCompare(input: {
   notes?: string;
   createdBy: string;
   createdByName?: string;
-}): Promise<{ success: boolean; id?: string; data?: DistributionCompareOperation; error?: string }> {
+}): Promise<{
+  success: boolean;
+  id?: string;
+  data?: DistributionCompareOperation;
+  error?: string;
+  overDistributed?: OverDistributedRef[];
+}> {
   try {
     if (!input.planRows?.length) {
       return { success: false, error: 'Suba el archivo de distribución (REFERENCIA, BODEGA, CANT).' };
@@ -580,6 +622,14 @@ export async function createDistributionCompare(input: {
       .join(' ');
 
     const lines = buildCompareLines({ physicalByRef, distributedByRef, byRefBodega });
+    const overDistributed = findOverDistributedRefs(lines);
+    if (overDistributed.length > 0) {
+      return {
+        success: false,
+        error: formatOverDistributedError(overDistributed),
+        overDistributed,
+      };
+    }
     const totals = buildTotals(lines);
     const now = new Date().toISOString();
     const ref = doc(collection(firestore, COL));
@@ -766,7 +816,8 @@ async function refreshCompareWorkflowStatus(compareId: string): Promise<void> {
   const compareSnap = await getDoc(doc(firestore, COL, compareId));
   if (!compareSnap.exists()) return;
   const compare = compareSnap.data() as DistributionCompareOperation;
-  if (compare.status === 'archived') return;
+  // No reabrir operaciones cerradas por admin ni archivadas.
+  if (compare.status === 'archived' || compare.status === 'completed') return;
 
   const tasksSnap = await getDocs(
     query(collection(firestore, TASKS_COL), where('compareId', '==', compareId), limit(500))
@@ -1086,7 +1137,7 @@ export async function listAvailableRemainderClaims(limitCompares = 25): Promise<
     if (!listRes.success || !listRes.data) {
       return { success: false, error: listRes.error || 'No se pudieron cargar comparaciones.' };
     }
-    const compares = listRes.data.filter((c) => c.status !== 'archived');
+    const compares = listRes.data.filter((c) => !isCompareClosedForWork(c.status));
     const out: import('@/types').DistributionRemainderAvailableClaim[] = [];
 
     await Promise.all(
@@ -1227,8 +1278,14 @@ export async function claimDistributionRemainder(input: {
     const compareSnap = await getDoc(doc(firestore, COL, input.compareId));
     if (!compareSnap.exists()) return { success: false, error: 'Comparación no encontrada.' };
     const compare = { id: compareSnap.id, ...compareSnap.data() } as DistributionCompareOperation;
-    if (compare.status === 'archived') {
-      return { success: false, error: 'La comparación está archivada.' };
+    if (isCompareClosedForWork(compare.status)) {
+      return {
+        success: false,
+        error:
+          compare.status === 'completed'
+            ? 'La comparación está cerrada (completada).'
+            : 'La comparación está archivada.',
+      };
     }
 
     const lines = await loadCompareLines(input.compareId);
@@ -1289,7 +1346,7 @@ export async function claimDistributionRemainder(input: {
       locationName: loc.locationName,
       createdAt: now,
       updatedAt: now,
-    });
+    }) as DistributionRemainderTask;
     await setDoc(ref, payload);
     await refreshCompareWorkflowStatus(input.compareId);
     return { success: true, taskId: ref.id };
@@ -1338,8 +1395,14 @@ export async function assignDistributionRemainders(input: {
     const compareSnap = await getDoc(doc(firestore, COL, input.compareId));
     if (!compareSnap.exists()) return { success: false, error: 'Comparación no encontrada.' };
     const compare = { id: compareSnap.id, ...compareSnap.data() } as DistributionCompareOperation;
-    if (compare.status === 'archived') {
-      return { success: false, error: 'La comparación está archivada.' };
+    if (isCompareClosedForWork(compare.status)) {
+      return {
+        success: false,
+        error:
+          compare.status === 'completed'
+            ? 'La comparación está cerrada (completada).'
+            : 'La comparación está archivada.',
+      };
     }
 
     const lines = await loadCompareLines(input.compareId);
@@ -1527,6 +1590,21 @@ export async function submitRemainderReturn(input: {
       return { success: false, error: 'La tarea ya fue enviada o validada.' };
     }
 
+    try {
+      const compareSnap = await getDoc(doc(firestore, COL, task.compareId));
+      if (compareSnap.exists()) {
+        const st = (compareSnap.data() as DistributionCompareOperation).status;
+        if (isCompareClosedForWork(st)) {
+          return {
+            success: false,
+            error: 'La comparación está cerrada; ya no se pueden enviar devoluciones.',
+          };
+        }
+      }
+    } catch {
+      /* ignore compare read errors; seguir con validaciones de tarea */
+    }
+
     const now = new Date().toISOString();
     await updateDoc(taskRef, {
       returnedQty: qty,
@@ -1642,8 +1720,14 @@ export async function supervisorConfirmRemaindersDirect(input: {
     const compareSnap = await getDoc(doc(firestore, COL, input.compareId));
     if (!compareSnap.exists()) return { success: false, error: 'Comparación no encontrada.' };
     const compare = { id: compareSnap.id, ...compareSnap.data() } as DistributionCompareOperation;
-    if (compare.status === 'archived') {
-      return { success: false, error: 'La comparación está archivada.' };
+    if (isCompareClosedForWork(compare.status)) {
+      return {
+        success: false,
+        error:
+          compare.status === 'completed'
+            ? 'La comparación está cerrada (completada).'
+            : 'La comparación está archivada.',
+      };
     }
 
     const lines = await loadCompareLines(input.compareId);
@@ -1751,6 +1835,193 @@ export async function supervisorConfirmRemaindersDirect(input: {
   } catch (e: any) {
     console.error('supervisorConfirmRemaindersDirect:', e);
     return { success: false, error: e?.message || 'No se pudo confirmar.' };
+  }
+}
+
+/**
+ * Admin/supervisor: cierra toda la operación de comparación.
+ * - Marca status `completed`.
+ * - Valida TODAS las refs remanentes (≥0) aún no validadas (asignadas, enviadas,
+ *   rechazadas, sin asignar) con los mismos efectos que validar / confirmar directo
+ *   (incluye borrar planDetail por referencia).
+ * - Refs ya validadas: se omiten.
+ * - Lotes de escritura Firestore (≤400) para no dejar la op a medias.
+ */
+export async function closeDistributionCompareOperation(input: {
+  compareId: string;
+  closedBy: string;
+  closedByName?: string;
+}): Promise<{
+  success: boolean;
+  validatedTasks?: number;
+  createdTasks?: number;
+  deletedPlanDetail?: number;
+  error?: string;
+}> {
+  try {
+    if (!input.compareId || !input.closedBy) {
+      return { success: false, error: 'Faltan datos para cerrar la operación.' };
+    }
+
+    const compareSnap = await getDoc(doc(firestore, COL, input.compareId));
+    if (!compareSnap.exists()) {
+      return { success: false, error: 'Comparación no encontrada.' };
+    }
+    const compare = { id: compareSnap.id, ...compareSnap.data() } as DistributionCompareOperation;
+    if (compare.status === 'archived') {
+      return { success: false, error: 'La comparación está archivada.' };
+    }
+    if (compare.status === 'completed') {
+      return { success: true, validatedTasks: 0, createdTasks: 0, deletedPlanDetail: 0 };
+    }
+
+    const closedByName = await resolveUserDisplayName(input.closedBy, input.closedByName);
+    const [lines, tasksSnap] = await Promise.all([
+      loadCompareLines(input.compareId),
+      getDocs(
+        query(collection(firestore, TASKS_COL), where('compareId', '==', input.compareId), limit(500))
+      ),
+    ]);
+
+    const existingByRef = new Map<string, { id: string; data: DistributionRemainderTask }>();
+    tasksSnap.forEach((d) => {
+      const data = d.data() as DistributionRemainderTask;
+      if (data.reference) existingByRef.set(data.reference, { id: d.id, data });
+    });
+
+    const now = new Date().toISOString();
+    const closeNotes = 'Cierre de operación (admin/supervisor): remanente validado al cerrar.';
+    let validatedTasks = 0;
+    let createdTasks = 0;
+
+    type PendingWrite =
+      | { kind: 'update'; taskId: string; fields: Record<string, unknown> }
+      | { kind: 'create'; payload: DistributionRemainderTask }
+      | { kind: 'deletePlanDetail'; reference: string };
+
+    const pending: PendingWrite[] = [];
+    const refsTouchingPlanDetail = new Set<string>();
+
+    // 1) Tareas existentes no validadas → validated (+ borrar planDetail).
+    for (const [reference, prev] of existingByRef) {
+      if (prev.data.status === 'validated') continue;
+      const line = lines.find((l) => l.reference === reference);
+      const expected =
+        line && isAssignableRemainderQty(line.remainderQty)
+          ? line.remainderQty
+          : Number(prev.data.expectedRemainderQty) || 0;
+      const returnedQty =
+        typeof prev.data.returnedQty === 'number' && Number.isFinite(prev.data.returnedQty)
+          ? prev.data.returnedQty
+          : expected;
+
+      pending.push({
+        kind: 'update',
+        taskId: prev.id,
+        fields: {
+          expectedRemainderQty: expected,
+          returnedQty,
+          status: 'validated' satisfies DistributionRemainderTaskStatus,
+          validatedAt: now,
+          validatedBy: input.closedBy,
+          validatedByName: closedByName || null,
+          rejectionReason: null,
+          notes: [prev.data.notes, closeNotes].filter(Boolean).join(' '),
+          updatedAt: now,
+        },
+      });
+      refsTouchingPlanDetail.add(reference);
+      validatedTasks += 1;
+    }
+
+    // 2) Remanentes ≥0 sin tarea → crear validadas (como confirmación directa).
+    for (const line of lines) {
+      if (!isAssignableRemainderQty(line.remainderQty)) continue;
+      if (existingByRef.has(line.reference)) continue;
+
+      const taskRef = doc(collection(firestore, TASKS_COL));
+      const payload: DistributionRemainderTask = stripUndefinedDeep({
+        id: taskRef.id,
+        compareId: input.compareId,
+        rkIdentifier: compare.rkIdentifier,
+        reference: line.reference,
+        expectedRemainderQty: line.remainderQty,
+        returnedQty: line.remainderQty,
+        status: 'validated' as DistributionRemainderTaskStatus,
+        assignedOperatorId: input.closedBy,
+        assignedOperatorName: closedByName,
+        assignedAt: now,
+        assignedBy: input.closedBy,
+        assignedByName: closedByName,
+        receptionOperationId: compare.receptionOperationId,
+        submittedAt: now,
+        submittedBy: input.closedBy,
+        submittedByName: closedByName,
+        validatedAt: now,
+        validatedBy: input.closedBy,
+        validatedByName: closedByName,
+        notes: closeNotes,
+        createdAt: now,
+        updatedAt: now,
+      }) as DistributionRemainderTask;
+
+      pending.push({ kind: 'create', payload });
+      refsTouchingPlanDetail.add(line.reference);
+      createdTasks += 1;
+    }
+
+    for (const reference of refsTouchingPlanDetail) {
+      pending.push({ kind: 'deletePlanDetail', reference });
+    }
+
+    // Ejecutar escrituras en lotes.
+    let batch = writeBatch(firestore);
+    let ops = 0;
+    const flush = async () => {
+      if (ops === 0) return;
+      await batch.commit();
+      batch = writeBatch(firestore);
+      ops = 0;
+    };
+
+    for (const w of pending) {
+      if (w.kind === 'update') {
+        batch.update(doc(firestore, TASKS_COL, w.taskId), w.fields as any);
+        ops += 1;
+      } else if (w.kind === 'create') {
+        batch.set(doc(firestore, TASKS_COL, w.payload.id), w.payload as any);
+        ops += 1;
+      } else {
+        batch.delete(doc(firestore, COL, input.compareId, PLAN_DETAIL_SUB, lineDocId(w.reference)));
+        ops += 1;
+      }
+      if (ops >= 400) await flush();
+    }
+    await flush();
+
+    // Red de seguridad: borrar planDetail restante (p.ej. refs solo plan / sobredistribución).
+    const deletedPlanDetail = await deletePlanDetailSubcollection(input.compareId);
+
+    const updatedAt = new Date().toISOString();
+    await updateDoc(doc(firestore, COL, input.compareId), {
+      status: 'completed',
+      updatedAt,
+    });
+    await setDoc(
+      doc(firestore, SUMMARY_COL, input.compareId),
+      { status: 'completed', updatedAt },
+      { merge: true }
+    );
+
+    return {
+      success: true,
+      validatedTasks,
+      createdTasks,
+      deletedPlanDetail,
+    };
+  } catch (e: any) {
+    console.error('closeDistributionCompareOperation:', e);
+    return { success: false, error: e?.message || 'No se pudo cerrar la operación.' };
   }
 }
 

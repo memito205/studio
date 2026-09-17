@@ -14,6 +14,7 @@ import {
   UserCheck,
   XCircle,
   Search,
+  Lock,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -21,6 +22,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Dialog,
   DialogContent,
@@ -28,6 +30,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import {
   Select,
   SelectContent,
@@ -48,6 +60,7 @@ import { useToast } from '@/hooks/use-toast';
 import {
   assignDistributionRemainders,
   claimDistributionRemainder,
+  closeDistributionCompareOperation,
   createDistributionCompare,
   deleteDistributionCompare,
   getDistributionCompare,
@@ -65,6 +78,7 @@ import {
   validateRemainderTask,
   type DistributionPlanRowInput,
   type DistributionStockRowInput,
+  type OverDistributedRef,
 } from '@/app/distributionCompareActions';
 import type {
   DistributionCompareOperation,
@@ -261,6 +275,11 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const [planDetailRows, setPlanDetailRows] = useState<DistributionComparePlanDetailRow[]>([]);
   const [planDetailEmpty, setPlanDetailEmpty] = useState(false);
   const [planDetailBodegaFilter, setPlanDetailBodegaFilter] = useState('all');
+  const [overDistributedError, setOverDistributedError] = useState<OverDistributedRef[] | null>(
+    null
+  );
+  const [closingCompareId, setClosingCompareId] = useState<string | null>(null);
+  const [closeConfirmId, setCloseConfirmId] = useState<string | null>(null);
   const receptionsLoadedRef = React.useRef(false);
   const operatorsLoadedRef = React.useRef(false);
   const loadGenRef = React.useRef(0);
@@ -514,6 +533,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       return;
     }
     setSaving(true);
+    setOverDistributedError(null);
     const res = await createDistributionCompare({
       receptionOperationId: receptionId || null,
       physicalSource: 'excel_stock',
@@ -527,11 +547,15 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     });
     setSaving(false);
     if (!res.success || !res.data) {
-      toast({
-        variant: 'destructive',
-        title: 'No se guardó',
-        description: res.error || 'Error al comparar.',
-      });
+      if (res.overDistributed && res.overDistributed.length > 0) {
+        setOverDistributedError(res.overDistributed);
+      } else {
+        toast({
+          variant: 'destructive',
+          title: 'No se guardó',
+          description: res.error || 'Error al comparar.',
+        });
+      }
       return;
     }
     toast({
@@ -545,6 +569,38 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     setTab('compares');
     setOnlyRemainder(true);
     await loadDetailTasks(res.data.id);
+  };
+
+  const handleCloseOperation = async (compareId: string) => {
+    if (!isManager || !user?.uid || !compareId) return;
+    setCloseConfirmId(null);
+    setClosingCompareId(compareId);
+    const res = await closeDistributionCompareOperation({
+      compareId,
+      closedBy: user.uid,
+      closedByName: user.displayName || user.email || user.uid,
+    });
+    setClosingCompareId(null);
+    if (!res.success) {
+      toast({
+        variant: 'destructive',
+        title: 'Cerrar operación',
+        description: res.error || 'No se pudo cerrar.',
+      });
+      return;
+    }
+    toast({
+      title: 'Operación cerrada',
+      description: `Validadas: ${res.validatedTasks || 0} · Creadas: ${res.createdTasks || 0} · Detalle borrado: ${res.deletedPlanDetail || 0}`,
+    });
+    setItems((prev) =>
+      prev.map((x) => (x.id === compareId ? { ...x, status: 'completed' } : x))
+    );
+    if (selected?.id === compareId) {
+      setSelected((prev) => (prev ? { ...prev, status: 'completed' } : prev));
+      await loadDetailTasks(compareId);
+    }
+    await reloadList();
   };
 
   const openDetail = async (it: DistributionCompareOperation) => {
@@ -928,6 +984,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     setStockRows(null);
     setStockFileName('');
     setNotes('');
+    setOverDistributedError(null);
   };
 
   const back = () => {
@@ -1110,6 +1167,24 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                             >
                               Ver / asignar
                             </Button>
+                            {isManager && it.status !== 'completed' && it.status !== 'archived' ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                disabled={closingCompareId === it.id}
+                                onClick={() => setCloseConfirmId(it.id)}
+                              >
+                                {closingCompareId === it.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Lock className="h-3.5 w-3.5 mr-1" />
+                                    Cerrar operación
+                                  </>
+                                )}
+                              </Button>
+                            ) : null}
                             {isManager ? (
                               <Button
                                 type="button"
@@ -1557,6 +1632,28 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   'Comparar y guardar'
                 )}
               </Button>
+              {overDistributedError && overDistributedError.length > 0 ? (
+                <Alert variant="destructive" className="max-h-72 overflow-y-auto">
+                  <AlertTitle>
+                    No se creó la comparación · {overDistributedError.length} ref(s) con
+                    distribuido &gt; físico
+                  </AlertTitle>
+                  <AlertDescription>
+                    <p className="mb-2 text-xs">
+                      Corrija el plan o el físico. Referencias solo en plan con físico 0 también
+                      bloquean.
+                    </p>
+                    <ul className="space-y-1 text-xs font-mono">
+                      {overDistributedError.map((r) => (
+                        <li key={r.reference}>
+                          {r.reference}: físico {fmt(r.physicalQty)}, distribuido{' '}
+                          {fmt(r.distributedQty)}, exceso {fmt(r.excessQty)}
+                        </li>
+                      ))}
+                    </ul>
+                  </AlertDescription>
+                </Alert>
+              ) : null}
             </CardContent>
           </Card>
         </div>
@@ -1594,7 +1691,9 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
             </Card>
           </div>
 
-          {isManager && selected.status !== 'archived' ? (
+          {isManager &&
+          selected.status !== 'archived' &&
+          selected.status !== 'completed' ? (
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-lg">
@@ -1664,6 +1763,19 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   </Button>
                   <Button
                     type="button"
+                    variant="outline"
+                    disabled={closingCompareId === selected.id}
+                    onClick={() => setCloseConfirmId(selected.id)}
+                  >
+                    {closingCompareId === selected.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                    ) : (
+                      <Lock className="h-4 w-4 mr-1" />
+                    )}
+                    Cerrar operación
+                  </Button>
+                  <Button
+                    type="button"
                     variant="destructive"
                     disabled={deletingId === selected.id}
                     onClick={() => void handleDeleteCompare(selected.id)}
@@ -1699,10 +1811,22 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                 <p className="text-xs text-muted-foreground">
                   Puede asignar remanente &gt; 0 o = 0 (el operario reporta 0). Elija operario por fila o
                   &quot;Asignar configuradas&quot;. El detalle bodega+talla es opcional y no recalcula
-                  remanentes.
+                  remanentes. &quot;Cerrar operación&quot; valida todos los remanentes pendientes y
+                  borra el detalle.
                 </p>
               </CardContent>
             </Card>
+          ) : null}
+
+          {isManager && selected.status === 'completed' ? (
+            <Alert>
+              <Lock className="h-4 w-4" />
+              <AlertTitle>Operación cerrada</AlertTitle>
+              <AlertDescription>
+                Todos los remanentes pendientes quedaron validados. Los operarios ya no pueden
+                trabajar esta comparación.
+              </AlertDescription>
+            </Alert>
           ) : null}
 
           <Card>
@@ -1848,7 +1972,8 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                                     variant="outline"
                                     disabled={
                                       claimingKey === `${selected.id}:${line.reference}` ||
-                                      selected.status === 'archived'
+                                      selected.status === 'archived' ||
+                                      selected.status === 'completed'
                                     }
                                     onClick={() => void handleClaim(selected.id, line.reference)}
                                   >
@@ -2054,6 +2179,35 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
           )}
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={!!closeConfirmId}
+        onOpenChange={(open) => {
+          if (!open) setCloseConfirmId(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Cerrar toda la operación?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se marcará la comparación como completada. Todos los remanentes aún no validados
+              (asignados, enviados, rechazados o sin asignar) se validarán y se borrará el detalle
+              de distribución de esas referencias. Los operarios ya no podrán seguir trabajando
+              esta comparación.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (closeConfirmId) void handleCloseOperation(closeConfirmId);
+              }}
+            >
+              Cerrar operación
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
