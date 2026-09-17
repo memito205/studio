@@ -1127,6 +1127,7 @@ export async function listMyRemainderTasks(operatorId: string): Promise<{
   error?: string;
 }> {
   try {
+    // Por assignedOperatorId (uid). Sin filtro de rol: operario, supervisor o admin asignados.
     if (!operatorId) return { success: false, error: 'Operario no indicado.' };
     const snap = await getDocs(
       query(
@@ -1661,6 +1662,7 @@ export async function submitRemainderReturn(input: {
   notes?: string;
 }): Promise<{ success: boolean; error?: string }> {
   try {
+    // Legalización del asignado (cualquier rol). Solo exige assignedOperatorId === operatorId.
     const qty = Number(input.returnedQty);
     if (!input.taskId || !input.operatorId) {
       return { success: false, error: 'Faltan datos de devolución.' };

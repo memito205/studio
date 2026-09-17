@@ -220,6 +220,9 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const { user, role } = useAuth();
   const { toast } = useToast();
   const isManager = role === 'admin' || role === 'supervisor';
+  /** Operario, supervisor y admin pueden tener refs asignadas y legalizarlas en Mis remanentes. */
+  const canWorkOwnRemainders =
+    role === 'operator' || role === 'supervisor' || role === 'admin';
 
   const [tab, setTab] = useState<
     'compares' | 'myTasks' | 'available' | 'pendingValidation' | 'assignments'
@@ -422,12 +425,12 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     }
   }, []);
 
-  // Una sola carga al montar (reloadList es estable).
+  // Carga al montar y cuando auth/uid o rol manager quedan listos (evita Mis remanentes vacío).
   useEffect(() => {
     void reloadList();
-  }, [reloadList]);
+  }, [reloadList, user?.uid, isManager]);
 
-  /** Operarios no entran a Ver/asignar. */
+  /** Operarios no entran a Ver/asignar (admin/supervisor sí). Mis remanentes no se afecta. */
   useEffect(() => {
     if (view === 'detail' && !isManager) {
       setView('list');
@@ -759,13 +762,21 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       toast({ variant: 'destructive', title: 'Asignación', description: res.error });
       return;
     }
+    const assignedToSelf = assignments.some((a) => a.operatorId === user.uid);
     toast({
       title: 'Remanentes asignados',
-      description: `Creadas: ${res.created || 0} · Actualizadas: ${res.updated || 0}`,
+      description: assignedToSelf
+        ? `Creadas: ${res.created || 0} · Actualizadas: ${res.updated || 0}. Abra Mis remanentes para enviar la devolución.`
+        : `Creadas: ${res.created || 0} · Actualizadas: ${res.updated || 0}`,
     });
     setSelectedRefs(new Set());
     await loadDetailTasks(selected.id);
     await reloadList();
+    if (assignedToSelf) {
+      setView('list');
+      setSelected(null);
+      setTab('myTasks');
+    }
   };
 
   const handleAssignOne = async (reference: string) => {
@@ -798,9 +809,20 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       toast({ variant: 'destructive', title: 'Asignación', description: res.error });
       return;
     }
-    toast({ title: 'Asignada', description: `${reference} → ${op?.displayName || operatorId}` });
+    const assignedToSelf = operatorId === user.uid;
+    toast({
+      title: 'Asignada',
+      description: assignedToSelf
+        ? `${reference} → usted. Envíe la devolución en Mis remanentes.`
+        : `${reference} → ${op?.displayName || operatorId}`,
+    });
     await loadDetailTasks(selected.id);
     await reloadList();
+    if (assignedToSelf) {
+      setView('list');
+      setSelected(null);
+      setTab('myTasks');
+    }
   };
 
   const handleClaim = async (compareId: string, reference: string) => {
@@ -1107,22 +1129,26 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
           >
             Comparaciones
           </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant={tab === 'myTasks' ? 'default' : 'outline'}
-            onClick={() => setTab('myTasks')}
-          >
-            Mis remanentes ({myTasks.length})
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant={tab === 'available' ? 'default' : 'outline'}
-            onClick={() => setTab('available')}
-          >
-            Disponibles ({availableClaims.length})
-          </Button>
+          {canWorkOwnRemainders ? (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant={tab === 'myTasks' ? 'default' : 'outline'}
+                onClick={() => setTab('myTasks')}
+              >
+                Mis remanentes ({myTasks.length})
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={tab === 'available' ? 'default' : 'outline'}
+                onClick={() => setTab('available')}
+              >
+                Disponibles ({availableClaims.length})
+              </Button>
+            </>
+          ) : null}
           {isManager ? (
             <>
               <Button
@@ -1280,12 +1306,13 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
         </Card>
       ) : null}
 
-      {view === 'list' && tab === 'myTasks' ? (
+      {view === 'list' && tab === 'myTasks' && canWorkOwnRemainders ? (
         <Card>
           <CardHeader>
             <CardTitle>Mis remanentes asignados</CardTitle>
             <CardDescription>
-              Referencias que le asignó un supervisor o que usted tomó. Registre la devolución a bodega.
+              Referencias asignadas a usted (operario o supervisor) o que tomó en Disponibles. Registre y
+              envíe la devolución a bodega (legalizar).
             </CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto">
@@ -1416,7 +1443,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
         </Card>
       ) : null}
 
-      {view === 'list' && tab === 'available' ? (
+      {view === 'list' && tab === 'available' && canWorkOwnRemainders ? (
         <Card>
           <CardHeader>
             <CardTitle>Referencias disponibles</CardTitle>
@@ -1584,17 +1611,49 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                         {task.claimedBySelf ? 'Auto' : 'Supervisor'}
                       </TableCell>
                       <TableCell className="text-right">
-                        {task.status === 'assigned' || task.status === 'rejected' ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            disabled={busyTaskId === task.id}
-                            onClick={() => setUnassignConfirmTask(task)}
-                          >
-                            Desasignar
-                          </Button>
-                        ) : null}
+                        <div className="flex flex-wrap justify-end gap-2">
+                          {task.assignedOperatorId === user?.uid &&
+                          (task.status === 'assigned' || task.status === 'rejected') ? (
+                            <>
+                              <Input
+                                className="h-8 w-24"
+                                type="number"
+                                min={0}
+                                placeholder={String(task.expectedRemainderQty)}
+                                value={returnDrafts[task.id] ?? ''}
+                                onChange={(e) =>
+                                  setReturnDrafts((prev) => ({
+                                    ...prev,
+                                    [task.id]: e.target.value,
+                                  }))
+                                }
+                              />
+                              <Button
+                                type="button"
+                                size="sm"
+                                disabled={busyTaskId === task.id}
+                                onClick={() => void handleSubmitReturn(task)}
+                              >
+                                {busyTaskId === task.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  'Enviar devolución'
+                                )}
+                              </Button>
+                            </>
+                          ) : null}
+                          {task.status === 'assigned' || task.status === 'rejected' ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={busyTaskId === task.id}
+                              onClick={() => setUnassignConfirmTask(task)}
+                            >
+                              Desasignar
+                            </Button>
+                          ) : null}
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -2184,7 +2243,36 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                               ) : null}
                               {isManager &&
                               (task.status === 'assigned' || task.status === 'rejected') ? (
-                                <div className="pt-1">
+                                <div className="flex flex-wrap items-center gap-2 pt-1">
+                                  {task.assignedOperatorId === user?.uid ? (
+                                    <>
+                                      <Input
+                                        className="h-8 w-24"
+                                        type="number"
+                                        min={0}
+                                        placeholder={String(task.expectedRemainderQty)}
+                                        value={returnDrafts[task.id] ?? ''}
+                                        onChange={(e) =>
+                                          setReturnDrafts((prev) => ({
+                                            ...prev,
+                                            [task.id]: e.target.value,
+                                          }))
+                                        }
+                                      />
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        disabled={busyTaskId === task.id}
+                                        onClick={() => void handleSubmitReturn(task)}
+                                      >
+                                        {busyTaskId === task.id ? (
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                        ) : (
+                                          'Enviar devolución'
+                                        )}
+                                      </Button>
+                                    </>
+                                  ) : null}
                                   <Button
                                     type="button"
                                     size="sm"
