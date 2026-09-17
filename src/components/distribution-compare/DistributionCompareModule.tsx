@@ -72,6 +72,7 @@ import {
   listRemainderAssignmentBoard,
   listRemainderTasksByCompare,
   rejectRemainderTask,
+  resolveReceptionLocationsForReferences,
   submitRemainderReturn,
   supervisorConfirmRemaindersDirect,
   unassignDistributionRemainderTask,
@@ -284,6 +285,10 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const [unassignConfirmTask, setUnassignConfirmTask] = useState<DistributionRemainderTask | null>(
     null
   );
+  /** Ubicación por ref (recepción) en Ver/asignar; complementa locationName de la tarea. */
+  const [detailLocationByRef, setDetailLocationByRef] = useState<
+    Record<string, { locationId?: string; locationName?: string }>
+  >({});
   const receptionsLoadedRef = React.useRef(false);
   const operatorsLoadedRef = React.useRef(false);
   const loadGenRef = React.useRef(0);
@@ -396,10 +401,40 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     else setTasks([]);
   }, []);
 
+  const hydrateDetailLocations = useCallback(async (compare: DistributionCompareOperation) => {
+    const refs = (compare.lines || []).map((l) => l.reference).filter(Boolean);
+    if (!compare.receptionOperationId || refs.length === 0) {
+      setDetailLocationByRef({});
+      return;
+    }
+    try {
+      const map = await resolveReceptionLocationsForReferences(
+        compare.receptionOperationId,
+        refs
+      );
+      const next: Record<string, { locationId?: string; locationName?: string }> = {};
+      map.forEach((v, k) => {
+        next[k] = v;
+      });
+      setDetailLocationByRef(next);
+    } catch {
+      setDetailLocationByRef({});
+    }
+  }, []);
+
   // Una sola carga al montar (reloadList es estable).
   useEffect(() => {
     void reloadList();
   }, [reloadList]);
+
+  /** Operarios no entran a Ver/asignar. */
+  useEffect(() => {
+    if (view === 'detail' && !isManager) {
+      setView('list');
+      setSelected(null);
+      setDetailLocationByRef({});
+    }
+  }, [view, isManager]);
 
   useEffect(() => {
     if (view === 'new') void ensureReceptionsLoaded();
@@ -573,6 +608,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     setTab('compares');
     setOnlyRemainder(true);
     await loadDetailTasks(res.data.id);
+    await hydrateDetailLocations(res.data);
   };
 
   const handleCloseOperation = async (compareId: string) => {
@@ -608,11 +644,13 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   };
 
   const openDetail = async (it: DistributionCompareOperation) => {
+    if (!isManager) return;
     setView('detail');
     setTab('compares');
     setSelectedRefs(new Set());
     setAssignOperatorId('');
     setDetailLoading(true);
+    setDetailLocationByRef({});
     setSelected({ ...it, lines: it.lines || [] });
     try {
       const [full, _tasks] = await Promise.all([
@@ -620,8 +658,10 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
         loadDetailTasks(it.id),
         ensureOperatorsLoaded(),
       ]);
-      if (full.success && full.data) setSelected(full.data);
-      else if (!full.success) {
+      if (full.success && full.data) {
+        setSelected(full.data);
+        await hydrateDetailLocations(full.data);
+      } else if (!full.success) {
         toast({
           variant: 'destructive',
           title: 'Detalle',
@@ -1185,14 +1225,16 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-2">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="secondary"
-                              onClick={() => void openDetail(it)}
-                            >
-                              Ver / asignar
-                            </Button>
+                            {isManager ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => void openDetail(it)}
+                              >
+                                Ver / asignar
+                              </Button>
+                            ) : null}
                             {isManager && it.status !== 'completed' && it.status !== 'archived' ? (
                               <Button
                                 type="button"
@@ -1763,7 +1805,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
         </div>
       ) : null}
 
-      {view === 'detail' && selected ? (
+      {view === 'detail' && selected && isManager ? (
         <div className="space-y-4">
           {detailLoading ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -1969,6 +2011,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   <TableRow>
                     {isManager ? <TableHead className="w-10" /> : null}
                     <TableHead>Referencia</TableHead>
+                    <TableHead>Ubicación</TableHead>
                     <TableHead className="text-right">Físico</TableHead>
                     <TableHead className="text-right">Distribuido</TableHead>
                     <TableHead className="text-right">Remanente</TableHead>
@@ -1979,6 +2022,9 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                 <TableBody>
                   {detailLines.map((line) => {
                     const task = taskByRef.get(line.reference);
+                    const locationName =
+                      task?.locationName ||
+                      detailLocationByRef[line.reference]?.locationName;
                     const canSelect =
                       isManager &&
                       line.remainderQty >= 0 &&
@@ -1996,6 +2042,13 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                           </TableCell>
                         ) : null}
                         <TableCell className="font-medium">{line.reference}</TableCell>
+                        <TableCell className="text-sm">
+                          {locationName ? (
+                            <span className="font-medium text-foreground">{locationName}</span>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-right tabular-nums">
                           {fmt(line.physicalQty)}
                         </TableCell>
@@ -2022,7 +2075,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                                     Sin remanente · operario reporta 0
                                   </div>
                                 ) : null}
-                                {isManager && canSelect ? (
+                                {canSelect ? (
                                   <div className="flex flex-wrap items-center gap-2">
                                     <Select
                                       value={rowOperatorByRef[line.reference] || undefined}
@@ -2069,24 +2122,6 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                                       />
                                     ) : null}
                                   </div>
-                                ) : !isManager && selected ? (
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="outline"
-                                    disabled={
-                                      claimingKey === `${selected.id}:${line.reference}` ||
-                                      selected.status === 'archived' ||
-                                      selected.status === 'completed'
-                                    }
-                                    onClick={() => void handleClaim(selected.id, line.reference)}
-                                  >
-                                    {claimingKey === `${selected.id}:${line.reference}` ? (
-                                      <Loader2 className="h-4 w-4 animate-spin" />
-                                    ) : (
-                                      'Tomar'
-                                    )}
-                                  </Button>
                                 ) : (
                                   <span className="text-muted-foreground">Sin asignar</span>
                                 )}
@@ -2100,9 +2135,6 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                               <div className="text-xs text-muted-foreground">
                                 {task.assignedOperatorName || task.assignedOperatorId}
                                 {task.claimedBySelf ? ' · auto' : ''}
-                                {task.locationName
-                                  ? ` · ${task.locationName}`
-                                  : ' · sin ubicación recepción'}
                                 {typeof task.returnedQty === 'number'
                                   ? ` · devuelto ${fmt(task.returnedQty)}/${fmt(task.expectedRemainderQty)}${
                                       task.returnedQty >= (Number(task.expectedRemainderQty) || 0)
