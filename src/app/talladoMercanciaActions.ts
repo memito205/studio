@@ -165,12 +165,12 @@ function stripUndefinedDeep(value: unknown): unknown {
 }
 
 function normalizeTalladoScanCode(raw: string): string {
-  // Lectores a veces emiten ' o , en vez del guion medio (-)
+  // Lectores a veces emiten ' , ; o / en vez del guion medio (-)
   return String(raw || '')
     .trim()
     .toUpperCase()
     .replace(/[\u2018\u2019\u201A\uFF07`´′ʼ']/g, '-')
-    .replace(/[,;]/g, '-')
+    .replace(/[,;/]/g, '-')
     .replace(/\s+/g, '')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');

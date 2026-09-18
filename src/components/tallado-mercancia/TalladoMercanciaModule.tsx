@@ -262,13 +262,13 @@ function fmtElapsedSince(iso?: string) {
   return fmtDuration(Date.now() - start);
 }
 
-/** Misma normalización visual que el servidor: ' y , → - */
+/** Misma normalización visual que el servidor: ' , ; y / → - */
 function displayScanCode(raw: string): string {
   return String(raw || '')
     .trim()
     .toUpperCase()
     .replace(/[\u2018\u2019\u201A\uFF07`´′ʼ']/g, '-')
-    .replace(/[,;]/g, '-')
+    .replace(/[,;/]/g, '-')
     .replace(/\s+/g, '')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
