@@ -208,20 +208,38 @@ async function listInProgressUnits(): Promise<TalladoUnit[]> {
     .filter((u) => !isTalladoSoftDeleted(u));
 }
 
+/**
+ * Variantes equivalentes al normalizar separadores (' , ; / → -).
+ * NO quitar guiones ni dígitos sueltos: eso inventaba matches parciales
+ * (p.ej. BOD-A-7211 → BODA7211 / TF 7211).
+ */
 function talladoCodeVariants(code: string, rawCode?: string): string[] {
+  const raw = String(rawCode || '').trim();
+  const rawUpper = raw.toUpperCase();
   return Array.from(
     new Set(
       [
         code,
         code.replace(/-/g, "'"),
         code.replace(/-/g, ','),
-        code.replace(/-/g, ''),
-        String(rawCode || '').trim(),
-        String(rawCode || '')
-          .trim()
-          .toUpperCase(),
+        code.replace(/-/g, '/'),
+        code.replace(/-/g, ';'),
+        raw || undefined,
+        rawUpper || undefined,
       ].filter(Boolean)
     )
+  );
+}
+
+/** Docs de transferencia cuyo codigoAlterno normalizado == scanCode (match exacto). */
+function filterTransfersByExactCodigoAlterno(
+  docs: TransferEntry[],
+  scanCode: string
+): TransferEntry[] {
+  const code = normalizeTalladoScanCode(scanCode);
+  if (!code) return [];
+  return docs.filter(
+    (t) => normalizeTalladoScanCode(String(t.codigoAlterno || '')) === code
   );
 }
 
@@ -1299,41 +1317,72 @@ export async function lookupTransferForTallado(
     }
 
     const col = collection(firestore, TRANSFERS_COL);
-    const digits = scanCode.replace(/\D/g, '');
     const altVariants = talladoCodeVariants(scanCode, rawCode).filter((v) => v !== scanCode);
+    // Código con letras (alterno): priorizar codigoAlterno exacto.
+    // Nunca extraer dígitos (BOD-A-7211 → 7211) para buscar numeroTF: eso agregaba
+    // marcas/cantidades ajenas vía aggregateTransfers (FILA+NIKE+…).
+    const looksLikeAltCode = /[A-Z]/.test(scanCode);
 
-    // Primera oleada en paralelo: TF exacto, dígitos, alterno exacto
-    const [byTf, byDigits, byAlt] = await Promise.all([
+    const [byTf, byAlt] = await Promise.all([
       getDocs(query(col, where('numeroTF', '==', scanCode), limit(50))),
-      digits && digits !== scanCode
-        ? getDocs(query(col, where('numeroTF', '==', digits), limit(50)))
-        : Promise.resolve(null),
       getDocs(query(col, where('codigoAlterno', '==', scanCode), limit(50))),
     ]);
 
-    if (!byTf.empty) {
-      const docs = byTf.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
-      return { success: true, data: aggregateTransfers(scanCode, 'numeroTF', docs) };
-    }
-    if (byDigits && !byDigits.empty) {
-      const docs = byDigits.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
-      return { success: true, data: aggregateTransfers(scanCode, 'numeroTF', docs) };
-    }
-    if (!byAlt.empty) {
-      const docs = byAlt.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
-      return { success: true, data: aggregateTransfers(scanCode, 'codigoAlterno', docs) };
-    }
+    const tryAltDocs = (docs: TransferEntry[]) => {
+      const exact = filterTransfersByExactCodigoAlterno(docs, scanCode);
+      if (exact.length === 0) return null;
+      return {
+        success: true as const,
+        data: aggregateTransfers(scanCode, 'codigoAlterno', exact),
+      };
+    };
 
-    if (altVariants.length > 0) {
-      const variantSnaps = await Promise.all(
-        altVariants.map((variant) =>
-          getDocs(query(col, where('codigoAlterno', '==', variant), limit(50)))
-        )
+    if (looksLikeAltCode) {
+      const altHit = tryAltDocs(
+        byAlt.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry))
       );
-      for (const byVariant of variantSnaps) {
-        if (!byVariant.empty) {
-          const docs = byVariant.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
-          return { success: true, data: aggregateTransfers(scanCode, 'codigoAlterno', docs) };
+      if (altHit) return altHit;
+
+      if (altVariants.length > 0) {
+        const variantSnaps = await Promise.all(
+          altVariants.map((variant) =>
+            getDocs(query(col, where('codigoAlterno', '==', variant), limit(50)))
+          )
+        );
+        for (const byVariant of variantSnaps) {
+          const hit = tryAltDocs(
+            byVariant.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry))
+          );
+          if (hit) return hit;
+        }
+      }
+
+      // TF solo con igualdad exacta del string completo (sin strip de dígitos).
+      if (!byTf.empty) {
+        const docs = byTf.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
+        return { success: true, data: aggregateTransfers(scanCode, 'numeroTF', docs) };
+      }
+    } else {
+      if (!byTf.empty) {
+        const docs = byTf.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
+        return { success: true, data: aggregateTransfers(scanCode, 'numeroTF', docs) };
+      }
+      const altHit = tryAltDocs(
+        byAlt.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry))
+      );
+      if (altHit) return altHit;
+
+      if (altVariants.length > 0) {
+        const variantSnaps = await Promise.all(
+          altVariants.map((variant) =>
+            getDocs(query(col, where('codigoAlterno', '==', variant), limit(50)))
+          )
+        );
+        for (const byVariant of variantSnaps) {
+          const hit = tryAltDocs(
+            byVariant.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry))
+          );
+          if (hit) return hit;
         }
       }
     }
@@ -1354,7 +1403,9 @@ export async function lookupTransferForTallado(
 
     return {
       success: false,
-      error: `No se encontró el código "${scanCode}" en transferencias, catálogo ni recepción (# caja).`,
+      error: looksLikeAltCode
+        ? `No se encontró el código alterno "${scanCode}" (match exacto tras normalizar). No se usan códigos parecidos ni solo los dígitos.`
+        : `No se encontró el código "${scanCode}" en transferencias, catálogo ni recepción (# caja).`,
     };
   } catch (error: any) {
     console.error('lookupTransferForTallado:', error);
