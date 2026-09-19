@@ -17,6 +17,10 @@ import {
 } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
 import { normalizeReceptionReference } from '@/lib/receptionReference';
+import {
+  emailAllowsPendingValidation,
+  userDocAllowsPendingValidation,
+} from '@/lib/distributionComparePermissions';
 import type {
   AppUser,
   DistributionCompareLine,
@@ -103,19 +107,25 @@ async function resolveUserDisplayName(
   return fb || uid || 'Operario';
 }
 
-/** Admin/supervisor, o flag `canViewDistributionPendingValidation` en users/{uid}. */
-async function userCanValidateDistributionRemainders(uid: string): Promise<boolean> {
+/**
+ * Admin/supervisor, flag `canViewDistributionPendingValidation` en users/{uid},
+ * o email en allowlist (p. ej. operario con permiso puntual).
+ */
+async function userCanValidateDistributionRemainders(
+  uid: string,
+  emailHint?: string | null
+): Promise<boolean> {
   if (!uid) return false;
+  if (emailAllowsPendingValidation(emailHint)) return true;
   try {
     const snap = await getDoc(doc(firestore, USERS_COL, uid));
     if (!snap.exists()) return false;
     const d = snap.data() as {
       role?: string;
-      canViewDistributionPendingValidation?: boolean;
+      email?: string;
+      canViewDistributionPendingValidation?: unknown;
     };
-    const role = String(d.role || '').trim().toLowerCase();
-    if (role === 'admin' || role === 'supervisor') return true;
-    return d.canViewDistributionPendingValidation === true;
+    return userDocAllowsPendingValidation(d);
   } catch {
     return false;
   }
@@ -1165,13 +1175,16 @@ export async function listMyRemainderTasks(operatorId: string): Promise<{
   }
 }
 
-export async function listPendingValidationRemainderTasks(actorUid: string): Promise<{
+export async function listPendingValidationRemainderTasks(
+  actorUid: string,
+  actorEmail?: string | null
+): Promise<{
   success: boolean;
   data?: DistributionRemainderTask[];
   error?: string;
 }> {
   try {
-    if (!actorUid || !(await userCanValidateDistributionRemainders(actorUid))) {
+    if (!actorUid || !(await userCanValidateDistributionRemainders(actorUid, actorEmail))) {
       return { success: false, error: 'Sin permiso para ver pendientes de validación.' };
     }
     const snap = await getDocs(
@@ -1742,12 +1755,13 @@ export async function validateRemainderTask(input: {
   taskId: string;
   validatorId: string;
   validatorName?: string;
+  validatorEmail?: string | null;
 }): Promise<{ success: boolean; error?: string }> {
   try {
     if (!input.taskId || !input.validatorId) {
       return { success: false, error: 'Faltan datos de validación.' };
     }
-    if (!(await userCanValidateDistributionRemainders(input.validatorId))) {
+    if (!(await userCanValidateDistributionRemainders(input.validatorId, input.validatorEmail))) {
       return { success: false, error: 'Sin permiso para validar devoluciones.' };
     }
     const taskRef = doc(firestore, TASKS_COL, input.taskId);
@@ -1781,13 +1795,14 @@ export async function rejectRemainderTask(input: {
   taskId: string;
   validatorId: string;
   validatorName?: string;
+  validatorEmail?: string | null;
   reason: string;
 }): Promise<{ success: boolean; error?: string }> {
   try {
     if (!input.taskId || !input.validatorId) {
       return { success: false, error: 'Faltan datos.' };
     }
-    if (!(await userCanValidateDistributionRemainders(input.validatorId))) {
+    if (!(await userCanValidateDistributionRemainders(input.validatorId, input.validatorEmail))) {
       return { success: false, error: 'Sin permiso para rechazar devoluciones.' };
     }
     if (!String(input.reason || '').trim()) {

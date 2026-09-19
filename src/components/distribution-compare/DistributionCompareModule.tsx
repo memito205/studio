@@ -97,6 +97,7 @@ import {
   validateComparePhysicalRows,
   withTimeout,
 } from '@/lib/distributionCompareClient';
+import { emailAllowsPendingValidation } from '@/lib/distributionComparePermissions';
 
 interface Props {
   onReturnToSuite: () => void;
@@ -220,8 +221,11 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const { user, role, canViewDistributionPendingValidation } = useAuth();
   const { toast } = useToast();
   const isManager = role === 'admin' || role === 'supervisor';
-  /** Admin/supervisor o flag reutilizable en users/{uid}. */
-  const canViewPendingValidation = isManager || canViewDistributionPendingValidation;
+  /** Admin/supervisor, flag Firestore, o email allowlist. */
+  const canViewPendingValidation =
+    isManager ||
+    canViewDistributionPendingValidation ||
+    emailAllowsPendingValidation(user?.email);
   /** Operario, supervisor y admin pueden tener refs asignadas y legalizarlas en Mis remanentes. */
   const canWorkOwnRemainders =
     role === 'operator' || role === 'supervisor' || role === 'admin';
@@ -298,9 +302,11 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const operatorsLoadedRef = React.useRef(false);
   const loadGenRef = React.useRef(0);
   const userUidRef = React.useRef<string | undefined>(user?.uid);
+  const userEmailRef = React.useRef<string | null | undefined>(user?.email);
   const isManagerRef = React.useRef(isManager);
   const canViewPendingValidationRef = React.useRef(canViewPendingValidation);
   userUidRef.current = user?.uid;
+  userEmailRef.current = user?.email;
   isManagerRef.current = isManager;
   canViewPendingValidationRef.current = canViewPendingValidation;
   const toastRef = React.useRef(toast);
@@ -362,7 +368,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
         .catch(() => undefined);
     }
     if (canViewPendingValidationRef.current && uid) {
-      void listPendingValidationRemainderTasks(uid)
+      void listPendingValidationRemainderTasks(uid, userEmailRef.current)
         .then((res) => {
           if (gen === loadGenRef.current && res.success) setPendingTasks(res.data || []);
         })
@@ -507,6 +513,20 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
         ])
       ),
     [assignmentBoard, matchesListSearch]
+  );
+
+  const filteredPendingTasks = useMemo(
+    () =>
+      pendingTasks.filter((t) =>
+        matchesListSearch([
+          t.reference,
+          t.rkIdentifier,
+          t.assignedOperatorName,
+          t.assignedOperatorId,
+          t.locationName,
+        ])
+      ),
+    [pendingTasks, matchesListSearch]
   );
 
   const onPlanFile = async (file: File | null) => {
@@ -713,7 +733,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       if (myRes.success) setMyTasks(myRes.data || []);
     }
     if (canViewPendingValidation && user?.uid) {
-      const pendRes = await listPendingValidationRemainderTasks(user.uid);
+      const pendRes = await listPendingValidationRemainderTasks(user.uid, user.email);
       if (pendRes.success) setPendingTasks(pendRes.data || []);
     }
   };
@@ -1010,6 +1030,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       taskId: task.id,
       validatorId: user.uid,
       validatorName: user.displayName || user.email || user.uid,
+      validatorEmail: user.email,
     });
     setBusyTaskId(null);
     if (!res.success) {
@@ -1037,6 +1058,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       taskId: task.id,
       validatorId: user.uid,
       validatorName: user.displayName || user.email || user.uid,
+      validatorEmail: user.email,
       reason,
     });
     setBusyTaskId(null);
@@ -1683,6 +1705,10 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
           <CardContent className="overflow-x-auto">
             {pendingTasks.length === 0 ? (
               <p className="text-center text-muted-foreground py-8">No hay pendientes.</p>
+            ) : filteredPendingTasks.length === 0 ? (
+              <p className="text-center text-muted-foreground py-8">
+                Sin resultados para «{listSearch.trim()}».
+              </p>
             ) : (
               <Table>
                 <TableHeader>
@@ -1696,7 +1722,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {pendingTasks.map((task) => {
+                  {filteredPendingTasks.map((task) => {
                     const match = (task.returnedQty || 0) === task.expectedRemainderQty;
                     return (
                       <TableRow key={task.id}>
