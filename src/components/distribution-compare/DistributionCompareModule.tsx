@@ -217,9 +217,11 @@ function compareStatusLabel(status: DistributionCompareOperation['status']) {
 }
 
 export default function DistributionCompareModule({ onReturnToSuite }: Props) {
-  const { user, role } = useAuth();
+  const { user, role, canViewDistributionPendingValidation } = useAuth();
   const { toast } = useToast();
   const isManager = role === 'admin' || role === 'supervisor';
+  /** Admin/supervisor o flag reutilizable en users/{uid}. */
+  const canViewPendingValidation = isManager || canViewDistributionPendingValidation;
   /** Operario, supervisor y admin pueden tener refs asignadas y legalizarlas en Mis remanentes. */
   const canWorkOwnRemainders =
     role === 'operator' || role === 'supervisor' || role === 'admin';
@@ -297,8 +299,10 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
   const loadGenRef = React.useRef(0);
   const userUidRef = React.useRef<string | undefined>(user?.uid);
   const isManagerRef = React.useRef(isManager);
+  const canViewPendingValidationRef = React.useRef(canViewPendingValidation);
   userUidRef.current = user?.uid;
   isManagerRef.current = isManager;
+  canViewPendingValidationRef.current = canViewPendingValidation;
   const toastRef = React.useRef(toast);
   toastRef.current = toast;
 
@@ -357,12 +361,14 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
         })
         .catch(() => undefined);
     }
-    if (isManagerRef.current) {
-      void listPendingValidationRemainderTasks()
+    if (canViewPendingValidationRef.current && uid) {
+      void listPendingValidationRemainderTasks(uid)
         .then((res) => {
           if (gen === loadGenRef.current && res.success) setPendingTasks(res.data || []);
         })
         .catch(() => undefined);
+    }
+    if (isManagerRef.current) {
       void listRemainderAssignmentBoard(300)
         .then((res) => {
           if (gen === loadGenRef.current && res.success) setAssignmentBoard(res.data || []);
@@ -425,10 +431,10 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     }
   }, []);
 
-  // Carga al montar y cuando auth/uid o rol manager quedan listos (evita Mis remanentes vacío).
+  // Carga al montar y cuando auth/uid o permiso de validación quedan listos (evita Mis remanentes vacío).
   useEffect(() => {
     void reloadList();
-  }, [reloadList, user?.uid, isManager]);
+  }, [reloadList, user?.uid, isManager, canViewPendingValidation]);
 
   /** Operarios no entran a Ver/asignar (admin/supervisor sí). Mis remanentes no se afecta. */
   useEffect(() => {
@@ -706,8 +712,8 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
       const myRes = await listMyRemainderTasks(user.uid);
       if (myRes.success) setMyTasks(myRes.data || []);
     }
-    if (isManager) {
-      const pendRes = await listPendingValidationRemainderTasks();
+    if (canViewPendingValidation && user?.uid) {
+      const pendRes = await listPendingValidationRemainderTasks(user.uid);
       if (pendRes.success) setPendingTasks(pendRes.data || []);
     }
   };
@@ -1159,15 +1165,17 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
               >
                 Asignaciones ({assignmentBoard.length})
               </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant={tab === 'pendingValidation' ? 'default' : 'outline'}
-                onClick={() => setTab('pendingValidation')}
-              >
-                Por validar ({pendingTasks.length})
-              </Button>
             </>
+          ) : null}
+          {canViewPendingValidation ? (
+            <Button
+              type="button"
+              size="sm"
+              variant={tab === 'pendingValidation' ? 'default' : 'outline'}
+              onClick={() => setTab('pendingValidation')}
+            >
+              Por validar ({pendingTasks.length})
+            </Button>
           ) : null}
         </div>
       ) : null}
@@ -1664,7 +1672,7 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
         </Card>
       ) : null}
 
-      {view === 'list' && tab === 'pendingValidation' && isManager ? (
+      {view === 'list' && tab === 'pendingValidation' && canViewPendingValidation ? (
         <Card>
           <CardHeader>
             <CardTitle>Devoluciones por validar</CardTitle>

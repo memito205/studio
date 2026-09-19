@@ -11,6 +11,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [user, setUser] = useState<User | null>(null);
     const [role, setRole] = useState<UserRole | null>(null);
     const [userName, setUserName] = useState<string | null>(null);
+    const [canViewDistributionPendingValidation, setCanViewDistributionPendingValidation] =
+        useState(false);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -32,16 +34,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     const rawRole = String(userData.role || '').trim().toLowerCase();
                     setRole((rawRole as UserRole) || null);
                     setUserName(userData.displayName || user.displayName || user.email || 'Operario');
+                    setCanViewDistributionPendingValidation(
+                        userData.canViewDistributionPendingValidation === true
+                    );
                 } else {
                     // Handle cases where user exists in Auth but not in Firestore 'users' collection
                     console.warn(`User document not found in Firestore for UID: ${user.uid}`);
                     setRole(null);
                     setUserName(user.displayName || user.email || 'Operario');
+                    setCanViewDistributionPendingValidation(false);
                 }
             } else {
                 setUser(null);
                 setRole(null);
                 setUserName(null);
+                setCanViewDistributionPendingValidation(false);
             }
             setLoading(false);
         });
@@ -53,8 +60,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user,
         role,
         userName,
+        canViewDistributionPendingValidation,
         loading
-    }), [user, role, userName, loading]);
+    }), [user, role, userName, canViewDistributionPendingValidation, loading]);
 
     return (
         <AuthContext.Provider value={value}>

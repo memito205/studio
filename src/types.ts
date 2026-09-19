@@ -1074,6 +1074,12 @@ export interface AppUser {
     displayName?: string;
     role: UserRole;
     disabled: boolean;
+    /**
+     * Operario (u otro rol no manager) puede ver y Validar/Rechazar
+     * «Devoluciones por validar» en Físico vs Distribución.
+     * No otorga Ver/asignar, Cerrar operación ni Desasignar.
+     */
+    canViewDistributionPendingValidation?: boolean;
 }
 
 export type GeneralLabelOwnerType = 'packer' | 'store';

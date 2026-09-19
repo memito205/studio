@@ -103,6 +103,24 @@ async function resolveUserDisplayName(
   return fb || uid || 'Operario';
 }
 
+/** Admin/supervisor, o flag `canViewDistributionPendingValidation` en users/{uid}. */
+async function userCanValidateDistributionRemainders(uid: string): Promise<boolean> {
+  if (!uid) return false;
+  try {
+    const snap = await getDoc(doc(firestore, USERS_COL, uid));
+    if (!snap.exists()) return false;
+    const d = snap.data() as {
+      role?: string;
+      canViewDistributionPendingValidation?: boolean;
+    };
+    const role = String(d.role || '').trim().toLowerCase();
+    if (role === 'admin' || role === 'supervisor') return true;
+    return d.canViewDistributionPendingValidation === true;
+  } catch {
+    return false;
+  }
+}
+
 function normRef(value: unknown): string {
   // Misma normalización que recepción (referenceStats), para que el cruce cuadre.
   return normalizeReceptionReference(String(value ?? ''));
@@ -1147,12 +1165,15 @@ export async function listMyRemainderTasks(operatorId: string): Promise<{
   }
 }
 
-export async function listPendingValidationRemainderTasks(): Promise<{
+export async function listPendingValidationRemainderTasks(actorUid: string): Promise<{
   success: boolean;
   data?: DistributionRemainderTask[];
   error?: string;
 }> {
   try {
+    if (!actorUid || !(await userCanValidateDistributionRemainders(actorUid))) {
+      return { success: false, error: 'Sin permiso para ver pendientes de validación.' };
+    }
     const snap = await getDocs(
       query(collection(firestore, TASKS_COL), where('status', '==', 'submitted'), limit(200))
     );
@@ -1726,6 +1747,9 @@ export async function validateRemainderTask(input: {
     if (!input.taskId || !input.validatorId) {
       return { success: false, error: 'Faltan datos de validación.' };
     }
+    if (!(await userCanValidateDistributionRemainders(input.validatorId))) {
+      return { success: false, error: 'Sin permiso para validar devoluciones.' };
+    }
     const taskRef = doc(firestore, TASKS_COL, input.taskId);
     const snap = await getDoc(taskRef);
     if (!snap.exists()) return { success: false, error: 'Tarea no encontrada.' };
@@ -1762,6 +1786,9 @@ export async function rejectRemainderTask(input: {
   try {
     if (!input.taskId || !input.validatorId) {
       return { success: false, error: 'Faltan datos.' };
+    }
+    if (!(await userCanValidateDistributionRemainders(input.validatorId))) {
+      return { success: false, error: 'Sin permiso para rechazar devoluciones.' };
     }
     if (!String(input.reason || '').trim()) {
       return { success: false, error: 'Indique el motivo del rechazo.' };
