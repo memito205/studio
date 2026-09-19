@@ -210,22 +210,31 @@ async function listInProgressUnits(): Promise<TalladoUnit[]> {
 
 /**
  * Variantes equivalentes al normalizar separadores (' , ; / → -).
+ * Incluye UPPER y lower: Firestore `==` es case-sensitive y algunos
+ * codigoAlterno históricos quedaron en minúsculas mientras el escaneo va a UPPER.
  * NO quitar guiones ni dígitos sueltos: eso inventaba matches parciales
  * (p.ej. BOD-A-7211 → BODA7211 / TF 7211).
  */
 function talladoCodeVariants(code: string, rawCode?: string): string[] {
   const raw = String(rawCode || '').trim();
   const rawUpper = raw.toUpperCase();
+  const rawLower = raw.toLowerCase();
+  const lower = code.toLowerCase();
+  const withSeparators = (c: string) => [
+    c,
+    c.replace(/-/g, "'"),
+    c.replace(/-/g, ','),
+    c.replace(/-/g, '/'),
+    c.replace(/-/g, ';'),
+  ];
   return Array.from(
     new Set(
       [
-        code,
-        code.replace(/-/g, "'"),
-        code.replace(/-/g, ','),
-        code.replace(/-/g, '/'),
-        code.replace(/-/g, ';'),
+        ...withSeparators(code),
+        ...(lower !== code ? withSeparators(lower) : []),
         raw || undefined,
         rawUpper || undefined,
+        rawLower || undefined,
       ].filter(Boolean)
     )
   );
@@ -1317,16 +1326,34 @@ export async function lookupTransferForTallado(
     }
 
     const col = collection(firestore, TRANSFERS_COL);
-    const altVariants = talladoCodeVariants(scanCode, rawCode).filter((v) => v !== scanCode);
-    // Código con letras (alterno): priorizar codigoAlterno exacto.
+    // Escaneo ya va a UPPER; en Firestore algunos codigoAlterno están en lower.
+    const scanLower = scanCode.toLowerCase();
+    const altVariants = talladoCodeVariants(scanCode, rawCode).filter(
+      (v) => v !== scanCode && v !== scanLower
+    );
+    // Código con letras (alterno): priorizar codigoAlterno exacto (tras normalize).
     // Nunca extraer dígitos (BOD-A-7211 → 7211) para buscar numeroTF: eso agregaba
     // marcas/cantidades ajenas vía aggregateTransfers (FILA+NIKE+…).
     const looksLikeAltCode = /[A-Z]/.test(scanCode);
 
-    const [byTf, byAlt] = await Promise.all([
+    const [byTf, byAlt, byAltLower] = await Promise.all([
       getDocs(query(col, where('numeroTF', '==', scanCode), limit(50))),
       getDocs(query(col, where('codigoAlterno', '==', scanCode), limit(50))),
+      scanLower !== scanCode
+        ? getDocs(query(col, where('codigoAlterno', '==', scanLower), limit(50)))
+        : Promise.resolve(null),
     ]);
+
+    const mergeAltPrimaryDocs = (): TransferEntry[] => {
+      const found = new Map<string, TransferEntry>();
+      for (const snap of [byAlt, byAltLower]) {
+        if (!snap) continue;
+        for (const d of snap.docs) {
+          found.set(d.id, { id: d.id, ...d.data() } as TransferEntry);
+        }
+      }
+      return Array.from(found.values());
+    };
 
     const tryAltDocs = (docs: TransferEntry[]) => {
       const exact = filterTransfersByExactCodigoAlterno(docs, scanCode);
@@ -1338,9 +1365,7 @@ export async function lookupTransferForTallado(
     };
 
     if (looksLikeAltCode) {
-      const altHit = tryAltDocs(
-        byAlt.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry))
-      );
+      const altHit = tryAltDocs(mergeAltPrimaryDocs());
       if (altHit) return altHit;
 
       if (altVariants.length > 0) {
@@ -1367,9 +1392,7 @@ export async function lookupTransferForTallado(
         const docs = byTf.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry));
         return { success: true, data: aggregateTransfers(scanCode, 'numeroTF', docs) };
       }
-      const altHit = tryAltDocs(
-        byAlt.docs.map((d) => ({ id: d.id, ...d.data() } as TransferEntry))
-      );
+      const altHit = tryAltDocs(mergeAltPrimaryDocs());
       if (altHit) return altHit;
 
       if (altVariants.length > 0) {
