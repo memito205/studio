@@ -13,7 +13,8 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { WholesaleOrder, WholesaleOrderDetail, OrderStatus, ProductDatabaseItem, PackingSession, PreprintedLabel, PackedItem, OperationPulse } from '@/types';
-import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrders, getPackedItemsForDate, getUserPulsesForDay, getGlobalPulsesForDay, loadOperatorMappings } from '@/app/actions';
+import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrders, getPackedItemsForDate, getUserPulsesForDay, getGlobalPulsesForDay, loadOperatorMappings, getPackedItemsForOrder } from '@/app/actions';
+import { computeWholesalePackingTotals, buildBoxAuditLines, boxAuditLinesToExcelRows, resolveWholesaleOrderStatus } from '@/lib/wholesalePacking';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
 import { exportToXlsx } from '@/services/export';
@@ -81,10 +82,12 @@ const OrderTable: React.FC<{
         </TableHeader>
         <TableBody>
             {orders.map(order => {
-                const packedUnits = allPackedItems.filter(item => item.orderId === order.id).reduce((sum, item) => sum + item.quantity, 0);
-                const totalUnits = order.cantidadTotal;
+                const orderPacked = allPackedItems.filter(item => item.orderId === order.id);
+                const totals = computeWholesalePackingTotals(order, orderPacked);
+                const packedUnits = totals.packedTotal;
+                const totalUnits = totals.orderTotal;
                 const progress = totalUnits > 0 ? (packedUnits / totalUnits) * 100 : (packedUnits > 0 ? 100 : 0);
-                const boxCount = new Set(allPackedItems.filter(item => item.orderId === order.id).map(item => item.packingUnitId)).size;
+                const boxCount = new Set(orderPacked.map(item => item.packingUnitId).filter(Boolean)).size;
                 const isSelected = selectedOrders.has(order.id);
 
                 return (
@@ -127,7 +130,7 @@ const OrderTable: React.FC<{
                                         <AlertDialogHeader>
                                             <AlertDialogTitle>¿Forzar Cierre de Pedido?</AlertDialogTitle>
                                             <AlertDialogDescription>
-                                                Esta acción marcará el pedido como "Empacado" aunque no esté completo. Podrá generar la orden de despacho. ¿Desea continuar?
+                                                Excepción intencional: marcará el pedido como Empacado aunque packed ≠ pedido (packingForceClosed). Use solo si faltan piezas justificadas. ¿Continuar?
                                             </AlertDialogDescription>
                                         </AlertDialogHeader>
                                         <AlertDialogFooter>
@@ -165,20 +168,27 @@ const OrderTable: React.FC<{
                                 <FileSearch className="mr-2 h-4 w-4" />
                                 Auditar
                             </Button>
-                            {order.status === 'Empacado' && (
+                            {(order.status === 'Empacado' || order.status === 'En Cargue' || order.status === 'Despachado' || order.status === 'En Empaque') && (
                                 <Button onClick={() => onDownloadComparisonReport(order)} size="sm" variant="outline" className="mr-2">
                                     <Download className="mr-2 h-4 w-4" />
-                                    Reporte
+                                    Reporte cajas
                                 </Button>
                             )}
                             <Button onClick={() => onOpenPrintDialog(order)} size="sm" variant="outline">
                                 <Printer className="mr-2 h-4 w-4" />
                                 Etiquetas
                             </Button>
-                            <Button onClick={() => onStartPacking(order)} size="sm" disabled={order.status === 'Empacado' || order.status === 'Cancelado'}>
-                                <PackageCheck className="mr-2 h-4 w-4" />
-                                {order.status === 'En Empaque' ? 'Continuar' : 'Empacar'}
-                            </Button>
+                            {(order.status === 'Empacado' || order.status === 'En Cargue' || order.status === 'Despachado') ? (
+                                <Button onClick={() => onOpenAuditDialog(order)} size="sm" variant="secondary">
+                                    <Boxes className="mr-2 h-4 w-4" />
+                                    Ver cajas
+                                </Button>
+                            ) : (
+                                <Button onClick={() => onStartPacking(order)} size="sm" disabled={order.status === 'Cancelado'}>
+                                    <PackageCheck className="mr-2 h-4 w-4" />
+                                    {order.status === 'En Empaque' ? 'Continuar' : 'Empacar'}
+                                </Button>
+                            )}
                         </TableCell>
                     </TableRow>
                 )
@@ -349,9 +359,10 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
   };
 
   const handleForceClose = async (order: WholesaleOrder) => {
-    const result = await updateOrderStatus(order.id, 'Empacado');
+    // Excepción intencional: Empacado incompleto (packingForceClosed=true).
+    const result = await updateOrderStatus(order.id, 'Empacado', { force: true });
     if (result.success) {
-        toast({ title: "Estado Actualizado", description: `El pedido ${order.id} ha sido marcado como Empacado.` });
+        toast({ title: "Estado Actualizado", description: `El pedido ${order.id} fue forzado a Empacado (incompleto permitido).` });
         fetchOrders();
     } else {
         toast({ variant: 'destructive', title: "Error", description: result.error });
@@ -376,112 +387,86 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
     }
   };
 
-  const parsePackedItemKey = (itemKey: string): { referencia: string; talla: string } => {
-    const key = String(itemKey || '').trim();
-    const idx = key.lastIndexOf('-');
-    if (idx < 0) return { referencia: key, talla: '' };
-    return {
-      referencia: key.slice(0, idx).trim(),
-      talla: key.slice(idx + 1).trim(),
-    };
-  };
-
-  const handleDownloadComparisonReport = (order: WholesaleOrder) => {
-    const packedItemsForOrder = allPackedItems.filter((p) => p.orderId === order.id);
-
-    type Acc = { referencia: string; talla: string; ordered: number; packed: number };
-    const byKey = new Map<string, Acc>();
-    const makeKey = (referencia: string, talla: string) => `${referencia}||${talla}`;
-
-    order.details.forEach((d) => {
-      const referencia = String(d.referencia || '').trim();
-      const talla = String(d.talla || '').trim();
-      const key = makeKey(referencia, talla);
-      const prev = byKey.get(key);
-      if (prev) {
-        prev.ordered += Number(d.cantidad || 0);
-      } else {
-        byKey.set(key, { referencia, talla, ordered: Number(d.cantidad || 0), packed: 0 });
-      }
-    });
-
-    packedItemsForOrder.forEach((p) => {
-      const ref = String(p.item?.referencia || parsePackedItemKey(p.itemKey).referencia || '').trim();
-      const talla = String(p.item?.talla || parsePackedItemKey(p.itemKey).talla || '').trim();
-      const key = makeKey(ref, talla);
-      const prev = byKey.get(key);
-      if (prev) {
-        prev.packed += Number(p.quantity || 0);
-      } else {
-        byKey.set(key, { referencia: ref, talla, ordered: 0, packed: Number(p.quantity || 0) });
-      }
-    });
-
-    const rows = Array.from(byKey.values())
-      .sort((a, b) => {
-        const byRef = a.referencia.localeCompare(b.referencia);
-        if (byRef !== 0) return byRef;
-        return a.talla.localeCompare(b.talla);
-      })
-      .map((r) => {
-        const diff = r.packed - r.ordered;
-        return {
-          'Pedido': order.id,
-          'Referencia': r.referencia || '-',
-          'Talla': r.talla || '-',
-          'Pedido (Cantidad)': r.ordered,
-          'Empacado (Cantidad)': r.packed,
-          'Diferencia': diff,
-          'Estado': diff === 0 ? 'Completo' : diff > 0 ? 'Sobrante' : 'Faltante',
-        };
+  const handleDownloadComparisonReport = async (order: WholesaleOrder) => {
+    try {
+      const [itemsRes, sessionRes, labelsRes] = await Promise.all([
+        getPackedItemsForOrder(order.id),
+        getPackingSession(order.id),
+        getLabelsForOrder(order.id),
+      ]);
+      const packedItemsForOrder = itemsRes.data || allPackedItems.filter((p) => p.orderId === order.id);
+      const totals = computeWholesalePackingTotals(order, packedItemsForOrder);
+      const lines = buildBoxAuditLines({
+        orderId: order.id,
+        packedItems: packedItemsForOrder,
+        session: sessionRes.data || null,
+        labels: labelsRes.data || [],
       });
-
-    exportToXlsx(rows, `Relacion_Pedido_vs_Empaque_${order.id}`);
-    toast({
-      title: 'Reporte descargado',
-      description: `Se descargó la relación del pedido ${order.id}.`,
-    });
+      const detailRows = boxAuditLinesToExcelRows(lines);
+      const summaryRows = [
+        { Concepto: 'TOTAL DEL PEDIDO', Cantidad: totals.orderTotal },
+        { Concepto: 'TOTAL EMPACADO', Cantidad: totals.packedTotal },
+        { Concepto: 'DIFERENCIA', Cantidad: totals.difference },
+        { Concepto: 'ESTADO', Cantidad: totals.isComplete ? 'Completo' : (order.packingForceClosed ? 'Forzado incompleto' : 'Incompleto') },
+      ];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detailRows), 'Por caja');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), 'Totales');
+      XLSX.writeFile(wb, `Auditoria_Cajas_${order.id}.xlsx`);
+      toast({
+        title: 'Reporte descargado',
+        description: `Pedido ${totals.orderTotal} · Empacado ${totals.packedTotal} · ${lines.length} líneas.`,
+      });
+    } catch (error: any) {
+      toast({ variant: 'destructive', title: 'Error al descargar', description: error?.message || 'No se pudo generar el reporte.' });
+    }
   };
 
   const onUploadClick = () => fileInputRef.current?.click();
 
   const ordersByStatus = React.useMemo(() => {
     return orders.reduce((acc, order) => {
-        const packedUnits = allPackedItems.filter(item => item.orderId === order.id).reduce((sum, item) => sum + item.quantity, 0);
+        const packedForOrder = allPackedItems.filter(item => item.orderId === order.id);
+        const totals = computeWholesalePackingTotals(order, packedForOrder);
         let status = order.status || 'Pte Empaque';
-        
-        // Logical correction for UI grouping
-        if (status === 'Pte Empaque' && packedUnits > 0) {
-            status = 'En Empaque';
-        } else if (status === 'En Empaque' && packedUnits >= order.cantidadTotal && order.cantidadTotal > 0) {
-            status = 'Empacado';
+
+        // UI grouping uses exact equality (same gate as persistence). Force-closed stays Empacado.
+        if (status === 'En Cargue' || status === 'Despachado' || status === 'Cancelado') {
+          // keep
+        } else {
+          status = resolveWholesaleOrderStatus({
+            currentStatus: status,
+            orderTotal: totals.orderTotal,
+            packedTotal: totals.packedTotal,
+            packingForceClosed: !!order.packingForceClosed,
+          });
         }
-        
+
         if (!acc[status]) acc[status] = [];
-        acc[status].push({ ...order, status }); // Pass corrected status to children
+        acc[status].push({ ...order, status });
         return acc;
     }, {} as Record<string, WholesaleOrder[]>);
   }, [orders, allPackedItems]);
 
-  // Background sync for stale statuses
+  // Background sync for stale statuses (exact match only; never auto Empacado if mismatch)
   useEffect(() => {
     const syncStatuses = async () => {
         for (const order of orders) {
-            const packedUnits = allPackedItems.filter(item => item.orderId === order.id).reduce((sum, item) => sum + item.quantity, 0);
-            let targetStatus: OrderStatus | null = null;
-
-            if (order.status === 'Pte Empaque' && packedUnits > 0) {
-                targetStatus = 'En Empaque';
-            } else if (order.status === 'En Empaque' && packedUnits >= order.cantidadTotal && order.cantidadTotal > 0) {
-                targetStatus = 'Empacado';
-            }
-
-            if (targetStatus) {
+            if (order.status === 'En Cargue' || order.status === 'Despachado' || order.status === 'Cancelado') continue;
+            const packedForOrder = allPackedItems.filter(item => item.orderId === order.id);
+            const totals = computeWholesalePackingTotals(order, packedForOrder);
+            const targetStatus = resolveWholesaleOrderStatus({
+              currentStatus: order.status || 'Pte Empaque',
+              orderTotal: totals.orderTotal,
+              packedTotal: totals.packedTotal,
+              packingForceClosed: !!order.packingForceClosed,
+            });
+            if (targetStatus !== order.status) {
                 await updateOrderStatus(order.id, targetStatus);
             }
         }
     };
-    if (orders.length > 0 && allPackedItems.length > 0) {
+    if (orders.length > 0) {
         syncStatuses();
     }
   }, [orders.length, allPackedItems.length]);

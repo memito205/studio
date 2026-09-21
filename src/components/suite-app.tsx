@@ -627,17 +627,13 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
     }
 
     if (packingOrder) {
-        const totalItems = newSession.units.reduce((sum, unit) => sum + Object.values(unit.items || {}).reduce((s, i) => s + i.packedQuantity, 0), 0);
+        // Contadores reales viven en packedItems; la sesión ya no mantiene packedQuantity fiable.
+        // Solo subir a En Empaque al crear actividad; Empacado lo decide syncWholesaleOrderPackingStatus.
         let newStatus = packingOrder.order.status;
-
-        if (totalItems > 0 && newStatus === 'Pte Empaque') {
+        const hasUnits = (newSession.units || []).length > 0;
+        if (hasUnits && newStatus === 'Pte Empaque') {
             newStatus = 'En Empaque';
-        } else if (totalItems === 0 && newStatus === 'En Empaque') {
-            newStatus = 'Pte Empaque';
-        } else if (packingOrder.order.cantidadTotal > 0 && totalItems >= packingOrder.order.cantidadTotal) {
-             newStatus = 'Empacado';
         }
-
         if (newStatus !== packingOrder.order.status) {
             const updatedOrder = { ...packingOrder.order, status: newStatus };
             await updateOrderStatus(packingOrder.order.id, newStatus);

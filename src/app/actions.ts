@@ -925,6 +925,7 @@ export async function loadWholesaleOrderById(orderId: string): Promise<{ data?: 
                 valorNetoTotal: data.valorNetoTotal,
                 status: data.status || 'Pte Empaque',
                 details: data.details,
+            packingForceClosed: !!data.packingForceClosed,
             } as WholesaleOrder;
             return { data: order };
         }
@@ -953,6 +954,7 @@ export async function loadWholesaleOrders(): Promise<{ data?: WholesaleOrder[]; 
                 valorNetoTotal: data.valorNetoTotal,
                 status: data.status || 'Pte Empaque', // Default status if missing
                 details: data.details,
+            packingForceClosed: !!data.packingForceClosed,
             } as WholesaleOrder;
         });
         return { data: orders };
@@ -986,14 +988,67 @@ export async function saveProductDatabaseItems(items: ProductDatabaseItem[]): Pr
   }
 }
 
-export async function updateOrderStatus(orderId: string, status: OrderStatus): Promise<{ success: boolean; error?: string }> {
+export async function updateOrderStatus(
+    orderId: string,
+    status: OrderStatus,
+    options?: { force?: boolean }
+): Promise<{ success: boolean; error?: string }> {
     try {
         const orderRef = doc(firestore, "wholesaleOrders", orderId);
-        await updateDoc(orderRef, { status: status });
+        const updates: { status: OrderStatus; packingForceClosed?: boolean } = { status };
+        if (status === 'Empacado' && options?.force) {
+            updates.packingForceClosed = true;
+        }
+        if (status !== 'Empacado' && status !== 'En Cargue' && status !== 'Despachado') {
+            updates.packingForceClosed = false;
+        }
+        await updateDoc(orderRef, updates);
         return { success: true };
     } catch (error: any) {
         console.error("Error updating order status:", error);
         return { success: false, error: `Failed to update order status: ${error.message}` };
+    }
+}
+
+/**
+ * Recalcula Empacado/En Empaque desde packedItems.
+ * Empacado solo si packedTotal === orderTotal (exacto), salvo packingForceClosed.
+ * No toca En Cargue / Despachado / Cancelado.
+ */
+export async function syncWholesaleOrderPackingStatus(orderId: string): Promise<{ success: boolean; status?: OrderStatus; error?: string }> {
+    try {
+        const { computeWholesalePackingTotals, resolveWholesaleOrderStatus } = await import('@/lib/wholesalePacking');
+        const orderRef = doc(firestore, "wholesaleOrders", orderId);
+        const orderSnap = await getDoc(orderRef);
+        if (!orderSnap.exists()) return { success: false, error: 'Order not found' };
+
+        const orderData = orderSnap.data();
+        const currentStatus = (orderData.status || 'Pte Empaque') as OrderStatus;
+        if (currentStatus === 'En Cargue' || currentStatus === 'Despachado' || currentStatus === 'Cancelado') {
+            return { success: true, status: currentStatus };
+        }
+
+        const packedQ = query(collection(firestore, "packedItems"), where("orderId", "==", orderId));
+        const packedSnap = await getDocs(packedQ);
+        const packedItems = packedSnap.docs.map(d => ({ quantity: Number(d.data().quantity ?? 1) }));
+        const totals = computeWholesalePackingTotals(
+            { details: orderData.details || [], cantidadTotal: orderData.cantidadTotal || 0 },
+            packedItems
+        );
+        const nextStatus = resolveWholesaleOrderStatus({
+            currentStatus,
+            orderTotal: totals.orderTotal,
+            packedTotal: totals.packedTotal,
+            packingForceClosed: !!orderData.packingForceClosed,
+        });
+
+        if (nextStatus !== currentStatus) {
+            await updateDoc(orderRef, { status: nextStatus });
+        }
+        return { success: true, status: nextStatus };
+    } catch (error: any) {
+        console.error("Error syncing wholesale packing status:", error);
+        return { success: false, error: error.message };
     }
 }
 
@@ -1350,19 +1405,11 @@ export async function addPackedItem(itemData: Omit<PackedItem, 'id' | 'scannedAt
         };
         await setDoc(itemRef, convertDatesToTimestamps(newItem));
 
-        // Update order status if it's currently 'Pte Empaque'
+        // Recalcular Empacado / En Empaque desde packedItems (igualdad exacta).
         try {
-            const orderRef = doc(firestore, "wholesaleOrders", itemData.orderId);
-            const orderSnap = await getDoc(orderRef);
-            if (orderSnap.exists()) {
-                const orderData = orderSnap.data();
-                if (orderData.status === 'Pte Empaque') {
-                    await updateDoc(orderRef, { status: 'En Empaque' });
-                }
-            }
+            await syncWholesaleOrderPackingStatus(itemData.orderId);
         } catch (statusError) {
             console.error("Error updating order status during addPackedItem:", statusError);
-            // Non-blocking error
         }
 
         return { success: true, itemId: itemRef.id };
@@ -1555,7 +1602,13 @@ export async function getPackedItemsForOrders(orderIds: string[]): Promise<{ dat
 
 export async function updatePackedItem(itemId: string, updates: Partial<PackedItem>): Promise<{ success: boolean, error?: string }> {
     try {
-        await updateDoc(doc(firestore, "packedItems", itemId), updates);
+        const itemRef = doc(firestore, "packedItems", itemId);
+        const snap = await getDoc(itemRef);
+        await updateDoc(itemRef, updates);
+        const orderId = snap.exists() ? snap.data().orderId : updates.orderId;
+        if (orderId) {
+            await syncWholesaleOrderPackingStatus(String(orderId));
+        }
         return { success: true };
     } catch (error: any) {
         return { success: false, error: error.message };
@@ -1564,7 +1617,13 @@ export async function updatePackedItem(itemId: string, updates: Partial<PackedIt
 
 export async function deletePackedItem(itemId: string): Promise<{ success: boolean, error?: string }> {
     try {
-        await deleteDoc(doc(firestore, "packedItems", itemId));
+        const itemRef = doc(firestore, "packedItems", itemId);
+        const snap = await getDoc(itemRef);
+        const orderId = snap.exists() ? snap.data().orderId : null;
+        await deleteDoc(itemRef);
+        if (orderId) {
+            await syncWholesaleOrderPackingStatus(String(orderId));
+        }
         return { success: true };
     } catch (error: any) {
         return { success: false, error: error.message };
@@ -1574,11 +1633,19 @@ export async function deletePackedItem(itemId: string): Promise<{ success: boole
 export async function bulkDeletePackedItems(itemIds: string[]): Promise<{ success: boolean, error?: string }> {
     if (!itemIds || itemIds.length === 0) return { success: true };
     try {
+        const orderIds = new Set<string>();
+        for (const id of itemIds) {
+            const snap = await getDoc(doc(firestore, "packedItems", id));
+            if (snap.exists() && snap.data().orderId) orderIds.add(String(snap.data().orderId));
+        }
         const batch = writeBatch(firestore);
         itemIds.forEach(id => {
             batch.delete(doc(firestore, "packedItems", id));
         });
         await batch.commit();
+        for (const orderId of orderIds) {
+            await syncWholesaleOrderPackingStatus(orderId);
+        }
         return { success: true };
     } catch (error: any) {
         console.error("Error in bulk delete:", error);
@@ -1742,7 +1809,7 @@ export async function removeScannedLabelFromShipment(shipmentId: string, labelId
                 if (usedLabelsCount > 0) {
                     transaction.update(orderRef, { status: 'En Cargue' });
                 } else {
-                    const newStatus = packedCount >= totalCount ? 'Empacado' : 'En Empaque';
+                    const newStatus = (totalCount > 0 && packedCount === totalCount) ? 'Empacado' : (packedCount > 0 ? 'En Empaque' : 'Pte Empaque');
                     transaction.update(orderRef, { status: newStatus });
                 }
             }

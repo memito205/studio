@@ -13,6 +13,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Loader2, Package, Box, ChevronDown, ChevronRight, LayoutTemplate, Search, Edit2, Check, X, Filter, Download } from 'lucide-react';
 import type { WholesaleOrder, PreprintedLabel, PackedItem, PackingSession } from '@/types';
 import { getLabelsForOrder, getPackedItemsForOrder, updatePackedItem, getPackingSession } from '@/app/actions';
+import {
+  buildBoxAuditLines,
+  boxAuditLinesToExcelRows,
+  computeWholesalePackingTotals,
+  resolvePackedItemRefTalla,
+} from '@/lib/wholesalePacking';
 
 interface OrderAuditDialogProps {
   order: WholesaleOrder | null;
@@ -125,49 +131,35 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
   }, [labels, packedItems, auditReferenceFilter, labelToUnitIdMap]);
 
   const handleDownloadBoxesExcel = () => {
-    if (!order || labels.length === 0) return;
-    
-    const sortedLabels = [...labels].sort((a, b) => {
-        const numA = Number(a.unitId);
-        const numB = Number(b.unitId);
-        if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
-        return String(a.unitId).localeCompare(String(b.unitId));
+    if (!order) return;
+    const totals = computeWholesalePackingTotals(order, packedItems);
+    const lines = buildBoxAuditLines({
+      orderId: order.id,
+      packedItems,
+      session: packingSession,
+      labels,
     });
-    
-    const data = sortedLabels.map(label => {
-        const unitFirestoreId = labelToUnitIdMap.get(label.id) || labelToUnitIdMap.get(label.unitId?.toString() || "");
-        const itemsInBox = packedItems.filter(p => 
-            p.packingUnitId === unitFirestoreId || 
-            p.packingUnitId === label.unitId?.toString() || 
-            p.packingUnitId === label.id
-        );
-        const uniqueRefs = new Set<string>();
-        itemsInBox.forEach(pi => {
-            if (pi.item && pi.item.referencia) uniqueRefs.add(pi.item.referencia.trim());
-            else if (pi.itemKey) uniqueRefs.add(pi.itemKey.split('-')[0].trim());
-            else if (pi.barcode) uniqueRefs.add(pi.barcode.trim());
-        });
-        const refsString = Array.from(uniqueRefs).join(', ');
-
-        const totalUnitsInBox = itemsInBox.reduce((sum, p) => sum + p.quantity, 0);
-
-        return {
-            'Pedido': order.id,
-            'Caja': label.unitId || '-',
-            'Etiqueta': label.id,
-            'Referencia(s)': refsString || 'Desconocida',
-            'Cantidad': totalUnitsInBox,
-            'Estado Etiqueta': translateStatus(label.status).label
-        };
-    });
-    
-    const ws = XLSX.utils.json_to_sheet(data);
+    const detailRows = boxAuditLinesToExcelRows(lines);
+    const summaryRows = [
+      { Concepto: 'TOTAL DEL PEDIDO', Cantidad: totals.orderTotal },
+      { Concepto: 'TOTAL EMPACADO', Cantidad: totals.packedTotal },
+      { Concepto: 'DIFERENCIA', Cantidad: totals.difference },
+      {
+        Concepto: 'ESTADO',
+        Cantidad: totals.isComplete
+          ? 'Completo'
+          : order.packingForceClosed
+            ? 'Forzado incompleto'
+            : 'Incompleto',
+      },
+    ];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "EtiquetasDeCajas");
-    XLSX.writeFile(wb, `Listado_Cajas_${order.id}.xlsx`);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detailRows), 'Por caja');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), 'Totales');
+    XLSX.writeFile(wb, `Auditoria_Cajas_${order.id}.xlsx`);
   };
 
-  const handleScannerKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const handleScannerKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
         e.preventDefault();
         const term = scannerInput.trim();
@@ -236,8 +228,7 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
 
   const packingBalance = useMemo(() => {
     if (!order) return [];
-    
-    // Create a map from the ordered details
+
     const balanceMap = new Map<string, {
       referencia: string;
       item: string;
@@ -246,60 +237,88 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
       packed: number;
     }>();
 
-    // Initialize with ordered items
     order.details?.forEach(d => {
-      const key = `${d.referencia}-${d.talla}-${d.item || ''}`;
-      balanceMap.set(key, { ...d, item: d.item || '', ordered: d.cantidad, packed: 0 });
-    });
-
-    // Add packed quantities
-    packedItems.forEach(pi => {
-      let ref = '';
-      let talla = '';
-      let itm = ''; // representing the color/variant string
-      
-      if (pi.item) {
-        ref = pi.item.referencia || '';
-        talla = pi.item.talla || '';
-        itm = pi.item.item || '';
-      } else if (pi.itemKey) {
-        // Fallback if item object isn't fully populated
-        const parts = pi.itemKey.split('-');
-        ref = parts[0] || 'Desconocido';
-        talla = parts[1] || '';
-      } else {
-        ref = pi.barcode || 'Desconocido';
-      }
-
-      const key = `${ref}-${talla}-${itm}`;
-      if (balanceMap.has(key)) {
-        balanceMap.get(key)!.packed += pi.quantity;
+      const ref = String(d.referencia || '').trim();
+      const talla = String(d.talla || '').trim();
+      const key = `${ref}||${talla}`;
+      const prev = balanceMap.get(key);
+      if (prev) {
+        prev.ordered += Number(d.cantidad || 0);
+        if (!prev.item && d.item) prev.item = d.item;
       } else {
         balanceMap.set(key, {
           referencia: ref,
-          item: itm,
-          talla: talla,
-          ordered: 0,
-          packed: pi.quantity
+          item: d.item || '',
+          talla,
+          ordered: Number(d.cantidad || 0),
+          packed: 0,
         });
       }
     });
 
-    // Sort alphabetically by reference, then size
+    packedItems.forEach(pi => {
+      const { referencia: ref, talla } = resolvePackedItemRefTalla(pi);
+      const key = `${ref}||${talla}`;
+      const qty = Number(pi.quantity || 0);
+      if (balanceMap.has(key)) {
+        balanceMap.get(key)!.packed += qty;
+      } else {
+        balanceMap.set(key, {
+          referencia: ref || 'Desconocido',
+          item: pi.item?.item || '',
+          talla: talla || '',
+          ordered: 0,
+          packed: qty,
+        });
+      }
+    });
+
     return Array.from(balanceMap.values()).sort((a, b) => {
-      const refA = String(a.referencia || '');
-      const refB = String(b.referencia || '');
-      const refComp = refA.localeCompare(refB);
+      const refComp = String(a.referencia || '').localeCompare(String(b.referencia || ''));
       if (refComp !== 0) return refComp;
-      
-      const tallaA = String(a.talla || '');
-      const tallaB = String(b.talla || '');
-      return tallaA.localeCompare(tallaB);
+      return String(a.talla || '').localeCompare(String(b.talla || ''));
     });
   }, [order, packedItems]);
 
-  const totalOrdered = packingBalance.reduce((sum, b) => sum + b.ordered, 0);
-  const totalPacked = packingBalance.reduce((sum, b) => sum + b.packed, 0);
+  const packingTotals = useMemo(
+    () => computeWholesalePackingTotals(order, packedItems),
+    [order, packedItems]
+  );
+
+  /** Cajas desde sesión + ítems (no depende solo de etiquetas impresas). */
+  const unitSummaries = useMemo(() => {
+    const byUnit = new Map<string, { unitId: string; label: string; items: typeof packedItems; qty: number }>();
+    const sessionUnits = packingSession?.units || [];
+    sessionUnits.forEach(u => {
+      if (!u.firestoreId) return;
+      byUnit.set(u.firestoreId, {
+        unitId: String(u.id),
+        label: u.labelBarcode || '-',
+        items: [],
+        qty: 0,
+      });
+    });
+    packedItems.forEach(pi => {
+      const uid = String(pi.packingUnitId || '').trim() || '__none__';
+      if (!byUnit.has(uid)) {
+        byUnit.set(uid, {
+          unitId: uid === '__none__' ? 'Sin caja' : 'Huérfana',
+          label: '-',
+          items: [],
+          qty: 0,
+        });
+      }
+      const row = byUnit.get(uid)!;
+      row.items.push(pi);
+      row.qty += Number(pi.quantity || 0);
+    });
+    return Array.from(byUnit.entries())
+      .map(([firestoreId, v]) => ({ firestoreId, ...v }))
+      .sort((a, b) => String(a.unitId).localeCompare(String(b.unitId), undefined, { numeric: true }));
+  }, [packingSession, packedItems]);
+
+  const totalOrdered = packingTotals.orderTotal;
+  const totalPacked = packingTotals.packedTotal;
 
   if (!order) return null;
 
@@ -343,15 +362,19 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                   <p className="font-semibold">Progreso General</p>
                   <p className="text-sm text-muted-foreground">Unidades pedidas frente a las físicamente empacadas.</p>
                 </div>
-                <div className="text-right flex gap-6">
+                <div className="text-right flex gap-6 items-center">
                   <div>
-                    <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Pedido</p>
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider">TOTAL DEL PEDIDO</p>
                     <p className="font-mono text-xl font-bold">{totalOrdered}</p>
                   </div>
                   <div>
-                    <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Empacado</p>
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider">TOTAL EMPACADO</p>
                     <p className="font-mono text-xl font-bold text-primary">{totalPacked}</p>
                   </div>
+                  <Button onClick={handleDownloadBoxesExcel} variant="outline" size="sm" className="gap-1">
+                    <Download className="h-4 w-4" />
+                    Descargar
+                  </Button>
                 </div>
               </div>
               <ScrollArea className="flex-1">
@@ -401,8 +424,8 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
             <TabsContent value="etiquetas" className="flex-1 mt-4 border rounded-md data-[state=inactive]:hidden">
              <div className="h-full flex flex-col overflow-hidden">
               
-              <div className="p-4 border-b bg-muted/30">
-                <div className="relative max-w-sm">
+              <div className="p-4 border-b bg-muted/30 flex flex-wrap items-center gap-3 justify-between">
+                <div className="relative max-w-sm flex-1 min-w-[220px]">
                   <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                   <Input 
                     placeholder="Buscar por código de etiqueta o Nro de caja..." 
@@ -410,6 +433,16 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                   />
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="text-right text-xs text-muted-foreground">
+                    <div>TOTAL DEL PEDIDO: <span className="font-mono font-semibold text-foreground">{totalOrdered}</span></div>
+                    <div>TOTAL EMPACADO: <span className="font-mono font-semibold text-primary">{totalPacked}</span></div>
+                  </div>
+                  <Button onClick={handleDownloadBoxesExcel} variant="outline" size="sm" className="gap-1">
+                    <Download className="h-4 w-4" />
+                    Descargar cajas
+                  </Button>
                 </div>
               </div>
 
@@ -428,7 +461,7 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                     {filteredLabels.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
-                          {searchTerm ? 'No se encontraron etiquetas con esa búsqueda.' : 'Aún no se han generado etiquetas para este pedido.'}
+                          {searchTerm ? 'No se encontraron etiquetas con esa búsqueda.' : (unitSummaries.length > 0 ? 'Sin etiquetas impresas; ver cajas físicas abajo.' : 'Aún no hay cajas ni etiquetas para este pedido.')}
                         </TableCell>
                       </TableRow>
                     ) : (
@@ -543,6 +576,75 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                 </Table>
               </ScrollArea>
              </div>
+
+              {unitSummaries.length > 0 && (
+                <div className="border-t">
+                  <div className="p-3 bg-muted/40 flex items-center justify-between">
+                    <p className="text-sm font-semibold">Cajas físicas (unidades de empaque)</p>
+                    <span className="text-xs text-muted-foreground">{unitSummaries.length} caja(s) · {totalPacked} und</span>
+                  </div>
+                  <ScrollArea className="max-h-[40vh]">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-12"></TableHead>
+                          <TableHead>Caja</TableHead>
+                          <TableHead>Etiqueta</TableHead>
+                          <TableHead className="text-right">Cantidad</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {unitSummaries
+                          .filter(u => !searchTerm || String(u.unitId).includes(searchTerm) || String(u.label).toLowerCase().includes(searchTerm.toLowerCase()))
+                          .map(unit => {
+                          const isExpanded = expandedRowKeys.has(unit.firestoreId);
+                          return (
+                            <React.Fragment key={unit.firestoreId}>
+                              <TableRow className="cursor-pointer hover:bg-muted/30" onClick={() => toggleRow(unit.firestoreId)}>
+                                <TableCell>
+                                  <Button variant="ghost" size="icon" className="h-6 w-6">
+                                    {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                                  </Button>
+                                </TableCell>
+                                <TableCell className="font-medium">Caja {unit.unitId}</TableCell>
+                                <TableCell className="font-mono text-xs">{unit.label}</TableCell>
+                                <TableCell className="text-right font-semibold">{unit.qty}</TableCell>
+                              </TableRow>
+                              {isExpanded && (
+                                <TableRow className="bg-muted/10">
+                                  <TableCell colSpan={4} className="p-0">
+                                    <div className="px-10 py-3 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                                      {unit.items.length === 0 ? (
+                                        <p className="text-sm text-muted-foreground">Caja vacía.</p>
+                                      ) : (
+                                        unit.items.map((pi, i) => {
+                                          const { referencia: ref, talla: tal } = resolvePackedItemRefTalla(pi);
+                                          return (
+                                            <div key={pi.id || i} className="flex justify-between items-center p-2 rounded-md border bg-background text-sm">
+                                              <div>
+                                                <p className="font-medium text-primary">{ref || 'Desconocido'}</p>
+                                                <p className="text-[10px] text-muted-foreground">Talla: {tal || '-'}</p>
+                                              </div>
+                                              <div className="bg-muted px-2 py-1 rounded font-mono text-xs font-bold">
+                                                {pi.quantity} unds
+                                              </div>
+                                            </div>
+                                          );
+                                        })
+                                      )}
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </ScrollArea>
+                </div>
+              )}
+
             </TabsContent>
 
             {/* PESTAÑA: ESCÁNER DE VALIDACIÓN */}

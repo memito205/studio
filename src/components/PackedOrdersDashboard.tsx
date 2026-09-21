@@ -9,7 +9,9 @@ import { ArrowLeft, CheckCircle, Package, AlertCircle, Eye, AlarmClockOff } from
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { StatCard } from './StatCard';
-import type { WholesaleOrder, PackingSession, PackingPause } from '@/types';
+import type { WholesaleOrder, PackingSession, PackingPause, PackedItem } from '@/types';
+import { getPackedItemsForOrder } from '@/app/actions';
+import { buildBoxAuditLines, computeWholesalePackingTotals } from '@/lib/wholesalePacking';
 import { cn } from '@/lib/utils';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -35,9 +37,41 @@ const SessionDetailsDialog: React.FC<{
   onOpenChange: (open: boolean) => void;
   analysis: OrderAnalysis | null;
 }> = ({ isOpen, onOpenChange, analysis }) => {
+    const [packedItems, setPackedItems] = React.useState<PackedItem[]>([]);
+    const [loadingItems, setLoadingItems] = React.useState(false);
+
+    React.useEffect(() => {
+      if (!isOpen || !analysis?.order?.id) {
+        setPackedItems([]);
+        return;
+      }
+      let cancelled = false;
+      (async () => {
+        setLoadingItems(true);
+        const res = await getPackedItemsForOrder(analysis.order.id);
+        if (!cancelled) {
+          setPackedItems(res.data || []);
+          setLoadingItems(false);
+        }
+      })();
+      return () => { cancelled = true; };
+    }, [isOpen, analysis?.order?.id]);
+
     if (!analysis || !analysis.session) return null;
 
     const { order, session } = analysis;
+    const lines = buildBoxAuditLines({
+      orderId: order.id,
+      packedItems,
+      session,
+    });
+    const byCaja = new Map<string, typeof lines>();
+    lines.forEach(l => {
+      const key = String(l.caja);
+      if (!byCaja.has(key)) byCaja.set(key, []);
+      byCaja.get(key)!.push(l);
+    });
+    const totals = computeWholesalePackingTotals(order, packedItems);
 
     const formatDuration = (start: Date, end: Date | undefined): string => {
         if (!end) return "En curso...";
@@ -52,11 +86,13 @@ const SessionDetailsDialog: React.FC<{
             <DialogContent className="max-w-4xl">
                 <DialogHeader>
                     <DialogTitle>Detalles de Empaque - Pedido {order.id}</DialogTitle>
-                    <DialogDescription>Operario: <span className="font-semibold">{session.packerName}</span></DialogDescription>
+                    <DialogDescription>
+                      Operario: <span className="font-semibold">{session.packerName}</span>
+                      <span className="mx-2">·</span>
+                      Pedido {totals.orderTotal} / Empacado {totals.packedTotal}
+                    </DialogDescription>
                 </DialogHeader>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4 max-h-[70vh] overflow-y-auto">
-                    
-                    {/* Pause Report */}
                     <div className="space-y-4">
                         <h3 className="font-semibold text-lg flex items-center gap-2"><AlarmClockOff/> Reporte de Pausas</h3>
                         {session.pauses && session.pauses.length > 0 ? (
@@ -85,28 +121,28 @@ const SessionDetailsDialog: React.FC<{
                         )}
                     </div>
                     
-                     {/* Box Contents */}
                      <div className="space-y-4">
                         <h3 className="font-semibold text-lg">Contenido de Cajas</h3>
                          <ScrollArea className="h-72 border rounded-md">
                             <div className="p-4 space-y-3">
-                                {session.units.map(unit => (
-                                    <div key={unit.id} className="p-3 bg-muted/50 rounded-lg">
-                                        <p className="font-semibold">Caja #{unit.id} - Etiqueta: <span className="font-mono">{unit.labelBarcode || 'N/A'}</span></p>
+                                {loadingItems ? (
+                                  <p className="text-muted-foreground text-center py-4">Cargando ítems empacados...</p>
+                                ) : Array.from(byCaja.entries()).map(([caja, cajaLines]) => (
+                                    <div key={caja} className="p-3 bg-muted/50 rounded-lg">
+                                        <p className="font-semibold">Caja #{caja} - Etiqueta: <span className="font-mono">{cajaLines[0]?.etiqueta || 'N/A'}</span></p>
                                         <ul className="list-disc list-inside text-sm text-muted-foreground mt-1">
-                                            {Object.values(unit.items).map(item => (
-                                                <li key={item.item.codigoBarras}>
-                                                    {item.packedQuantity} x {item.item.referencia} ({item.item.talla})
+                                            {cajaLines.map((line, idx) => (
+                                                <li key={idx}>
+                                                    {line.cantidad} x {line.referencia} ({line.talla})
                                                 </li>
                                             ))}
                                         </ul>
                                     </div>
                                 ))}
-                                {session.units.length === 0 && <p className="text-muted-foreground text-center py-4">No hay cajas registradas.</p>}
+                                {!loadingItems && byCaja.size === 0 && <p className="text-muted-foreground text-center py-4">No hay cajas registradas.</p>}
                             </div>
                         </ScrollArea>
                     </div>
-
                 </div>
                 <DialogFooter>
                     <Button onClick={() => onOpenChange(false)}>Cerrar</Button>

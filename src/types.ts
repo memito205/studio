@@ -932,6 +932,11 @@ export interface WholesaleOrder {
     valorNetoTotal: number;
     status: OrderStatus;
     details: WholesaleOrderDetail[];
+    /**
+     * Excepción intencional: admin/supervisor forzó Empacado aunque packed !== order total.
+     * El sync automático no debe revertir este estado.
+     */
+    packingForceClosed?: boolean;
     packingData?: {
         packedUnits: number;
         totalUnits: number;
