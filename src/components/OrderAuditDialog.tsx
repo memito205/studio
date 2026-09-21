@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
@@ -12,7 +12,10 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Loader2, Package, Box, ChevronDown, ChevronRight, LayoutTemplate, Search, Edit2, Check, X, Filter, Download } from 'lucide-react';
 import type { WholesaleOrder, PreprintedLabel, PackedItem, PackingSession } from '@/types';
-import { getLabelsForOrder, getPackedItemsForOrder, updatePackedItem, getPackingSession } from '@/app/actions';
+import { getLabelsForOrder, getPackedItemsForOrder, updatePackedItem, getPackingSession, assignLabelToWholesalePackingUnit, addSingleLabel } from '@/app/actions';
+import { useAuth } from '@/hooks/use-auth-context';
+import { useToast } from '@/hooks/use-toast';
+import { findUnlabeledWholesaleUnits } from '@/lib/wholesalePacking';
 import {
   buildBoxAuditLines,
   boxAuditLinesToExcelRows,
@@ -44,6 +47,11 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editQuantity, setEditQuantity] = useState<number>(0);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const { role, user, userName } = useAuth();
+  const { toast } = useToast();
+  const [assignUnitId, setAssignUnitId] = useState<number | null>(null);
+  const [assignLabelInput, setAssignLabelInput] = useState('');
+  const [isAssigning, setIsAssigning] = useState(false);
 
   useEffect(() => {
     if (isOpen && order) {
@@ -285,6 +293,38 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
     [order, packedItems]
   );
 
+  const unlabeledUnits = useMemo(
+    () => findUnlabeledWholesaleUnits(packingSession, packedItems),
+    [packingSession, packedItems]
+  );
+
+  const canAssignLabels = role === 'admin' || role === 'supervisor';
+
+  const handleAssignLabelFromAudit = async () => {
+    if (!order || assignUnitId == null || !assignLabelInput.trim()) return;
+    setIsAssigning(true);
+    try {
+      let labelId = assignLabelInput.trim().toUpperCase();
+      if (labelId === 'NUEVA' || labelId === 'NEW') {
+        const gen = await addSingleLabel(order.id);
+        if (!gen.data) throw new Error(gen.error || 'No se pudo generar etiqueta');
+        labelId = gen.data.id;
+      }
+      const actor = userName || user?.displayName || user?.email || 'Admin';
+      const result = await assignLabelToWholesalePackingUnit(order.id, assignUnitId, labelId, actor);
+      if (!result.success) throw new Error(result.error);
+      toast({ title: 'Etiqueta asociada', description: `Caja #${assignUnitId} → ${result.labelId}` });
+      setAssignUnitId(null);
+      setAssignLabelInput('');
+      await loadAuditData();
+    } catch (e: any) {
+      toast({ variant: 'destructive', title: 'Error', description: e.message });
+    } finally {
+      setIsAssigning(false);
+    }
+  };
+
+
   /** Cajas desde sesión + ítems (no depende solo de etiquetas impresas). */
   const unitSummaries = useMemo(() => {
     const byUnit = new Map<string, { unitId: string; label: string; items: typeof packedItems; qty: number }>();
@@ -340,6 +380,75 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
             </div>
           </div>
         </DialogHeader>
+
+        
+          {unlabeledUnits.length > 0 && (
+            <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+              <p className="font-semibold">Cajas con mercancía sin etiqueta VXM ({unlabeledUnits.length})</p>
+              <p className="text-xs mt-1 mb-2">El pedido no debería quedar Empacado mientras existan. Admin/supervisor puede asociar etiqueta aquí.</p>
+              <ul className="space-y-2">
+                {unlabeledUnits.map((u) => (
+                  <li key={u.firestoreId} className="flex flex-wrap items-center gap-2 justify-between bg-white/70 rounded px-2 py-1.5 border border-amber-200">
+                    <span>Caja #{u.id} · {u.itemQty} und · estado {u.status}</span>
+                    {canAssignLabels && (
+                      <Button size="sm" variant="outline" className="h-7" onClick={() => { setAssignUnitId(u.id); setAssignLabelInput(''); }}>
+                        Asociar etiqueta
+                      </Button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <Dialog open={assignUnitId != null} onOpenChange={(open) => { if (!open) { setAssignUnitId(null); setAssignLabelInput(''); } }}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Asociar etiqueta a Caja #{assignUnitId}</DialogTitle>
+                <DialogDescription>
+                  Escanee una VXM disponible del pedido, o genere una nueva y luego imprímala desde Etiquetas en el dashboard.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-2 py-2">
+                <Input
+                  value={assignLabelInput}
+                  onChange={(e) => setAssignLabelInput(e.target.value)}
+                  placeholder="VXM-..."
+                  disabled={isAssigning}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleAssignLabelFromAudit(); }}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isAssigning || !order}
+                  onClick={async () => {
+                    if (!order) return;
+                    setIsAssigning(true);
+                    try {
+                      const gen = await addSingleLabel(order.id);
+                      if (!gen.data) throw new Error(gen.error || 'Error');
+                      setAssignLabelInput(gen.data.id);
+                      toast({ title: 'Etiqueta generada', description: gen.data.id });
+                    } catch (e: any) {
+                      toast({ variant: 'destructive', title: 'Error', description: e.message });
+                    } finally {
+                      setIsAssigning(false);
+                    }
+                  }}
+                >
+                  Generar etiqueta VXM nueva
+                </Button>
+              </div>
+              <DialogFooter>
+                <Button variant="secondary" onClick={() => setAssignUnitId(null)} disabled={isAssigning}>Cancelar</Button>
+                <Button onClick={handleAssignLabelFromAudit} disabled={isAssigning || !assignLabelInput.trim()}>
+                  {isAssigning && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Asociar y cerrar caja
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
         {isLoading ? (
           <div className="flex-1 flex flex-col items-center justify-center">
@@ -591,6 +700,7 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                           <TableHead>Caja</TableHead>
                           <TableHead>Etiqueta</TableHead>
                           <TableHead className="text-right">Cantidad</TableHead>
+                          <TableHead className="text-right">Acción</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -609,10 +719,21 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                                 <TableCell className="font-medium">Caja {unit.unitId}</TableCell>
                                 <TableCell className="font-mono text-xs">{unit.label}</TableCell>
                                 <TableCell className="text-right font-semibold">{unit.qty}</TableCell>
+                                <TableCell className="text-right">
+                                  {(!unit.label || unit.label === '-') && unit.qty > 0 && canAssignLabels && unit.unitId !== 'Sin caja' && unit.unitId !== 'Huérfana' && (
+                                    <Button size="sm" variant="outline" className="h-7" onClick={(e) => {
+                                      e.stopPropagation();
+                                      const num = Number(unit.unitId);
+                                      if (!Number.isNaN(num)) { setAssignUnitId(num); setAssignLabelInput(''); }
+                                    }}>
+                                      Asociar
+                                    </Button>
+                                  )}
+                                </TableCell>
                               </TableRow>
                               {isExpanded && (
                                 <TableRow className="bg-muted/10">
-                                  <TableCell colSpan={4} className="p-0">
+                                  <TableCell colSpan={5} className="p-0">
                                     <div className="px-10 py-3 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                                       {unit.items.length === 0 ? (
                                         <p className="text-sm text-muted-foreground">Caja vacía.</p>

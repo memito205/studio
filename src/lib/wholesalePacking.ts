@@ -69,6 +69,43 @@ export function computeWholesalePackingTotals(
   };
 }
 
+/**
+ * Unidades de empaque (Ventas x Mayor) con mercancía pero sin etiqueta VXM.
+ * Causa típica: el operario terminó de escanear sin pulsar "Cerrar Caja".
+ */
+export function findUnlabeledWholesaleUnits(
+  session: PackingSession | null | undefined,
+  packedItems: PackedItem[]
+): Array<{ id: number; firestoreId: string; status: string; itemQty: number }> {
+  const units = session?.units || [];
+  const result: Array<{ id: number; firestoreId: string; status: string; itemQty: number }> = [];
+  for (const unit of units) {
+    if (!unit?.firestoreId) continue;
+    const itemQty = packedItems
+      .filter((p) => p.packingUnitId === unit.firestoreId)
+      .reduce((sum, p) => sum + Number(p.quantity ?? p.packedQuantity ?? 0), 0);
+    if (itemQty <= 0) continue;
+    const label = String(unit.labelBarcode || '').trim();
+    if (!label) {
+      result.push({
+        id: unit.id,
+        firestoreId: unit.firestoreId,
+        status: unit.status || 'open',
+        itemQty,
+      });
+    }
+  }
+  return result;
+}
+
+export function hasUnlabeledWholesaleUnits(
+  session: PackingSession | null | undefined,
+  packedItems: PackedItem[]
+): boolean {
+  return findUnlabeledWholesaleUnits(session, packedItems).length > 0;
+}
+
+
 /** Statuses that must not be auto-moved by packing counters. */
 const TERMINAL_OR_DISPATCH: ReadonlySet<OrderStatus> = new Set(['En Cargue', 'Despachado', 'Cancelado']);
 
@@ -83,8 +120,10 @@ export function resolveWholesaleOrderStatus(params: {
   orderTotal: number;
   packedTotal: number;
   packingForceClosed?: boolean;
+  /** Si false, no marcar Empacado aunque las cantidades cuadren (cajas sin VXM). */
+  allUnitsLabeled?: boolean;
 }): OrderStatus {
-  const { currentStatus, orderTotal, packedTotal, packingForceClosed } = params;
+  const { currentStatus, orderTotal, packedTotal, packingForceClosed, allUnitsLabeled = true } = params;
 
   if (TERMINAL_OR_DISPATCH.has(currentStatus)) {
     return currentStatus;
@@ -94,7 +133,7 @@ export function resolveWholesaleOrderStatus(params: {
     return 'Empacado';
   }
 
-  if (orderTotal > 0 && packedTotal === orderTotal) {
+  if (orderTotal > 0 && packedTotal === orderTotal && allUnitsLabeled) {
     return 'Empacado';
   }
 

@@ -13,7 +13,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { WholesaleOrder, WholesaleOrderDetail, OrderStatus, ProductDatabaseItem, PackingSession, PreprintedLabel, PackedItem, OperationPulse } from '@/types';
-import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrders, getPackedItemsForDate, getUserPulsesForDay, getGlobalPulsesForDay, loadOperatorMappings, getPackedItemsForOrder } from '@/app/actions';
+import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrders, getPackedItemsForDate, getUserPulsesForDay, getGlobalPulsesForDay, loadOperatorMappings, getPackedItemsForOrder, syncWholesaleOrderPackingStatus } from '@/app/actions';
 import { computeWholesalePackingTotals, buildBoxAuditLines, boxAuditLinesToExcelRows, resolveWholesaleOrderStatus } from '@/lib/wholesalePacking';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
@@ -448,22 +448,12 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
     }, {} as Record<string, WholesaleOrder[]>);
   }, [orders, allPackedItems]);
 
-  // Background sync for stale statuses (exact match only; never auto Empacado if mismatch)
+  // Background sync: server recalcula Empacado (cantidades exactas + cajas etiquetadas).
   useEffect(() => {
     const syncStatuses = async () => {
         for (const order of orders) {
             if (order.status === 'En Cargue' || order.status === 'Despachado' || order.status === 'Cancelado') continue;
-            const packedForOrder = allPackedItems.filter(item => item.orderId === order.id);
-            const totals = computeWholesalePackingTotals(order, packedForOrder);
-            const targetStatus = resolveWholesaleOrderStatus({
-              currentStatus: order.status || 'Pte Empaque',
-              orderTotal: totals.orderTotal,
-              packedTotal: totals.packedTotal,
-              packingForceClosed: !!order.packingForceClosed,
-            });
-            if (targetStatus !== order.status) {
-                await updateOrderStatus(order.id, targetStatus);
-            }
+            await syncWholesaleOrderPackingStatus(order.id);
         }
     };
     if (orders.length > 0) {

@@ -1017,7 +1017,7 @@ export async function updateOrderStatus(
  */
 export async function syncWholesaleOrderPackingStatus(orderId: string): Promise<{ success: boolean; status?: OrderStatus; error?: string }> {
     try {
-        const { computeWholesalePackingTotals, resolveWholesaleOrderStatus } = await import('@/lib/wholesalePacking');
+        const { computeWholesalePackingTotals, resolveWholesaleOrderStatus, hasUnlabeledWholesaleUnits } = await import('@/lib/wholesalePacking');
         const orderRef = doc(firestore, "wholesaleOrders", orderId);
         const orderSnap = await getDoc(orderRef);
         if (!orderSnap.exists()) return { success: false, error: 'Order not found' };
@@ -1030,16 +1030,25 @@ export async function syncWholesaleOrderPackingStatus(orderId: string): Promise<
 
         const packedQ = query(collection(firestore, "packedItems"), where("orderId", "==", orderId));
         const packedSnap = await getDocs(packedQ);
-        const packedItems = packedSnap.docs.map(d => ({ quantity: Number(d.data().quantity ?? 1) }));
+        const packedItems = packedSnap.docs.map(d => ({
+            packingUnitId: d.data().packingUnitId || '',
+            quantity: Number(d.data().quantity ?? 1),
+        }));
         const totals = computeWholesalePackingTotals(
             { details: orderData.details || [], cantidadTotal: orderData.cantidadTotal || 0 },
             packedItems
         );
+
+        const sessionSnap = await getDoc(doc(firestore, 'packingSessions', orderId));
+        const sessionData = sessionSnap.exists() ? (sessionSnap.data() as PackingSession) : null;
+        const allUnitsLabeled = !hasUnlabeledWholesaleUnits(sessionData, packedItems as any);
+
         const nextStatus = resolveWholesaleOrderStatus({
             currentStatus,
             orderTotal: totals.orderTotal,
             packedTotal: totals.packedTotal,
             packingForceClosed: !!orderData.packingForceClosed,
+            allUnitsLabeled,
         });
 
         if (nextStatus !== currentStatus) {
@@ -1460,6 +1469,9 @@ export async function associateOrphanToUnit(orderId: string, oldOrphanId: string
 
 export async function secureCloseUnitAction(orderId: string, unitId: number, labelId: string, packerName: string): Promise<{ success: boolean; error?: string }> {
     try {
+        if (!String(labelId || '').trim()) {
+            return { success: false, error: 'Debe escanear/asociar una etiqueta VXM para cerrar la caja. No se permite cerrar sin etiqueta.' };
+        }
         await runTransaction(firestore, async (transaction) => {
             const normalizedLabelId = normalizeLabelId(labelId);
             const labelRef = doc(firestore, "preprintedLabels", normalizedLabelId);
@@ -1522,6 +1534,92 @@ export async function secureCloseUnitAction(orderId: string, unitId: number, lab
         return { success: true };
     } catch (error: any) {
         console.error("Error in secureCloseUnitAction:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+
+/**
+ * Ventas x Mayor: asocia una etiqueta VXM a una unidad ya existente sin etiqueta
+ * (abierta o "cerrada" sin label). Marca la unidad como closed + label used.
+ * No afecta unidades de recepción.
+ */
+export async function assignLabelToWholesalePackingUnit(
+    orderId: string,
+    unitId: number,
+    labelId: string,
+    actorName: string
+): Promise<{ success: boolean; error?: string; labelId?: string }> {
+    try {
+        if (!String(labelId || '').trim()) {
+            return { success: false, error: 'Debe indicar una etiqueta VXM.' };
+        }
+        const normalizedLabelId = normalizeLabelId(labelId.trim().toUpperCase());
+
+        await runTransaction(firestore, async (transaction) => {
+            const labelRef = doc(firestore, "preprintedLabels", normalizedLabelId);
+            const sessionRef = doc(firestore, 'packingSessions', orderId);
+            const [labelSnap, sessionSnap] = await Promise.all([
+                transaction.get(labelRef),
+                transaction.get(sessionRef),
+            ]);
+
+            if (!sessionSnap.exists()) throw new Error('No hay sesión de empaque para este pedido.');
+            if (!labelSnap.exists()) throw new Error(`La etiqueta ${normalizedLabelId} no existe. Genérela/imprímala primero desde Etiquetas.`);
+
+            const labelData = labelSnap.data() as PreprintedLabel;
+            if (labelData.orderId !== orderId) {
+                throw new Error(`La etiqueta ${normalizedLabelId} no pertenece al pedido ${orderId}.`);
+            }
+
+            const units = [...((sessionSnap.data() as PackingSession).units || [])];
+            const unitIndex = units.findIndex((u) => u.id === unitId);
+            if (unitIndex === -1) throw new Error(`No se encontró la caja #${unitId} en la sesión.`);
+
+            const unit = units[unitIndex];
+            if (unit.labelBarcode && String(unit.labelBarcode).trim()) {
+                throw new Error(`La caja #${unitId} ya tiene etiqueta ${unit.labelBarcode}.`);
+            }
+
+            const alreadyOnThisUnit =
+                labelData.status !== 'available' &&
+                labelData.unitId === unitId &&
+                labelData.orderId === orderId;
+            if (labelData.status !== 'available' && !alreadyOnThisUnit) {
+                throw new Error(`La etiqueta ${normalizedLabelId} ya está en uso (estado: ${labelData.status}).`);
+            }
+
+            transaction.update(labelRef, {
+                status: 'used',
+                usedAt: Timestamp.now(),
+                unitId: unitId,
+                usedBy: actorName,
+            });
+
+            units[unitIndex] = {
+                ...unit,
+                status: 'closed',
+                labelBarcode: normalizedLabelId,
+                closed_at: unit.closed_at || new Date().toISOString(),
+                closedByName: unit.closedByName || actorName,
+            };
+            transaction.update(sessionRef, { units });
+
+            const logRef = doc(collection(firestore, 'activity_logs'));
+            transaction.set(logRef, {
+                type: 'unit_label_assigned_retroactive',
+                orderId,
+                unitId,
+                labelBarcode: normalizedLabelId,
+                packerName: actorName,
+                created_at: Timestamp.now(),
+            });
+        });
+
+        await syncWholesaleOrderPackingStatus(orderId);
+        return { success: true, labelId: normalizedLabelId };
+    } catch (error: any) {
+        console.error('Error in assignLabelToWholesalePackingUnit:', error);
         return { success: false, error: error.message };
     }
 }

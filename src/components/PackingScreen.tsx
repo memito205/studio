@@ -27,6 +27,8 @@ import {
     deletePackingUnit, 
     associateOrphanToUnit,
     secureCloseUnitAction,
+    assignLabelToWholesalePackingUnit,
+    addSingleLabel,
     repairSessionUnitsAction
 } from '@/app/actions';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
@@ -192,14 +194,14 @@ const CloseUnitDialog: React.FC<{
             <DialogContent>
                 <DialogHeader>
                     <DialogTitle>Cerrar Unidad de Empaque</DialogTitle>
-                    <DialogDescription>Escanee o digite el código de barras de la etiqueta para esta caja.</DialogDescription>
+                    <DialogDescription>Obligatorio: escanee una etiqueta VXM impresa para esta caja. No se puede cerrar sin etiqueta.</DialogDescription>
                 </DialogHeader>
                 <div className="py-4">
                     <Input
                         ref={inputRef}
                         value={label}
                         onChange={(e) => setLabel(e.target.value)}
-                        placeholder="Código de la etiqueta..."
+                        placeholder="VXM-... (obligatorio)"
                         onKeyDown={(e) => { if (e.key === 'Enter') handleConfirm(); }}
                         disabled={isLoading}
                     />
@@ -268,6 +270,9 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     // State for productivity timer
     const [elapsedTime, setElapsedTime] = useState(0);
     const [manualLabelToRelease, setManualLabelToRelease] = useState('');
+    const [assignLabelTarget, setAssignLabelTarget] = useState<PackingUnit | null>(null);
+    const [assignLabelInput, setAssignLabelInput] = useState('');
+    const [isAssigningLabel, setIsAssigningLabel] = useState(false);
     
     const fetchPackedItems = useCallback(async () => {
         const result = await getPackedItemsForOrder(packingOrder.order.id);
@@ -625,8 +630,60 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     };
 
 
+
+    const handleAssignLabelToUnit = async () => {
+        if (!assignLabelTarget || !assignLabelInput.trim()) {
+            toast({ variant: 'destructive', title: 'Etiqueta requerida', description: 'Digite o escanee una etiqueta VXM disponible.' });
+            return;
+        }
+        if (role !== 'admin' && role !== 'supervisor') {
+            toast({ variant: 'destructive', title: 'Sin permiso', description: 'Solo admin/supervisor puede asociar etiquetas a cajas existentes.' });
+            return;
+        }
+        setIsAssigningLabel(true);
+        try {
+            let labelId = assignLabelInput.trim().toUpperCase();
+            // Si el usuario pide generar una nueva
+            if (labelId === 'NUEVA' || labelId === 'NEW') {
+                const gen = await addSingleLabel(packingOrder.order.id);
+                if (!gen.data) throw new Error(gen.error || 'No se pudo generar etiqueta');
+                labelId = gen.data.id;
+            }
+            const actor = contextUserName || user?.displayName || user?.email || 'Admin';
+            const result = await assignLabelToWholesalePackingUnit(
+                packingOrder.order.id,
+                assignLabelTarget.id,
+                labelId,
+                actor
+            );
+            if (!result.success) throw new Error(result.error);
+            toast({
+                title: 'Etiqueta asociada',
+                description: `Caja #${assignLabelTarget.id} → ${result.labelId}. Ya puede imprimirla desde Etiquetas si falta el físico.`,
+            });
+            setAssignLabelTarget(null);
+            setAssignLabelInput('');
+        } catch (error: any) {
+            toast({ variant: 'destructive', title: 'No se asoció', description: error.message });
+        } finally {
+            setIsAssigningLabel(false);
+        }
+    };
+
     const handleReturnToOrders = () => {
-        // No longer need to save the full session here as it is synced in real-time
+        const openWithItems = session.units.find(u =>
+            u.status === 'open' &&
+            u.createdBy === user?.uid &&
+            allPackedItems.some(i => i.packingUnitId === u.firestoreId)
+        );
+        if (openWithItems && !openWithItems.labelBarcode) {
+            toast({
+                variant: 'destructive',
+                title: 'Caja sin etiquetar',
+                description: `Debe cerrar la caja #${openWithItems.id} con etiqueta VXM antes de salir. Use "Cerrar Caja".`,
+            });
+            return;
+        }
         onReturnToOrders();
     };
 
@@ -1356,6 +1413,55 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             </AlertDialogContent>
         </AlertDialog>
        <CloseUnitDialog isOpen={isCloseUnitDialogOpen} onOpenChange={setIsCloseUnitDialogOpen} onConfirm={handleCloseUnit} isLoading={isClosingUnit} />
+       <Dialog open={!!assignLabelTarget} onOpenChange={(open) => { if (!open) { setAssignLabelTarget(null); setAssignLabelInput(''); } }}>
+            <DialogContent>
+                <DialogHeader>
+                    <DialogTitle>Asociar etiqueta a Caja #{assignLabelTarget?.id}</DialogTitle>
+                    <DialogDescription>
+                        Solo admin/supervisor. Escanee una etiqueta VXM disponible del pedido, o escriba NUEVA para generar una etiqueta adicional (luego imprímala desde el módulo Etiquetas).
+                    </DialogDescription>
+                </DialogHeader>
+                <div className="py-2 space-y-2">
+                    <Input
+                        value={assignLabelInput}
+                        onChange={(e) => setAssignLabelInput(e.target.value)}
+                        placeholder="VXM-... o NUEVA"
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleAssignLabelToUnit(); }}
+                        disabled={isAssigningLabel}
+                        autoFocus
+                    />
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={isAssigningLabel}
+                        onClick={async () => {
+                            setIsAssigningLabel(true);
+                            try {
+                                const gen = await addSingleLabel(packingOrder.order.id);
+                                if (!gen.data) throw new Error(gen.error || 'Error al generar');
+                                setAssignLabelInput(gen.data.id);
+                                toast({ title: 'Etiqueta generada', description: `${gen.data.id} — asocie y luego imprímala.` });
+                            } catch (e: any) {
+                                toast({ variant: 'destructive', title: 'Error', description: e.message });
+                            } finally {
+                                setIsAssigningLabel(false);
+                            }
+                        }}
+                    >
+                        Generar etiqueta VXM nueva
+                    </Button>
+                </div>
+                <DialogFooter>
+                    <Button variant="secondary" onClick={() => setAssignLabelTarget(null)} disabled={isAssigningLabel}>Cancelar</Button>
+                    <Button onClick={handleAssignLabelToUnit} disabled={!assignLabelInput.trim() || isAssigningLabel}>
+                        {isAssigningLabel && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Asociar y cerrar caja
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+       </Dialog>
+
        <PauseDialog isOpen={isPauseDialogOpen} onOpenChange={setIsPauseDialogOpen} onConfirm={handlePause} />
        <UnitContentDialog
                     isOpen={isUnitContentDialogOpen}
@@ -1892,6 +1998,20 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                                             </CardHeader>
                                             <CardContent className="p-4 pt-0">
                                                 <p className="text-sm text-muted-foreground font-mono">{unit.labelBarcode || 'Sin etiqueta'}</p>
+                                                {!unit.labelBarcode && itemsCount > 0 && (role === 'admin' || role === 'supervisor') && (
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        className="mt-2 w-full border-amber-300 text-amber-800 hover:bg-amber-50"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            setAssignLabelTarget(unit);
+                                                            setAssignLabelInput('');
+                                                        }}
+                                                    >
+                                                        Asociar etiqueta VXM
+                                                    </Button>
+                                                )}
                                                 <div className="flex justify-between items-end mt-2">
                                                     <p className="text-lg font-bold">{itemsCount} items</p>
                                                     <div className="text-right">
