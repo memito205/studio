@@ -22,6 +22,19 @@ export type BodegaTvReceptionOpSummary = {
   operatorsToday: number;
 };
 
+/** Pedido Ventas x Mayor en empaque (progreso packed vs total canónico). */
+export type BodegaTvPackingOrderSummary = {
+  id: string;
+  cliente: string;
+  ordenDeCompra?: string;
+  status: string;
+  statusLabel: string;
+  packedUnits: number;
+  totalUnits: number;
+  remainingUnits: number;
+  progressPct?: number;
+};
+
 export type BodegaTvAreaKey =
   | 'empaque'
   | 'etiquetado'
@@ -54,6 +67,8 @@ export type BodegaTvAreaSnapshot = {
   extras?: { label: string; value: string }[];
   /** Solo recepción: resumen por operación activa / con und hoy (antes del ranking). */
   receptionOps?: BodegaTvReceptionOpSummary[];
+  /** Solo ventas_mayor: pedidos En Empaque con avance packed/total. */
+  packingOrders?: BodegaTvPackingOrderSummary[];
   /** Claves canónicas de personas identificadas (uid:/name:) para deduplicar recursos. */
   peopleKeys?: string[];
   /**

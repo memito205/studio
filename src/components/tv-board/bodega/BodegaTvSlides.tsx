@@ -4,6 +4,7 @@ import React from 'react';
 import type {
   BodegaTvAreaSnapshot,
   BodegaTvHourlyBucket,
+  BodegaTvPackingOrderSummary,
   BodegaTvPersonRank,
   BodegaTvReceptionOpSummary,
   BodegaTvSnapshot,
@@ -32,6 +33,8 @@ const AREA_ICON = {
 export const BODEGA_TV_PAGE_SIZE = 2;
 /** Operaciones de recepción por slide (antes del ranking de operarios). */
 export const RECEPTION_OPS_PAGE_SIZE = 3;
+/** Pedidos En Empaque (Ventas x Mayor) por slide. */
+export const PACKING_ORDERS_PAGE_SIZE = 3;
 
 function fmt(n: number, digits = 0) {
   if (!Number.isFinite(n)) return '0';
@@ -313,6 +316,7 @@ export function BodegaAreaDetailSlide({
     area.key === 'empaque' ||
     area.key === 'etiquetado' ||
     area.key === 'recepcion' ||
+    area.key === 'ventas_mayor' ||
     typeof area.compliance === 'number' ||
     rankingPage.some((r) => typeof r.compliance === 'number');
   const rankOffset = pageIndex * BODEGA_TV_PAGE_SIZE;
@@ -330,6 +334,8 @@ export function BodegaAreaDetailSlide({
       'Cajas',
       'Refs finalizadas',
       'Refs legacy',
+      'En Empaque',
+      'Meta U/H',
     ].includes(ex.label)
   );
 
@@ -553,6 +559,150 @@ export function BodegaRecepcionOpsSlide({
                       </div>
                       <div className="text-[1.4em] md:text-[1.7em] font-black tabular-nums text-sky-300 leading-none">
                         {typeof op.progressPct === 'number' ? `${fmt(op.progressPct, 0)}%` : '—'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function BodegaVentasMayorPackingSlide({
+  area,
+  ordersPage,
+  pageIndex,
+  pageCount,
+}: {
+  area: BodegaTvAreaSnapshot;
+  ordersPage: BodegaTvPackingOrderSummary[];
+  pageIndex: number;
+  pageCount: number;
+}) {
+  const Icon = AREA_ICON.ventas_mayor;
+  const allOrders = area.packingOrders || [];
+
+  return (
+    <div className="w-full h-full flex flex-col min-h-0 max-md:h-auto">
+      <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-[0.9em] gap-[0.75em] md:gap-[1em] shrink-0">
+        <div className="min-w-0">
+          <div className="flex items-center gap-[0.55em] mb-[0.35em]">
+            <Icon className={`w-[1.35em] h-[1.35em] shrink-0 ${AREA_ACCENT.ventas_mayor}`} />
+            <h2
+              className={`text-[1.7em] md:text-[2.4em] font-black tracking-tight leading-none ${AREA_ACCENT.ventas_mayor}`}
+            >
+              {area.title}
+            </h2>
+          </div>
+          <p className="text-[1em] text-slate-400 font-semibold">
+            Pedidos En Empaque · avance packed / total
+            {pageCount > 1 ? ` · página ${pageIndex + 1}/${pageCount}` : ''}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-[0.55em] md:gap-[0.7em] shrink-0">
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[0.85em] md:px-[1em] py-[0.65em] md:py-[0.75em] text-center min-w-[5.2em] md:min-w-[6.5em] flex-1 md:flex-none">
+            <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
+              Pedidos
+            </div>
+            <div className="text-[1.45em] md:text-[1.7em] font-black text-rose-300 tabular-nums leading-none mt-[0.2em]">
+              {fmt(allOrders.length)}
+            </div>
+          </div>
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[0.85em] md:px-[1em] py-[0.65em] md:py-[0.75em] text-center min-w-[5.2em] md:min-w-[6.5em] flex-1 md:flex-none">
+            <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
+              Empacado
+            </div>
+            <div className="text-[1.45em] md:text-[1.7em] font-black text-slate-100 tabular-nums leading-none mt-[0.2em]">
+              {fmt(allOrders.reduce((s, o) => s + (Number(o.packedUnits) || 0), 0))}
+            </div>
+          </div>
+          <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[0.85em] md:px-[1em] py-[0.65em] md:py-[0.75em] text-center min-w-[5.2em] md:min-w-[6.5em] flex-1 md:flex-none">
+            <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
+              Restante
+            </div>
+            <div className="text-[1.45em] md:text-[1.7em] font-black text-amber-300 tabular-nums leading-none mt-[0.2em]">
+              {fmt(allOrders.reduce((s, o) => s + (Number(o.remainingUnits) || 0), 0))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {!ordersPage.length ? (
+        <div className="flex-1 flex items-center justify-center text-[1.5em] text-slate-500 font-semibold">
+          Sin pedidos En Empaque
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 overflow-visible md:overflow-hidden flex flex-col justify-start md:justify-center gap-[0.75em] md:gap-[0.9em] pb-[1em] md:pb-0">
+          <div className="hidden md:grid grid-cols-[minmax(0,1.2fr)_minmax(0,1.6fr)_minmax(7em,1fr)_minmax(5em,0.7fr)_minmax(5.5em,0.75fr)] gap-x-[0.9em] text-[0.85em] font-bold uppercase tracking-wider text-slate-500 px-[0.4em]">
+            <span>Pedido</span>
+            <span>Cliente</span>
+            <span className="text-right">Empacado</span>
+            <span className="text-right">Restante</span>
+            <span className="text-right">Avance</span>
+          </div>
+          <div className="space-y-[0.75em] md:space-y-[0.85em]">
+            {ordersPage.map((order) => {
+              const packed = Number(order.packedUnits) || 0;
+              const total = Number(order.totalUnits) || 0;
+              const remaining = Number(order.remainingUnits) || 0;
+              return (
+                <div
+                  key={order.id}
+                  className="flex flex-col gap-[0.55em] md:grid md:grid-cols-[minmax(0,1.2fr)_minmax(0,1.6fr)_minmax(7em,1fr)_minmax(5em,0.7fr)_minmax(5.5em,0.75fr)] md:gap-x-[0.9em] md:items-center rounded-[1em] px-[1em] py-[0.9em] md:py-[1em] border bg-rose-500/10 border-rose-500/35"
+                >
+                  <div className="min-w-0">
+                    <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.15em]">
+                      Pedido
+                    </div>
+                    <div className="text-[1.35em] md:text-[1.55em] font-black text-slate-100 leading-tight break-words">
+                      {order.id}
+                    </div>
+                    {order.ordenDeCompra ? (
+                      <div className="text-[0.85em] text-slate-500 font-semibold mt-[0.15em] break-words">
+                        OC {order.ordenDeCompra}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.15em]">
+                      Cliente
+                    </div>
+                    <div className="text-[1.1em] md:text-[1.25em] font-bold text-slate-300 leading-tight break-words">
+                      {order.cliente}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-[0.5em] md:contents">
+                    <div className="text-center md:text-right">
+                      <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.15em]">
+                        Empacado
+                      </div>
+                      <div className="text-[1.4em] md:text-[1.7em] font-black tabular-nums leading-none">
+                        {fmt(packed)}
+                        {total > 0 ? (
+                          <span className="block text-[0.55em] font-semibold text-slate-500 mt-[0.25em]">
+                            / {fmt(total)}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="text-center md:text-right">
+                      <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.15em]">
+                        Restante
+                      </div>
+                      <div className="text-[1.4em] md:text-[1.7em] font-black tabular-nums text-amber-300 leading-none">
+                        {fmt(remaining)}
+                      </div>
+                    </div>
+                    <div className="text-center md:text-right">
+                      <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.15em]">
+                        Avance
+                      </div>
+                      <div className="text-[1.4em] md:text-[1.7em] font-black tabular-nums text-sky-300 leading-none">
+                        {typeof order.progressPct === 'number' ? `${fmt(order.progressPct, 0)}%` : '—'}
                       </div>
                     </div>
                   </div>

@@ -4,11 +4,14 @@ import { format } from 'date-fns';
 import {
   getGlobalPulsesForDay,
   getPackedItemsForDate,
+  getPackedItemsForOrders,
   getUserPulsesForUserDay,
   loadAllPackingSessions,
   loadHistoricalReports,
   loadOperatorMappings,
+  loadWholesaleOrders,
 } from '@/app/actions';
+import { computeWholesalePackingTotals } from '@/lib/wholesalePacking';
 import { listTalladoDashboard } from '@/app/talladoMercanciaActions';
 import {
   getAllUserProfiles,
@@ -25,6 +28,7 @@ import type {
   BodegaTvAreaSnapshot,
   BodegaTvHourlyBucket,
   BodegaTvMode,
+  BodegaTvPackingOrderSummary,
   BodegaTvReceptionOpSummary,
   BodegaTvRemainderAssignmentRow,
   BodegaTvSnapshot,
@@ -387,8 +391,12 @@ function emptyArea(key: BodegaTvAreaKey, title: string): BodegaTvAreaSnapshot {
     peopleKeys: [],
     anonymousPeople: 0,
     receptionOps: key === 'recepcion' ? [] : undefined,
+    packingOrders: key === 'ventas_mayor' ? [] : undefined,
   };
 }
+
+/** Meta u/h por defecto del módulo Ventas x Mayor (PackingScreen / GeneralSettings). */
+const VENTAS_MAYOR_PACKING_GOAL = 70;
 
 /**
  * Recursos únicos: personas identificadas sin repetir + cupo anónimo de tallado
@@ -984,6 +992,8 @@ function tsToMs(value: unknown): number {
 /**
  * Productividad del módulo Ventas por mayor (packedItems + pausas wholesale).
  * Misma base que el reporte de productividad del dashboard mayorista.
+ * Cumpl. % = U/H vs meta de empaque en vivo (default 70, igual PackingScreen).
+ * packingOrders: pedidos En Empaque con avance canónico packed/total.
  */
 async function buildVentasMayor(
   dayKey: string,
@@ -992,21 +1002,70 @@ async function buildVentasMayor(
 ): Promise<BodegaTvAreaSnapshot> {
   const area = emptyArea('ventas_mayor', 'Ventas x Mayor');
   try {
-    const [itemsRes, sessionsRes, mappingsRes, globalPulsesRes] = await Promise.all([
+    const [itemsRes, sessionsRes, mappingsRes, globalPulsesRes, ordersRes] = await Promise.all([
       getPackedItemsForDate(dayKey),
       loadAllPackingSessions(),
       loadOperatorMappings(),
       getGlobalPulsesForDay(dayKey),
+      loadWholesaleOrders(),
     ]);
-    if (itemsRes.error || !itemsRes.data?.length) return area;
 
-    const items = itemsRes.data;
+    // Pedidos En Empaque (progreso live), independiente de productividad del día.
+    const packingInProgress = (ordersRes.data || []).filter((o) => o.status === 'En Empaque');
+    if (packingInProgress.length > 0) {
+      const packedRes = await getPackedItemsForOrders(packingInProgress.map((o) => o.id));
+      const packedByOrder = new Map<string, PackedItem[]>();
+      for (const item of packedRes.data || []) {
+        const oid = String(item.orderId || '').trim();
+        if (!oid) continue;
+        const list = packedByOrder.get(oid) || [];
+        list.push(item);
+        packedByOrder.set(oid, list);
+      }
+      const packingOrders: BodegaTvPackingOrderSummary[] = packingInProgress.map((order) => {
+        const totals = computeWholesalePackingTotals(order, packedByOrder.get(order.id) || []);
+        const packedUnits = totals.packedTotal;
+        const totalUnits = totals.orderTotal;
+        const remainingUnits = Math.max(0, totalUnits - packedUnits);
+        const progressPct =
+          totalUnits > 0 ? Math.min(999, (packedUnits / totalUnits) * 100) : packedUnits > 0 ? 100 : 0;
+        return {
+          id: order.id,
+          cliente: order.cliente || '—',
+          ordenDeCompra: order.ordenDeCompra || undefined,
+          status: order.status,
+          statusLabel: 'En Empaque',
+          packedUnits,
+          totalUnits,
+          remainingUnits,
+          progressPct,
+        };
+      });
+      packingOrders.sort(
+        (a, b) =>
+          (b.progressPct || 0) - (a.progressPct || 0) ||
+          b.packedUnits - a.packedUnits ||
+          a.id.localeCompare(b.id)
+      );
+      area.packingOrders = packingOrders;
+    }
+
+    const items = itemsRes.data || [];
+    if (itemsRes.error || !items.length) {
+      area.extras = [
+        { label: 'En Empaque', value: String(area.packingOrders?.length || 0) },
+        { label: 'Fuente', value: 'Módulo Ventas x Mayor' },
+      ];
+      return area;
+    }
+
     const sessions = sessionsRes.data || [];
     const mappings = (mappingsRes.data || {}) as Record<string, string>;
     const cachedGlobalPulses = globalPulsesRes.data || [];
     const dayStart = new Date(`${dayKey}T00:00:00`).getTime();
     const dayEnd = new Date(`${dayKey}T23:59:59.999`).getTime();
     const nowMs = Date.now();
+    const packingGoal = VENTAS_MAYOR_PACKING_GOAL;
 
     const packerMap = new Map<
       string,
@@ -1063,6 +1122,7 @@ async function buildVentasMayor(
       name: string;
       units: number;
       productivity: number;
+      compliance?: number;
       packerId: string;
     }[] = [];
 
@@ -1140,12 +1200,14 @@ async function buildVentasMayor(
       const units = data.items.reduce((sum, i) => sum + (Number(i.quantity) || 1), 0);
       if (units <= 0) continue;
       const uph = totalEffectiveMs > 0 ? (units / (totalEffectiveMs / 1000)) * 3600 : 0;
+      const compliance = packingGoal > 0 && uph > 0 ? (uph / packingGoal) * 100 : undefined;
 
       rankingRows.push({
         packerId,
         name: bestName,
         units,
         productivity: uph,
+        compliance,
       });
     }
 
@@ -1166,11 +1228,22 @@ async function buildVentasMayor(
         : totalEffHours > 0
           ? totalUnits / totalEffHours
           : 0;
-    area.compliance = undefined;
+    {
+      let compSum = 0;
+      let compWeight = 0;
+      for (const r of rankingRows) {
+        if (typeof r.compliance === 'number' && Number.isFinite(r.compliance) && r.units > 0) {
+          compSum += r.compliance * r.units;
+          compWeight += r.units;
+        }
+      }
+      area.compliance = compWeight > 0 ? compSum / compWeight : undefined;
+    }
     area.ranking = rankingRows.map((r) => ({
       name: r.name,
       units: r.units,
       productivity: r.productivity,
+      compliance: r.compliance,
     }));
     area.peopleKeys = rankingRows.map((r) =>
       r.packerId ? personKeyFromUid(r.packerId) : personKeyFromName(r.name, uidByNormName)
@@ -1178,6 +1251,8 @@ async function buildVentasMayor(
     area.extras = [
       { label: 'Operarios', value: String(rankingRows.length) },
       { label: 'Und hoy', value: String(totalUnits) },
+      { label: 'En Empaque', value: String(area.packingOrders?.length || 0) },
+      { label: 'Meta U/H', value: String(packingGoal) },
       { label: 'Fuente', value: 'Módulo Ventas x Mayor' },
     ];
   } catch (e) {

@@ -12,9 +12,11 @@ import {
   BodegaOverviewSlide,
   BodegaRecepcionOpsSlide,
   BodegaRemainderAssignmentsSlide,
+  BodegaVentasMayorPackingSlide,
   BODEGA_TV_CORE_AREA_KEYS,
   BODEGA_TV_PAGE_SIZE,
   HOURLY_PAGE_SIZE,
+  PACKING_ORDERS_PAGE_SIZE,
   RECEPTION_OPS_PAGE_SIZE,
   REMAINDER_PAGE_SIZE,
 } from './bodega/BodegaTvSlides';
@@ -124,6 +126,30 @@ export default function BodegaTvBoard({ mode = 'full' }: { mode?: BodegaTvMode }
               opsPage={opsPage}
               pageIndex={pageIndex}
               pageCount={opsPageCount}
+            />
+          );
+        }
+      }
+
+      // Ventas x Mayor: pedidos En Empaque con avance antes del ranking.
+      if (area.key === 'ventas_mayor') {
+        const orders = area.packingOrders || [];
+        const ordersPageCount = Math.max(
+          1,
+          Math.ceil(Math.max(orders.length, 1) / PACKING_ORDERS_PAGE_SIZE)
+        );
+        for (let pageIndex = 0; pageIndex < ordersPageCount; pageIndex++) {
+          const ordersPage = orders.slice(
+            pageIndex * PACKING_ORDERS_PAGE_SIZE,
+            pageIndex * PACKING_ORDERS_PAGE_SIZE + PACKING_ORDERS_PAGE_SIZE
+          );
+          nodes.push(
+            <BodegaVentasMayorPackingSlide
+              key={`ventas-mayor-packing-p${pageIndex}`}
+              area={area}
+              ordersPage={ordersPage}
+              pageIndex={pageIndex}
+              pageCount={ordersPageCount}
             />
           );
         }
