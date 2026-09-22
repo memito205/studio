@@ -126,6 +126,58 @@ export type EtiquetadoDayBreakdown = {
   contributions: EtiquetadoContributionRow[];
 };
 
+/** Etapa compacta de un proceso RIM/VXM para Bodega Live. */
+export type BodegaTvProcessStage = {
+  label: string;
+  pct: number;
+};
+
+/** Fila de proceso publicada desde Plataforma Logística → Procesos de Bodega. */
+export type BodegaTvProcessRow = {
+  id: string;
+  name: string;
+  type: 'RIM' | 'VXM';
+  packedPercentage: number;
+  totalQuantity: number;
+  totalPacked: number;
+  fechaEntrega?: string;
+  isOverdue?: boolean;
+  stages: BodegaTvProcessStage[];
+  note?: string;
+};
+
+export type BodegaTvPendingGoodRow = {
+  id: string;
+  marca: string;
+  cantidadEntrada: number;
+  fechaEntradaAprox: string;
+};
+
+export type BodegaTvEntregaSummary = {
+  vehiculo: string;
+  itemCount: number;
+  totalQty: number;
+};
+
+/** Documento `bodega_process_summaries/latest` (snapshot manual para TV). */
+export type BodegaTvProcessSummary = {
+  publishedAt: string;
+  publishedBy: string;
+  dayKey: string;
+  source: string;
+  processes: BodegaTvProcessRow[];
+  pendingGoods: BodegaTvPendingGoodRow[];
+  entregas?: BodegaTvEntregaSummary[];
+  totals: {
+    processCount: number;
+    rimCount: number;
+    vxmCount: number;
+    overdueCount: number;
+    avgProgress: number;
+    pendingCount: number;
+  };
+};
+
 export type BodegaTvSnapshot = {
   dayKey: string;
   generatedAt: string;
@@ -139,4 +191,6 @@ export type BodegaTvSnapshot = {
   };
   /** Asignaciones Físico vs Distribución (remanentes / confirmación 0). */
   remainderAssignments?: BodegaTvRemainderAssignmentRow[];
+  /** Resumen publicado desde Procesos de Bodega (manual). */
+  processSummary?: BodegaTvProcessSummary | null;
 };

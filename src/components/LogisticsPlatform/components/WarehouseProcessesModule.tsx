@@ -6,6 +6,10 @@ import Loader from './Loader';
 import { findHeader, formatDate, normalizeDate, generateDailySummaryPdf, exportToExcel } from '../utils/helpers';
 import type { ExcelDataRow, ObservationSummary, EntregasPorVehiculo, PendingGoodsItem } from '../types';
 import { ClipboardPasteIcon, PlusCircleIcon, PdfFileIcon, PackageIcon, Trash2Icon, DownloadIcon, FileClockIcon } from './icons';
+import { publishWarehouseProcessSummary } from '@/app/warehouseProcessSummaryActions';
+import { useAuth } from '@/hooks/use-auth-context';
+import { toast } from '@/hooks/use-toast';
+import { CloudUpload, Loader2 } from 'lucide-react';
 
 import * as XLSX from 'xlsx';
 
@@ -14,9 +18,11 @@ const generateUniqueId = () => {
 };
 
 const WarehouseProcessesModule: React.FC = () => {
+    const { user, userName } = useAuth();
     const [processes, setProcesses] = useState<ObservationSummary[]>([]);
     const [pendingGoods, setPendingGoods] = useState<PendingGoodsItem[]>([]);
     const [entregasData, setEntregasData] = useState<EntregasPorVehiculo[]>([]);
+    const [isPublishing, setIsPublishing] = useState(false);
     
     // UI States
     const [processesFileName, setProcessesFileName] = useState<string | null>(null);
@@ -29,6 +35,72 @@ const WarehouseProcessesModule: React.FC = () => {
     const [prevReportFileName, setPrevReportFileName] = useState<string | null>(null);
 
     const todayStr = new Date().toISOString().split('T')[0];
+
+    const handlePublishToBodegaLive = async () => {
+        if (processes.length === 0 && pendingGoods.length === 0) {
+            toast({
+                title: 'Nada que publicar',
+                description: 'Carga o crea al menos un proceso o ingreso pendiente.',
+                variant: 'destructive',
+            });
+            return;
+        }
+        setIsPublishing(true);
+        try {
+            const publishedBy =
+                userName || user?.displayName || user?.email || 'Sistema';
+            const result = await publishWarehouseProcessSummary({
+                publishedBy,
+                processes: processes.map((p) => ({
+                    id: p.id,
+                    observation: p.observation,
+                    totalQuantity: p.totalQuantity,
+                    totalPacked: p.totalPacked,
+                    packedPercentage: p.packedPercentage,
+                    fechaEntrega: p.fechaEntrega,
+                    procesoObservacion: p.procesoObservacion,
+                    isVXM: p.isVXM,
+                    conteoPorcentaje: p.conteoPorcentaje,
+                    etiquetadoPorcentaje: p.etiquetadoPorcentaje,
+                    revisionCalidadPorcentaje: p.revisionCalidadPorcentaje,
+                    remisionPorcentaje: p.remisionPorcentaje,
+                })),
+                pendingGoods: pendingGoods.map((g) => ({
+                    id: g.id,
+                    marca: g.marca,
+                    cantidadEntrada: g.cantidadEntrada,
+                    fechaEntradaAprox: g.fechaEntradaAprox,
+                })),
+                entregas:
+                    entregasData.length > 0
+                        ? entregasData.map((e) => ({
+                              vehiculo: e.vehiculo,
+                              items: e.items,
+                          }))
+                        : undefined,
+            });
+            if (!result.success) {
+                toast({
+                    title: 'Error al publicar',
+                    description: result.error || 'No se pudo publicar a Bodega Live.',
+                    variant: 'destructive',
+                });
+                return;
+            }
+            toast({
+                title: 'Publicado a Bodega Live',
+                description: `${result.data?.totals.processCount || 0} procesos · se verá en la rotación de TV.`,
+            });
+        } catch (err: any) {
+            toast({
+                title: 'Error al publicar',
+                description: err?.message || 'Error inesperado.',
+                variant: 'destructive',
+            });
+        } finally {
+            setIsPublishing(false);
+        }
+    };
 
     // --- ACCIONES DE PROCESOS ---
     const handleProcessChange = (id: string, field: keyof ObservationSummary, value: any) => {
@@ -218,7 +290,7 @@ const WarehouseProcessesModule: React.FC = () => {
                 });
                 setEntregasData(Array.from(grouped.entries()).map(([v, rows]) => ({
                     vehiculo: v,
-                    items: rows.map(r => ({ ubicacion: String(r['UBICACION'] || r['VALOR'] || 'N/D'), marca: String(r['MARCA'] || 'N/D'), cantidad: Number(r['CANTIDAD'] || 0) }))
+                    items: (rows as any[]).map((r: any) => ({ ubicacion: String(r['UBICACION'] || r['VALOR'] || 'N/D'), marca: String(r['MARCA'] || 'N/D'), cantidad: Number(r['CANTIDAD'] || 0) }))
                 })));
             } catch (err) { console.error(err); } finally { setIsEntregasLoading(false); }
         };
@@ -250,7 +322,19 @@ const WarehouseProcessesModule: React.FC = () => {
             <section className="bg-white rounded-lg shadow-lg p-6">
                 <div className="flex justify-between items-center mb-6 border-b pb-3 flex-wrap gap-2">
                     <h2 className="text-2xl font-bold text-gray-800">Panel de Control de Bodega</h2>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 flex-wrap">
+                         <button
+                            onClick={() => void handlePublishToBodegaLive()}
+                            className="flex items-center px-4 py-2 bg-cyan-600 text-white font-bold rounded hover:bg-cyan-700 transition-all shadow disabled:opacity-60"
+                            disabled={isPublishing || (processes.length === 0 && pendingGoods.length === 0)}
+                        >
+                            {isPublishing ? (
+                                <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                            ) : (
+                                <CloudUpload className="h-5 w-5 mr-2" />
+                            )}
+                            Publicar a Bodega Live
+                        </button>
                          <button
                             onClick={handleExportExcel}
                             className="flex items-center px-4 py-2 bg-emerald-600 text-white font-bold rounded hover:bg-emerald-700 transition-all shadow"

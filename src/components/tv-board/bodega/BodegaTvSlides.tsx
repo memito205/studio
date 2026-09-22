@@ -6,10 +6,14 @@ import type {
   BodegaTvHourlyBucket,
   BodegaTvPackingOrderSummary,
   BodegaTvPersonRank,
+  BodegaTvProcessRow,
+  BodegaTvProcessSummary,
   BodegaTvReceptionOpSummary,
   BodegaTvSnapshot,
 } from '@/lib/bodegaTvTypes';
-import { Package, Tags, ScanLine, Warehouse, Trophy, Users, Gauge, ShoppingCart } from 'lucide-react';
+import { ClipboardList, Package, Tags, ScanLine, Warehouse, Trophy, Users, Gauge, ShoppingCart } from 'lucide-react';
+import { format } from 'date-fns';
+import { es } from 'date-fns/locale';
 
 /** Áreas del resumen principal (slide 1). El resto va al resumen complementario. */
 export const BODEGA_TV_CORE_AREA_KEYS = ['empaque', 'etiquetado', 'tallado', 'recepcion'] as const;
@@ -35,6 +39,8 @@ export const BODEGA_TV_PAGE_SIZE = 2;
 export const RECEPTION_OPS_PAGE_SIZE = 3;
 /** Pedidos En Empaque (Ventas x Mayor) por slide. */
 export const PACKING_ORDERS_PAGE_SIZE = 3;
+/** Procesos de Bodega (RIM/VXM) por slide. */
+export const PROCESS_SUMMARY_PAGE_SIZE = 3;
 
 function fmt(n: number, digits = 0) {
   if (!Number.isFinite(n)) return '0';
@@ -712,6 +718,223 @@ export function BodegaVentasMayorPackingSlide({
               );
             })}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProcessStagesCompact({ stages }: { stages: BodegaTvProcessRow['stages'] }) {
+  if (!stages?.length) return null;
+  return (
+    <div className="flex flex-wrap gap-[0.4em] mt-[0.35em]">
+      {stages.map((st) => (
+        <span
+          key={st.label}
+          className="rounded-full border border-slate-600 bg-slate-950/60 px-[0.65em] py-[0.2em] text-[0.75em] md:text-[0.8em] font-bold text-slate-300"
+        >
+          <span className="text-slate-500 mr-[0.3em]">{st.label}</span>
+          <span className="tabular-nums text-slate-100">{fmt(st.pct, 0)}%</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+export function BodegaProcessSummarySlide({
+  summary,
+  processesPage,
+  pageIndex,
+  pageCount,
+}: {
+  summary: BodegaTvProcessSummary | null | undefined;
+  processesPage: BodegaTvProcessRow[];
+  pageIndex: number;
+  pageCount: number;
+}) {
+  const publishedLabel = summary?.publishedAt
+    ? format(new Date(summary.publishedAt), "dd MMM · HH:mm", { locale: es })
+    : null;
+  const totals = summary?.totals;
+  const pending = summary?.pendingGoods || [];
+  const showPendingStrip = pending.length > 0 && pageIndex === 0;
+
+  return (
+    <div className="w-full h-full flex flex-col min-h-0 max-md:h-auto">
+      <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-[0.9em] gap-[0.75em] md:gap-[1em] shrink-0">
+        <div className="min-w-0">
+          <div className="flex items-center gap-[0.55em] mb-[0.35em]">
+            <ClipboardList className="w-[1.35em] h-[1.35em] shrink-0 text-cyan-400" />
+            <h2 className="text-[1.7em] md:text-[2.4em] font-black tracking-tight leading-none text-cyan-400">
+              Procesos de Bodega
+            </h2>
+          </div>
+          <p className="text-[1em] text-slate-400 font-semibold">
+            {summary
+              ? `Publicado ${publishedLabel || '—'}${summary.publishedBy ? ` · ${summary.publishedBy}` : ''}`
+              : 'Resumen manual desde Plataforma Logística'}
+            {pageCount > 1 ? ` · página ${pageIndex + 1}/${pageCount}` : ''}
+          </p>
+        </div>
+        {summary ? (
+          <div className="flex flex-wrap gap-[0.55em] md:gap-[0.7em] shrink-0">
+            <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[0.85em] md:px-[1em] py-[0.65em] md:py-[0.75em] text-center min-w-[5.2em] md:min-w-[6.5em] flex-1 md:flex-none">
+              <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
+                Procesos
+              </div>
+              <div className="text-[1.45em] md:text-[1.7em] font-black text-cyan-300 tabular-nums leading-none mt-[0.2em]">
+                {fmt(totals?.processCount || 0)}
+              </div>
+            </div>
+            <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[0.85em] md:px-[1em] py-[0.65em] md:py-[0.75em] text-center min-w-[5.2em] md:min-w-[6.5em] flex-1 md:flex-none">
+              <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
+                Avance medio
+              </div>
+              <div className="text-[1.45em] md:text-[1.7em] font-black text-sky-300 tabular-nums leading-none mt-[0.2em]">
+                {fmt(totals?.avgProgress || 0, 0)}%
+              </div>
+            </div>
+            <div className="rounded-[0.85em] border-2 border-slate-600 bg-slate-900 px-[0.85em] md:px-[1em] py-[0.65em] md:py-[0.75em] text-center min-w-[5.2em] md:min-w-[6.5em] flex-1 md:flex-none">
+              <div className="text-[0.65em] uppercase tracking-widest text-slate-500 font-bold">
+                Atrasados
+              </div>
+              <div
+                className={`text-[1.45em] md:text-[1.7em] font-black tabular-nums leading-none mt-[0.2em] ${
+                  (totals?.overdueCount || 0) > 0 ? 'text-red-400' : 'text-slate-100'
+                }`}
+              >
+                {fmt(totals?.overdueCount || 0)}
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {!summary ? (
+        <div className="flex-1 flex items-center justify-center text-[1.5em] text-slate-500 font-semibold">
+          Sin resumen publicado
+        </div>
+      ) : !processesPage.length ? (
+        <div className="flex-1 flex items-center justify-center text-[1.5em] text-slate-500 font-semibold">
+          Sin procesos en el resumen
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 overflow-visible md:overflow-hidden flex flex-col gap-[0.75em] md:gap-[0.85em] pb-[1em] md:pb-0">
+          <div className="flex-1 min-h-0 flex flex-col justify-start md:justify-center gap-[0.75em] md:gap-[0.85em]">
+            <div className="hidden md:grid grid-cols-[4.5em_minmax(0,2fr)_minmax(7em,1.1fr)_minmax(5.5em,0.75fr)] gap-x-[0.9em] text-[0.85em] font-bold uppercase tracking-wider text-slate-500 px-[0.4em]">
+              <span>Tipo</span>
+              <span>Proceso</span>
+              <span className="text-right">Empacado</span>
+              <span className="text-right">Avance</span>
+            </div>
+            <div className="space-y-[0.75em] md:space-y-[0.85em]">
+              {processesPage.map((proc) => {
+                const packed = Number(proc.totalPacked) || 0;
+                const total = Number(proc.totalQuantity) || 0;
+                const overdue = Boolean(proc.isOverdue);
+                return (
+                  <div
+                    key={proc.id || proc.name}
+                    className={`flex flex-col gap-[0.55em] md:grid md:grid-cols-[4.5em_minmax(0,2fr)_minmax(7em,1.1fr)_minmax(5.5em,0.75fr)] md:gap-x-[0.9em] md:items-center rounded-[1em] px-[1em] py-[0.9em] md:py-[1em] border ${
+                      overdue
+                        ? 'bg-red-500/10 border-red-500/40'
+                        : proc.type === 'VXM'
+                          ? 'bg-sky-500/10 border-sky-500/35'
+                          : 'bg-emerald-500/10 border-emerald-500/35'
+                    }`}
+                  >
+                    <div className="flex items-center gap-[0.55em] md:block">
+                      <span
+                        className={`inline-flex items-center justify-center rounded-full px-[0.7em] py-[0.25em] text-[0.85em] md:text-[0.95em] font-black ${
+                          proc.type === 'VXM'
+                            ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
+                            : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                        }`}
+                      >
+                        {proc.type}
+                      </span>
+                      {overdue ? (
+                        <span className="md:hidden rounded-full bg-red-600 text-white text-[0.7em] font-black px-[0.65em] py-[0.2em]">
+                          ATRASADO
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-[0.45em]">
+                        <div className="text-[1.25em] md:text-[1.45em] font-black text-slate-100 leading-tight break-words">
+                          {proc.name}
+                        </div>
+                        {overdue ? (
+                          <span className="hidden md:inline-flex rounded-full bg-red-600 text-white text-[0.7em] font-black px-[0.65em] py-[0.2em]">
+                            ATRASADO
+                          </span>
+                        ) : null}
+                      </div>
+                      <ProcessStagesCompact stages={proc.stages} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-[0.5em] md:contents">
+                      <div className="text-center md:text-right">
+                        <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.15em]">
+                          Empacado
+                        </div>
+                        <div className="text-[1.4em] md:text-[1.7em] font-black tabular-nums leading-none">
+                          {fmt(packed)}
+                          {total > 0 ? (
+                            <span className="block text-[0.55em] font-semibold text-slate-500 mt-[0.25em]">
+                              / {fmt(total)}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                      <div className="text-center md:text-right">
+                        <div className="md:hidden text-[0.7em] uppercase tracking-wider text-slate-500 font-bold mb-[0.15em]">
+                          Avance
+                        </div>
+                        <div
+                          className={`text-[1.4em] md:text-[1.7em] font-black tabular-nums leading-none ${
+                            overdue ? 'text-red-400' : 'text-sky-300'
+                          }`}
+                        >
+                          {fmt(proc.packedPercentage, 0)}%
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {showPendingStrip ? (
+            <div className="shrink-0 rounded-[0.85em] border border-slate-700 bg-slate-900/80 px-[0.9em] py-[0.7em]">
+              <div className="text-[0.75em] uppercase tracking-widest text-slate-500 font-bold mb-[0.45em]">
+                Próximos ingresos ({pending.length})
+              </div>
+              <div className="flex flex-wrap gap-[0.45em]">
+                {pending.slice(0, 8).map((g) => (
+                  <span
+                    key={g.id || g.marca}
+                    className="rounded-full border border-slate-600 bg-slate-950/70 px-[0.75em] py-[0.3em] text-[0.85em] font-bold text-slate-200"
+                  >
+                    <span className="text-amber-300">{g.marca}</span>
+                    <span className="text-slate-500 mx-[0.35em]">·</span>
+                    <span className="tabular-nums">{fmt(g.cantidadEntrada)}</span>
+                    {g.fechaEntradaAprox ? (
+                      <>
+                        <span className="text-slate-500 mx-[0.35em]">·</span>
+                        <span className="text-slate-400 text-[0.9em]">{g.fechaEntradaAprox}</span>
+                      </>
+                    ) : null}
+                  </span>
+                ))}
+                {pending.length > 8 ? (
+                  <span className="rounded-full border border-slate-700 px-[0.75em] py-[0.3em] text-[0.85em] font-bold text-slate-500">
+                    +{pending.length - 8} más
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
     </div>

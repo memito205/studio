@@ -37,6 +37,7 @@ import type {
   EtiquetadoContributionRow,
   EtiquetadoDayBreakdown,
 } from '@/lib/bodegaTvTypes';
+import { getLatestWarehouseProcessSummary } from '@/app/warehouseProcessSummaryActions';
 import {
   filterTalladoBundleToDay,
   isTalladoSameLocalDay,
@@ -1684,6 +1685,8 @@ export async function getBodegaTvSnapshot(options?: {
     let areas: BodegaTvAreaSnapshot[];
     let remainderAssignments: BodegaTvRemainderAssignmentRow[] | undefined;
 
+    let processSummary: BodegaTvSnapshot['processSummary'] = null;
+
     if (mode === 'externos') {
       const [tallado, etiquetado] = await Promise.all([
         buildTallado(dayKey, uidByNormName, true),
@@ -1692,17 +1695,20 @@ export async function getBodegaTvSnapshot(options?: {
       areas = [tallado, etiquetado];
       remainderAssignments = undefined;
     } else {
-      const [empaque, etiquetado, tallado, recepcion, ventasMayor, remainders] = await Promise.all([
-        buildEmpaque(dayKey, uidByNormName),
-        buildEtiquetado(dayKey, nameByUid, uidByNormName, 'all'),
-        buildTallado(dayKey, uidByNormName),
-        buildRecepcion(dayKey, nameByUid),
-        buildVentasMayor(dayKey, nameByUid, uidByNormName),
-        buildRemainderAssignments(dayKey, nameByUid),
-      ]);
+      const [empaque, etiquetado, tallado, recepcion, ventasMayor, remainders, processRes] =
+        await Promise.all([
+          buildEmpaque(dayKey, uidByNormName),
+          buildEtiquetado(dayKey, nameByUid, uidByNormName, 'all'),
+          buildTallado(dayKey, uidByNormName),
+          buildRecepcion(dayKey, nameByUid),
+          buildVentasMayor(dayKey, nameByUid, uidByNormName),
+          buildRemainderAssignments(dayKey, nameByUid),
+          getLatestWarehouseProcessSummary(),
+        ]);
       // Core overview: 4 áreas. Ventas x Mayor va al slide complementario + ranking.
       areas = [empaque, etiquetado, tallado, recepcion, ventasMayor];
       remainderAssignments = remainders;
+      processSummary = processRes.success ? processRes.data ?? null : null;
     }
 
     let complianceWeight = 0;
@@ -1738,6 +1744,7 @@ export async function getBodegaTvSnapshot(options?: {
         operators: uniqueOperators,
       },
       remainderAssignments,
+      ...(mode === 'full' ? { processSummary } : {}),
     };
 
     return { success: true, data: snapshot };

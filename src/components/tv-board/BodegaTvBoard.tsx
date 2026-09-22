@@ -10,6 +10,7 @@ import {
   BodegaAreaDetailSlide,
   BodegaAreaHourlySlide,
   BodegaOverviewSlide,
+  BodegaProcessSummarySlide,
   BodegaRecepcionOpsSlide,
   BodegaRemainderAssignmentsSlide,
   BodegaVentasMayorPackingSlide,
@@ -17,6 +18,7 @@ import {
   BODEGA_TV_PAGE_SIZE,
   HOURLY_PAGE_SIZE,
   PACKING_ORDERS_PAGE_SIZE,
+  PROCESS_SUMMARY_PAGE_SIZE,
   RECEPTION_OPS_PAGE_SIZE,
   REMAINDER_PAGE_SIZE,
 } from './bodega/BodegaTvSlides';
@@ -104,6 +106,29 @@ export default function BodegaTvBoard({ mode = 'full' }: { mode?: BodegaTvMode }
             rows={pageRows}
             pageIndex={pageIndex}
             pageCount={remainderPages}
+          />
+        );
+      }
+
+      // Procesos de Bodega (resumen publicado manualmente).
+      const processSummary = data.processSummary;
+      const processRows = processSummary?.processes || [];
+      const processPageCount = Math.max(
+        1,
+        Math.ceil(Math.max(processRows.length, 1) / PROCESS_SUMMARY_PAGE_SIZE)
+      );
+      for (let pageIndex = 0; pageIndex < processPageCount; pageIndex++) {
+        const processesPage = processRows.slice(
+          pageIndex * PROCESS_SUMMARY_PAGE_SIZE,
+          pageIndex * PROCESS_SUMMARY_PAGE_SIZE + PROCESS_SUMMARY_PAGE_SIZE
+        );
+        nodes.push(
+          <BodegaProcessSummarySlide
+            key={`process-summary-p${pageIndex}`}
+            summary={processSummary}
+            processesPage={processesPage}
+            pageIndex={pageIndex}
+            pageCount={processPageCount}
           />
         );
       }
