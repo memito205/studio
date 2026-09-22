@@ -6,8 +6,8 @@ import {
   createLogisticsAdminTask,
   listLogisticsAdminTasks,
   setLogisticsAdminTaskDone,
-  type LogisticsAdminTask,
 } from "@/app/adminTasksActions";
+import type { LogisticsAdminTask } from "@/lib/adminTasks";
 import { useAuth } from "@/hooks/use-auth-context";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";

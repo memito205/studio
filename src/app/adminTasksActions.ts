@@ -12,23 +12,8 @@ import {
   Timestamp,
   updateDoc,
 } from 'firebase/firestore';
+import { LOGISTICS_ADMIN_TASKS_COL, type LogisticsAdminTask } from '@/lib/adminTasks';
 import { firestore } from '@/services/firebase';
-
-export const LOGISTICS_ADMIN_TASKS_COL = 'logisticsAdminTasks';
-
-export type LogisticsAdminTask = {
-  id: string;
-  title: string;
-  notes?: string;
-  done: boolean;
-  createdAt: string;
-  updatedAt: string;
-  createdByUid: string;
-  createdByName: string;
-  doneAt?: string | null;
-  doneByUid?: string | null;
-  order?: number;
-};
 
 type Actor = { uid: string; name?: string | null };
 
