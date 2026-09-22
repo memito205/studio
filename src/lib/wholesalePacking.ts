@@ -343,3 +343,238 @@ export function orderVsPackedLinesToExcelRows(orderId: string, lines: OrderVsPac
     Estado: r.status,
   }));
 }
+
+const normalizeCargueLabelKey = (id: string) =>
+  String(id || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '')
+    .replace(/'/g, '-')
+    .replace(/_/g, '-');
+
+function coerceLoadedAt(value: unknown): Date | null {
+  if (!value) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === 'object' && value !== null && 'seconds' in value) {
+    const seconds = Number((value as { seconds?: number }).seconds);
+    if (Number.isFinite(seconds)) return new Date(seconds * 1000);
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
+    const d = new Date(value);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+
+export type CargueLoadLookup = {
+  loadedAt: Date | null;
+  shipmentId?: string;
+  truckPlate?: string;
+  driverName?: string;
+};
+
+/** Build labelId → load metadata from open/closed dispatch sessions. */
+export function buildCargueLoadLookup(
+  shipments: Array<{
+    id?: string;
+    truckPlate?: string;
+    driverName?: string;
+    scannedLabels?: Record<string, unknown>;
+    orderIds?: string[];
+  }>
+): Map<string, CargueLoadLookup> {
+  const map = new Map<string, CargueLoadLookup>();
+  for (const shipment of shipments) {
+    const scanned = shipment.scannedLabels || {};
+    for (const [rawLabelId, ts] of Object.entries(scanned)) {
+      const key = normalizeCargueLabelKey(rawLabelId);
+      if (!key) continue;
+      const loadedAt = coerceLoadedAt(ts);
+      const prev = map.get(key);
+      // Keep earliest load time if the same label appears in multiple sessions.
+      if (prev?.loadedAt && loadedAt && prev.loadedAt.getTime() <= loadedAt.getTime()) continue;
+      map.set(key, {
+        loadedAt,
+        shipmentId: shipment.id,
+        truckPlate: shipment.truckPlate,
+        driverName: shipment.driverName,
+      });
+    }
+  }
+  return map;
+}
+
+export type CargueProgressItem = {
+  referencia: string;
+  talla: string;
+  cantidad: number;
+};
+
+export type CargueProgressUnit = {
+  pedido: string;
+  caja: string;
+  etiqueta: string;
+  packingUnitId: string;
+  loaded: boolean;
+  loadedAt: Date | null;
+  shipmentId?: string;
+  truckPlate?: string;
+  driverName?: string;
+  items: CargueProgressItem[];
+  totalQty: number;
+};
+
+export type CargueProgressReport = {
+  expectedBoxes: number;
+  loadedBoxes: number;
+  pendingBoxes: number;
+  loadedUnitsQty: number;
+  pendingUnitsQty: number;
+  units: CargueProgressUnit[];
+};
+
+/**
+ * Progreso de cargue por pedido: cajas esperadas (etiquetas used/dispatched)
+ * vs cargadas (status dispatched o presentes en scannedLabels de un envío).
+ * Funciona mientras el pedido está En Cargue (parcial) o ya Despachado.
+ */
+export function buildCargueProgress(params: {
+  orderId: string;
+  packedItems: PackedItem[];
+  session?: PackingSession | null;
+  labels?: PreprintedLabel[] | null;
+  loadLookup?: Map<string, CargueLoadLookup>;
+}): CargueProgressReport {
+  const { orderId, packedItems, session, labels, loadLookup } = params;
+  const orderLabels = (labels || []).filter((l) => l.orderId === orderId && l.status !== 'void');
+  const expectedLabels = orderLabels.filter((l) => l.status === 'used' || l.status === 'dispatched');
+
+  const unitMeta = new Map<string, UnitMeta>();
+  (session?.units || []).forEach((unit) => {
+    if (!unit?.firestoreId) return;
+    unitMeta.set(unit.firestoreId, {
+      packingUnitId: unit.firestoreId,
+      caja: String(unit.id ?? '-'),
+      etiqueta: String(unit.labelBarcode || ''),
+    });
+  });
+  expectedLabels.forEach((label) => {
+    const unitIdStr = label.unitId != null ? String(label.unitId) : '';
+    const byLabel = (session?.units || []).find(
+      (u) =>
+        (u.labelBarcode && normalizeCargueLabelKey(u.labelBarcode) === normalizeCargueLabelKey(label.id)) ||
+        (unitIdStr && String(u.id) === unitIdStr)
+    );
+    const packingUnitId = byLabel?.firestoreId || '';
+    if (packingUnitId) {
+      const prev = unitMeta.get(packingUnitId);
+      unitMeta.set(packingUnitId, {
+        packingUnitId,
+        caja: prev?.caja || unitIdStr || String(label.unitId ?? '-'),
+        etiqueta: label.id || prev?.etiqueta || '',
+      });
+    }
+  });
+
+  const itemsByUnit = new Map<string, CargueProgressItem[]>();
+  packedItems
+    .filter((p) => p.orderId === orderId)
+    .forEach((pi) => {
+      const packingUnitId = String(pi.packingUnitId || '').trim();
+      if (!packingUnitId) return;
+      const { referencia, talla } = resolvePackedItemRefTalla(pi);
+      const qty = Number(pi.quantity ?? pi.packedQuantity ?? 0);
+      const list = itemsByUnit.get(packingUnitId) || [];
+      const existing = list.find((i) => i.referencia === referencia && i.talla === talla);
+      if (existing) existing.cantidad += qty;
+      else list.push({ referencia: referencia || 'Desconocida', talla: talla || '-', cantidad: qty });
+      itemsByUnit.set(packingUnitId, list);
+    });
+
+  const units: CargueProgressUnit[] = expectedLabels.map((label) => {
+    const labelKey = normalizeCargueLabelKey(label.id);
+    const unitIdStr = label.unitId != null ? String(label.unitId) : '';
+    const byLabel = (session?.units || []).find(
+      (u) =>
+        (u.labelBarcode && normalizeCargueLabelKey(u.labelBarcode) === labelKey) ||
+        (unitIdStr && String(u.id) === unitIdStr)
+    );
+    const packingUnitId = byLabel?.firestoreId || '';
+    const meta = packingUnitId
+      ? unitMeta.get(packingUnitId)
+      : { packingUnitId: '', caja: unitIdStr || '-', etiqueta: label.id };
+    const loadInfo = loadLookup?.get(labelKey);
+    const loaded = label.status === 'dispatched' || !!loadInfo;
+    const items = (packingUnitId ? itemsByUnit.get(packingUnitId) : undefined) || [];
+    const totalQty = items.reduce((s, i) => s + i.cantidad, 0);
+    return {
+      pedido: orderId,
+      caja: meta?.caja || unitIdStr || '-',
+      etiqueta: label.id,
+      packingUnitId: packingUnitId || meta?.packingUnitId || '',
+      loaded,
+      loadedAt: loadInfo?.loadedAt || null,
+      shipmentId: loadInfo?.shipmentId,
+      truckPlate: loadInfo?.truckPlate,
+      driverName: loadInfo?.driverName,
+      items: items.sort((a, b) => {
+        const byRef = a.referencia.localeCompare(b.referencia);
+        if (byRef !== 0) return byRef;
+        return a.talla.localeCompare(b.talla);
+      }),
+      totalQty,
+    };
+  });
+
+  units.sort((a, b) => {
+    if (a.loaded !== b.loaded) return a.loaded ? -1 : 1;
+    return String(a.caja).localeCompare(String(b.caja), undefined, { numeric: true });
+  });
+
+  const loadedBoxes = units.filter((u) => u.loaded).length;
+  const pendingBoxes = units.length - loadedBoxes;
+  return {
+    expectedBoxes: units.length,
+    loadedBoxes,
+    pendingBoxes,
+    loadedUnitsQty: units.filter((u) => u.loaded).reduce((s, u) => s + u.totalQty, 0),
+    pendingUnitsQty: units.filter((u) => !u.loaded).reduce((s, u) => s + u.totalQty, 0),
+    units,
+  };
+}
+
+export function cargueProgressToExcelRows(report: CargueProgressReport) {
+  const rows: Array<Record<string, string | number>> = [];
+  for (const unit of report.units) {
+    const loadedAtStr = unit.loadedAt
+      ? unit.loadedAt.toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'medium' })
+      : '';
+    const base = {
+      Pedido: unit.pedido,
+      Caja: unit.caja,
+      'Etiqueta VXM': unit.etiqueta,
+      Estado: unit.loaded ? 'Cargada' : 'Pendiente',
+      LoadedAt: loadedAtStr,
+      Envío: unit.shipmentId ? String(unit.shipmentId).slice(-6) : '',
+      Placa: unit.truckPlate || '',
+    };
+    if (unit.items.length === 0) {
+      rows.push({
+        ...base,
+        Referencia: '-',
+        Talla: '-',
+        Cantidad: unit.totalQty || 0,
+      });
+    } else {
+      for (const item of unit.items) {
+        rows.push({
+          ...base,
+          Referencia: item.referencia,
+          Talla: item.talla,
+          Cantidad: item.cantidad,
+        });
+      }
+    }
+  }
+  return rows;
+}

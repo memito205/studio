@@ -10,12 +10,18 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ArrowLeft, Loader2, ScanLine, Truck, Check, X, Trash2, AlertTriangle, Package, CheckCircle2, XCircle } from 'lucide-react';
+import { ArrowLeft, Loader2, ScanLine, Truck, Check, X, Trash2, AlertTriangle, Package, CheckCircle2, XCircle, Download } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { DispatchReport } from './DispatchReport';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { cn } from '@/lib/utils';
+import * as XLSX from 'xlsx';
+import {
+  buildCargueLoadLookup,
+  buildCargueProgress,
+  cargueProgressToExcelRows,
+} from '@/lib/wholesalePacking';
 
 interface DispatchScreenProps {
   shipmentId: string;
@@ -405,6 +411,79 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
     setIsProcessing(false);
   };
 
+  /** Excel de progreso mientras el cargue sigue abierto (no cierra el envío). */
+  const handleDownloadCargueProgress = async () => {
+    if (!sessionInfo) return;
+    setIsProcessing(true);
+    try {
+      const orderIds =
+        (sessionInfo.allowedOrderIds && sessionInfo.allowedOrderIds.length > 0
+          ? sessionInfo.allowedOrderIds
+          : sessionInfo.orderIds) || [];
+      const uniqueOrderIds = Array.from(new Set(orderIds));
+      if (uniqueOrderIds.length === 0) {
+        toast({
+          variant: 'destructive',
+          title: 'Sin pedidos',
+          description: 'No hay pedidos asociados a este despacho para reportar.',
+        });
+        return;
+      }
+
+      const loadLookup = buildCargueLoadLookup([sessionInfo]);
+      const allRows: Array<Record<string, string | number>> = [];
+      let loaded = 0;
+      let expected = 0;
+
+      for (const orderId of uniqueOrderIds) {
+        const [labelsRes, itemsRes, sessionRes] = await Promise.all([
+          getLabelsForOrder(orderId),
+          getPackedItemsForOrder(orderId),
+          getPackingSession(orderId),
+        ]);
+        const report = buildCargueProgress({
+          orderId,
+          packedItems: itemsRes.data || [],
+          session: sessionRes.data || null,
+          labels: labelsRes.data || [],
+          loadLookup,
+        });
+        loaded += report.loadedBoxes;
+        expected += report.expectedBoxes;
+        allRows.push(...cargueProgressToExcelRows(report));
+      }
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(allRows), 'Progreso cargue');
+      XLSX.utils.book_append_sheet(
+        wb,
+        XLSX.utils.json_to_sheet([
+          { Concepto: 'Envío', Valor: sessionInfo.id?.slice(-6) || '' },
+          { Concepto: 'Placa', Valor: sessionInfo.truckPlate || '' },
+          { Concepto: 'Conductor', Valor: sessionInfo.driverName || '' },
+          { Concepto: 'Estado envío', Valor: sessionInfo.status },
+          { Concepto: 'Cajas cargadas (sesión)', Valor: Object.keys(sessionInfo.scannedLabels || {}).length },
+          { Concepto: 'Cajas cargadas (pedidos)', Valor: loaded },
+          { Concepto: 'Cajas esperadas (pedidos)', Valor: expected },
+        ]),
+        'Resumen'
+      );
+      XLSX.writeFile(wb, `Progreso_Cargue_Envio_${sessionInfo.id?.slice(-6) || 'Doc'}.xlsx`);
+      toast({
+        title: 'Progreso de cargue descargado',
+        description: `${loaded}/${expected} cajas · ${allRows.length} líneas.`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: 'destructive',
+        title: 'Error al descargar',
+        description: error?.message || 'No se pudo generar el Excel de progreso.',
+      });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   // --- Derived State ---
 
   const scannedLabelsSet = useMemo(() => new Set(Object.keys(sessionInfo?.scannedLabels || {})), [sessionInfo?.scannedLabels]);
@@ -497,9 +576,20 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
             <Progress value={progressPercent} className="h-3" />
           </div>
 
-          <Button onClick={onReturnToDispatchDashboard} variant="outline">
-            <ArrowLeft className="mr-2 h-4 w-4" /> Volver
-          </Button>
+          <div className="flex gap-2 flex-wrap">
+            <Button
+              onClick={() => void handleDownloadCargueProgress()}
+              variant="outline"
+              disabled={isProcessing}
+              title="Descargar progreso de cargue (también con envío abierto)"
+            >
+              <Download className="mr-2 h-4 w-4" />
+              Excel progreso
+            </Button>
+            <Button onClick={onReturnToDispatchDashboard} variant="outline">
+              <ArrowLeft className="mr-2 h-4 w-4" /> Volver
+            </Button>
+          </div>
         </CardHeader>
 
         <CardContent className="space-y-4">

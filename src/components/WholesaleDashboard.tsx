@@ -13,7 +13,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { WholesaleOrder, WholesaleOrderDetail, OrderStatus, ProductDatabaseItem, PackingSession, PreprintedLabel, PackedItem, OperationPulse } from '@/types';
-import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrders, getPackedItemsForDate, getUserPulsesForDay, getGlobalPulsesForDay, loadOperatorMappings, getPackedItemsForOrder, syncWholesaleOrderPackingStatus } from '@/app/actions';
+import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrders, getPackedItemsForDate, getUserPulsesForDay, getGlobalPulsesForDay, loadOperatorMappings, getPackedItemsForOrder, syncWholesaleOrderPackingStatus, getShipments } from '@/app/actions';
 import {
   computeWholesalePackingTotals,
   buildBoxAuditLines,
@@ -21,12 +21,16 @@ import {
   buildOrderVsPackedLines,
   orderVsPackedLinesToExcelRows,
   resolveWholesaleOrderStatus,
+  buildCargueLoadLookup,
+  buildCargueProgress,
+  cargueProgressToExcelRows,
 } from '@/lib/wholesalePacking';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
 import { exportToXlsx } from '@/services/export';
 import { LabelPrintDialog } from './LabelPrintDialog';
 import { OrderAuditDialog } from './OrderAuditDialog';
+import { CargueProgressDialog } from './CargueProgressDialog';
 import { excelSerialDateToJSDate } from '@/lib/parsingUtils';
 import { Checkbox } from './ui/checkbox';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
@@ -55,8 +59,10 @@ const OrderTable: React.FC<{
   onDownloadComparisonReport: (order: WholesaleOrder) => void;
   onDownloadBoxAuditReport: (order: WholesaleOrder) => void;
   onForceDispatchOrder: (order: WholesaleOrder) => void;
+  onOpenCargueProgress: (order: WholesaleOrder) => void;
+  onDownloadCargueReport: (order: WholesaleOrder) => void;
   role: string | null;
-}> = ({ orders, sessions, allPackedItems, selectedOrders, onOrderSelect, onStartPacking, onOpenPrintDialog, onForceCloseOrder, onOpenAuditDialog, onDownloadComparisonReport, onDownloadBoxAuditReport, onForceDispatchOrder, role }) => {
+}> = ({ orders, sessions, allPackedItems, selectedOrders, onOrderSelect, onStartPacking, onOpenPrintDialog, onForceCloseOrder, onOpenAuditDialog, onDownloadComparisonReport, onDownloadBoxAuditReport, onForceDispatchOrder, onOpenCargueProgress, onDownloadCargueReport, role }) => {
     
   if (orders.length === 0) {
     return <p className="text-muted-foreground text-center py-8">No hay pedidos en esta etapa.</p>;
@@ -172,6 +178,30 @@ const OrderTable: React.FC<{
                                     </AlertDialogContent>
                                 </AlertDialog>
                             )}
+                            {(order.status === 'En Cargue' || order.status === 'Despachado') && (role === 'admin' || role === 'supervisor') && (
+                                <>
+                                  <Button
+                                    onClick={() => onOpenCargueProgress(order)}
+                                    size="sm"
+                                    variant="outline"
+                                    className="mr-2 border-amber-300 text-amber-800 hover:bg-amber-50"
+                                    title="Progreso de cargue (cajas cargadas vs pendientes)"
+                                  >
+                                    <Truck className="mr-2 h-4 w-4" />
+                                    Ver cargue
+                                  </Button>
+                                  <Button
+                                    onClick={() => onDownloadCargueReport(order)}
+                                    size="sm"
+                                    variant="outline"
+                                    className="mr-2"
+                                    title="Excel progreso de cargue"
+                                  >
+                                    <Download className="mr-2 h-4 w-4" />
+                                    Excel cargue
+                                  </Button>
+                                </>
+                            )}
                             <Button onClick={() => onOpenAuditDialog(order)} size="sm" variant="outline" className="mr-2 border-primary/20 hover:bg-primary/10">
                                 <FileSearch className="mr-2 h-4 w-4" />
                                 Auditar
@@ -227,6 +257,8 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
   const [orderForPrinting, setOrderForPrinting] = useState<WholesaleOrder | null>(null);
   const [isAuditDialogOpen, setIsAuditDialogOpen] = useState(false);
   const [orderForAuditing, setOrderForAuditing] = useState<WholesaleOrder | null>(null);
+  const [isCargueDialogOpen, setIsCargueDialogOpen] = useState(false);
+  const [orderForCargue, setOrderForCargue] = useState<WholesaleOrder | null>(null);
   const [allPackedItems, setAllPackedItems] = useState<PackedItem[]>([]);
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [isProductivityDialogOpen, setIsProductivityDialogOpen] = useState(false);
@@ -258,6 +290,55 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
     setOrderForAuditing(order);
     setIsAuditDialogOpen(true);
   };
+
+  const handleOpenCargueProgress = (order: WholesaleOrder) => {
+    setOrderForCargue(order);
+    setIsCargueDialogOpen(true);
+  };
+
+  /** Excel de progreso de cargue (cajas cargadas/pendientes + refs). No altera Pedido vs leído ni Auditoría cajas. */
+  const handleDownloadCargueReport = async (order: WholesaleOrder) => {
+    try {
+      const [itemsRes, sessionRes, labelsRes, shipmentsRes] = await Promise.all([
+        getPackedItemsForOrder(order.id),
+        getPackingSession(order.id),
+        getLabelsForOrder(order.id),
+        getShipments(),
+      ]);
+      const loadLookup = buildCargueLoadLookup(shipmentsRes.data || []);
+      const report = buildCargueProgress({
+        orderId: order.id,
+        packedItems: itemsRes.data || [],
+        session: sessionRes.data || null,
+        labels: labelsRes.data || [],
+        loadLookup,
+      });
+      const detailRows = cargueProgressToExcelRows(report);
+      const summaryRows = [
+        { Concepto: 'Cajas esperadas', Cantidad: report.expectedBoxes },
+        { Concepto: 'Cajas cargadas', Cantidad: report.loadedBoxes },
+        { Concepto: 'Cajas pendientes', Cantidad: report.pendingBoxes },
+        { Concepto: 'Unds en cajas cargadas', Cantidad: report.loadedUnitsQty },
+        { Concepto: 'Unds en cajas pendientes', Cantidad: report.pendingUnitsQty },
+        { Concepto: 'Estado pedido', Cantidad: order.status },
+      ];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detailRows), 'Progreso cargue');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), 'Resumen');
+      XLSX.writeFile(wb, `Progreso_Cargue_${order.id}.xlsx`);
+      toast({
+        title: 'Progreso de cargue descargado',
+        description: `${report.loadedBoxes}/${report.expectedBoxes} cajas · ${detailRows.length} líneas.`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: 'destructive',
+        title: 'Error al descargar',
+        description: error?.message || 'No se pudo generar el reporte de cargue.',
+      });
+    }
+  };
+
   const handleOrderSelect = (orderId: string, isSelected: boolean) => {
     setSelectedOrders(prev => {
         const newSelection = new Set(prev);
@@ -514,6 +595,13 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
             order={orderForAuditing}
         />
       )}
+      {orderForCargue && (
+        <CargueProgressDialog
+            isOpen={isCargueDialogOpen}
+            onOpenChange={setIsCargueDialogOpen}
+            order={orderForCargue}
+        />
+      )}
       <div className="flex justify-between items-center flex-wrap gap-4">
           <div className="flex-1">
               <h1 className="text-2xl font-bold">Módulo de Ventas por Mayor</h1>
@@ -580,22 +668,22 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
                 <TabsTrigger value="Cancelado">Cancelado ({ordersByStatus['Cancelado']?.length || 0})</TabsTrigger>
               </TabsList>
               <TabsContent value="Pte Empaque" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Pte Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} role={role} />
+                  <OrderTable orders={ordersByStatus['Pte Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} role={role} />
               </TabsContent>
               <TabsContent value="En Empaque" className="mt-4">
-                  <OrderTable orders={ordersByStatus['En Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} role={role} />
+                  <OrderTable orders={ordersByStatus['En Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} role={role} />
               </TabsContent>
               <TabsContent value="Empacado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Empacado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} role={role} />
+                  <OrderTable orders={ordersByStatus['Empacado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} role={role} />
               </TabsContent>
               <TabsContent value="En Cargue" className="mt-4">
-                  <OrderTable orders={ordersByStatus['En Cargue'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} role={role} />
+                  <OrderTable orders={ordersByStatus['En Cargue'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} role={role} />
               </TabsContent>
               <TabsContent value="Despachado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Despachado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} role={role} />
+                  <OrderTable orders={ordersByStatus['Despachado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} role={role} />
               </TabsContent>
                <TabsContent value="Cancelado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Cancelado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} role={role} />
+                  <OrderTable orders={ordersByStatus['Cancelado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} role={role} />
               </TabsContent>
             </Tabs>
           )}
