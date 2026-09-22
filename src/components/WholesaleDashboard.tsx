@@ -14,7 +14,14 @@ import { useAuth } from '@/hooks/use-auth-context';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { WholesaleOrder, WholesaleOrderDetail, OrderStatus, ProductDatabaseItem, PackingSession, PreprintedLabel, PackedItem, OperationPulse } from '@/types';
 import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrders, getPackedItemsForDate, getUserPulsesForDay, getGlobalPulsesForDay, loadOperatorMappings, getPackedItemsForOrder, syncWholesaleOrderPackingStatus } from '@/app/actions';
-import { computeWholesalePackingTotals, buildBoxAuditLines, boxAuditLinesToExcelRows, resolveWholesaleOrderStatus } from '@/lib/wholesalePacking';
+import {
+  computeWholesalePackingTotals,
+  buildBoxAuditLines,
+  boxAuditLinesToExcelRows,
+  buildOrderVsPackedLines,
+  orderVsPackedLinesToExcelRows,
+  resolveWholesaleOrderStatus,
+} from '@/lib/wholesalePacking';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
 import { exportToXlsx } from '@/services/export';
@@ -46,9 +53,10 @@ const OrderTable: React.FC<{
   onForceCloseOrder: (order: WholesaleOrder) => void;
   onOpenAuditDialog: (order: WholesaleOrder) => void;
   onDownloadComparisonReport: (order: WholesaleOrder) => void;
+  onDownloadBoxAuditReport: (order: WholesaleOrder) => void;
   onForceDispatchOrder: (order: WholesaleOrder) => void;
   role: string | null;
-}> = ({ orders, sessions, allPackedItems, selectedOrders, onOrderSelect, onStartPacking, onOpenPrintDialog, onForceCloseOrder, onOpenAuditDialog, onDownloadComparisonReport, onForceDispatchOrder, role }) => {
+}> = ({ orders, sessions, allPackedItems, selectedOrders, onOrderSelect, onStartPacking, onOpenPrintDialog, onForceCloseOrder, onOpenAuditDialog, onDownloadComparisonReport, onDownloadBoxAuditReport, onForceDispatchOrder, role }) => {
     
   if (orders.length === 0) {
     return <p className="text-muted-foreground text-center py-8">No hay pedidos en esta etapa.</p>;
@@ -168,11 +176,17 @@ const OrderTable: React.FC<{
                                 <FileSearch className="mr-2 h-4 w-4" />
                                 Auditar
                             </Button>
-                            {(order.status === 'Empacado' || order.status === 'En Cargue' || order.status === 'Despachado' || order.status === 'En Empaque') && (
-                                <Button onClick={() => onDownloadComparisonReport(order)} size="sm" variant="outline" className="mr-2">
-                                    <Download className="mr-2 h-4 w-4" />
-                                    Reporte cajas
-                                </Button>
+                            {(order.status === 'Empacado' || order.status === 'En Empaque' || order.status === 'En Cargue' || order.status === 'Despachado') && (
+                                <>
+                                  <Button onClick={() => onDownloadComparisonReport(order)} size="sm" variant="outline" className="mr-2" title="Pedido vs leído (ref / talla)">
+                                      <Download className="mr-2 h-4 w-4" />
+                                      Pedido vs leído
+                                  </Button>
+                                  <Button onClick={() => onDownloadBoxAuditReport(order)} size="sm" variant="outline" className="mr-2" title="Auditoría por caja">
+                                      <Download className="mr-2 h-4 w-4" />
+                                      Reporte cajas
+                                  </Button>
+                                </>
                             )}
                             <Button onClick={() => onOpenPrintDialog(order)} size="sm" variant="outline">
                                 <Printer className="mr-2 h-4 w-4" />
@@ -387,7 +401,26 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
     }
   };
 
+  /** Pedido vs leído/empacado por referencia + talla (cantidades generales). */
   const handleDownloadComparisonReport = async (order: WholesaleOrder) => {
+    try {
+      const itemsRes = await getPackedItemsForOrder(order.id);
+      const packedItemsForOrder = itemsRes.data || allPackedItems.filter((p) => p.orderId === order.id);
+      const lines = buildOrderVsPackedLines(order, packedItemsForOrder);
+      const rows = orderVsPackedLinesToExcelRows(order.id, lines);
+      exportToXlsx(rows, `Relacion_Pedido_vs_Empaque_${order.id}`);
+      const totals = computeWholesalePackingTotals(order, packedItemsForOrder);
+      toast({
+        title: 'Pedido vs leído descargado',
+        description: `Pedido ${totals.orderTotal} · Leído ${totals.packedTotal} · ${lines.length} líneas (ref/talla).`,
+      });
+    } catch (error: any) {
+      toast({ variant: 'destructive', title: 'Error al descargar', description: error?.message || 'No se pudo generar el reporte pedido vs leído.' });
+    }
+  };
+
+  /** Auditoría por caja (Excel intacto; también disponible en Auditar). */
+  const handleDownloadBoxAuditReport = async (order: WholesaleOrder) => {
     try {
       const [itemsRes, sessionRes, labelsRes] = await Promise.all([
         getPackedItemsForOrder(order.id),
@@ -414,11 +447,11 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), 'Totales');
       XLSX.writeFile(wb, `Auditoria_Cajas_${order.id}.xlsx`);
       toast({
-        title: 'Reporte descargado',
+        title: 'Reporte de cajas descargado',
         description: `Pedido ${totals.orderTotal} · Empacado ${totals.packedTotal} · ${lines.length} líneas.`,
       });
     } catch (error: any) {
-      toast({ variant: 'destructive', title: 'Error al descargar', description: error?.message || 'No se pudo generar el reporte.' });
+      toast({ variant: 'destructive', title: 'Error al descargar', description: error?.message || 'No se pudo generar el reporte de cajas.' });
     }
   };
 
@@ -547,22 +580,22 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
                 <TabsTrigger value="Cancelado">Cancelado ({ordersByStatus['Cancelado']?.length || 0})</TabsTrigger>
               </TabsList>
               <TabsContent value="Pte Empaque" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Pte Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onForceDispatchOrder={handleForceDispatch} role={role} />
+                  <OrderTable orders={ordersByStatus['Pte Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} role={role} />
               </TabsContent>
               <TabsContent value="En Empaque" className="mt-4">
-                  <OrderTable orders={ordersByStatus['En Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onForceDispatchOrder={handleForceDispatch} role={role} />
+                  <OrderTable orders={ordersByStatus['En Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} role={role} />
               </TabsContent>
               <TabsContent value="Empacado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Empacado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onForceDispatchOrder={handleForceDispatch} role={role} />
+                  <OrderTable orders={ordersByStatus['Empacado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} role={role} />
               </TabsContent>
               <TabsContent value="En Cargue" className="mt-4">
-                  <OrderTable orders={ordersByStatus['En Cargue'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onForceDispatchOrder={handleForceDispatch} role={role} />
+                  <OrderTable orders={ordersByStatus['En Cargue'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} role={role} />
               </TabsContent>
               <TabsContent value="Despachado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Despachado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onForceDispatchOrder={handleForceDispatch} role={role} />
+                  <OrderTable orders={ordersByStatus['Despachado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} role={role} />
               </TabsContent>
                <TabsContent value="Cancelado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Cancelado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onForceDispatchOrder={handleForceDispatch} role={role} />
+                  <OrderTable orders={ordersByStatus['Cancelado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} role={role} />
               </TabsContent>
             </Tabs>
           )}

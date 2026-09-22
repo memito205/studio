@@ -37,6 +37,7 @@ import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { exportToXlsx } from '@/services/export';
+import { buildOrderVsPackedLines, orderVsPackedLinesToExcelRows } from '@/lib/wholesalePacking';
 import { useToast } from '@/hooks/use-toast';
 import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious } from '@/components/ui/carousel';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -1298,68 +1299,37 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
 
     const handleExport = (type: 'general' | 'detailed') => {
-        const packedByRefTalla = globalPackingProgress; // Use global progress
-        const packedRefs = new Set<string>();
-        Object.keys(packedByRefTalla).forEach(key => packedRefs.add(parseItemKey(key).reference));
-    
-        const dataToExport = Array.from(packedRefs).map(ref => {
-            const orderedTotal = packingOrder.order.details
-                .filter(d => (d.referencia || '').toString().trim() === ref)
-                .reduce((sum, d) => sum + d.cantidad, 0);
-            
-            const packedTotal = Object.entries(packedByRefTalla)
-                .filter(([key]) => key.startsWith(`${ref}-`))
-                .reduce((sum, [, qty]) => sum + qty, 0);
-    
-            return {
-                'Referencia': ref,
-                'Pedido': orderedTotal,
-                'Leido (Total)': packedTotal,
-            };
-        });
-    
+        const lines = buildOrderVsPackedLines(packingOrder.order, allPackedItems);
+
         if (type === 'general') {
+            const byRef = new Map<string, { Pedido: number; 'Leido (Total)': number }>();
+            lines.forEach((l) => {
+                const prev = byRef.get(l.referencia) || { Pedido: 0, 'Leido (Total)': 0 };
+                prev.Pedido += l.ordered;
+                prev['Leido (Total)'] += l.packed;
+                byRef.set(l.referencia, prev);
+            });
+            const dataToExport = Array.from(byRef.entries())
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([ref, totals]) => ({
+                    Referencia: ref,
+                    Pedido: totals.Pedido,
+                    'Leido (Total)': totals['Leido (Total)'],
+                }));
             exportToXlsx(dataToExport, `Reporte_General_Pedido_${packingOrder.order.id}`);
-        } else { // detailed
-            const detailedData = [];
-            for (const refData of dataToExport) {
-                const ref = refData.Referencia;
-                const detailsForRef = packingOrder.order.details.filter(d => (d.referencia || '').toString().trim() === ref);
-                const exportedTallas = new Set<string>();
-                for (const detail of detailsForRef) {
-                    const talla = (detail.talla || '').toString().trim();
-                    const itemKey = createItemKey(ref, talla);
-                    const packedQty = packedByRefTalla[itemKey] || 0;
-                    const diff = packedQty - detail.cantidad;
-                    exportedTallas.add(talla);
-                    detailedData.push({
-                        'Referencia': ref,
-                        'Talla': talla,
-                        'Item': detail.item,
-                        'Pedido': detail.cantidad,
-                        'Leido': packedQty,
-                        'Diferencia': diff,
-                        'Estado': diff === 0 ? 'Completo' : diff > 0 ? 'Sobrante' : 'Faltante',
-                    });
-                }
-                Object.entries(packedByRefTalla)
-                    .filter(([key]) => parseItemKey(key).reference === ref)
-                    .forEach(([key, packedQty]) => {
-                        const { talla } = parseItemKey(key);
-                        const tallaKey = talla || '';
-                        if (exportedTallas.has(tallaKey)) return;
-                        detailedData.push({
-                            'Referencia': ref,
-                            'Talla': tallaKey,
-                            'Item': detailsForRef[0]?.item || '',
-                            'Pedido': 0,
-                            'Leido': packedQty,
-                            'Diferencia': packedQty,
-                            'Estado': 'Sobrante',
-                        });
-                    });
-            }
-             exportToXlsx(detailedData, `Reporte_Detallado_Pedido_${packingOrder.order.id}`);
+        } else {
+            exportToXlsx(
+                orderVsPackedLinesToExcelRows(packingOrder.order.id, lines).map((r) => ({
+                    Referencia: r.Referencia,
+                    Talla: r.Talla,
+                    Item: r.Item,
+                    Pedido: r['Cantidad Pedido'],
+                    Leido: r['Cantidad Leída'],
+                    Diferencia: r.Diferencia,
+                    Estado: r.Estado,
+                })),
+                `Reporte_Detallado_Pedido_${packingOrder.order.id}`
+            );
         }
 
         toast({

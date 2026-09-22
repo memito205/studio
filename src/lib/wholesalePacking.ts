@@ -260,3 +260,86 @@ export function boxAuditLinesToExcelRows(lines: BoxAuditLine[]) {
     Cantidad: l.cantidad,
   }));
 }
+
+/** Línea de comparación pedido (orden) vs leído/empacado, por referencia+talla. */
+export type OrderVsPackedLine = {
+  referencia: string;
+  talla: string;
+  item: string;
+  ordered: number;
+  packed: number;
+  difference: number;
+  status: 'Completo' | 'Sobrante' | 'Faltante';
+};
+
+/**
+ * Relación pedido vs empacado (cantidades generales por ref/talla).
+ * Incluye faltantes (ordered>0, packed=0) y sobrantes no pedidos.
+ */
+export function buildOrderVsPackedLines(
+  order: Pick<WholesaleOrder, 'id' | 'details'> | null | undefined,
+  packedItems: PackedItem[]
+): OrderVsPackedLine[] {
+  type Acc = { referencia: string; talla: string; item: string; ordered: number; packed: number };
+  const byKey = new Map<string, Acc>();
+  const makeKey = (referencia: string, talla: string) => `${referencia}||${talla}`;
+
+  (order?.details || []).forEach((d) => {
+    const referencia = String(d.referencia || '').trim();
+    const talla = String(d.talla || '').trim();
+    const item = String(d.item || '').trim();
+    const key = makeKey(referencia, talla);
+    const prev = byKey.get(key);
+    if (prev) {
+      prev.ordered += Number(d.cantidad || 0);
+      if (!prev.item && item) prev.item = item;
+    } else {
+      byKey.set(key, { referencia, talla, item, ordered: Number(d.cantidad || 0), packed: 0 });
+    }
+  });
+
+  packedItems.forEach((p) => {
+    const { referencia, talla } = resolvePackedItemRefTalla(p);
+    const key = makeKey(referencia, talla);
+    const qty = Number(p.quantity ?? p.packedQuantity ?? 0);
+    const prev = byKey.get(key);
+    if (prev) {
+      prev.packed += qty;
+    } else {
+      const item = String((p.item as { item?: string } | undefined)?.item || '').trim();
+      byKey.set(key, { referencia: referencia || 'Desconocida', talla, item, ordered: 0, packed: qty });
+    }
+  });
+
+  return Array.from(byKey.values())
+    .sort((a, b) => {
+      const byRef = a.referencia.localeCompare(b.referencia);
+      if (byRef !== 0) return byRef;
+      return a.talla.localeCompare(b.talla);
+    })
+    .map((r) => {
+      const difference = r.packed - r.ordered;
+      return {
+        referencia: r.referencia || '-',
+        talla: r.talla || '-',
+        item: r.item || '-',
+        ordered: r.ordered,
+        packed: r.packed,
+        difference,
+        status: (difference === 0 ? 'Completo' : difference > 0 ? 'Sobrante' : 'Faltante') as OrderVsPackedLine['status'],
+      };
+    });
+}
+
+export function orderVsPackedLinesToExcelRows(orderId: string, lines: OrderVsPackedLine[]) {
+  return lines.map((r) => ({
+    Pedido: orderId,
+    Referencia: r.referencia,
+    Talla: r.talla,
+    Item: r.item,
+    'Cantidad Pedido': r.ordered,
+    'Cantidad Leída': r.packed,
+    Diferencia: r.difference,
+    Estado: r.status,
+  }));
+}
