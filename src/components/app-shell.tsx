@@ -8,6 +8,7 @@ import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { PulseDialog } from './PulseDialog';
 import { Badge } from './ui/badge';
 import { Coffee, Play, Clock } from 'lucide-react';
+import { AdminTasksPopup } from './AdminTasksPopup';
 
 interface AppShellProps {
   title: string;
@@ -108,6 +109,8 @@ export const AppShell: React.FC<AppShellProps> = ({ title, children }) => {
             setIsDialogOpen(false);
         }}
       />
+
+      <AdminTasksPopup />
 
       <footer className="text-center py-6 text-sm text-muted-foreground border-t mt-8">
         <p>&copy; {new Date().getFullYear()} Nexus Operativo. Todos los derechos reservados.</p>
