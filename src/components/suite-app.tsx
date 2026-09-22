@@ -8,9 +8,10 @@ import dynamic from 'next/dynamic';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import type { ProcessedReportData, ProductivityGoals, BrandProductTypeGoals, ManualProductClassifications, ManualJustifications, ManualJustificationsUpdate, ReferenceCorrections, UniqueReference, ReportConfiguration, ManualOperatorMappings, IncidentLogEntry, ChatMessage, SmartAlert, ActionPlan, Annotations, TaggedReport, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, PackingUnit, PackingSession, AppStep, ReceptionOperation, JustificationType, DiscardedRecord, RemisionEntry, DeadTimeEntry, ReportSummary, CreditCalculationResult, DispatchSessionInfo, RouteEntry, TransferEntry, EcommerceOrder, DelayedOrderLog, OperationPulse, ReferenceGoals } from '@/types';
+import { DEFAULT_PACKING_PRODUCTIVITY_GOAL } from '@/types';
 import { processReport, getSanitizedData, extractUniqueReferences, extractPackersFromReport, preProcessDeadTimes, classifyProduct, buildProductLookupMap, enrichEntryFromCatalog, buildPersistedPulseJustifications } from '@/services/reportProcessor';
 import { normalizeBarcode } from '@/lib/parsingUtils';
-import { handleExecutiveSummary, handleRootCauseAnalysis, handleGenerateSmartAlerts, handleGetJustificationSuggestions, saveReportToHistory, loadHistoricalReports, updateOrderStatus, savePackingSession, loadWholesaleOrders, getPackingSession, loadAllPackingSessions, consolidateDailyReports, previewConsolidatedReport, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, loadFullReportSnapshots, loadOperatorMappings, saveJustificationsForDay, loadJustificationsByDate, getPulsesByDate } from '@/app/actions';
+import { handleExecutiveSummary, handleRootCauseAnalysis, handleGenerateSmartAlerts, handleGetJustificationSuggestions, saveReportToHistory, loadHistoricalReports, updateOrderStatus, savePackingSession, loadWholesaleOrders, getPackingSession, loadAllPackingSessions, consolidateDailyReports, previewConsolidatedReport, addPackedItem, getPackedItemsForOrder, deletePackedItem, updatePackedItem, createPackingUnit, loadFullReportSnapshots, loadOperatorMappings, saveJustificationsForDay, loadJustificationsByDate, getPulsesByDate, getPackingSettings } from '@/app/actions';
 import { getProductsByBarcodes } from '@/app/reception/actions';
 import { Loader2, AlertTriangle } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -129,8 +130,8 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string>('');
   
-  // General Settings
-  const [packingGoal, setPackingGoal] = useState<number>(70);
+  // General Settings — meta compartida con Bodega Live (persistida en settings/packing)
+  const [packingGoal, setPackingGoal] = useState<number>(DEFAULT_PACKING_PRODUCTIVITY_GOAL);
 
 
   // Wholesale & Packing State
@@ -240,6 +241,21 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
     } catch(e) {
         console.error("Error loading data from localStorage", e);
     }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const result = await getPackingSettings();
+      if (cancelled || !result.success) return;
+      const goal = result.data?.productivityGoal;
+      if (typeof goal === 'number' && Number.isFinite(goal) && goal > 0) {
+        setPackingGoal(goal);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {

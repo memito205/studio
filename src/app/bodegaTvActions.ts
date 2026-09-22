@@ -5,12 +5,14 @@ import {
   getGlobalPulsesForDay,
   getPackedItemsForDate,
   getPackedItemsForOrders,
+  getPackingSettings,
   getUserPulsesForUserDay,
   loadAllPackingSessions,
   loadHistoricalReports,
   loadOperatorMappings,
   loadWholesaleOrders,
 } from '@/app/actions';
+import { DEFAULT_PACKING_PRODUCTIVITY_GOAL } from '@/types';
 import { computeWholesalePackingTotals } from '@/lib/wholesalePacking';
 import { listTalladoDashboard } from '@/app/talladoMercanciaActions';
 import {
@@ -394,9 +396,6 @@ function emptyArea(key: BodegaTvAreaKey, title: string): BodegaTvAreaSnapshot {
     packingOrders: key === 'ventas_mayor' ? [] : undefined,
   };
 }
-
-/** Meta u/h por defecto del módulo Ventas x Mayor (PackingScreen / GeneralSettings). */
-const VENTAS_MAYOR_PACKING_GOAL = 70;
 
 /**
  * Recursos únicos: personas identificadas sin repetir + cupo anónimo de tallado
@@ -992,7 +991,7 @@ function tsToMs(value: unknown): number {
 /**
  * Productividad del módulo Ventas por mayor (packedItems + pausas wholesale).
  * Misma base que el reporte de productividad del dashboard mayorista.
- * Cumpl. % = U/H vs meta de empaque en vivo (default 70, igual PackingScreen).
+ * Cumpl. % = U/H vs meta de empaque en vivo (settings/packing, fallback 70).
  * packingOrders: pedidos En Empaque con avance canónico packed/total.
  */
 async function buildVentasMayor(
@@ -1002,13 +1001,22 @@ async function buildVentasMayor(
 ): Promise<BodegaTvAreaSnapshot> {
   const area = emptyArea('ventas_mayor', 'Ventas x Mayor');
   try {
-    const [itemsRes, sessionsRes, mappingsRes, globalPulsesRes, ordersRes] = await Promise.all([
-      getPackedItemsForDate(dayKey),
-      loadAllPackingSessions(),
-      loadOperatorMappings(),
-      getGlobalPulsesForDay(dayKey),
-      loadWholesaleOrders(),
-    ]);
+    const [itemsRes, sessionsRes, mappingsRes, globalPulsesRes, ordersRes, packingSettingsRes] =
+      await Promise.all([
+        getPackedItemsForDate(dayKey),
+        loadAllPackingSessions(),
+        loadOperatorMappings(),
+        getGlobalPulsesForDay(dayKey),
+        loadWholesaleOrders(),
+        getPackingSettings(),
+      ]);
+
+    const packingGoalRaw = Number(packingSettingsRes.data?.productivityGoal);
+    const packingGoal =
+      Number.isFinite(packingGoalRaw) && packingGoalRaw > 0
+        ? packingGoalRaw
+        : DEFAULT_PACKING_PRODUCTIVITY_GOAL;
+    area.extras = [{ label: 'Meta U/H', value: String(packingGoal) }];
 
     // Pedidos En Empaque (progreso live), independiente de productividad del día.
     const packingInProgress = (ordersRes.data || []).filter((o) => o.status === 'En Empaque');
@@ -1054,6 +1062,7 @@ async function buildVentasMayor(
     if (itemsRes.error || !items.length) {
       area.extras = [
         { label: 'En Empaque', value: String(area.packingOrders?.length || 0) },
+        { label: 'Meta U/H', value: String(packingGoal) },
         { label: 'Fuente', value: 'Módulo Ventas x Mayor' },
       ];
       return area;
@@ -1065,7 +1074,6 @@ async function buildVentasMayor(
     const dayStart = new Date(`${dayKey}T00:00:00`).getTime();
     const dayEnd = new Date(`${dayKey}T23:59:59.999`).getTime();
     const nowMs = Date.now();
-    const packingGoal = VENTAS_MAYOR_PACKING_GOAL;
 
     const packerMap = new Map<
       string,

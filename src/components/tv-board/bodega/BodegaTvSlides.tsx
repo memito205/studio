@@ -585,6 +585,7 @@ export function BodegaVentasMayorPackingSlide({
 }) {
   const Icon = AREA_ICON.ventas_mayor;
   const allOrders = area.packingOrders || [];
+  const metaUh = (area.extras || []).find((ex) => ex.label === 'Meta U/H')?.value;
 
   return (
     <div className="w-full h-full flex flex-col min-h-0 max-md:h-auto">
@@ -600,6 +601,7 @@ export function BodegaVentasMayorPackingSlide({
           </div>
           <p className="text-[1em] text-slate-400 font-semibold">
             Pedidos En Empaque · avance packed / total
+            {metaUh ? ` · Meta: ${metaUh} U/H` : ''}
             {pageCount > 1 ? ` · página ${pageIndex + 1}/${pageCount}` : ''}
           </p>
         </div>

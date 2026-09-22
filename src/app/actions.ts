@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DeliveryManifestDraft, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem } from "@/types";
+import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, PackingSettings, DEFAULT_PACKING_PRODUCTIVITY_GOAL, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DeliveryManifestDraft, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -1976,6 +1976,61 @@ export async function updateProductivitySettings(settings: Omit<ProductivitySett
         return { success: true };
     } catch (error: any) {
         return { success: false, error: `Failed to update settings: ${error.message}` };
+    }
+}
+
+export async function getPackingSettings(): Promise<{
+    success: boolean;
+    data?: PackingSettings | null;
+    error?: string;
+}> {
+    try {
+        const settingsRef = doc(firestore, 'settings', 'packing');
+        const docSnap = await getDoc(settingsRef);
+        if (docSnap.exists()) {
+            const raw = docSnap.data() as Partial<PackingSettings>;
+            const goal = Number(raw.productivityGoal);
+            return {
+                success: true,
+                data: {
+                    id: docSnap.id,
+                    productivityGoal:
+                        Number.isFinite(goal) && goal > 0 ? goal : DEFAULT_PACKING_PRODUCTIVITY_GOAL,
+                    updatedAt: raw.updatedAt,
+                },
+            };
+        }
+        return {
+            success: true,
+            data: {
+                id: 'packing',
+                productivityGoal: DEFAULT_PACKING_PRODUCTIVITY_GOAL,
+            },
+        };
+    } catch (error: any) {
+        return { success: false, error: `Failed to load packing settings: ${error.message}` };
+    }
+}
+
+export async function updatePackingSettings(
+    settings: Pick<PackingSettings, 'productivityGoal'>
+): Promise<{ success: boolean; error?: string }> {
+    try {
+        const goal = Number(settings.productivityGoal);
+        if (!Number.isFinite(goal) || goal < 0) {
+            return { success: false, error: 'La meta de productividad debe ser un número válido (≥ 0).' };
+        }
+        await setDoc(
+            doc(firestore, 'settings', 'packing'),
+            {
+                productivityGoal: goal,
+                updatedAt: new Date().toISOString(),
+            },
+            { merge: true }
+        );
+        return { success: true };
+    } catch (error: any) {
+        return { success: false, error: `Failed to update packing settings: ${error.message}` };
     }
 }
 

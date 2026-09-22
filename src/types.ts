@@ -1955,6 +1955,17 @@ export interface ProductivitySettings {
     };
 }
 
+/** Meta u/h por defecto del módulo de empaque en vivo (PackingScreen / Bodega Live Ventas x Mayor). */
+export const DEFAULT_PACKING_PRODUCTIVITY_GOAL = 70;
+
+/** `settings/packing` — meta compartida entre Configuración General, PackingScreen y Bodega Live. */
+export interface PackingSettings {
+    id: string;
+    /** Unidades por hora objetivo para Cumpl. % en empaque / Ventas x Mayor. */
+    productivityGoal: number;
+    updatedAt?: string;
+}
+
 
 export interface ActivityLog {
   id?: string;
