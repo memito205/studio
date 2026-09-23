@@ -223,6 +223,10 @@ export interface ObservationSummary {
   deltaCalidad?: number;
   deltaRemision?: number;
   hasDeltas?: boolean;
+  /** Solo UI de revisión día anterior; no se publica a Bodega Live. */
+  matchMethod?: 'exact' | 'fuzzy' | 'quantity' | 'manual';
+  matchedPreviousLabel?: string;
+  matchedPreviousId?: string;
 }
 
 export interface PendingGoodsItem {
