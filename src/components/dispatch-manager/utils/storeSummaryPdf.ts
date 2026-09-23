@@ -101,12 +101,20 @@ export function buildStoreSummaries(rows: StoreSummarySourceRow[]): StoreSummary
     .filter((s) => s.totalDocs > 0);
 }
 
+export type StoreSummaryZipVariant = 'planned' | 'actual';
+
+const ZIP_VARIANT_LABEL: Record<StoreSummaryZipVariant, string> = {
+  planned: 'ZIP planificado',
+  actual: 'ZIP real / cerrado',
+};
+
 function createStorePdf(
   summary: StoreSummary,
-  meta?: { sessionName?: string; generatedAt?: Date }
+  meta?: { sessionName?: string; generatedAt?: Date; variant?: StoreSummaryZipVariant }
 ): jsPDF {
   const doc = new jsPDF();
   const generatedAt = meta?.generatedAt || new Date();
+  const variant = meta?.variant || 'planned';
   let y = 18;
 
   doc.setFontSize(14);
@@ -116,6 +124,8 @@ function createStorePdf(
 
   doc.setFontSize(10);
   doc.setFont('helvetica', 'normal');
+  doc.text(`Tipo: ${ZIP_VARIANT_LABEL[variant]}`, 14, y);
+  y += 5;
   if (meta?.sessionName) {
     doc.text(`Sesión: ${meta.sessionName}`, 14, y);
     y += 5;
@@ -200,29 +210,42 @@ export function verificationItemsToSummaryRows(items: VerificationItem[]): Store
 /**
  * Genera un PDF por tienda. Si hay más de una, descarga un ZIP con todos.
  * Si hay una sola, descarga el PDF directo.
+ *
+ * - `planned`: planificado / cruce completo (descarga inicial al guardar).
+ * - `actual`: solo unidades realmente escaneadas al cerrar el despacho.
  */
 export async function downloadStoreSummaryPdfs(
   rows: StoreSummarySourceRow[],
-  options?: { sessionName?: string }
-): Promise<{ success: boolean; storeCount: number; fileName?: string; error?: string }> {
+  options?: { sessionName?: string; variant?: StoreSummaryZipVariant }
+): Promise<{ success: boolean; storeCount: number; fileName?: string; variant: StoreSummaryZipVariant; error?: string }> {
+  const variant: StoreSummaryZipVariant = options?.variant || 'planned';
   try {
     const summaries = buildStoreSummaries(rows);
     if (summaries.length === 0) {
-      return { success: false, storeCount: 0, error: 'No hay TFs válidas para generar el resumen.' };
+      return {
+        success: false,
+        storeCount: 0,
+        variant,
+        error:
+          variant === 'actual'
+            ? 'No hay unidades escaneadas para generar el ZIP real.'
+            : 'No hay TFs válidas para generar el resumen.',
+      };
     }
 
     const stamp = format(new Date(), 'yyyyMMdd_HHmm');
     const sessionSlug = options?.sessionName
       ? sanitizeFilePart(options.sessionName)
       : 'despacho';
-    const meta = { sessionName: options?.sessionName, generatedAt: new Date() };
+    const variantSlug = variant === 'actual' ? 'REAL_CERRADO' : 'PLANIFICADO';
+    const meta = { sessionName: options?.sessionName, generatedAt: new Date(), variant };
 
     if (summaries.length === 1) {
       const only = summaries[0];
       const pdf = createStorePdf(only, meta);
-      const fileName = `Resumen_${sanitizeFilePart(only.destino)}_${stamp}.pdf`;
+      const fileName = `Resumen_${variantSlug}_${sanitizeFilePart(only.destino)}_${stamp}.pdf`;
       pdf.save(fileName);
-      return { success: true, storeCount: 1, fileName };
+      return { success: true, storeCount: 1, fileName, variant };
     }
 
     const zip = new JSZip();
@@ -233,7 +256,7 @@ export async function downloadStoreSummaryPdfs(
     });
 
     const zipBlob = await zip.generateAsync({ type: 'blob' });
-    const fileName = `Resumen_Tiendas_${sessionSlug}_${stamp}.zip`;
+    const fileName = `Resumen_Tiendas_${variantSlug}_${sessionSlug}_${stamp}.zip`;
     const url = URL.createObjectURL(zipBlob);
     const a = document.createElement('a');
     a.href = url;
@@ -243,12 +266,13 @@ export async function downloadStoreSummaryPdfs(
     a.remove();
     URL.revokeObjectURL(url);
 
-    return { success: true, storeCount: summaries.length, fileName };
+    return { success: true, storeCount: summaries.length, fileName, variant };
   } catch (error: any) {
     console.error('Error generating store summary PDFs:', error);
     return {
       success: false,
       storeCount: 0,
+      variant,
       error: error?.message || 'No se pudieron generar los PDF por tienda.',
     };
   }

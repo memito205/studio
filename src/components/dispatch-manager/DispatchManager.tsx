@@ -94,10 +94,11 @@ const SaveVerificationDialog: React.FC<{
                             className="mt-0.5"
                         />
                         <span>
-                            <span className="font-medium">Generar PDF por tienda</span>
+                            <span className="font-medium">ZIP planificado (PDF por tienda)</span>
                             <span className="block text-xs text-muted-foreground">
-                                Un PDF por destino con TFs únicas, total Cant. TFT y resumen por marca.
-                                Si hay varias tiendas, se descarga un ZIP.
+                                Resumen del cruce completo: un PDF por destino con TFs únicas.
+                                Si hay varias tiendas, se descarga el ZIP planificado.
+                                Al cerrar el despacho después del pistoleo se genera el ZIP real / cerrado.
                             </span>
                         </span>
                     </label>
@@ -106,7 +107,7 @@ const SaveVerificationDialog: React.FC<{
                     <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancelar</Button>
                     <Button onClick={handleSaveClick} disabled={isLoading || !name.trim()}>
                         {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                        {generateStorePdfs ? 'Guardar y PDF' : 'Guardar'}
+                        {generateStorePdfs ? 'Guardar y ZIP planificado' : 'Guardar'}
                     </Button>
                 </DialogFooter>
             </DialogContent>
@@ -539,20 +540,20 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
         if (options.generateStorePdfs) {
             const pdfResult = await downloadStoreSummaryPdfs(
                 merchandiseItemsToSummaryRows(filteredMatchedData),
-                { sessionName: name }
+                { sessionName: name, variant: 'planned' }
             );
             if (pdfResult.success) {
                 toast({
-                    title: 'PDF por tienda',
+                    title: 'ZIP planificado',
                     description:
                         pdfResult.storeCount === 1
                             ? `Se descargó ${pdfResult.fileName}.`
-                            : `Se descargó ZIP con ${pdfResult.storeCount} PDF(s): ${pdfResult.fileName}.`,
+                            : `Se descargó ZIP planificado con ${pdfResult.storeCount} PDF(s): ${pdfResult.fileName}.`,
                 });
             } else {
                 toast({
                     variant: 'destructive',
-                    title: 'Sesión guardada, PDF falló',
+                    title: 'Sesión guardada, ZIP planificado falló',
                     description: pdfResult.error,
                 });
             }

@@ -38,7 +38,7 @@ const VerificationDetailDialog: React.FC<{
     session: SavedVerification | null;
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
-    onExportStorePdfs: (session: SavedVerification) => Promise<void>;
+    onExportStorePdfs: (session: SavedVerification, variant: 'planned' | 'actual') => Promise<void>;
     isExportingPdfs: boolean;
 }> = ({ session, isOpen, onOpenChange, onExportStorePdfs, isExportingPdfs }) => {
     if (!session) return null;
@@ -89,17 +89,30 @@ const VerificationDetailDialog: React.FC<{
                                 Guardado por {session.savedBy} el {format(new Date(session.createdAt), 'PPP p', { locale: es })}
                             </DialogDescription>
                         </div>
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 flex-wrap">
                             <Button
                                 variant="outline"
                                 size="sm"
                                 disabled={isExportingPdfs || (session.results?.length || 0) === 0}
-                                onClick={() => onExportStorePdfs(session)}
+                                onClick={() => onExportStorePdfs(session, 'planned')}
+                                title="Cruce completo / planificado"
                             >
                                 {isExportingPdfs
                                     ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                     : <FileText className="mr-2 h-4 w-4" />}
-                                PDF por tienda
+                                ZIP planificado
+                            </Button>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={isExportingPdfs || !(session.results || []).some((i) => i.scanned)}
+                                onClick={() => onExportStorePdfs(session, 'actual')}
+                                title="Solo unidades escaneadas (ZIP real / cerrado)"
+                            >
+                                {isExportingPdfs
+                                    ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    : <FileText className="mr-2 h-4 w-4" />}
+                                ZIP real / cerrado
                             </Button>
                             <Button variant="outline" size="sm" onClick={handleExport}>
                                 <FileDown className="mr-2 h-4 w-4" /> Exportar a Excel
@@ -155,33 +168,41 @@ const VerificationHistory: React.FC = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const handleExportStorePdfs = async (session: SavedVerification) => {
-        if (!session.results?.length) {
+    const handleExportStorePdfs = async (session: SavedVerification, variant: 'planned' | 'actual' = 'planned') => {
+        const sourceItems =
+            variant === 'actual'
+                ? (session.results || []).filter((item) => item.scanned)
+                : (session.results || []);
+        if (!sourceItems.length) {
             toast({
                 variant: 'destructive',
                 title: 'Sin datos',
-                description: 'Esta sesión no tiene resultados cruzados para el resumen.',
+                description:
+                    variant === 'actual'
+                        ? 'No hay unidades escaneadas para el ZIP real / cerrado.'
+                        : 'Esta sesión no tiene resultados cruzados para el ZIP planificado.',
             });
             return;
         }
         setExportingPdfId(session.id || session.name);
         const result = await downloadStoreSummaryPdfs(
-            verificationItemsToSummaryRows(session.results),
-            { sessionName: session.name }
+            verificationItemsToSummaryRows(sourceItems),
+            { sessionName: session.name, variant }
         );
         setExportingPdfId(null);
+        const title = variant === 'actual' ? 'ZIP real / cerrado' : 'ZIP planificado';
         if (result.success) {
             toast({
-                title: 'PDF por tienda',
+                title,
                 description:
                     result.storeCount === 1
                         ? `Se descargó ${result.fileName}.`
-                        : `Se descargó ZIP con ${result.storeCount} PDF(s): ${result.fileName}.`,
+                        : `Se descargó ${title} con ${result.storeCount} PDF(s): ${result.fileName}.`,
             });
         } else {
             toast({
                 variant: 'destructive',
-                title: 'Error al generar PDF',
+                title: `Error al generar ${title}`,
                 description: result.error,
             });
         }
@@ -275,12 +296,28 @@ const VerificationHistory: React.FC = () => {
                                                     variant="outline"
                                                     size="sm"
                                                     disabled={exportingPdfId === (session.id || session.name) || !session.results?.length}
-                                                    onClick={() => handleExportStorePdfs(session)}
+                                                    onClick={() => handleExportStorePdfs(session, 'planned')}
+                                                    title="ZIP planificado (cruce completo)"
                                                 >
                                                     {exportingPdfId === (session.id || session.name)
                                                         ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                                         : <FileText className="mr-2 h-4 w-4" />}
-                                                    PDF tiendas
+                                                    ZIP planificado
+                                                </Button>
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    disabled={
+                                                        exportingPdfId === (session.id || session.name) ||
+                                                        !(session.results || []).some((i) => i.scanned)
+                                                    }
+                                                    onClick={() => handleExportStorePdfs(session, 'actual')}
+                                                    title="ZIP real / cerrado (solo escaneados)"
+                                                >
+                                                    {exportingPdfId === (session.id || session.name)
+                                                        ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                        : <FileText className="mr-2 h-4 w-4" />}
+                                                    ZIP real
                                                 </Button>
                                                 {isAdmin && (
                                                     <AlertDialog>

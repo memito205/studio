@@ -16,7 +16,8 @@ import {
   Loader2,
   PlayCircle,
   ArrowLeft,
-  AlertTriangle
+  AlertTriangle,
+  FileArchive
 } from 'lucide-react';
 import type { VerificationItem, SavedVerification } from '@/types';
 import { parseVerificationExcel, exportVerificationToExcel } from '@/components/dispatch-manager/utils/excel';
@@ -39,6 +40,21 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import {
+  downloadStoreSummaryPdfs,
+  verificationItemsToSummaryRows,
+} from '@/components/dispatch-manager/utils/storeSummaryPdf';
 
 
 const SaveVerificationDialog: React.FC<{
@@ -100,11 +116,15 @@ const ScanningInterface: React.FC<{
   } | null>(null);
   
   const [isSaving, setIsSaving] = useState(false);
+  const [isClosingDispatch, setIsClosingDispatch] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('saved');
   const debounceTimer = useRef<NodeJS.Timeout>();
 
   const inputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+  const { role } = useAuth();
+  const canCloseDispatch = role === 'admin' || role === 'supervisor';
+  const isSessionOpen = session.status !== 'completed';
   
   const [filters, setFilters] = useState({ codigo: '', destino: '', tft: '', status: 'all' });
 
@@ -248,6 +268,64 @@ const ScanningInterface: React.FC<{
     if (debounceTimer.current) clearTimeout(debounceTimer.current);
     saveProgress(true);
   };
+
+  const handleCloseDispatch = async () => {
+    if (!canCloseDispatch || !isSessionOpen) return;
+    if (stats.scanned === 0) {
+      toast({
+        variant: 'destructive',
+        title: 'Sin unidades leídas',
+        description: 'Debe haber al menos una etiqueta escaneada para cerrar y generar el ZIP real.',
+      });
+      return;
+    }
+
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    setIsClosingDispatch(true);
+    setIsSaving(true);
+    setSaveStatus('saving');
+
+    const scannedItems = data.filter((item) => item.scanned);
+    const result = await updateVerificationSession(session.id, {
+      results: data,
+      stats,
+      status: 'completed',
+    });
+
+    if (!result.success) {
+      setSaveStatus('error');
+      setIsSaving(false);
+      setIsClosingDispatch(false);
+      toast({ variant: 'destructive', title: 'Error al cerrar', description: result.error });
+      return;
+    }
+
+    const pdfResult = await downloadStoreSummaryPdfs(
+      verificationItemsToSummaryRows(scannedItems),
+      { sessionName: session.name, variant: 'actual' }
+    );
+
+    setIsSaving(false);
+    setIsClosingDispatch(false);
+
+    if (pdfResult.success) {
+      toast({
+        title: 'Despacho cerrado',
+        description:
+          pdfResult.storeCount === 1
+            ? `Sesión completada. ZIP real / cerrado: ${pdfResult.fileName}.`
+            : `Sesión completada. ZIP real / cerrado con ${pdfResult.storeCount} PDF(s): ${pdfResult.fileName}.`,
+      });
+    } else {
+      toast({
+        variant: 'destructive',
+        title: 'Despacho cerrado, ZIP falló',
+        description: pdfResult.error || 'La sesión se cerró pero no se pudo generar el ZIP real.',
+      });
+    }
+    onBack();
+  };
+
   
   const renderSaveStatus = () => {
     switch (saveStatus) {
@@ -299,9 +377,52 @@ const ScanningInterface: React.FC<{
                   <div><span className="text-sm font-medium text-muted-foreground">Completado</span><p className="text-2xl font-bold">{stats.total > 0 ? Math.round((stats.scanned / stats.total) * 100) : 0}%</p></div>
                 </div>
                 <div className="flex flex-col gap-2 mt-6">
-                    <Button onClick={handleFinalize} disabled={isSaving}>
-                        {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <PackageCheck size={14} className="mr-2"/>} Finalizar Verificación
-                    </Button>
+                    {canCloseDispatch && isSessionOpen ? (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            disabled={isSaving || isClosingDispatch || stats.scanned === 0}
+                            className="bg-amber-600 hover:bg-amber-700 text-white"
+                          >
+                            {(isSaving || isClosingDispatch)
+                              ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/>
+                              : <FileArchive size={14} className="mr-2"/>}
+                            Cerrar despacho
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>¿Cerrar despacho?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              Se marcará la sesión como completada y se descargará el ZIP real / cerrado
+                              solo con las unidades realmente escaneadas ({stats.scanned} de {stats.total})
+                              {stats.pending > 0
+                                ? `. Quedarán ${stats.pending} unidad(es) pendientes fuera del ZIP (no encontradas / no leídas).`
+                                : '.'}{' '}
+                              El ZIP planificado (cruce completo) no se modifica; puede volver a descargarlo desde el historial.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                            <AlertDialogAction
+                              className="bg-amber-600 hover:bg-amber-700"
+                              onClick={() => void handleCloseDispatch()}
+                            >
+                              Cerrar y descargar ZIP real
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    ) : (
+                      <Button onClick={handleFinalize} disabled={isSaving || !isSessionOpen}>
+                          {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <PackageCheck size={14} className="mr-2"/>} Finalizar Verificación
+                      </Button>
+                    )}
+                    {canCloseDispatch && isSessionOpen && (
+                      <p className="text-[10px] text-muted-foreground leading-snug">
+                        Genera el <strong>ZIP real / cerrado</strong> con lo pistoleado. El ZIP planificado es el del cruce al guardar la sesión.
+                      </p>
+                    )}
                 </div>
             </CardContent>
           </Card>
@@ -582,7 +703,12 @@ export default function VerificationModule() {
   }
   
   if (isAdmin) {
-    return <AdminView sessions={sessions} fetchSessions={fetchSessions} />;
+    return (
+      <div className="space-y-8">
+        <AdminView sessions={sessions} fetchSessions={fetchSessions} />
+        <SupervisorView sessions={sessions} onSelectSession={setActiveSession} />
+      </div>
+    );
   }
 
   if (isSupervisor) {
