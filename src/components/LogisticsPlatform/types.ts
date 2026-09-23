@@ -224,7 +224,7 @@ export interface ObservationSummary {
   deltaRemision?: number;
   hasDeltas?: boolean;
   /** Solo UI de revisión día anterior; no se publica a Bodega Live. */
-  matchMethod?: 'exact' | 'fuzzy' | 'quantity' | 'manual';
+  matchMethod?: 'exact' | 'fuzzy' | 'quantity' | 'manual' | 'imported_previous';
   matchedPreviousLabel?: string;
   matchedPreviousId?: string;
 }

@@ -1,7 +1,7 @@
 import type { ObservationSummary } from '../types';
 import { findHeader, formatDate, normalizeDate } from './helpers';
 
-export type MatchMethod = 'exact' | 'fuzzy' | 'quantity' | 'manual';
+export type MatchMethod = 'exact' | 'fuzzy' | 'quantity' | 'manual' | 'imported_previous';
 
 export interface PreviousDayProcessRow {
   id: string;
@@ -440,6 +440,79 @@ export function clearPreviousDayDeltas(current: ObservationSummary): Observation
   return { ...rest, hasDeltas: false };
 }
 
+/** Proceso activo creado desde una fila del día anterior sin pareja en el Excel de hoy. */
+export function createObservationFromPreviousDay(
+  previous: PreviousDayProcessRow,
+  id: string
+): ObservationSummary {
+  const q = Number(previous.totalQuantity) || 0;
+  const p = Number(previous.totalPacked) || 0;
+  return {
+    id,
+    observation: previous.label || 'PROCESO ANTERIOR',
+    originalObservation: 'imported_previous',
+    totalQuantity: q,
+    totalPacked: p,
+    packedPercentage: q > 0 ? (p / q) * 100 : 0,
+    fechaObs: previous.fechaProceso || 'N/D',
+    fechaEntrega: previous.fechaEntrega || '',
+    procesoObservacion: '',
+    isVXM: previous.isVXM,
+    conteoPorcentaje: previous.conteoPorcentaje || 0,
+    etiquetadoPorcentaje: previous.etiquetadoPorcentaje || 0,
+    revisionCalidadPorcentaje: previous.revisionCalidadPorcentaje || 0,
+    remisionPorcentaje: previous.remisionPorcentaje || 0,
+    // Baseline = valores de ayer → avance del día parte en 0 hasta que el usuario edite.
+    deltaPacked: 0,
+    deltaConteo: 0,
+    deltaEtiquetado: 0,
+    deltaCalidad: 0,
+    deltaRemision: 0,
+    hasDeltas: true,
+    matchMethod: 'imported_previous',
+    matchedPreviousLabel: previous.label,
+    matchedPreviousId: previous.id,
+  };
+}
+
+export interface ImportUnmatchedResult {
+  imported: ObservationSummary[];
+  importedMatches: ProcessMatch[];
+}
+
+/** Crea tarjetas activas + matches para filas previas que no emparejaron con el Excel de hoy. */
+export function importUnmatchedPreviousAsActive(
+  previousRows: PreviousDayProcessRow[],
+  unmatchedPreviousIds: string[],
+  createId: () => string
+): ImportUnmatchedResult {
+  const byId = new Map(previousRows.map((r) => [r.id, r]));
+  const imported: ObservationSummary[] = [];
+  const importedMatches: ProcessMatch[] = [];
+
+  for (const prevId of unmatchedPreviousIds) {
+    const prev = byId.get(prevId);
+    if (!prev) continue;
+    const id = createId();
+    imported.push(createObservationFromPreviousDay(prev, id));
+    importedMatches.push({
+      currentId: id,
+      previousId: prevId,
+      method: 'imported_previous',
+      score: 1,
+    });
+  }
+
+  return { imported, importedMatches };
+}
+
+export function isImportedFromPrevious(item: ObservationSummary): boolean {
+  return (
+    item.matchMethod === 'imported_previous' ||
+    item.originalObservation === 'imported_previous'
+  );
+}
+
 export function methodLabel(method: MatchMethod): string {
   switch (method) {
     case 'exact':
@@ -450,6 +523,8 @@ export function methodLabel(method: MatchMethod): string {
       return 'Cantidad';
     case 'manual':
       return 'Manual';
+    case 'imported_previous':
+      return 'Desde ayer';
     default:
       return method;
   }

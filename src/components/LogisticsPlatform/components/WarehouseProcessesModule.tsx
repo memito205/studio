@@ -13,6 +13,8 @@ import {
     applyPreviousDayDeltas,
     autoMatchProcesses,
     clearPreviousDayDeltas,
+    importUnmatchedPreviousAsActive,
+    isImportedFromPrevious,
     methodLabel,
     parsePreviousDayRows,
     type PreviousDayProcessRow,
@@ -78,6 +80,21 @@ const WarehouseProcessesModule: React.FC = () => {
         [previousDayRows, matchedPrevIds]
     );
 
+    /** Previas libres + las ya importadas como «Desde ayer» (para Asociar sin perder el vínculo). */
+    const previousAvailableForAssociate = useMemo(() => {
+        const importedPrevIds = new Set(
+            processMatches.filter((m) => m.method === 'imported_previous').map((m) => m.previousId)
+        );
+        return previousDayRows.filter(
+            (p) => !matchedPrevIds.has(p.id) || importedPrevIds.has(p.id)
+        );
+    }, [previousDayRows, matchedPrevIds, processMatches]);
+
+    const realMatches = useMemo(
+        () => processMatches.filter((m) => m.method !== 'imported_previous'),
+        [processMatches]
+    );
+
     const applyMatchesToProcesses = (
         base: ObservationSummary[],
         matches: ProcessMatch[],
@@ -90,8 +107,35 @@ const WarehouseProcessesModule: React.FC = () => {
             if (!m) return clearPreviousDayDeltas(item);
             const prev = prevMap.get(m.previousId);
             if (!prev) return clearPreviousDayDeltas(item);
+            if (m.method === 'imported_previous') {
+                // Mantener baseline importado; applyPreviousDayDeltas dejaría deltas en 0 igual.
+                return {
+                    ...applyPreviousDayDeltas(item, prev, m.method),
+                    matchMethod: 'imported_previous' as const,
+                };
+            }
             return applyPreviousDayDeltas(item, prev, m.method);
         });
+    };
+
+    /** Quita imports previos, rematch auto, importa no emparejados como activos. */
+    const rematchAndImportPrevious = (
+        baseProcesses: ObservationSummary[],
+        prevRows: PreviousDayProcessRow[]
+    ): { processes: ObservationSummary[]; matches: ProcessMatch[]; importedCount: number } => {
+        const withoutImported = baseProcesses.filter((p) => !isImportedFromPrevious(p));
+        const { matches, unmatchedPreviousIds } = autoMatchProcesses(withoutImported, prevRows);
+        const matched = applyMatchesToProcesses(withoutImported, matches, prevRows);
+        const { imported, importedMatches } = importUnmatchedPreviousAsActive(
+            prevRows,
+            unmatchedPreviousIds,
+            generateUniqueId
+        );
+        return {
+            processes: [...matched, ...imported],
+            matches: [...matches, ...importedMatches],
+            importedCount: imported.length,
+        };
     };
 
     const handlePublishToBodegaLive = async () => {
@@ -171,6 +215,32 @@ const WarehouseProcessesModule: React.FC = () => {
                 const p = Number(updated.totalPacked || 0);
                 updated.packedPercentage = q > 0 ? (p / q) * 100 : 0;
 
+                // Recalcular avance vs baseline del día anterior (emparejado o importado)
+                const prevRow = updated.matchedPreviousId
+                    ? prevById.get(updated.matchedPreviousId)
+                    : undefined;
+                if (prevRow) {
+                    updated.deltaPacked = Math.max(0, p - (prevRow.totalPacked || 0));
+                    updated.deltaConteo = Math.max(
+                        0,
+                        (Number(updated.conteoPorcentaje) || 0) - (prevRow.conteoPorcentaje || 0)
+                    );
+                    updated.deltaEtiquetado = Math.max(
+                        0,
+                        (Number(updated.etiquetadoPorcentaje) || 0) - (prevRow.etiquetadoPorcentaje || 0)
+                    );
+                    updated.deltaCalidad = Math.max(
+                        0,
+                        (Number(updated.revisionCalidadPorcentaje) || 0) -
+                            (prevRow.revisionCalidadPorcentaje || 0)
+                    );
+                    updated.deltaRemision = Math.max(
+                        0,
+                        (Number(updated.remisionPorcentaje) || 0) - (prevRow.remisionPorcentaje || 0)
+                    );
+                    updated.hasDeltas = true;
+                }
+
                 return updated;
             }
             return item;
@@ -233,9 +303,27 @@ const WarehouseProcessesModule: React.FC = () => {
     };
 
     const handleUnmatch = (currentId: string) => {
+        const removed = processMatches.find((m) => m.currentId === currentId);
         const nextMatches = processMatches.filter((m) => m.currentId !== currentId);
-        setProcessMatches(nextMatches);
-        setProcesses((prev) => applyMatchesToProcesses(prev, nextMatches, previousDayRows));
+        setProcesses((prev) => {
+            const cleared = applyMatchesToProcesses(prev, nextMatches, previousDayRows);
+            // La previa liberada vuelve como tarjeta activa «Desde ayer» (no a la lista sin usar).
+            if (
+                removed &&
+                removed.method !== 'imported_previous' &&
+                !nextMatches.some((m) => m.previousId === removed.previousId)
+            ) {
+                const { imported, importedMatches } = importUnmatchedPreviousAsActive(
+                    previousDayRows,
+                    [removed.previousId],
+                    generateUniqueId
+                );
+                queueMicrotask(() => setProcessMatches([...nextMatches, ...importedMatches]));
+                return [...cleared, ...imported];
+            }
+            queueMicrotask(() => setProcessMatches(nextMatches));
+            return cleared;
+        });
     };
 
     const handleManualAssociate = (currentId: string) => {
@@ -248,7 +336,8 @@ const WarehouseProcessesModule: React.FC = () => {
             });
             return;
         }
-        if (matchedPrevIds.has(previousId)) {
+        const existingPrevMatch = processMatches.find((m) => m.previousId === previousId);
+        if (existingPrevMatch && existingPrevMatch.method !== 'imported_previous') {
             toast({
                 title: 'Ya está asociado',
                 description: 'Ese proceso del día anterior ya tiene pareja.',
@@ -256,12 +345,26 @@ const WarehouseProcessesModule: React.FC = () => {
             });
             return;
         }
+        // Si estaba importado como «Desde ayer», quitar esa tarjeta y usar el actual de hoy.
+        const importedCurrentId =
+            existingPrevMatch?.method === 'imported_previous' ? existingPrevMatch.currentId : null;
+
         const nextMatches: ProcessMatch[] = [
-            ...processMatches.filter((m) => m.currentId !== currentId),
+            ...processMatches.filter(
+                (m) =>
+                    m.currentId !== currentId &&
+                    m.previousId !== previousId &&
+                    m.currentId !== importedCurrentId
+            ),
             { currentId, previousId, method: 'manual', score: 1 },
         ];
         setProcessMatches(nextMatches);
-        setProcesses((prev) => applyMatchesToProcesses(prev, nextMatches, previousDayRows));
+        setProcesses((prev) => {
+            const base = importedCurrentId
+                ? prev.filter((p) => p.id !== importedCurrentId)
+                : prev;
+            return applyMatchesToProcesses(base, nextMatches, previousDayRows);
+        });
         setManualPick((p) => {
             const n = { ...p };
             delete n[currentId];
@@ -292,16 +395,19 @@ const WarehouseProcessesModule: React.FC = () => {
                 setPreviousDayRows(prevRows);
                 setManualPick({});
                 setProcesses((currentProcesses) => {
-                    const { matches } = autoMatchProcesses(currentProcesses, prevRows);
-                    const updated = applyMatchesToProcesses(currentProcesses, matches, prevRows);
+                    const { processes: next, matches, importedCount } = rematchAndImportPrevious(
+                        currentProcesses,
+                        prevRows
+                    );
+                    const autoMatched = matches.filter((m) => m.method !== 'imported_previous').length;
                     queueMicrotask(() => {
                         setProcessMatches(matches);
                         toast({
                             title: 'Día anterior cargado',
-                            description: `${matches.length} emparejados automático · ${currentProcesses.length - matches.length} por revisar · ${prevRows.length} filas previas.`,
+                            description: `${autoMatched} emparejados · ${importedCount} importados desde ayer · ${prevRows.length} filas previas.`,
                         });
                     });
-                    return updated;
+                    return next;
                 });
             } catch (err) {
                 console.error(err);
@@ -357,7 +463,16 @@ const WarehouseProcessesModule: React.FC = () => {
                     remisionPorcentaje: 0
                 }));
 
-                setProcesses(prev => [...newItems, ...prev]);
+                setProcesses(prev => {
+                    const combined = [...newItems, ...prev];
+                    if (previousDayRows.length === 0) return combined;
+                    const { processes: next, matches } = rematchAndImportPrevious(
+                        combined,
+                        previousDayRows
+                    );
+                    queueMicrotask(() => setProcessMatches(matches));
+                    return next;
+                });
             } catch (err: any) { alert(err.message); } finally { setIsProcessesLoading(false); }
         };
         reader.readAsArrayBuffer(file);
@@ -457,16 +572,20 @@ const WarehouseProcessesModule: React.FC = () => {
                             <div>
                                 <h2 className="text-xl font-bold text-gray-800">Revisión de emparejamientos</h2>
                                 <p className="text-xs text-gray-500">
-                                    Día anterior: {prevReportFileName || 'archivo'} · {processMatches.length} asociados · {unmatchedCurrent.length} actuales sin pareja · {unmatchedPrevious.length} anteriores libres
+                                    Día anterior: {prevReportFileName || 'archivo'} · {realMatches.length} asociados ·{' '}
+                                    {processMatches.filter((m) => m.method === 'imported_previous').length} desde ayer ·{' '}
+                                    {unmatchedCurrent.filter((p) => !isImportedFromPrevious(p)).length} actuales sin pareja
+                                    {unmatchedPrevious.length > 0 ? ` · ${unmatchedPrevious.length} anteriores libres` : ''}
                                 </p>
                                 <p className="text-[11px] text-amber-800/80 mt-1 max-w-3xl">
-                                    Los procesos activos salen solo del Excel de hoy. El día anterior sirve para calcular el avance (Δ) cuando se asocia a un proceso actual.
+                                    Si un proceso de ayer no está en el Excel de hoy, se crea automáticamente como tarjeta activa
+                                    (badge «Desde ayer»). Si hay uno de hoy y uno de ayer, el avance (Δ) se calcula al asociarlos.
                                 </p>
                             </div>
                         </div>
                     </div>
 
-                    {processMatches.length > 0 && (
+                    {realMatches.length > 0 && (
                         <div className="mb-6 overflow-x-auto">
                             <h3 className="text-sm font-bold text-gray-700 mb-2">Emparejados</h3>
                             <table className="min-w-full text-sm border rounded-lg overflow-hidden">
@@ -480,7 +599,7 @@ const WarehouseProcessesModule: React.FC = () => {
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y">
-                                    {processMatches.map((m) => {
+                                    {realMatches.map((m) => {
                                         const cur = processById.get(m.currentId);
                                         const prev = prevById.get(m.previousId);
                                         if (!cur || !prev) return null;
@@ -523,15 +642,20 @@ const WarehouseProcessesModule: React.FC = () => {
                         </div>
                     )}
 
-                    {unmatchedCurrent.length > 0 && (
+                    {unmatchedCurrent.filter((p) => !isImportedFromPrevious(p)).length > 0 && (
                         <div className="mb-6">
                             <h3 className="text-sm font-bold text-gray-700 mb-1">Actuales sin pareja — asociar manualmente</h3>
                             <p className="text-[11px] text-gray-500 mb-2">
                                 Elige un proceso del día anterior y pulsa Asociar para que el avance (Δ Emp., etapas) se calcule contra esa base.
+                                Si eliges uno ya mostrado como «Desde ayer», esa tarjeta se fusiona en el proceso de hoy.
                             </p>
                             <div className="space-y-3">
-                                {unmatchedCurrent.map((cur) => {
-                                    const freePrev = unmatchedPrevious.filter((p) => p.isVXM === Boolean(cur.isVXM));
+                                {unmatchedCurrent
+                                    .filter((p) => !isImportedFromPrevious(p))
+                                    .map((cur) => {
+                                    const freePrev = previousAvailableForAssociate.filter(
+                                        (p) => p.isVXM === Boolean(cur.isVXM)
+                                    );
                                     return (
                                         <div
                                             key={cur.id}
@@ -552,11 +676,19 @@ const WarehouseProcessesModule: React.FC = () => {
                                                 }
                                             >
                                                 <option value="">— Elegir del día anterior —</option>
-                                                {freePrev.map((p) => (
-                                                    <option key={p.id} value={p.id}>
-                                                        {p.label} (Ped {p.totalQuantity} / Emp {p.totalPacked})
-                                                    </option>
-                                                ))}
+                                                {freePrev.map((p) => {
+                                                    const isImported = processMatches.some(
+                                                        (m) =>
+                                                            m.previousId === p.id &&
+                                                            m.method === 'imported_previous'
+                                                    );
+                                                    return (
+                                                        <option key={p.id} value={p.id}>
+                                                            {p.label} (Ped {p.totalQuantity} / Emp {p.totalPacked})
+                                                            {isImported ? ' · Desde ayer' : ''}
+                                                        </option>
+                                                    );
+                                                })}
                                             </select>
                                             <button
                                                 type="button"
@@ -571,7 +703,7 @@ const WarehouseProcessesModule: React.FC = () => {
                                     );
                                 })}
                             </div>
-                            {unmatchedPrevious.length === 0 && (
+                            {previousAvailableForAssociate.length === 0 && (
                                 <p className="text-xs text-gray-400 mt-2">No quedan procesos del día anterior libres para asociar.</p>
                             )}
                         </div>
@@ -581,10 +713,7 @@ const WarehouseProcessesModule: React.FC = () => {
                         <div>
                             <h3 className="text-sm font-bold text-gray-700 mb-1">Anteriores sin usar</h3>
                             <p className="text-[11px] text-gray-500 mb-2">
-                                Filas de ayer que no se emparejaron con ningún proceso de hoy. RIM/VXM es solo el tipo, no un estado especial.
-                                {unmatchedCurrent.length > 0
-                                    ? ' Para que afecten el avance, asócialas arriba a un proceso actual del mismo tipo.'
-                                    : ' Si la marca no está en el Excel de hoy, no hay tarjeta activa que crear desde aquí: carga el proceso de hoy o créalo con + RIM / + VXM y luego asocia.'}
+                                Casos excepcionales que no se importaron como activos. Normalmente esta lista queda vacía.
                             </p>
                             <ul className="text-xs text-gray-600 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                                 {unmatchedPrevious.map((p) => (
@@ -646,7 +775,12 @@ const WarehouseProcessesModule: React.FC = () => {
                                             <span className={`text-[10px] font-black px-3 py-1 rounded-full ${item.isVXM ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}`}>
                                                 {item.isVXM ? 'VXM' : 'RIM'}
                                             </span>
-                                            {item.hasDeltas && item.matchedPreviousLabel && (
+                                            {item.matchMethod === 'imported_previous' && (
+                                                <span className="ml-2 text-[9px] font-bold text-violet-700 bg-violet-50 px-2 py-0.5 rounded-full border border-violet-200">
+                                                    Desde ayer
+                                                </span>
+                                            )}
+                                            {item.hasDeltas && item.matchedPreviousLabel && item.matchMethod !== 'imported_previous' && (
                                                 <span className="ml-2 text-[9px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
                                                     vs {item.matchedPreviousLabel.slice(0, 24)}{item.matchedPreviousLabel.length > 24 ? '…' : ''} ({methodLabel(item.matchMethod || 'manual')})
                                                 </span>
@@ -662,7 +796,7 @@ const WarehouseProcessesModule: React.FC = () => {
                                         <div className="grid grid-cols-2 gap-4">
                                             <div>
                                                 <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest">F. Proceso</label>
-                                                {item.originalObservation === 'manual' ? (
+                                                {item.originalObservation === 'manual' || item.originalObservation === 'imported_previous' ? (
                                                     <input
                                                         type="text"
                                                         value={item.fechaObs}
