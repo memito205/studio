@@ -459,6 +459,9 @@ const WarehouseProcessesModule: React.FC = () => {
                                 <p className="text-xs text-gray-500">
                                     Día anterior: {prevReportFileName || 'archivo'} · {processMatches.length} asociados · {unmatchedCurrent.length} actuales sin pareja · {unmatchedPrevious.length} anteriores libres
                                 </p>
+                                <p className="text-[11px] text-amber-800/80 mt-1 max-w-3xl">
+                                    Los procesos activos salen solo del Excel de hoy. El día anterior sirve para calcular el avance (Δ) cuando se asocia a un proceso actual.
+                                </p>
                             </div>
                         </div>
                     </div>
@@ -522,7 +525,10 @@ const WarehouseProcessesModule: React.FC = () => {
 
                     {unmatchedCurrent.length > 0 && (
                         <div className="mb-6">
-                            <h3 className="text-sm font-bold text-gray-700 mb-2">Actuales sin pareja — asociar manualmente</h3>
+                            <h3 className="text-sm font-bold text-gray-700 mb-1">Actuales sin pareja — asociar manualmente</h3>
+                            <p className="text-[11px] text-gray-500 mb-2">
+                                Elige un proceso del día anterior y pulsa Asociar para que el avance (Δ Emp., etapas) se calcule contra esa base.
+                            </p>
                             <div className="space-y-3">
                                 {unmatchedCurrent.map((cur) => {
                                     const freePrev = unmatchedPrevious.filter((p) => p.isVXM === Boolean(cur.isVXM));
@@ -573,7 +579,13 @@ const WarehouseProcessesModule: React.FC = () => {
 
                     {unmatchedPrevious.length > 0 && (
                         <div>
-                            <h3 className="text-sm font-bold text-gray-700 mb-2">Anteriores sin usar</h3>
+                            <h3 className="text-sm font-bold text-gray-700 mb-1">Anteriores sin usar</h3>
+                            <p className="text-[11px] text-gray-500 mb-2">
+                                Filas de ayer que no se emparejaron con ningún proceso de hoy. RIM/VXM es solo el tipo, no un estado especial.
+                                {unmatchedCurrent.length > 0
+                                    ? ' Para que afecten el avance, asócialas arriba a un proceso actual del mismo tipo.'
+                                    : ' Si la marca no está en el Excel de hoy, no hay tarjeta activa que crear desde aquí: carga el proceso de hoy o créalo con + RIM / + VXM y luego asocia.'}
+                            </p>
                             <ul className="text-xs text-gray-600 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                                 {unmatchedPrevious.map((p) => (
                                     <li key={p.id} className="border border-dashed border-gray-200 rounded-lg px-3 py-2 bg-white">
