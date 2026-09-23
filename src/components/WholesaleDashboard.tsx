@@ -5,7 +5,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { UploadCloud, Loader2, PackageCheck, ArrowLeft, Database, Boxes, BarChart2, Printer, Send, Lock, Compass, Download, FileSearch, RotateCcw, Truck } from 'lucide-react';
+import { UploadCloud, Loader2, PackageCheck, ArrowLeft, Database, Boxes, BarChart2, Printer, Send, Lock, Compass, Download, FileSearch, RotateCcw, Truck, RefreshCw } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
@@ -13,16 +13,17 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { WholesaleOrder, WholesaleOrderDetail, OrderStatus, ProductDatabaseItem, PackingSession, PreprintedLabel, PackedItem, OperationPulse } from '@/types';
-import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, getPackingSession, generateAndSaveLabels, getLabelsForOrder, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrders, getPackedItemsForDate, getUserPulsesForDay, getGlobalPulsesForDay, loadOperatorMappings, getPackedItemsForOrder, syncWholesaleOrderPackingStatus, getShipments } from '@/app/actions';
+import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, generateAndSaveLabels, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrders, getPackedItemsForDate, getUserPulsesForDay, getGlobalPulsesForDay, loadOperatorMappings, syncWholesaleOrderPackingStatus } from '@/app/actions';
+import {
+  getOrBuildBoxAuditReport,
+  getOrBuildCargueProgressReport,
+  getOrBuildPedidoVsLeidoReport,
+} from '@/app/wholesaleReportActions';
 import {
   computeWholesalePackingTotals,
-  buildBoxAuditLines,
   boxAuditLinesToExcelRows,
-  buildOrderVsPackedLines,
   orderVsPackedLinesToExcelRows,
   resolveWholesaleOrderStatus,
-  buildCargueLoadLookup,
-  buildCargueProgress,
   cargueProgressToExcelRows,
 } from '@/lib/wholesalePacking';
 import { cn } from '@/lib/utils';
@@ -56,13 +57,15 @@ const OrderTable: React.FC<{
   onOpenPrintDialog: (order: WholesaleOrder) => void;
   onForceCloseOrder: (order: WholesaleOrder) => void;
   onOpenAuditDialog: (order: WholesaleOrder) => void;
-  onDownloadComparisonReport: (order: WholesaleOrder) => void;
-  onDownloadBoxAuditReport: (order: WholesaleOrder) => void;
+  onDownloadComparisonReport: (order: WholesaleOrder, opts?: { forceRegenerate?: boolean }) => void;
+  onDownloadBoxAuditReport: (order: WholesaleOrder, opts?: { forceRegenerate?: boolean }) => void;
   onForceDispatchOrder: (order: WholesaleOrder) => void;
   onOpenCargueProgress: (order: WholesaleOrder) => void;
-  onDownloadCargueReport: (order: WholesaleOrder) => void;
+  onDownloadCargueReport: (order: WholesaleOrder, opts?: { forceRegenerate?: boolean }) => void;
+  onRegeneratePackingSnapshots: (order: WholesaleOrder) => void;
+  onRegenerateCargueSnapshot: (order: WholesaleOrder) => void;
   role: string | null;
-}> = ({ orders, sessions, allPackedItems, selectedOrders, onOrderSelect, onStartPacking, onOpenPrintDialog, onForceCloseOrder, onOpenAuditDialog, onDownloadComparisonReport, onDownloadBoxAuditReport, onForceDispatchOrder, onOpenCargueProgress, onDownloadCargueReport, role }) => {
+}> = ({ orders, sessions, allPackedItems, selectedOrders, onOrderSelect, onStartPacking, onOpenPrintDialog, onForceCloseOrder, onOpenAuditDialog, onDownloadComparisonReport, onDownloadBoxAuditReport, onForceDispatchOrder, onOpenCargueProgress, onDownloadCargueReport, onRegeneratePackingSnapshots, onRegenerateCargueSnapshot, role }) => {
     
   if (orders.length === 0) {
     return <p className="text-muted-foreground text-center py-8">No hay pedidos en esta etapa.</p>;
@@ -200,6 +203,18 @@ const OrderTable: React.FC<{
                                     <Download className="mr-2 h-4 w-4" />
                                     Excel cargue
                                   </Button>
+                                  {order.status === 'Despachado' && (
+                                    <Button
+                                      onClick={() => onRegenerateCargueSnapshot(order)}
+                                      size="sm"
+                                      variant="outline"
+                                      className="mr-2"
+                                      title="Regenerar snapshot de progreso de cargue"
+                                    >
+                                      <RefreshCw className="mr-2 h-4 w-4" />
+                                      Regenerar cargue
+                                    </Button>
+                                  )}
                                 </>
                             )}
                             <Button onClick={() => onOpenAuditDialog(order)} size="sm" variant="outline" className="mr-2 border-primary/20 hover:bg-primary/10">
@@ -216,6 +231,18 @@ const OrderTable: React.FC<{
                                       <Download className="mr-2 h-4 w-4" />
                                       Reporte cajas
                                   </Button>
+                                  {(role === 'admin' || role === 'supervisor') && (order.status === 'Empacado' || order.status === 'Despachado') && (
+                                    <Button
+                                      onClick={() => onRegeneratePackingSnapshots(order)}
+                                      size="sm"
+                                      variant="outline"
+                                      className="mr-2"
+                                      title="Regenerar snapshots Pedido vs leído + Auditoría cajas"
+                                    >
+                                      <RefreshCw className="mr-2 h-4 w-4" />
+                                      Regenerar
+                                    </Button>
+                                  )}
                                 </>
                             )}
                             <Button onClick={() => onOpenPrintDialog(order)} size="sm" variant="outline">
@@ -297,22 +324,21 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
   };
 
   /** Excel de progreso de cargue (cajas cargadas/pendientes + refs). No altera Pedido vs leído ni Auditoría cajas. */
-  const handleDownloadCargueReport = async (order: WholesaleOrder) => {
+  const handleDownloadCargueReport = async (order: WholesaleOrder, opts?: { forceRegenerate?: boolean }) => {
     try {
-      const [itemsRes, sessionRes, labelsRes, shipmentsRes] = await Promise.all([
-        getPackedItemsForOrder(order.id),
-        getPackingSession(order.id),
-        getLabelsForOrder(order.id),
-        getShipments(),
-      ]);
-      const loadLookup = buildCargueLoadLookup(shipmentsRes.data || []);
-      const report = buildCargueProgress({
+      const packedHint = allPackedItems.filter((p) => p.orderId === order.id);
+      const result = await getOrBuildCargueProgressReport({
         orderId: order.id,
-        packedItems: itemsRes.data || [],
-        session: sessionRes.data || null,
-        labels: labelsRes.data || [],
-        loadLookup,
+        orderStatus: order.status,
+        forceRegenerate: !!opts?.forceRegenerate,
+        preferLive: order.status === 'En Cargue',
+        packedItemsHint: opts?.forceRegenerate ? null : (packedHint.length > 0 ? packedHint : null),
+        actor: role ? { uid: null, name: role } : undefined,
       });
+      if (result.error || !result.data) {
+        throw new Error(result.error || 'No se pudo generar el reporte de cargue.');
+      }
+      const report = result.data;
       const detailRows = cargueProgressToExcelRows(report);
       const summaryRows = [
         { Concepto: 'Cajas esperadas', Cantidad: report.expectedBoxes },
@@ -328,7 +354,7 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
       XLSX.writeFile(wb, `Progreso_Cargue_${order.id}.xlsx`);
       toast({
         title: 'Progreso de cargue descargado',
-        description: `${report.loadedBoxes}/${report.expectedBoxes} cajas · ${detailRows.length} líneas.`,
+        description: `${report.loadedBoxes}/${report.expectedBoxes} cajas · ${detailRows.length} líneas${result.fromSnapshot ? ' (snapshot)' : ''}.`,
       });
     } catch (error: any) {
       toast({
@@ -483,17 +509,25 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
   };
 
   /** Pedido vs leído/empacado por referencia + talla (cantidades generales). */
-  const handleDownloadComparisonReport = async (order: WholesaleOrder) => {
+  const handleDownloadComparisonReport = async (order: WholesaleOrder, opts?: { forceRegenerate?: boolean }) => {
     try {
-      const itemsRes = await getPackedItemsForOrder(order.id);
-      const packedItemsForOrder = itemsRes.data || allPackedItems.filter((p) => p.orderId === order.id);
-      const lines = buildOrderVsPackedLines(order, packedItemsForOrder);
+      const packedHint = allPackedItems.filter((p) => p.orderId === order.id);
+      const result = await getOrBuildPedidoVsLeidoReport({
+        orderId: order.id,
+        orderStatus: order.status,
+        forceRegenerate: !!opts?.forceRegenerate,
+        packedItemsHint: opts?.forceRegenerate ? null : (packedHint.length > 0 ? packedHint : null),
+        actor: role ? { uid: null, name: role } : undefined,
+      });
+      if (result.error || !result.data) {
+        throw new Error(result.error || 'No se pudo generar el reporte pedido vs leído.');
+      }
+      const { lines, totals } = result.data;
       const rows = orderVsPackedLinesToExcelRows(order.id, lines);
       exportToXlsx(rows, `Relacion_Pedido_vs_Empaque_${order.id}`);
-      const totals = computeWholesalePackingTotals(order, packedItemsForOrder);
       toast({
         title: 'Pedido vs leído descargado',
-        description: `Pedido ${totals.orderTotal} · Leído ${totals.packedTotal} · ${lines.length} líneas (ref/talla).`,
+        description: `Pedido ${totals.orderTotal} · Leído ${totals.packedTotal} · ${lines.length} líneas (ref/talla)${result.fromSnapshot ? ' · snapshot' : ''}.`,
       });
     } catch (error: any) {
       toast({ variant: 'destructive', title: 'Error al descargar', description: error?.message || 'No se pudo generar el reporte pedido vs leído.' });
@@ -501,27 +535,26 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
   };
 
   /** Auditoría por caja (Excel intacto; también disponible en Auditar). */
-  const handleDownloadBoxAuditReport = async (order: WholesaleOrder) => {
+  const handleDownloadBoxAuditReport = async (order: WholesaleOrder, opts?: { forceRegenerate?: boolean }) => {
     try {
-      const [itemsRes, sessionRes, labelsRes] = await Promise.all([
-        getPackedItemsForOrder(order.id),
-        getPackingSession(order.id),
-        getLabelsForOrder(order.id),
-      ]);
-      const packedItemsForOrder = itemsRes.data || allPackedItems.filter((p) => p.orderId === order.id);
-      const totals = computeWholesalePackingTotals(order, packedItemsForOrder);
-      const lines = buildBoxAuditLines({
+      const packedHint = allPackedItems.filter((p) => p.orderId === order.id);
+      const result = await getOrBuildBoxAuditReport({
         orderId: order.id,
-        packedItems: packedItemsForOrder,
-        session: sessionRes.data || null,
-        labels: labelsRes.data || [],
+        orderStatus: order.status,
+        forceRegenerate: !!opts?.forceRegenerate,
+        packedItemsHint: opts?.forceRegenerate ? null : (packedHint.length > 0 ? packedHint : null),
+        actor: role ? { uid: null, name: role } : undefined,
       });
+      if (result.error || !result.data) {
+        throw new Error(result.error || 'No se pudo generar el reporte de cajas.');
+      }
+      const { lines, totals } = result.data;
       const detailRows = boxAuditLinesToExcelRows(lines);
       const summaryRows = [
         { Concepto: 'TOTAL DEL PEDIDO', Cantidad: totals.orderTotal },
         { Concepto: 'TOTAL EMPACADO', Cantidad: totals.packedTotal },
         { Concepto: 'DIFERENCIA', Cantidad: totals.difference },
-        { Concepto: 'ESTADO', Cantidad: totals.isComplete ? 'Completo' : (order.packingForceClosed ? 'Forzado incompleto' : 'Incompleto') },
+        { Concepto: 'ESTADO', Cantidad: totals.isComplete ? 'Completo' : (order.packingForceClosed || totals.packingForceClosed ? 'Forzado incompleto' : 'Incompleto') },
       ];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detailRows), 'Por caja');
@@ -529,10 +562,67 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
       XLSX.writeFile(wb, `Auditoria_Cajas_${order.id}.xlsx`);
       toast({
         title: 'Reporte de cajas descargado',
-        description: `Pedido ${totals.orderTotal} · Empacado ${totals.packedTotal} · ${lines.length} líneas.`,
+        description: `Pedido ${totals.orderTotal} · Empacado ${totals.packedTotal} · ${lines.length} líneas${result.fromSnapshot ? ' · snapshot' : ''}.`,
       });
     } catch (error: any) {
       toast({ variant: 'destructive', title: 'Error al descargar', description: error?.message || 'No se pudo generar el reporte de cajas.' });
+    }
+  };
+
+  const handleRegenerateCargueSnapshot = async (order: WholesaleOrder) => {
+    try {
+      const result = await getOrBuildCargueProgressReport({
+        orderId: order.id,
+        orderStatus: order.status,
+        forceRegenerate: true,
+        preferLive: false,
+        actor: role ? { uid: null, name: role } : undefined,
+      });
+      if (result.error || !result.data) {
+        throw new Error(result.error || 'No se pudo regenerar el snapshot de cargue.');
+      }
+      toast({
+        title: 'Snapshot de cargue regenerado',
+        description: `${result.data.loadedBoxes}/${result.data.expectedBoxes} cajas.`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: 'destructive',
+        title: 'Error al regenerar',
+        description: error?.message || 'No se pudo regenerar el snapshot de cargue.',
+      });
+    }
+  };
+
+  const handleRegeneratePackingSnapshots = async (order: WholesaleOrder) => {
+    try {
+      const [pedido, box] = await Promise.all([
+        getOrBuildPedidoVsLeidoReport({
+          orderId: order.id,
+          orderStatus: order.status,
+          forceRegenerate: true,
+          actor: role ? { uid: null, name: role } : undefined,
+        }),
+        getOrBuildBoxAuditReport({
+          orderId: order.id,
+          orderStatus: order.status,
+          forceRegenerate: true,
+          actor: role ? { uid: null, name: role } : undefined,
+        }),
+      ]);
+      if (pedido.error || box.error) {
+        throw new Error(pedido.error || box.error);
+      }
+      toast({
+        title: 'Snapshots regenerados',
+        description: `Pedido vs leído (${pedido.data?.lines.length || 0} líneas) y auditoría de cajas (${box.data?.lines.length || 0} líneas).`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: 'destructive',
+        title: 'Error al regenerar',
+        description: error?.message || 'No se pudieron regenerar los snapshots.',
+      });
     }
   };
 
@@ -593,6 +683,7 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
             isOpen={isAuditDialogOpen}
             onOpenChange={setIsAuditDialogOpen}
             order={orderForAuditing}
+            initialPackedItems={allPackedItems.filter((p) => p.orderId === orderForAuditing.id)}
         />
       )}
       {orderForCargue && (
@@ -600,6 +691,7 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
             isOpen={isCargueDialogOpen}
             onOpenChange={setIsCargueDialogOpen}
             order={orderForCargue}
+            initialPackedItems={allPackedItems.filter((p) => p.orderId === orderForCargue.id)}
         />
       )}
       <div className="flex justify-between items-center flex-wrap gap-4">
@@ -668,22 +760,22 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
                 <TabsTrigger value="Cancelado">Cancelado ({ordersByStatus['Cancelado']?.length || 0})</TabsTrigger>
               </TabsList>
               <TabsContent value="Pte Empaque" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Pte Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} role={role} />
+                  <OrderTable orders={ordersByStatus['Pte Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} role={role} />
               </TabsContent>
               <TabsContent value="En Empaque" className="mt-4">
-                  <OrderTable orders={ordersByStatus['En Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} role={role} />
+                  <OrderTable orders={ordersByStatus['En Empaque'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} role={role} />
               </TabsContent>
               <TabsContent value="Empacado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Empacado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} role={role} />
+                  <OrderTable orders={ordersByStatus['Empacado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} role={role} />
               </TabsContent>
               <TabsContent value="En Cargue" className="mt-4">
-                  <OrderTable orders={ordersByStatus['En Cargue'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} role={role} />
+                  <OrderTable orders={ordersByStatus['En Cargue'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} role={role} />
               </TabsContent>
               <TabsContent value="Despachado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Despachado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} role={role} />
+                  <OrderTable orders={ordersByStatus['Despachado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} role={role} />
               </TabsContent>
                <TabsContent value="Cancelado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Cancelado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} role={role} />
+                  <OrderTable orders={ordersByStatus['Cancelado'] || []} sessions={new Map()} allPackedItems={allPackedItems} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} role={role} />
               </TabsContent>
             </Tabs>
           )}

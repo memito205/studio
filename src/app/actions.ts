@@ -1003,6 +1003,11 @@ export async function updateOrderStatus(
             updates.packingForceClosed = false;
         }
         await updateDoc(orderRef, updates);
+        if (status === 'Empacado' || status === 'Despachado') {
+            void import('@/app/wholesaleReportActions')
+                .then((m) => m.captureWholesaleReportSnapshotsForStatus(orderId, status))
+                .catch((err) => console.warn('wholesale report snapshot capture skipped:', err));
+        }
         return { success: true };
     } catch (error: any) {
         console.error("Error updating order status:", error);
@@ -1053,6 +1058,11 @@ export async function syncWholesaleOrderPackingStatus(orderId: string): Promise<
 
         if (nextStatus !== currentStatus) {
             await updateDoc(orderRef, { status: nextStatus });
+            if (nextStatus === 'Empacado') {
+                void import('@/app/wholesaleReportActions')
+                    .then((m) => m.captureWholesaleReportSnapshotsForStatus(orderId, nextStatus))
+                    .catch((err) => console.warn('wholesale report snapshot capture skipped:', err));
+            }
         }
         return { success: true, status: nextStatus };
     } catch (error: any) {
@@ -1830,17 +1840,24 @@ export async function addScannedLabelToShipment(shipmentId: string, labelId: str
             const availableLabels = totalLabels - dispatchedLabels;
 
             const orderRef = doc(firestore, "wholesaleOrders", orderId);
+            const becameDespachado = availableLabels <= 0;
             if (availableLabels > 0) {
                 transaction.update(orderRef, { status: 'En Cargue' });
             } else {
                 transaction.update(orderRef, { status: 'Despachado' });
             }
             
-            return { wasAvailable, orderId }; // Pass this data to the caller inside the transaction
+            return { wasAvailable, orderId, becameDespachado }; // Pass this data to the caller inside the transaction
         });
         
         if (result.isDuplicate) {
             return { success: false, error: `La etiqueta ${normalizedLabelId} ya fue despachada.`, orderId: result.orderId };
+        }
+
+        if (result.becameDespachado && result.orderId) {
+            void import('@/app/wholesaleReportActions')
+                .then((m) => m.captureWholesaleReportSnapshotsForStatus(String(result.orderId), 'Despachado'))
+                .catch((err) => console.warn('wholesale report snapshot capture skipped:', err));
         }
         
         // Add auditWarning to the return if it was available

@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Loader2, Package, Box, ChevronDown, ChevronRight, LayoutTemplate, Search, Edit2, Check, X, Filter, Download } from 'lucide-react';
+import { Loader2, Package, Box, ChevronDown, ChevronRight, LayoutTemplate, Search, Edit2, Check, X, Filter, Download, RefreshCw } from 'lucide-react';
 import type { WholesaleOrder, PreprintedLabel, PackedItem, PackingSession } from '@/types';
 import { getLabelsForOrder, getPackedItemsForOrder, updatePackedItem, getPackingSession, assignLabelToWholesalePackingUnit, addSingleLabel } from '@/app/actions';
 import { useAuth } from '@/hooks/use-auth-context';
@@ -27,9 +27,11 @@ interface OrderAuditDialogProps {
   order: WholesaleOrder | null;
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Reuse packed items already loaded in WholesaleDashboard when available. */
+  initialPackedItems?: PackedItem[];
 }
 
-export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDialogProps) {
+export function OrderAuditDialog({ order, isOpen, onOpenChange, initialPackedItems }: OrderAuditDialogProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [labels, setLabels] = useState<PreprintedLabel[]>([]);
   const [packedItems, setPackedItems] = useState<PackedItem[]>([]);
@@ -66,20 +68,71 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
     }
   }, [isOpen, order]);
 
-  const loadAuditData = async () => {
+  const loadAuditData = async (opts?: { forceRefreshPacked?: boolean }) => {
     if (!order) return;
     setIsLoading(true);
     try {
-      const [labelsRes, itemsRes, sessionRes] = await Promise.all([
+      const hint = (initialPackedItems || []).filter((p) => p.orderId === order.id);
+      const reusePacked = !opts?.forceRefreshPacked && hint.length > 0;
+
+      const fetches: Array<Promise<unknown>> = [
         getLabelsForOrder(order.id),
-        getPackedItemsForOrder(order.id),
-        getPackingSession(order.id)
-      ]);
+        getPackingSession(order.id),
+      ];
+      if (!reusePacked) {
+        fetches.push(getPackedItemsForOrder(order.id));
+      }
+
+      const results = await Promise.all(fetches);
+      const labelsRes = results[0] as Awaited<ReturnType<typeof getLabelsForOrder>>;
+      const sessionRes = results[1] as Awaited<ReturnType<typeof getPackingSession>>;
+      const itemsRes = reusePacked
+        ? { data: hint }
+        : (results[2] as Awaited<ReturnType<typeof getPackedItemsForOrder>>);
+
       if (labelsRes.data) setLabels(labelsRes.data);
       if (itemsRes.data) setPackedItems(itemsRes.data);
       if (sessionRes.data) setPackingSession(sessionRes.data);
     } catch (error) {
       console.error("Error loading audit data:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRegenerateSnapshot = async () => {
+    if (!order) return;
+    setIsLoading(true);
+    try {
+      const { getOrBuildBoxAuditReport } = await import('@/app/wholesaleReportActions');
+      const [labelsRes, itemsRes, sessionRes, snapRes] = await Promise.all([
+        getLabelsForOrder(order.id),
+        getPackedItemsForOrder(order.id),
+        getPackingSession(order.id),
+        getOrBuildBoxAuditReport({
+          orderId: order.id,
+          orderStatus: order.status,
+          forceRegenerate: true,
+          actor: { uid: user?.uid || null, name: userName || role || null },
+        }),
+      ]);
+      if (labelsRes.data) setLabels(labelsRes.data);
+      if (itemsRes.data) setPackedItems(itemsRes.data);
+      if (sessionRes.data) setPackingSession(sessionRes.data);
+      if (snapRes.error) {
+        toast({ variant: 'destructive', title: 'Error', description: snapRes.error });
+      } else {
+        toast({
+          title: 'Snapshot regenerado',
+          description: 'Auditoría de cajas actualizada desde datos en vivo.',
+        });
+      }
+    } catch (error: any) {
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: error?.message || 'No se pudo regenerar el snapshot.',
+      });
     } finally {
       setIsLoading(false);
     }
@@ -299,6 +352,7 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
   );
 
   const canAssignLabels = role === 'admin' || role === 'supervisor';
+  const canRegenerate = canAssignLabels;
 
   const handleAssignLabelFromAudit = async () => {
     if (!order || assignUnitId == null || !assignLabelInput.trim()) return;
@@ -484,6 +538,19 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange }: OrderAuditDial
                     <Download className="h-4 w-4" />
                     Descargar
                   </Button>
+                  {canRegenerate && (order?.status === 'Empacado' || order?.status === 'Despachado') && (
+                    <Button
+                      onClick={() => void handleRegenerateSnapshot()}
+                      variant="outline"
+                      size="sm"
+                      className="gap-1"
+                      disabled={isLoading}
+                      title="Regenerar snapshot de auditoría de cajas"
+                    >
+                      <RefreshCw className="h-4 w-4" />
+                      Regenerar
+                    </Button>
+                  )}
                 </div>
               </div>
               <ScrollArea className="flex-1">

@@ -9,21 +9,22 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Loader2, Download, Truck, Package, CheckCircle2, Clock } from 'lucide-react';
-import type { WholesaleOrder } from '@/types';
-import { getLabelsForOrder, getPackedItemsForOrder, getPackingSession, getShipments } from '@/app/actions';
+import { Loader2, Download, Truck, Package, CheckCircle2, Clock, RefreshCw } from 'lucide-react';
+import type { PackedItem, WholesaleOrder } from '@/types';
+import { getOrBuildCargueProgressReport } from '@/app/wholesaleReportActions';
+import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import {
-  buildCargueLoadLookup,
-  buildCargueProgress,
   cargueProgressToExcelRows,
   type CargueProgressReport,
 } from '@/lib/wholesalePacking';
+import { isWholesaleReportTerminal } from '@/lib/wholesaleReportSnapshots';
 
 interface CargueProgressDialogProps {
   order: WholesaleOrder | null;
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
+  initialPackedItems?: PackedItem[];
 }
 
 function formatLoadedAt(d: Date | null): string {
@@ -31,39 +32,52 @@ function formatLoadedAt(d: Date | null): string {
   return d.toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'medium' });
 }
 
-export function CargueProgressDialog({ order, isOpen, onOpenChange }: CargueProgressDialogProps) {
+export function CargueProgressDialog({ order, isOpen, onOpenChange, initialPackedItems }: CargueProgressDialogProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [report, setReport] = useState<CargueProgressReport | null>(null);
+  const [fromSnapshot, setFromSnapshot] = useState(false);
+  const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const { toast } = useToast();
+  const { role, user, userName } = useAuth();
+  const canRegenerate = role === 'admin' || role === 'supervisor';
 
   useEffect(() => {
     if (isOpen && order) {
-      void loadProgress();
+      void loadProgress(false);
     } else {
       setReport(null);
+      setFromSnapshot(false);
+      setGeneratedAt(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when dialog opens for an order
   }, [isOpen, order?.id]);
 
-  const loadProgress = async () => {
+  const loadProgress = async (forceRegenerate: boolean) => {
     if (!order) return;
     setIsLoading(true);
     try {
-      const [labelsRes, itemsRes, sessionRes, shipmentsRes] = await Promise.all([
-        getLabelsForOrder(order.id),
-        getPackedItemsForOrder(order.id),
-        getPackingSession(order.id),
-        getShipments(),
-      ]);
-      const loadLookup = buildCargueLoadLookup(shipmentsRes.data || []);
-      const next = buildCargueProgress({
+      const packedHint = (initialPackedItems || []).filter((p) => p.orderId === order.id);
+      const preferLive = order.status === 'En Cargue' || !isWholesaleReportTerminal('cargueProgress', order.status);
+      const result = await getOrBuildCargueProgressReport({
         orderId: order.id,
-        packedItems: itemsRes.data || [],
-        session: sessionRes.data || null,
-        labels: labelsRes.data || [],
-        loadLookup,
+        orderStatus: order.status,
+        forceRegenerate,
+        preferLive,
+        packedItemsHint: packedHint.length > 0 ? packedHint : null,
+        actor: { uid: user?.uid || null, name: userName || role || null },
       });
-      setReport(next);
+      if (result.error || !result.data) {
+        throw new Error(result.error || 'No se pudo cargar el progreso de cargue.');
+      }
+      setReport(result.data);
+      setFromSnapshot(!!result.fromSnapshot);
+      setGeneratedAt(result.generatedAt || null);
+      if (forceRegenerate) {
+        toast({
+          title: 'Snapshot regenerado',
+          description: 'Progreso de cargue actualizado desde datos en vivo.',
+        });
+      }
     } catch (error: any) {
       console.error('Error loading cargue progress:', error);
       toast({
@@ -113,6 +127,13 @@ export function CargueProgressDialog({ order, isOpen, onOpenChange }: CargueProg
     }
   };
 
+  const snapshotHint =
+    order?.status === 'En Cargue'
+      ? 'Vista en vivo (En Cargue).'
+      : fromSnapshot
+        ? `Snapshot${generatedAt ? ` · ${new Date(generatedAt).toLocaleString('es-CO')}` : ''}.`
+        : 'Generado en vivo.';
+
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
@@ -123,7 +144,8 @@ export function CargueProgressDialog({ order, isOpen, onOpenChange }: CargueProg
           </DialogTitle>
           <DialogDescription>
             {order?.cliente} · Estado: <Badge variant="outline">{order?.status}</Badge>
-            {' '}· Se actualiza con las etiquetas VXM escaneadas en despacho (también en curso).
+            {' '}· {snapshotHint}
+            {order?.status === 'En Cargue' ? ' Se actualiza con las etiquetas VXM escaneadas en despacho.' : ''}
           </DialogDescription>
         </DialogHeader>
 
@@ -278,14 +300,25 @@ export function CargueProgressDialog({ order, isOpen, onOpenChange }: CargueProg
           </div>
         )}
 
-        <DialogFooter className="gap-2 sm:gap-0">
+        <DialogFooter className="gap-2 sm:gap-0 flex-wrap">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cerrar
           </Button>
-          <Button variant="outline" onClick={() => void loadProgress()} disabled={isLoading}>
+          <Button variant="outline" onClick={() => void loadProgress(false)} disabled={isLoading}>
             {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Package className="mr-2 h-4 w-4" />}
             Actualizar
           </Button>
+          {canRegenerate && (
+            <Button
+              variant="outline"
+              onClick={() => void loadProgress(true)}
+              disabled={isLoading}
+              title="Regenerar snapshot desde datos en vivo (admin/supervisor)"
+            >
+              {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+              Regenerar
+            </Button>
+          )}
           <Button onClick={handleDownloadExcel} disabled={!report || isLoading} className="bg-amber-600 hover:bg-amber-700">
             <Download className="mr-2 h-4 w-4" />
             Descargar Excel
