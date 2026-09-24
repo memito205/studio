@@ -16,7 +16,7 @@ const PAUSE_LABELS: Record<string, string> = {
 };
 
 function isSinRemision(u: TalladoUnit): boolean {
-  if (u.source === 'catalogo' || u.source === 'recepcion') return true;
+  if (u.source === 'catalogo' || u.source === 'recepcion' || u.source === 'manual') return true;
   const dest = String(u.bodegaDestino || '')
     .trim()
     .toUpperCase()
@@ -181,6 +181,10 @@ export function downloadTalladoDayConsolidatedExcel(opts: {
     Referencia: u.referencia || '',
     Talla: u.talla || '',
     Cantidad: u.cantidad,
+    Esperado: u.source === 'manual' ? u.expectedQty ?? '' : '',
+    Delta: u.source === 'manual' ? u.qtyDelta ?? '' : '',
+    'Diff qty': u.source === 'manual' && u.hasQtyDiff ? 'Sí' : u.source === 'manual' ? 'No' : '',
+    Ubicación: u.ubicacion || '',
     Marca: reportMarca(u),
     Destino: reportDestino(u),
     Origen: u.source || '',
@@ -201,6 +205,21 @@ export function downloadTalladoDayConsolidatedExcel(opts: {
     Operario: u.userName,
   }));
 
+  const diffsManual = data.units
+    .filter((u) => u.source === 'manual' && (u.hasQtyDiff || (Number(u.qtyDelta) || 0) !== 0))
+    .map((u) => ({
+      Código: u.scanCode,
+      Referencia: u.referencia || '',
+      Ubicación: u.ubicacion || '',
+      Esperado: u.expectedQty ?? '',
+      Cantidad: u.cantidad,
+      Delta: u.qtyDelta ?? '',
+      Marca: u.marca || '',
+      Grupo: u.grupo,
+      Operario: u.userName,
+      Inicio: fmtLocal(u.startedAt),
+    }));
+
   const pausas = data.pauses.map((p) => ({
     Grupo: p.grupo,
     Tipo: PAUSE_LABELS[p.type] || p.type,
@@ -218,6 +237,11 @@ export function downloadTalladoDayConsolidatedExcel(opts: {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(marcas.length ? marcas : [{ Marca: '—' }]), 'Marcas');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(turnos.length ? turnos : [{ Grupo: '—' }]), 'Turnos');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(unidades.length ? unidades : [{ Código: '—' }]), 'Unidades');
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(diffsManual.length ? diffsManual : [{ Código: 'Sin diffs manual' }]),
+    'Diffs manual'
+  );
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(pausas.length ? pausas : [{ Tipo: '—' }]), 'Pausas');
 
   XLSX.writeFile(wb, `tallado_dia_consolidado_${data.dayKey}.xlsx`);

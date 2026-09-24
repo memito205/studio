@@ -89,6 +89,7 @@ import { downloadTalladoDayConsolidatedExcel } from '@/lib/talladoMercanciaExcel
 import { downloadTalladoCatalogTemplate, parseTalladoCatalogSheet, TALLADO_DEFAULT_DESTINO } from '@/lib/talladoCatalog';
 import { talladoLocalDayKey, talladoPauseMs, talladoPerPersonHour } from '@/lib/talladoProductivity';
 import { TalladoCameraScanner } from '@/components/tallado-mercancia/TalladoCameraScanner';
+import { TalladoCyclicLocationPanel } from '@/components/tallado-mercancia/TalladoCyclicLocationPanel';
 
 interface TalladoMercanciaModuleProps {
   onReturnToSuite: () => void;
@@ -199,7 +200,7 @@ function firstUnitStartIsoForShift(units: TalladoUnit[], shiftId: string, dayKey
 }
 
 function isTalladoSinRemision(u: Pick<TalladoUnit, 'source' | 'bodegaDestino' | 'marca'>): boolean {
-  if (u.source === 'catalogo' || u.source === 'recepcion') return true;
+  if (u.source === 'catalogo' || u.source === 'recepcion' || u.source === 'manual') return true;
   const dest = String(u.bodegaDestino || '').toUpperCase();
   const marca = String(u.marca || '').toUpperCase();
   return (
@@ -216,6 +217,10 @@ function displayTalladoMarca(u: TalladoUnit): string {
     const refs = String(u.referencia || '').trim();
     if (refs) return refs;
     return TALLADO_DEFAULT_DESTINO;
+  }
+  // Modo cíclico: mostrar marca del inventario (o SIN_MARCA), no el destino genérico.
+  if (u.source === 'manual') {
+    return String(u.marca || '').trim() || 'SIN_MARCA';
   }
   if (isTalladoSinRemision(u)) return TALLADO_DEFAULT_DESTINO;
   return u.marca || '—';
@@ -281,6 +286,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const scanRef = useRef<HTMLInputElement>(null);
 
   const [mainTab, setMainTab] = useState<'operario' | 'admin' | 'vivo'>(canAdmin ? 'operario' : 'operario');
+  const [operatorWorkMode, setOperatorWorkMode] = useState<'escanear' | 'ciclico'>('escanear');
   const [grupo, setGrupo] = useState('Grupo 1');
   const [peopleCount, setPeopleCount] = useState(1);
   const [shift, setShift] = useState<TalladoShift | null>(null);
@@ -1404,6 +1410,23 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       byMarca.set(m, (byMarca.get(m) || 0) + (Number(u.cantidad) || 0));
     }
 
+    const manualDiffRows = done
+      .filter((u) => u.source === 'manual' && (u.hasQtyDiff || (Number(u.qtyDelta) || 0) !== 0))
+      .map((u) => ({
+        id: u.id,
+        scanCode: u.scanCode,
+        referencia: u.referencia || '',
+        ubicacion: u.ubicacion || '',
+        expectedQty: u.expectedQty ?? 0,
+        cantidad: u.cantidad,
+        qtyDelta: u.qtyDelta ?? (Number(u.cantidad) || 0) - (Number(u.expectedQty) || 0),
+        marca: u.marca || '',
+        grupo: u.grupo,
+        userName: u.userName,
+        startedAt: u.startedAt,
+      }))
+      .sort((a, b) => Math.abs(b.qtyDelta) - Math.abs(a.qtyDelta));
+
     return {
       qty,
       doneCount: done.length,
@@ -1422,6 +1445,8 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         .sort((a, b) => b[1] - a[1])
         .slice(0, 12)
         .map(([marca, cant]) => ({ marca, cant })),
+      manualDiffRows,
+      manualDiffCount: manualDiffRows.length,
     };
   }, [dashUnits, dashPauses, dashShifts, dashDayKey]);
 
@@ -1879,6 +1904,46 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
 
               <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
                 <div className="space-y-4">
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={operatorWorkMode === 'escanear' ? 'default' : 'outline'}
+                      onClick={() => setOperatorWorkMode('escanear')}
+                    >
+                      <ScanLine className="mr-1.5 h-4 w-4" />
+                      Escanear
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={operatorWorkMode === 'ciclico' ? 'default' : 'outline'}
+                      onClick={() => setOperatorWorkMode('ciclico')}
+                    >
+                      Por ubicación (cíclico)
+                    </Button>
+                  </div>
+
+                  {operatorWorkMode === 'ciclico' && shift && user?.uid ? (
+                    <TalladoCyclicLocationPanel
+                      shiftId={shift.id}
+                      grupo={shift.grupo}
+                      userId={user.uid}
+                      userName={user.displayName || user.email || 'Operario'}
+                      disabled={!!openPause}
+                      onConfirmed={(u) => {
+                        setUnits((prev) => [u, ...prev.filter((x) => x.id !== u.id)]);
+                        showScanFlash(
+                          u.scanCode,
+                          `${u.referencia} @ ${u.ubicacion} · ${u.cantidad} und.`,
+                          'ok',
+                          2800
+                        );
+                      }}
+                    />
+                  ) : null}
+
+                  {operatorWorkMode === 'escanear' ? (
                   <Card>
                     <CardHeader className="pb-2">
                       <CardTitle className="text-base">Escanear código</CardTitle>
@@ -2046,6 +2111,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                       ) : null}
                     </CardContent>
                   </Card>
+                  ) : null}
 
                   <Card>
                     <CardHeader className="pb-2 flex flex-row flex-wrap items-center justify-between gap-2">
@@ -2097,6 +2163,11 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                                     {u.source === 'recepcion' ? (
                                       <Badge variant="outline" className="text-[10px] px-1 py-0">
                                         Rec #{u.unitNumber ?? u.scanCode}
+                                      </Badge>
+                                    ) : null}
+                                    {u.source === 'manual' ? (
+                                      <Badge variant="outline" className="text-[10px] px-1 py-0">
+                                        Cíclico{u.ubicacion ? ` · ${u.ubicacion}` : ''}
                                       </Badge>
                                     ) : null}
                                   </div>
@@ -2820,6 +2891,70 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                             <TableCell className="text-right tabular-nums">{r.qty}</TableCell>
                             <TableCell className="text-right tabular-nums">{r.units}</TableCell>
                             <TableCell className="text-right tabular-nums">{r.pauseMin}</TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">
+                    Diffs cíclico (manual){' '}
+                    {dashStats.manualDiffCount > 0 ? (
+                      <Badge variant="destructive" className="ml-2">
+                        {dashStats.manualDiffCount}
+                      </Badge>
+                    ) : null}
+                  </CardTitle>
+                  <CardDescription>
+                    Unidades source=manual con cantidad ≠ esperado (qtyDelta ≠ 0). El operario no ve estas señales.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Ref</TableHead>
+                        <TableHead>Ubicación</TableHead>
+                        <TableHead className="text-right">Esperado</TableHead>
+                        <TableHead className="text-right">Cant.</TableHead>
+                        <TableHead className="text-right">Δ</TableHead>
+                        <TableHead>Marca</TableHead>
+                        <TableHead>Grupo</TableHead>
+                        <TableHead>Operario</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {dashStats.manualDiffRows.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={8} className="text-center text-muted-foreground py-6">
+                            Sin diferencias manuales en {dashDayKey}.
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        dashStats.manualDiffRows.map((r) => (
+                          <TableRow key={r.id}>
+                            <TableCell className="font-mono text-xs">{r.referencia || r.scanCode}</TableCell>
+                            <TableCell className="text-sm">{r.ubicacion || '—'}</TableCell>
+                            <TableCell className="text-right tabular-nums">{r.expectedQty}</TableCell>
+                            <TableCell className="text-right tabular-nums">{r.cantidad}</TableCell>
+                            <TableCell
+                              className={`text-right tabular-nums font-semibold ${
+                                r.qtyDelta > 0
+                                  ? 'text-amber-700'
+                                  : r.qtyDelta < 0
+                                    ? 'text-destructive'
+                                    : ''
+                              }`}
+                            >
+                              {r.qtyDelta > 0 ? `+${r.qtyDelta}` : r.qtyDelta}
+                            </TableCell>
+                            <TableCell className="text-sm">{r.marca || '—'}</TableCell>
+                            <TableCell>{r.grupo}</TableCell>
+                            <TableCell className="text-xs">{r.userName}</TableCell>
                           </TableRow>
                         ))
                       )}

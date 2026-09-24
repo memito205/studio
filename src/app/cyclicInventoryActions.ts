@@ -265,7 +265,7 @@ async function mergeLatestCountsOntoLines(inventoryDate: string): Promise<void> 
  */
 export async function importCyclicInventoryForDate(input: {
   inventoryDate: string;
-  lines: { reference: string; size: string; location: string; expectedQty: number }[];
+  lines: { reference: string; size: string; location: string; expectedQty: number; marca?: string }[];
   uploadedBy: string;
   uploadedByName?: string;
   fileName?: string;
@@ -279,7 +279,13 @@ export async function importCyclicInventoryForDate(input: {
       return { success: false, error: 'Usuario no identificado.' };
     }
 
-    const normalized: { reference: string; size: string; location: string; expectedQty: number }[] = [];
+    const normalized: {
+      reference: string;
+      size: string;
+      location: string;
+      expectedQty: number;
+      marca: string;
+    }[] = [];
     for (const row of input.lines || []) {
       const reference = normRef(row.reference);
       if (!reference) continue;
@@ -288,6 +294,7 @@ export async function importCyclicInventoryForDate(input: {
         size: normSize(row.size),
         location: normLoc(row.location),
         expectedQty: Math.max(0, Math.floor(Number(row.expectedQty) || 0)),
+        marca: String(row.marca ?? '').trim(),
       });
     }
     if (normalized.length === 0) {
@@ -296,7 +303,7 @@ export async function importCyclicInventoryForDate(input: {
 
     const merged = new Map<
       string,
-      { reference: string; size: string; location: string; expectedQty: number }
+      { reference: string; size: string; location: string; expectedQty: number; marca: string }
     >();
     for (const row of normalized) {
       const k = lineRefLocSizeKey(row.reference, row.size, row.location);
@@ -307,9 +314,11 @@ export async function importCyclicInventoryForDate(input: {
           size: row.size,
           location: row.location,
           expectedQty: row.expectedQty,
+          marca: row.marca,
         });
       } else {
         cur.expectedQty += row.expectedQty;
+        if (!cur.marca && row.marca) cur.marca = row.marca;
       }
     }
     const consolidatedRows = [...merged.values()];
@@ -328,6 +337,7 @@ export async function importCyclicInventoryForDate(input: {
           size: row.size,
           location: row.location,
           expectedQty: row.expectedQty,
+          marca: row.marca || '',
           countedQty: null,
           countedAt: null,
           countedBy: null,
@@ -423,8 +433,11 @@ function consolidateLinesByRefLocSize(raw: CyclicInventoryLine[]): CyclicInvento
     }
     const sortedLines = [...g.lines].sort((a, b) => a.id.localeCompare(b.id));
     const primary = sortedLines[0];
+    const marca =
+      sortedLines.map((l) => String(l.marca || '').trim()).find((m) => !!m) || primary.marca || '';
     out.push({
       ...primary,
+      marca,
       expectedQty: sumExpected,
       countedQty: bestQty,
       countedAt: bestCountedAt ?? null,

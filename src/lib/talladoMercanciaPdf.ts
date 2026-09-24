@@ -13,7 +13,7 @@ const PAUSE_LABELS: Record<string, string> = {
 };
 
 function isSinRemision(u: TalladoUnit): boolean {
-  if (u.source === 'catalogo' || u.source === 'recepcion') return true;
+  if (u.source === 'catalogo' || u.source === 'recepcion' || u.source === 'manual') return true;
   const dest = String(u.bodegaDestino || '')
     .trim()
     .toUpperCase()
@@ -113,7 +113,9 @@ function writeUnitsAndPauses(
                     ? `Caja #${u.unitNumber ?? u.scanCode}${u.rkIdentifier ? ` · RK ${u.rkIdentifier}` : ''}`
                     : u.source === 'catalogo'
                       ? 'Catálogo'
-                      : '—',
+                      : u.source === 'manual'
+                        ? `Cíclico · ${u.ubicacion || '—'}`
+                        : '—',
           ]),
     styles: { fontSize: 7, cellPadding: 2.5 },
     headStyles: { fillColor: [30, 64, 175] },

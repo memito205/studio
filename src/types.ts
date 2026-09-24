@@ -1146,6 +1146,8 @@ export interface CyclicInventoryLine {
   countedQty: number | null;
   countedAt?: string | Date | null;
   countedBy?: string | null;
+  /** Marca opcional del Excel (columna Marca/brand). Vacío si no venía en el archivo. */
+  marca?: string;
   /** Si hay varias filas Firestore con la misma ref + talla + ubicación, aquí van todos los ids. */
   consolidatedLineIds?: string[];
 }
@@ -1667,8 +1669,8 @@ export interface TalladoUnit {
   bodegaOrigen?: string;
   marca: string;
   grupoMercancia?: string;
-  /** Origen del match: transfers, catálogo Excel o cruce recepción. */
-  source?: 'transfers' | 'catalogo' | 'recepcion';
+  /** Origen del match: transfers, catálogo Excel, cruce recepción o invent. cíclico manual. */
+  source?: 'transfers' | 'catalogo' | 'recepcion' | 'manual';
   referencia?: string;
   talla?: string;
   cantidad: number;
@@ -1702,6 +1704,18 @@ export interface TalladoUnit {
   deletedBy?: string;
   deletedByEmail?: string;
   deletedByName?: string;
+  /** Modo cíclico por ubicación: ubicación física del inventario del día. */
+  ubicacion?: string;
+  /** Fecha del inventario cíclico (AAAA-MM-DD) usada al confirmar. */
+  inventoryDate?: string;
+  /** Ids de cyclicInventoryLines agregados (ref+ubicación, sin talla). */
+  cyclicLineIds?: string[];
+  /** Cantidad esperada agregada al confirmar (suma expectedQty del grupo). */
+  expectedQty?: number;
+  /** cantidad − expectedQty (solo source manual). */
+  qtyDelta?: number;
+  /** true si qtyDelta !== 0 (señal admin; el operario no la ve). */
+  hasQtyDiff?: boolean;
 }
 
 export interface TalladoPause {
@@ -1758,7 +1772,7 @@ export interface TalladoTransferLookup {
   grupoMercancia?: string;
   cantidad: number;
   lineCount: number;
-  source?: 'transfers' | 'catalogo' | 'recepcion';
+  source?: 'transfers' | 'catalogo' | 'recepcion' | 'manual';
   referencia?: string;
   talla?: string;
   catalogId?: string;
@@ -1769,6 +1783,16 @@ export interface TalladoTransferLookup {
   yaEtiquetada?: boolean;
   /** Si el cliente ya eligió modo; si no, se sugiere por source. */
   etiquetadoModo?: TalladoEtiquetadoModo;
+}
+
+/** Línea agregada ref+ubicación (sin talla) para Tallado modo cíclico. */
+export interface TalladoCyclicAggLine {
+  reference: string;
+  location: string;
+  expectedQtyAgg: number;
+  cyclicLineIds: string[];
+  /** Primera marca no vacía del grupo; si ninguna → SIN_MARCA. */
+  marca: string;
 }
 
 // Types for Merchandise Reception

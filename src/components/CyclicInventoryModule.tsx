@@ -275,8 +275,20 @@ function readCell(row: Record<string, unknown>, ...aliases: string[]): string {
   return String(row[key] ?? '').trim();
 }
 
-function parseImportRows(raw: unknown[]): { reference: string; size: string; location: string; expectedQty: number }[] {
-  const out: { reference: string; size: string; location: string; expectedQty: number }[] = [];
+function parseImportRows(raw: unknown[]): {
+  reference: string;
+  size: string;
+  location: string;
+  expectedQty: number;
+  marca: string;
+}[] {
+  const out: {
+    reference: string;
+    size: string;
+    location: string;
+    expectedQty: number;
+    marca: string;
+  }[] = [];
   for (const row of raw) {
     if (!row || typeof row !== 'object') continue;
     const r = row as Record<string, unknown>;
@@ -286,6 +298,7 @@ function parseImportRows(raw: unknown[]): { reference: string; size: string; loc
       findColumnKeyIncludes(r, 'detalle_ext', 'detalle');
     const size = sizeKey ? String(r[sizeKey] ?? '').trim() : '';
     const location = readCell(r, 'ubicacion', 'location', 'loc', 'ubicación');
+    const marca = readCell(r, 'marca', 'brand', 'brandname', 'marca_producto');
     const qtyKey =
       findCaseInsensitiveKey(r, 'cantidad_esperada', 'esperada', 'qty', 'cantidad', 'stock', 'inventario', 'existencia') ||
       findCaseInsensitiveKey(r, 'cant') ||
@@ -308,6 +321,7 @@ function parseImportRows(raw: unknown[]): { reference: string; size: string; loc
       reference,
       size,
       location,
+      marca,
       expectedQty: Number.isFinite(expectedQty) && !Number.isNaN(expectedQty) ? Math.max(0, Math.floor(expectedQty)) : 0,
     });
   }
@@ -977,7 +991,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       const rows = parseImportRows(json);
       if (rows.length === 0) {
         throw new Error(
-          'No se encontraron filas válidas. Use columnas: Referencia, Talla, Ubicación, Cantidad esperada (filas con la misma ref + talla + ubicación se suman).'
+          'No se encontraron filas válidas. Use columnas: Referencia, Talla, Ubicación, Cantidad esperada (opcional: Marca). Filas con la misma ref + talla + ubicación se suman.',
         );
       }
       const res = await importCyclicInventoryForDate({
@@ -1421,6 +1435,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                       <TableRow>
                         <TableHead>Referencia</TableHead>
                         <TableHead>Talla</TableHead>
+                        <TableHead>Marca</TableHead>
                         <TableHead className="text-right">Esperada</TableHead>
                         <TableHead>Ubicación</TableHead>
                         <TableHead className="w-36">Físico</TableHead>
@@ -1431,7 +1446,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                     <TableBody>
                       {filteredLines.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
+                          <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
                             No hay líneas para esta fecha o ninguna coincide con el filtro. Pida a un supervisor que suba el Excel
                             del día.
                           </TableCell>
@@ -1441,6 +1456,9 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                           <TableRow key={line.id}>
                             <TableCell className="font-mono text-sm">{line.reference}</TableCell>
                             <TableCell className="text-sm text-muted-foreground">{formatSize(line.size)}</TableCell>
+                            <TableCell className="text-sm text-muted-foreground">
+                              {String(line.marca || '').trim() || '—'}
+                            </TableCell>
                             <TableCell className="text-right font-medium">
                               <div>{line.expectedQty}</div>
                               {(line.expectedQtyDelta ?? 0) !== 0 ? (

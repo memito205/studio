@@ -20,6 +20,7 @@ import { firestore } from '@/services/firebase';
 import type {
   TalladoCatalogImportRow,
   TalladoCatalogItem,
+  TalladoCyclicAggLine,
   TalladoEtiquetadoModo,
   TalladoPause,
   TalladoPauseType,
@@ -33,6 +34,8 @@ import type {
 } from '@/types';
 import { isTalladoSameLocalDay, talladoLocalDayKey, filterTalladoBundleToDay, talladoBogotaDayBounds } from '@/lib/talladoProductivity';
 import { resolveTalladoEtiquetadoModo } from '@/lib/talladoEtiquetado';
+import { getCyclicInventoryLinesForDate } from '@/app/cyclicInventoryActions';
+import { isValidInventoryDateKey } from '@/lib/cyclicInventoryDate';
 
 const SHIFTS_COL = 'talladoShifts';
 const UNITS_COL = 'talladoUnits';
@@ -2913,5 +2916,329 @@ export async function clearTalladoCatalog(): Promise<{
     return { success: true, deleted };
   } catch (error: any) {
     return { success: false, error: error?.message || 'No se pudo vaciar el catálogo.' };
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tallado 4º modo: por ubicación (inventario cíclico del día)                 */
+/* No altera scanTalladoCode / confirmTalladoUnitFromLookup.                   */
+/* -------------------------------------------------------------------------- */
+
+function talladoCyclicNormRef(s: string): string {
+  return String(s || '')
+    .trim()
+    .toUpperCase();
+}
+
+function talladoCyclicNormLoc(s: string): string {
+  return String(s || '').trim();
+}
+
+function talladoCyclicRefLocKey(reference: string, location: string): string {
+  return `${talladoCyclicNormRef(reference)}|${talladoCyclicNormLoc(location)}`;
+}
+
+function buildManualTalladoScanCode(inventoryDate: string, location: string, reference: string): string {
+  const loc = talladoCyclicNormLoc(location)
+    .toUpperCase()
+    .replace(/\|/g, '/');
+  const ref = talladoCyclicNormRef(reference).replace(/\|/g, '/');
+  return normalizeTalladoScanCode(`MAN|${inventoryDate}|${loc}|${ref}`);
+}
+
+function aggregateCyclicLinesByRefLoc(
+  lines: { id: string; reference: string; location: string; expectedQty: number; marca?: string; consolidatedLineIds?: string[] }[]
+): TalladoCyclicAggLine[] {
+  const groups = new Map<
+    string,
+    {
+      reference: string;
+      location: string;
+      expectedQtyAgg: number;
+      cyclicLineIds: string[];
+      marca: string;
+    }
+  >();
+  for (const line of lines) {
+    const reference = String(line.reference || '').trim();
+    const location = String(line.location || '').trim();
+    if (!reference) continue;
+    const key = talladoCyclicRefLocKey(reference, location);
+    const ids = [
+      ...(line.consolidatedLineIds && line.consolidatedLineIds.length
+        ? line.consolidatedLineIds
+        : [line.id]),
+    ].filter(Boolean);
+    const marca = String(line.marca || '').trim();
+    const cur = groups.get(key);
+    if (!cur) {
+      groups.set(key, {
+        reference: talladoCyclicNormRef(reference) || reference,
+        location,
+        expectedQtyAgg: Math.max(0, Math.floor(Number(line.expectedQty) || 0)),
+        cyclicLineIds: [...ids],
+        marca,
+      });
+    } else {
+      cur.expectedQtyAgg += Math.max(0, Math.floor(Number(line.expectedQty) || 0));
+      for (const id of ids) {
+        if (!cur.cyclicLineIds.includes(id)) cur.cyclicLineIds.push(id);
+      }
+      if (!cur.marca && marca) cur.marca = marca;
+    }
+  }
+  return [...groups.values()]
+    .map((g) => ({
+      ...g,
+      marca: g.marca || 'SIN_MARCA',
+    }))
+    .sort((a, b) =>
+      `${a.location}|${a.reference}`.localeCompare(`${b.location}|${b.reference}`, 'es')
+    );
+}
+
+/** Índice del inventario cíclico del día para autocomplete Ubicación / Referencia. */
+export async function getTalladoCyclicDayBundle(inventoryDate?: string): Promise<{
+  success: boolean;
+  inventoryDate?: string;
+  locations?: string[];
+  references?: string[];
+  lines?: TalladoCyclicAggLine[];
+  error?: string;
+}> {
+  try {
+    const dateKey = String(inventoryDate || talladoLocalDayKey()).trim();
+    if (!isValidInventoryDateKey(dateKey)) {
+      return { success: false, error: 'Fecha inválida. Use AAAA-MM-DD.' };
+    }
+    const res = await getCyclicInventoryLinesForDate(dateKey);
+    if (!res.success || !res.data) {
+      return { success: false, error: res.error || 'No se pudo cargar el inventario cíclico.' };
+    }
+    const lines = aggregateCyclicLinesByRefLoc(res.data);
+    const locSet = new Set<string>();
+    const refSet = new Set<string>();
+    for (const l of lines) {
+      if (l.location) locSet.add(l.location);
+      if (l.reference) refSet.add(l.reference);
+    }
+    const locations = [...locSet].sort((a, b) => a.localeCompare(b, 'es'));
+    const references = [...refSet].sort((a, b) => a.localeCompare(b, 'es'));
+    return { success: true, inventoryDate: dateKey, locations, references, lines };
+  } catch (error: any) {
+    console.error('getTalladoCyclicDayBundle:', error);
+    return { success: false, error: error?.message || 'Error al cargar inventario cíclico.' };
+  }
+}
+
+/** Líneas agregadas (sin talla) de una ubicación del día cíclico. */
+export async function getTalladoCyclicAggForLocation(input: {
+  inventoryDate?: string;
+  location: string;
+}): Promise<{
+  success: boolean;
+  inventoryDate?: string;
+  location?: string;
+  lines?: TalladoCyclicAggLine[];
+  error?: string;
+}> {
+  try {
+    const location = talladoCyclicNormLoc(input.location);
+    if (!location) return { success: false, error: 'Ubicación requerida.' };
+    const bundle = await getTalladoCyclicDayBundle(input.inventoryDate);
+    if (!bundle.success || !bundle.lines) {
+      return { success: false, error: bundle.error || 'Sin datos.' };
+    }
+    const want = talladoCyclicNormLoc(location);
+    const lines = bundle.lines.filter((l) => talladoCyclicNormLoc(l.location) === want);
+    if (lines.length === 0) {
+      return {
+        success: false,
+        error: `La ubicación "${location}" no está en el inventario cíclico de ${bundle.inventoryDate}.`,
+      };
+    }
+    return {
+      success: true,
+      inventoryDate: bundle.inventoryDate,
+      location: lines[0].location,
+      lines,
+    };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'Error al cargar ubicación.' };
+  }
+}
+
+/** Ubicaciones del día donde aparece una referencia (agregado sin talla). */
+export async function getTalladoCyclicLocationsForReference(input: {
+  inventoryDate?: string;
+  reference: string;
+}): Promise<{
+  success: boolean;
+  inventoryDate?: string;
+  reference?: string;
+  locations?: { location: string; expectedQtyAgg: number }[];
+  error?: string;
+}> {
+  try {
+    const reference = talladoCyclicNormRef(input.reference);
+    if (!reference) return { success: false, error: 'Referencia requerida.' };
+    const bundle = await getTalladoCyclicDayBundle(input.inventoryDate);
+    if (!bundle.success || !bundle.lines) {
+      return { success: false, error: bundle.error || 'Sin datos.' };
+    }
+    const matches = bundle.lines.filter((l) => talladoCyclicNormRef(l.reference) === reference);
+    if (matches.length === 0) {
+      return {
+        success: false,
+        error: `La referencia "${reference}" no está en el inventario cíclico de ${bundle.inventoryDate}.`,
+      };
+    }
+    const byLoc = new Map<string, number>();
+    for (const m of matches) {
+      const loc = m.location || 'SIN_UBICACION';
+      byLoc.set(loc, (byLoc.get(loc) || 0) + m.expectedQtyAgg);
+    }
+    const locations = [...byLoc.entries()]
+      .map(([location, expectedQtyAgg]) => ({ location, expectedQtyAgg }))
+      .sort((a, b) => a.location.localeCompare(b.location, 'es'));
+    return {
+      success: true,
+      inventoryDate: bundle.inventoryDate,
+      reference: matches[0].reference,
+      locations,
+    };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'Error al buscar referencia.' };
+  }
+}
+
+/**
+ * Confirma una línea agregada del inventario cíclico (source: manual).
+ * Etiquetado siempre Normal (sin campo etiquetadoModo). Mismas puertas de turno/pausa.
+ */
+export async function confirmTalladoManualFromCyclic(input: {
+  shiftId: string;
+  userId: string;
+  userName: string;
+  grupo: string;
+  inventoryDate: string;
+  location: string;
+  reference: string;
+  cantidad: number;
+  skipOpenPauseCheck?: boolean;
+}): Promise<{ success: boolean; data?: TalladoUnit; error?: string }> {
+  try {
+    if (!input.shiftId) return { success: false, error: 'Sin turno activo.' };
+    const gate = await requireActiveShiftForToday(input.shiftId);
+    if (!gate.ok) return { success: false, error: gate.error };
+
+    if (!input.skipOpenPauseCheck) {
+      const openPause = await getDocs(
+        query(
+          collection(firestore, PAUSES_COL),
+          where('shiftId', '==', input.shiftId),
+          where('status', '==', 'open'),
+          limit(1)
+        )
+      );
+      if (!openPause.empty) {
+        return { success: false, error: 'El grupo está en pausa. Reanude antes de confirmar.' };
+      }
+    }
+
+    const dateKey = String(input.inventoryDate || '').trim();
+    if (!isValidInventoryDateKey(dateKey)) {
+      return { success: false, error: 'Fecha de inventario inválida.' };
+    }
+    const location = talladoCyclicNormLoc(input.location);
+    const reference = talladoCyclicNormRef(input.reference);
+    if (!location) return { success: false, error: 'Ubicación requerida.' };
+    if (!reference) return { success: false, error: 'Referencia requerida.' };
+
+    const cantidad = Math.max(0, Math.floor(Number(input.cantidad) || 0));
+
+    const dayRes = await getCyclicInventoryLinesForDate(dateKey);
+    if (!dayRes.success || !dayRes.data) {
+      return { success: false, error: dayRes.error || 'No se pudo validar el inventario cíclico.' };
+    }
+    const agg = aggregateCyclicLinesByRefLoc(dayRes.data).find(
+      (l) =>
+        talladoCyclicNormRef(l.reference) === reference &&
+        talladoCyclicNormLoc(l.location) === location
+    );
+    if (!agg) {
+      return {
+        success: false,
+        error: `La combinación ${reference} @ ${location} no existe en el cíclico de ${dateKey}.`,
+      };
+    }
+
+    const scanCode = buildManualTalladoScanCode(dateKey, agg.location, agg.reference);
+    const prior = await findUnitsMatchingCode(scanCode);
+    const openUnits = prior.filter((u) => u.status === 'in_progress');
+    if (openUnits.length > 0) {
+      const existing = openUnits[0];
+      return {
+        success: false,
+        error: `El código ${existing.scanCode} quedó abierto (legado). Escanee de nuevo para cerrarlo y luego registre uno nuevo.`,
+      };
+    }
+    const doneSame = prior.find((u) => u.status === 'done' && !u.packingUnitId && unitMatchesScanCode(u, scanCode));
+    if (doneSame) {
+      return { success: false, error: alreadyDoneError(doneSame) };
+    }
+
+    const expectedQty = Math.max(0, Math.floor(Number(agg.expectedQtyAgg) || 0));
+    const qtyDelta = cantidad - expectedQty;
+    const hasQtyDiff = qtyDelta !== 0;
+    const marca = String(agg.marca || '').trim() || 'SIN_MARCA';
+    const now = new Date().toISOString();
+    const dayKey = talladoLocalDayKey(new Date(now));
+    const ref = doc(collection(firestore, UNITS_COL));
+    const row: TalladoUnit = {
+      id: ref.id,
+      shiftId: input.shiftId,
+      grupo: input.grupo,
+      scanCode,
+      transferIds: [],
+      numeroTF: agg.reference,
+      bodegaDestino: DEFAULT_DESTINO_SIN_REMISION,
+      marca,
+      source: 'manual',
+      referencia: agg.reference,
+      talla: '',
+      cantidad,
+      startedAt: now,
+      endedAt: now,
+      dayKey,
+      durationMs: 0,
+      durationNetMs: 0,
+      userId: input.userId,
+      userName: input.userName || 'Operario',
+      status: 'done',
+      ubicacion: agg.location,
+      inventoryDate: dateKey,
+      cyclicLineIds: agg.cyclicLineIds,
+      expectedQty,
+      qtyDelta,
+      hasQtyDiff,
+      // etiquetadoModo omitido a propósito → Normal
+    };
+
+    try {
+      await setDoc(ref, stripUndefinedDeep(row) as TalladoUnit);
+    } catch (writeErr: any) {
+      console.error('confirmTalladoManualFromCyclic write failed:', writeErr);
+      return {
+        success: false,
+        error:
+          writeErr?.message ||
+          'Error al guardar la lectura en Firestore. No se confirmó; reintente.',
+      };
+    }
+    return { success: true, data: row };
+  } catch (error: any) {
+    console.error('confirmTalladoManualFromCyclic:', error);
+    return { success: false, error: error?.message || 'No se pudo confirmar la línea cíclica.' };
   }
 }
