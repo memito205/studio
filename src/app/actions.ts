@@ -6,7 +6,8 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, PackingSettings, DEFAULT_PACKING_PRODUCTIVITY_GOAL, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DeliveryManifestDraft, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem, WarehouseLocationConfig, AltCodeReceipt, AltCodeReceiptStatus } from "@/types";
+import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, PackingSettings, DEFAULT_PACKING_PRODUCTIVITY_GOAL, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DeliveryManifestDraft, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem, WarehouseLocationConfig, AltCodeReceipt, AltCodeReceiptStatus, VerificationItem, VerificationCargueInfo, VerificationDispatchClass, VerificationDispatchClose } from "@/types";
+import { normalizeDestination } from '@/components/dispatch-manager/utils/excel';
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -6289,6 +6290,224 @@ export async function updateVerificationSession(sessionId: string, sessionData: 
     console.error("Error updating verification session:", error);
     return { success: false, error: error.message };
   }
+}
+
+// --- Despacho con doble lectura (alistamiento + cargue) ---
+
+const loadScanDocId = (codigo: string) => String(codigo || '').trim().toUpperCase().replace(/\//g, '-').slice(0, 300) || 'SIN-CODIGO';
+
+const withoutUndefined = (data: any): any => {
+    if (Array.isArray(data)) return data.map(withoutUndefined);
+    if (data && typeof data === 'object' && Object.getPrototypeOf(data) === Object.prototype) {
+        const out: Record<string, any> = {};
+        Object.entries(data).forEach(([k, v]) => {
+            if (v !== undefined) out[k] = withoutUndefined(v);
+        });
+        return out;
+    }
+    return data;
+};
+
+const toSessionWrite = (data: any) => convertDatesToTimestamps(withoutUndefined(data));
+
+export async function startVerificationCargue(
+    sessionId: string,
+    payload: {
+        placa: string;
+        conductor: string;
+        auxiliares?: string;
+        results: VerificationItem[];
+        stats: SavedVerification['stats'];
+        outOfPlanReads: VerificationItem[];
+    },
+    startedByName?: string
+): Promise<{ success: boolean; cargue?: VerificationCargueInfo; error?: string }> {
+    const placa = String(payload.placa || '').trim().toUpperCase();
+    const conductor = String(payload.conductor || '').trim();
+    if (!placa || !conductor) return { success: false, error: 'Placa y conductor son obligatorios.' };
+    try {
+        const cargue: VerificationCargueInfo = {
+            placa,
+            conductor,
+            auxiliares: String(payload.auxiliares || '').trim(),
+            startedAt: new Date(),
+            startedByName: startedByName || '',
+        };
+        await updateDoc(
+            doc(firestore, 'verificationSessions', sessionId),
+            toSessionWrite({
+                results: payload.results,
+                stats: payload.stats,
+                outOfPlanReads: payload.outOfPlanReads,
+                status: 'in-progress',
+                phase: 'cargue',
+                cargue,
+            })
+        );
+        return { success: true, cargue };
+    } catch (error: any) {
+        console.error('Error starting cargue:', error);
+        return { success: false, error: error.message || 'No se pudo iniciar el cargue.' };
+    }
+}
+
+/** Registra una lectura en el camión (un documento por código; no pisa lecturas de otros equipos). */
+export async function recordVerificationLoadScan(
+    sessionId: string,
+    scan: { codigo: string; inPicking: boolean; item?: VerificationItem },
+    actor?: TransferActor
+): Promise<{ success: boolean; duplicate?: boolean; error?: string }> {
+    try {
+        const ref = doc(firestore, 'verificationSessions', sessionId, 'loadScans', loadScanDocId(scan.codigo));
+        const existing = await getDoc(ref);
+        if (existing.exists()) return { success: false, duplicate: true };
+        await setDoc(
+            ref,
+            toSessionWrite({
+                codigo: scan.codigo,
+                at: new Date(),
+                byId: actor?.userId || '',
+                byName: actor?.displayName || '',
+                inPicking: !!scan.inPicking,
+                ...(scan.item ? { item: scan.item } : {}),
+            })
+        );
+        return { success: true };
+    } catch (error: any) {
+        console.error('Error recording load scan:', error);
+        return { success: false, error: error.message || 'No se pudo registrar la lectura de cargue.' };
+    }
+}
+
+export async function removeVerificationLoadScan(sessionId: string, codigo: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        await deleteDoc(doc(firestore, 'verificationSessions', sessionId, 'loadScans', loadScanDocId(codigo)));
+        return { success: true };
+    } catch (error: any) {
+        return { success: false, error: error.message || 'No se pudo quitar la lectura.' };
+    }
+}
+
+/**
+ * Cierra el despacho: crea la relación de entrega solo con lo leído en el camión
+ * (pasa a Enviado a Destino) y guarda la clasificación de cada ítem en la sesión.
+ */
+export async function closeVerificationDispatch(
+    sessionId: string,
+    payload: {
+        sessionName: string;
+        results: VerificationItem[];
+        stats: SavedVerification['stats'];
+        loaded: Array<{ codigo: string; tf: string; destino: string }>;
+        summary: Record<VerificationDispatchClass, number>;
+        cargue: VerificationCargueInfo;
+    },
+    actor?: TransferActor
+): Promise<{
+    success: boolean;
+    manifestId?: number;
+    manifestDocId?: string;
+    skipped?: Array<{ codigo: string; tf: string; destino: string; reason: string }>;
+    altRows?: Array<{ codigoAlterno: string; numeroTF: string; destino: string; cantidad: number }>;
+    error?: string;
+}> {
+    try {
+        const tfs = Array.from(new Set(payload.loaded.map((l) => String(l.tf || '').trim()).filter(Boolean)));
+        const linesByTf = new Map<string, Array<{ id: string; data: any }>>();
+        for (let i = 0; i < tfs.length; i += 30) {
+            const snap = await getDocs(query(collection(firestore, 'transfers'), where('numeroTF', 'in', tfs.slice(i, i + 30))));
+            snap.forEach((d) => {
+                const tf = String(d.data().numeroTF || '').trim();
+                if (!linesByTf.has(tf)) linesByTf.set(tf, []);
+                linesByTf.get(tf)!.push({ id: d.id, data: d.data() });
+            });
+        }
+
+        const eligible: TransferStatus[] = ['Recibido en Bodega', 'Validado Supervisor'];
+        const transferIds = new Set<string>();
+        const destinations: Record<string, number> = {};
+        let totalUnits = 0;
+        const skipped: Array<{ codigo: string; tf: string; destino: string; reason: string }> = [];
+        const altMap = new Map<string, { codigoAlterno: string; numeroTF: string; destino: string; cantidad: number }>();
+
+        payload.loaded.forEach((l) => {
+            const lines = (linesByTf.get(String(l.tf || '').trim()) || []).filter(
+                (line) => normalizeDestination(String(line.data.bodegaDestino || '')) === l.destino
+            );
+            if (lines.length === 0) {
+                skipped.push({ ...l, reason: 'TF no encontrada en transferencias' });
+                return;
+            }
+            const ok = lines.filter((line) => eligible.includes(line.data.status));
+            if (ok.length === 0) {
+                const states = Array.from(new Set(lines.map((line) => line.data.status))).join(', ');
+                skipped.push({ ...l, reason: `Estado ${states}` });
+                return;
+            }
+            ok.forEach((line) => {
+                if (transferIds.has(line.id)) return;
+                transferIds.add(line.id);
+                const qty = Number(line.data.cantidad || 0) || 0;
+                const dest = String(line.data.bodegaDestino || 'N/A');
+                destinations[dest] = (destinations[dest] || 0) + qty;
+                totalUnits += qty;
+                const alt = String(line.data.codigoAlterno || '').trim();
+                if (alt) {
+                    const key = `${alt}|${line.data.numeroTF}|${dest}`;
+                    const row = altMap.get(key) || { codigoAlterno: alt, numeroTF: String(line.data.numeroTF), destino: dest, cantidad: 0 };
+                    row.cantidad += qty;
+                    altMap.set(key, row);
+                }
+            });
+        });
+
+        if (transferIds.size === 0) {
+            return { success: false, skipped, error: 'Ninguna TF cargada está en Recibido en Bodega; no se creó la relación.' };
+        }
+
+        const manifestRes = await createDeliveryManifest(
+            {
+                resource: payload.cargue.placa,
+                driver: payload.cargue.conductor,
+                assistants: payload.cargue.auxiliares || '',
+                transferIds: Array.from(transferIds),
+                summary: { totalTransfers: totalUnits, destinations },
+                verificationSessionId: sessionId,
+                verificationName: payload.sessionName,
+            },
+            actor
+        );
+        if (!manifestRes.success || !manifestRes.id) {
+            return { success: false, skipped, error: manifestRes.error || 'No se pudo crear la relación de entrega.' };
+        }
+        const manifestSnap = await getDoc(doc(firestore, 'deliveryManifests', manifestRes.id));
+        const manifestId = Number(manifestSnap.data()?.manifestId || 0) || undefined;
+
+        const dispatchClose: VerificationDispatchClose = {
+            closedAt: new Date(),
+            closedByName: actor?.displayName || '',
+            manifestDocId: manifestRes.id,
+            ...(manifestId ? { manifestId } : {}),
+            summary: payload.summary,
+            skipped,
+        };
+        await updateDoc(
+            doc(firestore, 'verificationSessions', sessionId),
+            toSessionWrite({
+                results: payload.results,
+                stats: payload.stats,
+                outOfPlanReads: [],
+                status: 'completed',
+                phase: 'cerrada',
+                dispatchClose,
+            })
+        );
+
+        return { success: true, manifestId, manifestDocId: manifestRes.id, skipped, altRows: Array.from(altMap.values()) };
+    } catch (error: any) {
+        console.error('Error closing verification dispatch:', error);
+        return { success: false, error: error.message || 'No se pudo cerrar el despacho.' };
+    }
 }
 
 export async function deleteVerificationSession(sessionId: string): Promise<{ success: boolean; error?: string }> {

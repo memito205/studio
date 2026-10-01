@@ -524,6 +524,9 @@ export interface DeliveryManifest {
         totalTransfers: number;
         destinations: { [key: string]: number };
     };
+    /** Relación generada al cerrar un despacho del Gestor (alistamiento + cargue). */
+    verificationSessionId?: string;
+    verificationName?: string;
 }
 
 /** Borrador de cargue / relación de entrega (autoguardado antes de confirmar). */
@@ -2444,6 +2447,50 @@ export interface VerificationItem {
   notFoundAt?: Date;
   /** Agregada por lectura fuera del plan (excluida por límite o no incluida en el cruce). */
   outOfPlan?: boolean;
+  /** Cargue: lectura en el camión. */
+  loadedAt?: Date;
+  loadedByName?: string;
+  /** Clasificación al cerrar el despacho con cargue. */
+  dispatchClass?: VerificationDispatchClass;
+  notLoadedReason?: string;
+}
+
+export type VerificationDispatchClass =
+  | 'ambas'
+  | 'solo_cargue'
+  | 'solo_alistamiento'
+  | 'no_encontrada'
+  | 'sin_leer';
+
+/** Lectura de cargue (subcolección `verificationSessions/{id}/loadScans`). */
+export interface VerificationLoadScan {
+  id: string;
+  codigo: string;
+  at: Date;
+  byId?: string;
+  byName?: string;
+  /** Ya estaba leída en alistamiento al cargarla. */
+  inPicking: boolean;
+  /** Ítem completo cuando se agregó en cargue sin estar en la lista. */
+  item?: VerificationItem;
+}
+
+export interface VerificationCargueInfo {
+  placa: string;
+  conductor: string;
+  auxiliares?: string;
+  startedAt: Date;
+  startedByName?: string;
+}
+
+export interface VerificationDispatchClose {
+  closedAt: Date;
+  closedByName?: string;
+  manifestDocId?: string;
+  manifestId?: number;
+  summary: Record<VerificationDispatchClass, number>;
+  /** TF cargadas que no se pudieron incluir en la relación (estado distinto, no encontradas). */
+  skipped?: Array<{ codigo: string; tf: string; destino: string; reason: string }>;
 }
 
 export interface SavedVerification {
@@ -2471,6 +2518,11 @@ export interface SavedVerification {
   status?: 'pending' | 'in-progress' | 'completed';
   /** Lecturas fuera del plan aún no agregadas (el supervisor las agrega al final). */
   outOfPlanReads?: VerificationItem[];
+  /** Sesiones nuevas: el cierre exige pasar por cargue (doble lectura) y crea la relación de entrega. */
+  requiresCargue?: boolean;
+  phase?: 'alistamiento' | 'cargue' | 'cerrada';
+  cargue?: VerificationCargueInfo;
+  dispatchClose?: VerificationDispatchClose;
 }
 
 

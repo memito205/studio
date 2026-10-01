@@ -17,7 +17,8 @@ import {
   PlayCircle,
   ArrowLeft,
   AlertTriangle,
-  FileArchive
+  FileArchive,
+  Truck
 } from 'lucide-react';
 import type { VerificationItem, SavedVerification } from '@/types';
 import { parseVerificationExcel, exportVerificationToExcel } from '@/components/dispatch-manager/utils/excel';
@@ -27,10 +28,10 @@ import {
   getOtherSessionsForTf,
   normalizeTfKey,
 } from '@/components/dispatch-manager/utils/duplicateVerifications';
-import { saveVerificationSession, loadVerificationSessions, updateVerificationSession, lookupTransferForVerification } from '@/app/actions';
-import { normalizeDestination } from '@/components/dispatch-manager/utils/excel';
-import { weekdayShortEs } from '@/lib/warehouseLocations';
+import { saveVerificationSession, loadVerificationSessions, updateVerificationSession, startVerificationCargue } from '@/app/actions';
+import { arrivalLabel, findItemForCode, normalizeScanCode, resolveOutOfPlanCode } from '@/components/dispatch-manager/utils/verificationScan';
 import { Checkbox } from '@/components/ui/checkbox';
+import VerificationCargue from './VerificationCargue';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
@@ -104,38 +105,6 @@ const SaveVerificationDialog: React.FC<{
     );
 };
 
-const upperKey = (value: unknown) => String(value ?? '').trim().toUpperCase();
-const altKey = (value: unknown) => upperKey(value).replace(/\s+/g, '');
-
-type ItemMatch = { index: number } | { ambiguous: string[] } | null;
-
-/** Busca una lectura por código de rótulo, número de TF solo o código alterno. */
-const findItemForCode = (items: VerificationItem[], code: string): ItemMatch => {
-  const exact = items.findIndex((item) => upperKey(item.codigo) === code);
-  if (exact !== -1) return { index: exact };
-
-  const byTf = items
-    .map((item, index) => ({ item, index }))
-    .filter(({ item }) => upperKey(item.tftCruce) === code || upperKey(item.tfOriginal) === code);
-  if (byTf.length > 0) {
-    const pending = byTf.filter(({ item }) => !item.scanned);
-    const pool = pending.length > 0 ? pending : byTf;
-    const destinos = Array.from(new Set(pool.map(({ item }) => item.destino)));
-    if (destinos.length > 1) return { ambiguous: destinos };
-    return { index: pool[0].index };
-  }
-
-  const alt = altKey(code);
-  const byAlt = items.findIndex((item) => item.codigoAlterno && altKey(item.codigoAlterno) === alt);
-  return byAlt !== -1 ? { index: byAlt } : null;
-};
-
-const arrivalLabel = (iso?: string) => {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '—' : `${weekdayShortEs(d)} ${format(d, 'dd/MM')}`;
-};
-
 const ScanningInterface: React.FC<{
   session: SavedVerification;
   allSessions: SavedVerification[];
@@ -162,9 +131,14 @@ const ScanningInterface: React.FC<{
 
   const inputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
-  const { role } = useAuth();
+  const { role, user, userName } = useAuth();
   const canCloseDispatch = role === 'admin' || role === 'supervisor';
   const isSessionOpen = session.status !== 'completed';
+  const requiresCargue = !!session.requiresCargue;
+  const [cargueInfo, setCargueInfo] = useState(session.phase === 'cargue' ? session.cargue : undefined);
+  const [cargueDialogOpen, setCargueDialogOpen] = useState(false);
+  const [cargueForm, setCargueForm] = useState({ placa: '', conductor: '', auxiliares: '' });
+  const [isStartingCargue, setIsStartingCargue] = useState(false);
   
   const [filters, setFilters] = useState({ codigo: '', destino: '', tft: '', status: 'all' });
 
@@ -256,84 +230,18 @@ const ScanningInterface: React.FC<{
       setLastScanStatus({ type: 'duplicate', message: 'YA ESTÁ EN LECTURAS FUERA DEL PLAN', code });
       return;
     }
-    const excluded = session.excludedResults || [];
-    const excludedMatch = findItemForCode(excluded, code);
-    if (excludedMatch && 'index' in excludedMatch) {
-      registerOutOfPlan(excluded[excludedMatch.index], code, 'Estaba excluida por el límite del destino.');
-      return;
-    }
-
     setIsLookingUp(true);
-    const res = await lookupTransferForVerification(code);
+    const res = await resolveOutOfPlanCode(code, {
+      excluded: session.excludedResults || [],
+      sessionDestinos,
+      existing: [data, outOfPlanReads],
+    });
     setIsLookingUp(false);
-    if (res.error) {
-      setLastScanStatus({ type: 'error', message: 'ERROR CONSULTANDO LA TF', code, detail: res.error });
+    if (!res.ok) {
+      setLastScanStatus({ type: res.type, message: res.message, code, detail: res.detail });
       return;
     }
-    if (res.pendingAlt) {
-      setLastScanStatus({
-        type: 'error',
-        message: 'CÓDIGO ALTERNO SIN TF — NO SE PUEDE DESPACHAR',
-        code,
-        detail: `Déjela en su ubicación (${res.pendingAlt.ubicacion || 'sin ubicación'}) hasta que aparezca la TF.`,
-      });
-      return;
-    }
-    if (res.groups.length === 0) {
-      setLastScanStatus({ type: 'error', message: '¡CÓDIGO NO ENCONTRADO!', code });
-      return;
-    }
-    const received = res.groups.filter((g) => g.statuses.includes('Recibido en Bodega'));
-    if (received.length === 0) {
-      const states = Array.from(new Set(res.groups.flatMap((g) => g.statuses))).join(', ');
-      setLastScanStatus({ type: 'error', message: 'TF NO ESTÁ EN RECIBIDO EN BODEGA', code, detail: `Estado actual: ${states}.` });
-      return;
-    }
-    const inSessionDest = received.filter((g) => sessionDestinos.has(normalizeDestination(g.bodegaDestino)));
-    if (inSessionDest.length === 0) {
-      setLastScanStatus({
-        type: 'error',
-        message: 'DESTINO FUERA DE ESTA VALIDACIÓN',
-        code,
-        detail: `La TF va para ${received.map((g) => normalizeDestination(g.bodegaDestino)).join(', ')}.`,
-      });
-      return;
-    }
-    if (inSessionDest.length > 1) {
-      setLastScanStatus({
-        type: 'error',
-        message: 'TF EN VARIOS DESTINOS — LEA EL RÓTULO DESTINO-TF',
-        code,
-        detail: inSessionDest.map((g) => normalizeDestination(g.bodegaDestino)).join(', '),
-      });
-      return;
-    }
-    const g = inSessionDest[0];
-    const destino = normalizeDestination(g.bodegaDestino);
-    const codigo = `${g.bodegaDestino.trim()}-${g.numeroTF}`.toUpperCase().replace(/'/g, '-');
-    if (findItemForCode(outOfPlanReads, codigo) || findItemForCode(data, codigo)) {
-      setLastScanStatus({ type: 'duplicate', message: '¡CÓDIGO YA ESCANEADO!', code });
-      return;
-    }
-    registerOutOfPlan(
-      {
-        codigo,
-        tftCruce: g.numeroTF,
-        fechaTft: g.fecha ? format(new Date(g.fecha), 'dd/MM/yyyy') : '-',
-        cantTft: String(g.cantidad || ''),
-        destino,
-        empacador: '',
-        contenidoOriginal: g.numeroTF,
-        tfOriginal: g.numeroTF,
-        scanned: true,
-        ...(g.marca ? { marca: g.marca } : {}),
-        ...(g.ubicacion ? { ubicacion: g.ubicacion } : {}),
-        ...(g.fechaLlegada ? { fechaLlegada: g.fechaLlegada } : {}),
-        ...(g.codigoAlterno ? { codigoAlterno: g.codigoAlterno } : {}),
-      },
-      code,
-      'No estaba en el cruce de esta validación.'
-    );
+    registerOutOfPlan(res.item, code, res.reason);
   };
 
   const addOutOfPlanToList = (items: VerificationItem[]) => {
@@ -362,7 +270,7 @@ const ScanningInterface: React.FC<{
 
   const handleScan = async (e: React.FormEvent) => {
     e.preventDefault();
-    const code = scanInput.trim().toUpperCase().replace(/['\/]/g, '-');
+    const code = normalizeScanCode(scanInput);
     if (!code || isLookingUp) return;
     setScanInput('');
 
@@ -520,7 +428,25 @@ const ScanningInterface: React.FC<{
     onBack();
   };
 
-  
+  const handleStartCargue = async () => {
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    setIsStartingCargue(true);
+    const res = await startVerificationCargue(
+      session.id,
+      { ...cargueForm, results: data, stats, outOfPlanReads },
+      (userName || '').trim() || user?.displayName || user?.email || ''
+    );
+    setIsStartingCargue(false);
+    if (!res.success || !res.cargue) {
+      toast({ variant: 'destructive', title: 'No se pudo pasar a cargue', description: res.error });
+      return;
+    }
+    setSaveStatus('saved');
+    setCargueDialogOpen(false);
+    setCargueInfo(res.cargue);
+    toast({ title: 'Cargue iniciado', description: `Placa ${res.cargue.placa}. Lea cada caja al subirla al camión.` });
+  };
+
   const renderSaveStatus = () => {
     switch (saveStatus) {
         case 'saving':
@@ -535,6 +461,10 @@ const ScanningInterface: React.FC<{
             return null;
     }
   };
+
+  if (cargueInfo && isSessionOpen) {
+    return <VerificationCargue session={{ ...session, cargue: cargueInfo }} data={data} onBack={onBack} />;
+  }
 
   return (
      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -587,7 +517,56 @@ const ScanningInterface: React.FC<{
                   <div><span className="text-sm font-medium text-muted-foreground">Fuera del plan</span><p className="text-2xl font-bold text-blue-700">{outOfPlanAdded}{outOfPlanReads.length > 0 ? ` (+${outOfPlanReads.length})` : ''}</p></div>
                 </div>
                 <div className="flex flex-col gap-2 mt-6">
-                    {canCloseDispatch && isSessionOpen ? (
+                    {requiresCargue && canCloseDispatch && isSessionOpen ? (
+                      <>
+                        <Button
+                          disabled={isSaving || isStartingCargue || stats.scanned === 0}
+                          className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                          onClick={() => setCargueDialogOpen(true)}
+                        >
+                          <Truck size={14} className="mr-2" /> Pasar a cargue
+                        </Button>
+                        <p className="text-[10px] text-muted-foreground leading-snug">
+                          Al terminar el alistamiento, pase a cargue: se lee cada caja al subirla al camión y al cerrar se crea la relación de entrega.
+                        </p>
+                        <Dialog open={cargueDialogOpen} onOpenChange={(o) => !isStartingCargue && setCargueDialogOpen(o)}>
+                          <DialogContent>
+                            <DialogHeader>
+                              <DialogTitle>Pasar a cargue</DialogTitle>
+                              <DialogDescription>
+                                Alistadas {stats.scanned} de {stats.total}
+                                {stats.pending > 0 ? ` (${stats.pending} sin leer${notFoundCount > 0 ? `, ${notFoundCount} no encontradas` : ''})` : ''}.
+                                {outOfPlanReads.length > 0 && ` Hay ${outOfPlanReads.length} lectura(s) fuera del plan sin agregar; no pasarán a cargue.`}
+                              </DialogDescription>
+                            </DialogHeader>
+                            <div className="grid gap-3 py-2">
+                              <div>
+                                <Label htmlFor="cargue-placa">Placa *</Label>
+                                <Input id="cargue-placa" value={cargueForm.placa} onChange={(e) => setCargueForm((p) => ({ ...p, placa: e.target.value.toUpperCase() }))} />
+                              </div>
+                              <div>
+                                <Label htmlFor="cargue-conductor">Conductor *</Label>
+                                <Input id="cargue-conductor" value={cargueForm.conductor} onChange={(e) => setCargueForm((p) => ({ ...p, conductor: e.target.value }))} />
+                              </div>
+                              <div>
+                                <Label htmlFor="cargue-aux">Auxiliares</Label>
+                                <Input id="cargue-aux" value={cargueForm.auxiliares} onChange={(e) => setCargueForm((p) => ({ ...p, auxiliares: e.target.value }))} />
+                              </div>
+                            </div>
+                            <DialogFooter>
+                              <Button variant="ghost" onClick={() => setCargueDialogOpen(false)} disabled={isStartingCargue}>Cancelar</Button>
+                              <Button
+                                onClick={() => void handleStartCargue()}
+                                disabled={isStartingCargue || !cargueForm.placa.trim() || !cargueForm.conductor.trim()}
+                              >
+                                {isStartingCargue && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                                Iniciar cargue
+                              </Button>
+                            </DialogFooter>
+                          </DialogContent>
+                        </Dialog>
+                      </>
+                    ) : canCloseDispatch && isSessionOpen ? (
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button
@@ -633,7 +612,7 @@ const ScanningInterface: React.FC<{
                           {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <PackageCheck size={14} className="mr-2"/>} Finalizar Verificación
                       </Button>
                     )}
-                    {canCloseDispatch && isSessionOpen && (
+                    {!requiresCargue && canCloseDispatch && isSessionOpen && (
                       <p className="text-[10px] text-muted-foreground leading-snug">
                         Genera el <strong>ZIP real / cerrado</strong> con lo pistoleado. El ZIP planificado es el del cruce al guardar la sesión.
                       </p>
@@ -858,7 +837,16 @@ const SupervisorView: React.FC<{
                                 <TableRow key={session.id}>
                                     <TableCell>{session.name}</TableCell>
                                     <TableCell>{format(new Date(session.createdAt), 'dd/MM/yyyy')}</TableCell>
-                                    <TableCell><Badge variant={session.status === 'in-progress' ? 'default' : 'secondary'}>{session.status}</Badge></TableCell>
+                                    <TableCell>
+                                      <div className="flex flex-wrap gap-1">
+                                        <Badge variant={session.status === 'in-progress' ? 'default' : 'secondary'}>{session.status}</Badge>
+                                        {session.requiresCargue && (
+                                          <Badge className={session.phase === 'cargue' ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-800'}>
+                                            {session.phase === 'cargue' ? `Cargue · ${session.cargue?.placa || ''}` : 'Alistamiento'}
+                                          </Badge>
+                                        )}
+                                      </div>
+                                    </TableCell>
                                     <TableCell>{session.stats.scanned} / {session.stats.total}</TableCell>
                                     <TableCell><Button onClick={() => onSelectSession(session)}><PlayCircle className="mr-2 h-4 w-4"/> Iniciar/Continuar</Button></TableCell>
                                 </TableRow>

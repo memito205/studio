@@ -567,7 +567,9 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
             scanned: 0,
             pending: verificationItems.length
         },
-        status: 'pending'
+        status: 'pending',
+        requiresCargue: true,
+        phase: 'alistamiento',
     };
 
     const result = await saveVerificationSession(sessionData);
