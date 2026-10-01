@@ -12,7 +12,11 @@ import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { TransferEntry, TransferStatus, DeliveryManifest, DeliveryManifestDraft, UserRole, CollectionLog, AppUser, RouteEntry, TransferActor } from '@/types';
-import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, findMixedStatusTransfers, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders, repairSingleTransferStorageOrder, reindexTransferStorageOrdersByDestination, getOpenDeliveryManifestDrafts, upsertDeliveryManifestDraft, closeDeliveryManifestDraft, discardDeliveryManifestDraft } from '@/app/actions';
+import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, findMixedStatusTransfers, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders, repairSingleTransferStorageOrder, reindexTransferStorageOrdersByDestination, getOpenDeliveryManifestDrafts, upsertDeliveryManifestDraft, closeDeliveryManifestDraft, discardDeliveryManifestDraft, receiveTransfersInWarehouse, getWarehouseLocationConfig, loadOperatorMappings } from '@/app/actions';
+import type { WarehouseLocationConfig } from '@/types';
+import { EMPTY_WAREHOUSE_LOCATION_CONFIG, suggestLocationsForDestino, suggestLocationsForDestinos, weekdayShortEs } from '@/lib/warehouseLocations';
+import { SearchableSelect, type SearchableOption } from './SearchableSelect';
+import { WarehouseLocationsDialog } from './WarehouseLocationsDialog';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -137,6 +141,8 @@ const buildFilteredTransfersExportRows = (
         Estado: t.status,
         'Placa Recolección': placaMap.get(t.id) || '',
         'Fecha Recibido': t.recibidoAt ? format(t.recibidoAt, 'dd/MM/yyyy HH:mm') : '',
+        'Ubicación': t.ubicacion || '',
+        'Recibió (empacador)': t.recibidoPackerName || '',
         'Fecha Enviado': t.enviadoAt ? format(t.enviadoAt, 'dd/MM/yyyy HH:mm') : '',
     }));
 
@@ -186,6 +192,12 @@ const DESTINOS_PREDEFINIDOS = [
     "B21", "B22", "B23", "MOLINOS", "BODEGA PIONEROS", "OFICINA"
 ].sort();
 
+const toValidDate = (value: unknown): Date | null => {
+  if (!value) return null;
+  const d = value instanceof Date ? value : new Date(value as any);
+  return Number.isNaN(d.getTime()) ? null : d;
+};
+
 const TransferLabel: React.FC<{ transfer: TransferEntry; hideBarcode?: boolean }> = ({ transfer, hideBarcode }) => {
   const barcodeRef = React.useRef<HTMLCanvasElement>(null);
   const barcodeValue = `${transfer.bodegaDestino}-${transfer.numeroTF}`.toUpperCase();
@@ -197,58 +209,56 @@ const TransferLabel: React.FC<{ transfer: TransferEntry; hideBarcode?: boolean }
           format: "CODE128",
           displayValue: false,
           margin: 0,
-          height: 18,
-          width: 1.5,
+          height: 16,
+          width: 1.2,
         });
       } catch (e) {
         console.error('Error generating barcode', e);
       }
     }
-  }, [barcodeValue]);
+  }, [barcodeValue, hideBarcode]);
+
+  const arrivalDate = toValidDate(transfer.recibidoAt) || toValidDate(transfer.fecha);
+  const tfDate = toValidDate(transfer.fecha);
 
   return (
-    <div id={`transfer-label-to-print-${transfer.id}`} className="px-3 py-1 border border-gray-300 rounded-lg bg-white text-black flex flex-col overflow-hidden" style={{ width: '10cm', height: '4.8cm' }}>
-      
-      {/* Header with Integrated Order */}
-      <div className="flex justify-between items-center border-b pb-1 mb-1">
-        <div className="flex flex-col">
-          <p className="text-[9px] font-bold">TRANSFERENCIA INTERNA</p>
-          <p className="text-[8px] text-gray-500 font-sans">{format(transfer.fecha, "dd/MM/yyyy")}</p>
+    <div id={`transfer-label-to-print-${transfer.id}`} className="border border-gray-300 rounded-lg bg-white text-black flex overflow-hidden font-sans" style={{ width: '10cm', height: '4.8cm' }}>
+      {/* Bloque del día de llegada (reemplaza el color: se lee de lejos en B/N) */}
+      <div className="bg-black text-white flex flex-col items-center justify-center shrink-0" style={{ width: '2.5cm' }}>
+        <span className="text-[30px] font-black leading-none">{arrivalDate ? weekdayShortEs(arrivalDate) : '--'}</span>
+        <span className="text-[24px] font-black leading-none mt-1">{arrivalDate ? format(arrivalDate, 'dd/MM') : '--/--'}</span>
+      </div>
+
+      <div className="flex-1 min-w-0 flex flex-col px-2 py-1">
+        <div className="flex justify-between items-start">
+          <div className="leading-none">
+            <p className="text-[8px] font-bold">TRANSFERENCIA INTERNA</p>
+            {tfDate && <p className="text-[7px] text-gray-600 mt-0.5">TF del {format(tfDate, 'dd/MM/yyyy')}</p>}
+          </div>
+          {transfer.storageOrder && (
+            <div className="bg-black text-white px-1.5 py-0.5 rounded-sm text-[9px] font-black leading-none whitespace-nowrap">
+              ORDEN {transfer.storageOrder}
+            </div>
+          )}
         </div>
-        
-        {transfer.storageOrder && (
-          <div className="bg-black text-white px-3 py-1 rounded flex flex-col items-center">
-            <span className="text-[7px] font-bold leading-none">ORDEN</span>
-            <span className="text-lg font-black leading-none">{transfer.storageOrder}</span>
+
+        <div className="text-[26px] font-black leading-none tracking-wider mt-0.5 truncate">TF {transfer.numeroTF}</div>
+
+        <div className="flex justify-between items-baseline mt-0.5">
+          <span className="text-[13px] font-bold leading-none truncate">DESTINO {transfer.bodegaDestino}</span>
+          <span className="text-[11px] font-bold leading-none whitespace-nowrap">UNID {transfer.cantidad || 1}</span>
+        </div>
+
+        {transfer.ubicacion && (
+          <div className="border-2 border-black rounded-sm px-1.5 py-0.5 mt-1 text-[13px] font-black leading-none truncate">
+            UBIC: {transfer.ubicacion}
           </div>
         )}
 
-        <div className="text-right flex flex-col items-end">
-            <p className="text-[9px] font-bold uppercase text-gray-500">Destino</p>
-            <p className="text-lg font-bold leading-none">{transfer.bodegaDestino}</p>
-        </div>
-      </div>
-      
-      {/* Main content area */}
-      <div className="flex-grow flex flex-col items-center justify-center">
-        {/* Unidades and Info */}
-        <div className="w-full flex justify-end pr-4 -mt-1">
-           <div className="flex flex-col items-end">
-              <span className="text-[8px] font-bold uppercase text-gray-400">Unidades</span>
-              <span className="text-base font-bold leading-none">{transfer.cantidad || 1}</span>
-           </div>
-        </div>
-        
-        {/* Large TF number */}
-        <div className="text-center font-sans text-3xl font-bold tracking-[0.2em] -mt-1 mb-1">
-          {transfer.numeroTF}
-        </div>
-        
-        {/* Barcode and its text */}
         {!hideBarcode && (
-          <div className="flex flex-col items-center">
-            <canvas ref={barcodeRef} />
-            <div className="font-sans text-[9px] font-bold tracking-[0.3em] leading-none mt-1">{barcodeValue}</div>
+          <div className="flex flex-col items-center mt-auto">
+            <canvas ref={barcodeRef} style={{ maxWidth: '100%', height: 'auto' }} />
+            <div className="text-[8px] font-bold tracking-[0.25em] leading-none mt-0.5">{barcodeValue}</div>
           </div>
         )}
       </div>
@@ -746,13 +756,16 @@ const ManifestDetailsDialog: React.FC<{
     </Dialog>
   );
 };
+const RECEPTION_PACKER_STORAGE_KEY = 'suite.transfers.receptionPackerId';
+
 const WarehouseReceptionView: React.FC<{
   collectionLogs: CollectionLog[];
   onRefresh: () => void;
 }> = ({ collectionLogs, onRefresh }) => {
-    const { user, userName } = useAuth();
+    const { user, userName, role } = useAuth();
     const { toast } = useToast();
     const actor = useMemo(() => toTransferActor(user, userName), [user, userName]);
+    const canManageLocations = role === 'admin' || role === 'supervisor';
     const [isLoading, setIsLoading] = useState(false);
     const [searchPlate, setSearchPlate] = useState('');
     const [foundTransfers, setFoundTransfers] = useState<TransferEntry[]>([]);
@@ -763,6 +776,57 @@ const WarehouseReceptionView: React.FC<{
     // This state is for the individual label dialog
     const [isLabelDialogOpen, setIsLabelDialogOpen] = useState(false);
     const [transferForLabel, setTransferForLabel] = useState<TransferEntry | null>(null);
+
+    const [locationConfig, setLocationConfig] = useState<WarehouseLocationConfig>(EMPTY_WAREHOUSE_LOCATION_CONFIG);
+    const [isLocationsDialogOpen, setIsLocationsDialogOpen] = useState(false);
+    const [packerOptions, setPackerOptions] = useState<SearchableOption[]>([]);
+    const [packerId, setPackerId] = useState('');
+    const [lotLocation, setLotLocation] = useState('');
+    const [rowLocations, setRowLocations] = useState<Record<string, string>>({});
+
+    useEffect(() => {
+        getWarehouseLocationConfig().then((res) => {
+            if (res.data) setLocationConfig(res.data);
+        });
+        loadOperatorMappings().then((res) => {
+            if (!res.data) return;
+            const opts = Object.entries(res.data)
+                .filter(([id, name]) => id && name)
+                .map(([id, name]) => ({ value: id, label: String(name).trim().toUpperCase() }))
+                .sort((a, b) => a.label.localeCompare(b.label, 'es'));
+            setPackerOptions(opts);
+        });
+        try {
+            setPackerId(window.localStorage.getItem(RECEPTION_PACKER_STORAGE_KEY) || '');
+        } catch {
+            // localStorage no disponible
+        }
+    }, []);
+
+    const handlePackerChange = (value: string) => {
+        setPackerId(value);
+        try {
+            if (value) window.localStorage.setItem(RECEPTION_PACKER_STORAGE_KEY, value);
+            else window.localStorage.removeItem(RECEPTION_PACKER_STORAGE_KEY);
+        } catch {
+            // localStorage no disponible
+        }
+    };
+
+    const locationOptions = useMemo<SearchableOption[]>(
+        () => locationConfig.codes.map((c) => ({ value: c, label: c })),
+        [locationConfig.codes]
+    );
+    const groupedFound = useMemo(() => groupTransfersByTF(foundTransfers), [foundTransfers]);
+    const selectedGroups = useMemo(
+        () => groupedFound.filter((g) => g.allIds.some((id) => selectedTransfers.has(id))),
+        [groupedFound, selectedTransfers]
+    );
+    const lotSuggestions = useMemo(
+        () => suggestLocationsForDestinos(locationConfig, (selectedGroups.length > 0 ? selectedGroups : groupedFound).map((g) => g.bodegaDestino)),
+        [locationConfig, selectedGroups, groupedFound]
+    );
+    const effectiveLocation = (group: GroupedTransfer) => rowLocations[group.id] || lotLocation || '';
 
 
     const handleSearchByPlate = async () => {
@@ -797,6 +861,8 @@ const WarehouseReceptionView: React.FC<{
         }
 
         setSelectedTransfers(new Set()); // Reset selection
+        setRowLocations({});
+        setLotLocation('');
         setIsLoading(false);
     };
     
@@ -839,16 +905,46 @@ const WarehouseReceptionView: React.FC<{
             toast({ variant: 'destructive', title: 'Sin selección', description: 'Debe seleccionar al menos una transferencia.' });
             return;
         }
+        const packer = packerOptions.find((p) => p.value === packerId);
+        if (packerOptions.length > 0 && !packer) {
+            toast({ variant: 'destructive', title: 'Falta el empacador', description: 'Seleccione quién recibe (Maestro de Empacadores).' });
+            return;
+        }
+        if (locationConfig.codes.length > 0) {
+            const missing = selectedGroups.filter((g) => !effectiveLocation(g));
+            if (missing.length > 0) {
+                toast({
+                    variant: 'destructive',
+                    title: 'Falta ubicación',
+                    description: `Asigne ubicación del lote o por fila a: ${missing.slice(0, 5).map((g) => g.numeroTF).join(', ')}${missing.length > 5 ? '…' : ''}`,
+                });
+                return;
+            }
+        }
         setIsLoading(true);
-        const transferIdsToUpdate = Array.from(selectedTransfers);
-        const result = await batchUpdateTransferStatus(transferIdsToUpdate, 'Recibido en Bodega', actor);
+        const groupsToReceive = selectedGroups.map((g) => ({
+            group: g,
+            ids: g.allIds.filter((id) => selectedTransfers.has(id)),
+            ubicacion: effectiveLocation(g),
+        }));
+        const transferIdsToUpdate = groupsToReceive.flatMap((g) => g.ids);
+        const result = await receiveTransfersInWarehouse(
+            groupsToReceive.map(({ ids, ubicacion }) => ({ ids, ubicacion })),
+            actor,
+            packer ? { id: packer.value, name: packer.label } : undefined
+        );
         if (result.success) {
             toast({ title: 'Éxito', description: `${transferIdsToUpdate.length} transferencias marcadas como 'Recibido en Bodega'.` });
             
             if (andPrint) {
-                const transfersToUpdate = foundTransfers.filter(t => transferIdsToUpdate.includes(t.id));
-                // Consolidation: Group by TF before setting state for printing
-                setTransfersToPrint(groupTransfersByTF(transfersToUpdate));
+                const receivedAt = new Date();
+                setTransfersToPrint(
+                    groupsToReceive.map(({ group, ubicacion }) => ({
+                        ...group,
+                        recibidoAt: receivedAt,
+                        ubicacion: ubicacion || undefined,
+                    }))
+                );
             }
             
             onRefresh();
@@ -961,9 +1057,43 @@ const WarehouseReceptionView: React.FC<{
                             </Button>
                         </div>
                     </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-3 items-end rounded-md border bg-muted/30 p-3">
+                        <div className="space-y-1">
+                            <Label className="text-xs">Quién recibe (empacador)</Label>
+                            <SearchableSelect
+                                value={packerId}
+                                onChange={handlePackerChange}
+                                options={packerOptions}
+                                placeholder={packerOptions.length ? 'Escriba su nombre...' : 'Sin Maestro de Empacadores'}
+                                searchPlaceholder="Buscar empacador..."
+                                emptyText="No está en el Maestro de Empacadores."
+                                disabled={packerOptions.length === 0}
+                            />
+                        </div>
+                        <div className="space-y-1">
+                            <Label className="text-xs">Ubicación del lote (aplica a todas las TF sin ubicación propia)</Label>
+                            <SearchableSelect
+                                value={lotLocation}
+                                onChange={setLotLocation}
+                                options={locationOptions}
+                                suggestedValues={lotSuggestions}
+                                suggestedLabel="Sugeridas por destino"
+                                placeholder={locationOptions.length ? 'Seleccionar ubicación...' : 'Sin maestro de ubicaciones'}
+                                searchPlaceholder="Buscar ubicación..."
+                                disabled={locationOptions.length === 0}
+                                allowClear
+                            />
+                        </div>
+                        {canManageLocations && (
+                            <Button type="button" variant="outline" onClick={() => setIsLocationsDialogOpen(true)}>
+                                <ListOrdered className="mr-2 h-4 w-4" /> Ubicaciones ({locationConfig.codes.length})
+                            </Button>
+                        )}
+                    </div>
                     
                     <div className="border rounded-md max-h-[60vh] overflow-auto">
-                        <Table className="min-w-[1000px]">
+                        <Table className="min-w-[1100px]">
                             <TableHeader>
                                 <TableRow>
                                     <TableHead className="w-12">
@@ -977,13 +1107,14 @@ const WarehouseReceptionView: React.FC<{
                                     <TableHead># TF</TableHead>
                                     <TableHead>Origen</TableHead>
                                     <TableHead>Destino</TableHead>
+                                    <TableHead className="w-[240px]">Ubicación</TableHead>
                                     <TableHead>Estado Actual</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
                                 {isLoading ? (
-                                    <TableRow><TableCell colSpan={5} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
-                                ) : foundTransfers.length > 0 ? groupTransfersByTF(foundTransfers).map(t => (
+                                    <TableRow><TableCell colSpan={7} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
+                                ) : foundTransfers.length > 0 ? groupedFound.map(t => (
                                     <TableRow key={t.id} data-state={selectedTransfers.has(t.id) ? "selected" : ""}>
                                         <TableCell>
                                             <Checkbox 
@@ -997,16 +1128,37 @@ const WarehouseReceptionView: React.FC<{
                                         <TableCell className="font-medium">{t.numeroTF}</TableCell>
                                         <TableCell>{t.bodegaOrigen}</TableCell>
                                         <TableCell>{t.bodegaDestino}</TableCell>
+                                        <TableCell>
+                                            <SearchableSelect
+                                                value={rowLocations[t.id] || ''}
+                                                onChange={(v) => setRowLocations(prev => ({ ...prev, [t.id]: v }))}
+                                                options={locationOptions}
+                                                suggestedValues={suggestLocationsForDestino(locationConfig, t.bodegaDestino)}
+                                                suggestedLabel={`Sugeridas ${t.bodegaDestino}`}
+                                                placeholder={lotLocation ? `Lote: ${lotLocation}` : 'Seleccionar...'}
+                                                searchPlaceholder="Buscar ubicación..."
+                                                disabled={locationOptions.length === 0}
+                                                allowClear
+                                                className="h-8 text-xs"
+                                            />
+                                        </TableCell>
                                         <TableCell>{getStatusBadge(t.status)}</TableCell>
                                     </TableRow>
                                 )) : (
-                                    <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground">Ingrese una placa y presione buscar para ver los resultados.</TableCell></TableRow>
+                                    <TableRow><TableCell colSpan={7} className="h-24 text-center text-muted-foreground">Ingrese una placa y presione buscar para ver los resultados.</TableCell></TableRow>
                                 )}
                             </TableBody>
                         </Table>
                     </div>
                 </CardContent>
             </Card>
+            <WarehouseLocationsDialog
+                open={isLocationsDialogOpen}
+                onOpenChange={setIsLocationsDialogOpen}
+                config={locationConfig}
+                onSaved={setLocationConfig}
+                updatedByName={userName || user?.email || undefined}
+            />
             <div style={{ position: 'absolute', left: '-9999px', top: 0 }}>
                 {transfersToPrint.map(transfer => (
                     <TransferLabel key={transfer.id} transfer={transfer} />

@@ -489,6 +489,12 @@ export interface TransferEntry {
   deliveredAt?: Date;
   manualStatusChangeJustification?: string;
   storageOrder?: string;
+  /** Ubicación física en bodega (maestro de ubicaciones). */
+  ubicacion?: string;
+  ubicacionAt?: Date;
+  /** Empacador (Maestro de Empacadores) que recibió/ubicó en bodega. */
+  recibidoPackerId?: string;
+  recibidoPackerName?: string;
   recolectadoBy?: string;
   recolectadoByName?: string;
   validatedBy?: string;
@@ -543,6 +549,15 @@ export interface CollectionLog {
     destinations: { [key: string]: number };
   };
   recolectadoPor: string;
+}
+
+/** Maestro de ubicaciones de bodega (doc `settings/warehouseLocations`). */
+export interface WarehouseLocationConfig {
+  codes: string[];
+  /** Destino normalizado → prefijos de ubicación sugeridos (ej. B8 → ["208-"]). */
+  prefixes: Record<string, string[]>;
+  updatedAt?: string;
+  updatedByName?: string;
 }
 
 

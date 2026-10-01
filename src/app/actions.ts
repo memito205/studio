@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, PackingSettings, DEFAULT_PACKING_PRODUCTIVITY_GOAL, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DeliveryManifestDraft, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem } from "@/types";
+import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, PackingSettings, DEFAULT_PACKING_PRODUCTIVITY_GOAL, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DeliveryManifestDraft, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem, WarehouseLocationConfig } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -4919,6 +4919,84 @@ export async function batchUpdateTransferStatus(
     } catch (error: any) {
         console.error('Error in batch update transfer status:', error);
         return { success: false, error: error.message };
+    }
+}
+
+/** Recepción en bodega con ubicación por TF y empacador que recibió. */
+export async function receiveTransfersInWarehouse(
+    groups: Array<{ ids: string[]; ubicacion?: string }>,
+    actor?: TransferActor,
+    packer?: { id: string; name: string }
+): Promise<{ success: boolean; count?: number; error?: string }> {
+    const entries = groups.flatMap((g) =>
+        g.ids.filter(Boolean).map((id) => ({ id, ubicacion: (g.ubicacion || '').trim().toUpperCase() }))
+    );
+    if (entries.length === 0) return { success: true, count: 0 };
+    try {
+        const now = Timestamp.now();
+        const CHUNK = 450;
+        for (let i = 0; i < entries.length; i += CHUNK) {
+            const batch = writeBatch(firestore);
+            entries.slice(i, i + CHUNK).forEach(({ id, ubicacion }) => {
+                const updates: Record<string, unknown> = { status: 'Recibido en Bodega', recibidoAt: now };
+                if (ubicacion) {
+                    updates.ubicacion = ubicacion;
+                    updates.ubicacionAt = now;
+                }
+                if (packer?.id) {
+                    updates.recibidoPackerId = packer.id;
+                    updates.recibidoPackerName = packer.name;
+                }
+                applyTransferStatusActor(updates, 'Recibido en Bodega', actor, undefined, now);
+                batch.update(doc(firestore, 'transfers', id), updates as DocumentData);
+            });
+            await batch.commit();
+        }
+        return { success: true, count: entries.length };
+    } catch (error: any) {
+        console.error('Error receiving transfers in warehouse:', error);
+        return { success: false, error: error.message || 'No se pudo recibir en bodega.' };
+    }
+}
+
+export async function getWarehouseLocationConfig(): Promise<{ data?: WarehouseLocationConfig; error?: string }> {
+    try {
+        const snap = await getDoc(doc(firestore, 'settings', 'warehouseLocations'));
+        if (!snap.exists()) return { data: { codes: [], prefixes: {} } };
+        const raw = snap.data() as any;
+        return {
+            data: {
+                codes: Array.isArray(raw.codes) ? raw.codes.map(String) : [],
+                prefixes: raw.prefixes && typeof raw.prefixes === 'object' ? raw.prefixes : {},
+                updatedAt: raw.updatedAt?.toDate ? raw.updatedAt.toDate().toISOString() : undefined,
+                updatedByName: raw.updatedByName || undefined,
+            },
+        };
+    } catch (error: any) {
+        console.error('Error loading warehouse locations:', error);
+        return { error: error.message || 'No se pudo cargar el maestro de ubicaciones.' };
+    }
+}
+
+/** Reemplaza las partes enviadas (codes y/o prefixes) del maestro de ubicaciones. */
+export async function saveWarehouseLocationConfig(
+    patch: { codes?: string[]; prefixes?: Record<string, string[]> },
+    updatedByName?: string
+): Promise<{ success: boolean; error?: string }> {
+    try {
+        const ref = doc(firestore, 'settings', 'warehouseLocations');
+        const snap = await getDoc(ref);
+        const current = snap.exists() ? (snap.data() as any) : {};
+        await setDoc(ref, {
+            codes: patch.codes ?? (Array.isArray(current.codes) ? current.codes : []),
+            prefixes: patch.prefixes ?? (current.prefixes || {}),
+            updatedAt: Timestamp.now(),
+            updatedByName: updatedByName || '',
+        });
+        return { success: true };
+    } catch (error: any) {
+        console.error('Error saving warehouse locations:', error);
+        return { success: false, error: error.message || 'No se pudo guardar el maestro de ubicaciones.' };
     }
 }
 
