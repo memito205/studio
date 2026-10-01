@@ -118,7 +118,20 @@ export const AdminDataManagement: React.FC = () => {
         throw new Error("El archivo está vacío o no contiene referencias válidas.");
       }
 
-      const referencesToSave = lines.map(line => ({
+      const existingIds = new Set(references.map(r => r.id));
+      const uniqueLines = [...new Set(lines)];
+      const newLines = uniqueLines.filter(line => !existingIds.has(line));
+      const alreadyCount = uniqueLines.length - newLines.length;
+
+      if (newLines.length === 0) {
+        toast({
+          title: "Sin referencias nuevas",
+          description: `Las ${uniqueLines.length} referencias del archivo ya estaban en la base. No se escribió nada.`,
+        });
+        return;
+      }
+
+      const referencesToSave = newLines.map(line => ({
         id: line,
         sourceFile: file.name,
       }));
@@ -128,9 +141,13 @@ export const AdminDataManagement: React.FC = () => {
       if (result.success) {
         toast({
           title: "Carga Exitosa",
-          description: `${result.processedCount} referencias fueron actualizadas o añadidas.`,
+          description: `${result.processedCount} referencia(s) nueva(s) agregada(s) · ${alreadyCount} ya existían (sin reescribir).`,
         });
-        fetchReferences();
+        const now = new Date();
+        setReferences(prev => [
+          ...referencesToSave.map(r => ({ id: r.id, lastUploaded: now, sourceFile: r.sourceFile })),
+          ...prev,
+        ]);
       } else {
         throw new Error(result.error);
       }

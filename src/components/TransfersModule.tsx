@@ -3050,7 +3050,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
           getCollectionLogs(),
           getTransfersByStatus('Recolectado en Ruta'),
           getTransfersByStatus('Validado Supervisor'),
-          getTransfersByStatus('Recibido en Bodega')
+          getTransfersByStatus('Recibido en Bodega', 10000)
         ]);
         
         if (usersResult) {

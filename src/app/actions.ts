@@ -4662,9 +4662,9 @@ export async function getTfKeysCollectedOnRoute(): Promise<{ keys?: string[]; er
     }
 }
 
-export async function getTransfersByStatus(status: TransferStatus): Promise<{ data?: TransferEntry[]; error?: string }> {
+export async function getTransfersByStatus(status: TransferStatus, maxItems = 1000): Promise<{ data?: TransferEntry[]; error?: string }> {
     try {
-        const q = query(collection(firestore, "transfers"), where("status", "==", status), limit(1000));
+        const q = query(collection(firestore, "transfers"), where("status", "==", status), limit(Math.min(Math.max(maxItems, 1), 10000)));
         const querySnapshot = await getDocs(q);
         const transfers = querySnapshot.docs.map(doc => ({
             id: doc.id,
