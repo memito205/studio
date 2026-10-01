@@ -495,6 +495,8 @@ export interface TransferEntry {
   /** Empacador (Maestro de Empacadores) que recibió/ubicó en bodega. */
   recibidoPackerId?: string;
   recibidoPackerName?: string;
+  /** Registro de código alterno con el que se enlazó esta línea. */
+  altCodeReceiptId?: string;
   recolectadoBy?: string;
   recolectadoByName?: string;
   validatedBy?: string;
@@ -549,6 +551,31 @@ export interface CollectionLog {
     destinations: { [key: string]: number };
   };
   recolectadoPor: string;
+}
+
+export type AltCodeReceiptStatus = 'pending' | 'linked' | 'void';
+
+/** Caja de código alterno (BDIST/BDIS2/BODPP) registrada al llegar, antes de existir la TF. */
+export interface AltCodeReceipt {
+  id: string;
+  codigoAlterno: string;
+  ubicacion?: string;
+  destinoHint?: string;
+  packerId?: string;
+  packerName?: string;
+  registeredAt: string;
+  registeredBy?: string;
+  registeredByName?: string;
+  status: AltCodeReceiptStatus;
+  linkedTransferIds?: string[];
+  linkedNumeroTF?: string;
+  linkedDestino?: string;
+  linkedAt?: string;
+  /** Ej. "TF ya despachada" cuando todas las líneas estaban en estado final. */
+  linkNote?: string;
+  voidReason?: string;
+  voidedAt?: string;
+  voidedByName?: string;
 }
 
 /** Maestro de ubicaciones de bodega (doc `settings/warehouseLocations`). */

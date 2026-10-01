@@ -17,6 +17,7 @@ import type { WarehouseLocationConfig } from '@/types';
 import { EMPTY_WAREHOUSE_LOCATION_CONFIG, suggestLocationsForDestino, suggestLocationsForDestinos, weekdayShortEs } from '@/lib/warehouseLocations';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect';
 import { WarehouseLocationsDialog } from './WarehouseLocationsDialog';
+import { AltCodeRegistrationView } from './AltCodeRegistrationView';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -1919,6 +1920,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                 <TabsTrigger value="collection">Registrar Recolección</TabsTrigger>
                 {isAdmin && <TabsTrigger value="validation">Validación Supervisor</TabsTrigger>}
                 <TabsTrigger value="reception">Recepción en Bodega</TabsTrigger>
+                <TabsTrigger value="alt_code">Registrar Código Alterno</TabsTrigger>
                 {isAdmin && (
                     <>
                         <TabsTrigger value="manifest">Crear Relación de Entrega</TabsTrigger>
@@ -1929,6 +1931,9 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             </TabsList>
             <TabsContent value="reception" className="mt-6">
                  <WarehouseReceptionView onRefresh={onRefresh} collectionLogs={collectionLogs} />
+            </TabsContent>
+            <TabsContent value="alt_code" className="mt-6">
+                 <AltCodeRegistrationView />
             </TabsContent>
              <TabsContent value="validation" className="mt-6">
                 <Card>
@@ -3396,7 +3401,11 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
           if(result.summary) {
               toast({ 
                   title: "Sincronización Completa", 
-                  description: `Analizador: ${analysisResult.count || 0} TFs. Operación: ${result.summary.added} nuevas / ${result.summary.updated} actualizadas.`, 
+                  description: `Analizador: ${analysisResult.count || 0} TFs. Operación: ${result.summary.added} nuevas / ${result.summary.updated} actualizadas.${
+                    result.summary.altLinked || result.summary.altPending
+                      ? ` Código alterno: ${result.summary.altLinked || 0} enlazadas · ${result.summary.altPending || 0} pendientes sin TF.`
+                      : ''
+                  }`, 
               });
               fetchData();
           } else if (result.error) {

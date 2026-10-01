@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, PackingSettings, DEFAULT_PACKING_PRODUCTIVITY_GOAL, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DeliveryManifestDraft, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem, WarehouseLocationConfig } from "@/types";
+import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, PackingSettings, DEFAULT_PACKING_PRODUCTIVITY_GOAL, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DeliveryManifestDraft, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem, WarehouseLocationConfig, AltCodeReceipt, AltCodeReceiptStatus } from "@/types";
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -4038,8 +4038,12 @@ export async function repairSingleTransferStorageOrder(transferId: string): Prom
 
 
 // --- Transfers Module Actions ---
-export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'status'>[]): Promise<{ success: boolean; error?: string; summary?: { added: number, updated: number, removed: number } }> {
+export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | 'status'>[]): Promise<{ success: boolean; error?: string; summary?: { added: number, updated: number, removed: number, altLinked?: number, altPending?: number } }> {
     const transfersCollection = collection(firestore, 'transfers');
+    const transfers = transfersInput.map((t) => {
+        const alt = normalizeAltCode(t.codigoAlterno);
+        return alt ? { ...t, codigoAlterno: alt } : t;
+    });
     
     try {
         // 1. Get ALL current transfers to build an existence map
@@ -4118,7 +4122,8 @@ export async function saveTransfers(transfers: Omit<TransferEntry, 'id' | 'statu
         }
         
         await batch.commit();
-        return { success: true, summary: { added, updated, removed } };
+        const altLink = await linkPendingAltCodeReceipts();
+        return { success: true, summary: { added, updated, removed, altLinked: altLink.linked, altPending: altLink.pending } };
 
     } catch (error: any) {
         console.error("Error guardando transferencias (Composite Sync):", error);
@@ -4997,6 +5002,310 @@ export async function saveWarehouseLocationConfig(
     } catch (error: any) {
         console.error('Error saving warehouse locations:', error);
         return { success: false, error: error.message || 'No se pudo guardar el maestro de ubicaciones.' };
+    }
+}
+
+// --- Registro de cajas de código alterno (antes de existir la TF) ---
+
+const ALT_CODE_RECEIPTS = 'altCodeReceipts';
+const TRANSFER_FINAL_STATUSES: TransferStatus[] = ['Enviado a Destino', 'Entregado en Ruta'];
+
+const normalizeAltCode = (value: unknown): string => String(value ?? '').trim().toUpperCase().replace(/\s+/g, '');
+
+const tsToIso = (value: any): string | undefined =>
+    value?.toDate ? value.toDate().toISOString() : value instanceof Date ? value.toISOString() : typeof value === 'string' ? value : undefined;
+
+const toAltCodeReceipt = (id: string, raw: any): AltCodeReceipt => ({
+    id,
+    codigoAlterno: String(raw.codigoAlterno || ''),
+    ubicacion: raw.ubicacion || undefined,
+    destinoHint: raw.destinoHint || undefined,
+    packerId: raw.packerId || undefined,
+    packerName: raw.packerName || undefined,
+    registeredAt: tsToIso(raw.registeredAt) || new Date(0).toISOString(),
+    registeredBy: raw.registeredBy || undefined,
+    registeredByName: raw.registeredByName || undefined,
+    status: (raw.status || 'pending') as AltCodeReceiptStatus,
+    linkedTransferIds: Array.isArray(raw.linkedTransferIds) ? raw.linkedTransferIds : undefined,
+    linkedNumeroTF: raw.linkedNumeroTF || undefined,
+    linkedDestino: raw.linkedDestino || undefined,
+    linkedAt: tsToIso(raw.linkedAt),
+    linkNote: raw.linkNote || undefined,
+    voidReason: raw.voidReason || undefined,
+    voidedAt: tsToIso(raw.voidedAt),
+    voidedByName: raw.voidedByName || undefined,
+});
+
+/** Transferencias cuyo codigoAlterno coincide con alguno de los códigos (consulta en bloques de 30). */
+async function findTransfersByAltCodes(codes: string[]): Promise<Map<string, Array<{ id: string; data: any }>>> {
+    const byCode = new Map<string, Array<{ id: string; data: any }>>();
+    const unique = Array.from(new Set(codes.filter(Boolean)));
+    for (let i = 0; i < unique.length; i += 30) {
+        const chunk = unique.slice(i, i + 30);
+        const snap = await getDocs(query(collection(firestore, 'transfers'), where('codigoAlterno', 'in', chunk)));
+        snap.forEach((d) => {
+            const code = normalizeAltCode(d.data().codigoAlterno);
+            if (!byCode.has(code)) byCode.set(code, []);
+            byCode.get(code)!.push({ id: d.id, data: d.data() });
+        });
+    }
+    return byCode;
+}
+
+type PendingWrite = { ref: DocumentReference; data: DocumentData };
+
+/**
+ * Prepara las escrituras para enlazar un registro con sus líneas de TF:
+ * pasa a Recibido en Bodega con la hora real del registro; no toca TF ya despachadas.
+ */
+function buildAltCodeLinkWrites(
+    receiptId: string,
+    receipt: any,
+    lines: Array<{ id: string; data: any }>,
+    extraLineFields: Record<string, unknown> = {}
+): PendingWrite[] {
+    const writes: PendingWrite[] = [];
+    const registeredAt: Timestamp = receipt.registeredAt?.toDate ? receipt.registeredAt : Timestamp.now();
+    const actor: TransferActor | undefined = receipt.registeredBy
+        ? { userId: receipt.registeredBy, displayName: receipt.registeredByName || receipt.registeredBy }
+        : undefined;
+    const ubicacion = String(receipt.ubicacion || '').trim().toUpperCase();
+    let activeLines = 0;
+
+    lines.forEach(({ id, data }) => {
+        const status = data.status as TransferStatus;
+        if (TRANSFER_FINAL_STATUSES.includes(status)) return;
+        activeLines++;
+        const updates: Record<string, unknown> = { altCodeReceiptId: receiptId, ...extraLineFields };
+        if (status === 'Recibido en Bodega') {
+            if (ubicacion && !data.ubicacion) {
+                updates.ubicacion = ubicacion;
+                updates.ubicacionAt = registeredAt;
+            }
+        } else {
+            updates.status = 'Recibido en Bodega';
+            updates.recibidoAt = registeredAt;
+            if (ubicacion) {
+                updates.ubicacion = ubicacion;
+                updates.ubicacionAt = registeredAt;
+            }
+            applyTransferStatusActor(updates, 'Recibido en Bodega', actor, undefined, registeredAt);
+        }
+        if (receipt.packerId && !data.recibidoPackerId) {
+            updates.recibidoPackerId = receipt.packerId;
+            updates.recibidoPackerName = receipt.packerName || '';
+        }
+        writes.push({ ref: doc(firestore, 'transfers', id), data: updates as DocumentData });
+    });
+
+    const tfs = Array.from(new Set(lines.map((l) => String(l.data.numeroTF || '')).filter(Boolean)));
+    const destinos = Array.from(new Set(lines.map((l) => String(l.data.bodegaDestino || '')).filter(Boolean)));
+    writes.push({
+        ref: doc(firestore, ALT_CODE_RECEIPTS, receiptId),
+        data: {
+            status: 'linked',
+            linkedTransferIds: lines.map((l) => l.id),
+            linkedNumeroTF: tfs.join(', '),
+            linkedDestino: destinos.join(', '),
+            linkedAt: Timestamp.now(),
+            linkNote: activeLines === 0 ? 'TF ya despachada' : '',
+        },
+    });
+    return writes;
+}
+
+async function commitWrites(writes: PendingWrite[]) {
+    for (let i = 0; i < writes.length; i += 450) {
+        const batch = writeBatch(firestore);
+        writes.slice(i, i + 450).forEach((w) => batch.update(w.ref, w.data));
+        await batch.commit();
+    }
+}
+
+/** Enlaza todos los registros pendientes cuyo código ya exista en transferencias. */
+export async function linkPendingAltCodeReceipts(): Promise<{ success: boolean; linked: number; pending: number; error?: string }> {
+    try {
+        const snap = await getDocs(query(collection(firestore, ALT_CODE_RECEIPTS), where('status', '==', 'pending')));
+        if (snap.empty) return { success: true, linked: 0, pending: 0 };
+        const receipts = snap.docs.map((d) => ({ id: d.id, data: d.data() }));
+        const matches = await findTransfersByAltCodes(receipts.map((r) => normalizeAltCode(r.data.codigoAlterno)));
+        const writes: PendingWrite[] = [];
+        const usedCodes = new Set<string>();
+        let linked = 0;
+        receipts.forEach((r) => {
+            const code = normalizeAltCode(r.data.codigoAlterno);
+            const lines = matches.get(code);
+            if (!lines || lines.length === 0 || usedCodes.has(code)) return;
+            usedCodes.add(code);
+            writes.push(...buildAltCodeLinkWrites(r.id, r.data, lines));
+            linked++;
+        });
+        await commitWrites(writes);
+        return { success: true, linked, pending: receipts.length - linked };
+    } catch (error: any) {
+        console.error('Error linking alt code receipts:', error);
+        return { success: false, linked: 0, pending: 0, error: error.message };
+    }
+}
+
+async function findActiveAltCodeReceipt(code: string, excludeId?: string): Promise<AltCodeReceipt | null> {
+    const snap = await getDocs(query(collection(firestore, ALT_CODE_RECEIPTS), where('codigoAlterno', '==', code)));
+    const hit = snap.docs.find((d) => d.id !== excludeId && d.data().status !== 'void');
+    return hit ? toAltCodeReceipt(hit.id, hit.data()) : null;
+}
+
+export async function registerAltCodeReceipt(
+    input: { codigoAlterno: string; ubicacion?: string; destinoHint?: string; packer?: { id: string; name: string } },
+    actor?: TransferActor
+): Promise<{ success: boolean; receipt?: AltCodeReceipt; duplicate?: AltCodeReceipt; error?: string }> {
+    const code = normalizeAltCode(input.codigoAlterno);
+    if (!code) return { success: false, error: 'Ingrese el código alterno.' };
+    try {
+        const duplicate = await findActiveAltCodeReceipt(code);
+        if (duplicate) return { success: false, duplicate, error: 'Código ya registrado.' };
+
+        const ref = doc(collection(firestore, ALT_CODE_RECEIPTS));
+        const data: Record<string, unknown> = {
+            codigoAlterno: code,
+            ubicacion: String(input.ubicacion || '').trim().toUpperCase(),
+            destinoHint: String(input.destinoHint || '').trim().toUpperCase(),
+            packerId: input.packer?.id || '',
+            packerName: input.packer?.name || '',
+            registeredAt: Timestamp.now(),
+            registeredBy: actor?.userId || '',
+            registeredByName: actor?.displayName || '',
+            status: 'pending',
+        };
+        await setDoc(ref, data);
+
+        const matches = await findTransfersByAltCodes([code]);
+        const lines = matches.get(code) || [];
+        if (lines.length > 0) await commitWrites(buildAltCodeLinkWrites(ref.id, data, lines));
+
+        const saved = await getDoc(ref);
+        return { success: true, receipt: toAltCodeReceipt(ref.id, saved.data()) };
+    } catch (error: any) {
+        console.error('Error registering alt code receipt:', error);
+        return { success: false, error: error.message || 'No se pudo registrar el código alterno.' };
+    }
+}
+
+/** Cambia la ubicación del registro y, si ya está enlazado, de sus líneas activas. */
+export async function relocateAltCodeReceipt(receiptId: string, ubicacion: string): Promise<{ success: boolean; error?: string }> {
+    const ubic = String(ubicacion || '').trim().toUpperCase();
+    if (!ubic) return { success: false, error: 'Seleccione la ubicación.' };
+    try {
+        const ref = doc(firestore, ALT_CODE_RECEIPTS, receiptId);
+        const snap = await getDoc(ref);
+        if (!snap.exists()) return { success: false, error: 'Registro no encontrado.' };
+        const now = Timestamp.now();
+        const writes: PendingWrite[] = [{ ref, data: { ubicacion: ubic } }];
+        const ids: string[] = snap.data().linkedTransferIds || [];
+        if (ids.length > 0) {
+            const lines = await getTransfersByIds(ids);
+            (lines.data || []).forEach((t) => {
+                if (!TRANSFER_FINAL_STATUSES.includes(t.status)) {
+                    writes.push({ ref: doc(firestore, 'transfers', t.id), data: { ubicacion: ubic, ubicacionAt: now } });
+                }
+            });
+        }
+        await commitWrites(writes);
+        return { success: true };
+    } catch (error: any) {
+        return { success: false, error: error.message || 'No se pudo reubicar.' };
+    }
+}
+
+/** Corrige un código mal digitado (solo pendientes) e intenta enlazar de nuevo. */
+export async function correctAltCodeReceipt(receiptId: string, newCode: string): Promise<{ success: boolean; linked?: boolean; error?: string }> {
+    const code = normalizeAltCode(newCode);
+    if (!code) return { success: false, error: 'Ingrese el código corregido.' };
+    try {
+        const ref = doc(firestore, ALT_CODE_RECEIPTS, receiptId);
+        const snap = await getDoc(ref);
+        if (!snap.exists()) return { success: false, error: 'Registro no encontrado.' };
+        if (snap.data().status !== 'pending') return { success: false, error: 'Solo se pueden corregir registros pendientes.' };
+        const duplicate = await findActiveAltCodeReceipt(code, receiptId);
+        if (duplicate) return { success: false, error: `El código ${code} ya está registrado (${duplicate.ubicacion || 'sin ubicación'}).` };
+        await updateDoc(ref, { codigoAlterno: code });
+        const lines = (await findTransfersByAltCodes([code])).get(code) || [];
+        if (lines.length > 0) {
+            await commitWrites(buildAltCodeLinkWrites(receiptId, { ...snap.data(), codigoAlterno: code }, lines));
+        }
+        return { success: true, linked: lines.length > 0 };
+    } catch (error: any) {
+        return { success: false, error: error.message || 'No se pudo corregir.' };
+    }
+}
+
+/** Enlaza a mano con un número de TF y copia el código alterno a sus líneas. */
+export async function manualLinkAltCodeReceipt(
+    receiptId: string,
+    numeroTF: string,
+    bodegaDestino?: string
+): Promise<{ success: boolean; destinos?: string[]; error?: string }> {
+    const tf = String(numeroTF || '').trim();
+    if (!tf) return { success: false, error: 'Ingrese el número de TF.' };
+    try {
+        const ref = doc(firestore, ALT_CODE_RECEIPTS, receiptId);
+        const snap = await getDoc(ref);
+        if (!snap.exists()) return { success: false, error: 'Registro no encontrado.' };
+        if (snap.data().status !== 'pending') return { success: false, error: 'Solo se pueden enlazar registros pendientes.' };
+        const tfSnap = await getDocs(query(collection(firestore, 'transfers'), where('numeroTF', '==', tf)));
+        let lines = tfSnap.docs.map((d) => ({ id: d.id, data: d.data() }));
+        if (lines.length === 0) return { success: false, error: `No existe la TF ${tf}.` };
+        const dest = String(bodegaDestino || '').trim().toUpperCase();
+        if (dest) lines = lines.filter((l) => String(l.data.bodegaDestino || '').trim().toUpperCase() === dest);
+        const destinos = Array.from(new Set(lines.map((l) => String(l.data.bodegaDestino || '').trim().toUpperCase())));
+        if (destinos.length > 1) {
+            return { success: false, destinos, error: `La TF ${tf} tiene varios destinos (${destinos.join(', ')}). Indique el destino.` };
+        }
+        if (lines.length === 0) return { success: false, error: `La TF ${tf} no tiene líneas para el destino ${dest}.` };
+        const code = normalizeAltCode(snap.data().codigoAlterno);
+        await commitWrites(buildAltCodeLinkWrites(receiptId, snap.data(), lines, { codigoAlterno: code }));
+        return { success: true };
+    } catch (error: any) {
+        return { success: false, error: error.message || 'No se pudo enlazar.' };
+    }
+}
+
+export async function voidAltCodeReceipt(receiptId: string, reason: string, actor?: TransferActor): Promise<{ success: boolean; error?: string }> {
+    const why = String(reason || '').trim();
+    if (!why) return { success: false, error: 'Indique el motivo.' };
+    try {
+        const ref = doc(firestore, ALT_CODE_RECEIPTS, receiptId);
+        const snap = await getDoc(ref);
+        if (!snap.exists()) return { success: false, error: 'Registro no encontrado.' };
+        if (snap.data().status !== 'pending') return { success: false, error: 'Solo se pueden anular registros pendientes.' };
+        await updateDoc(ref, {
+            status: 'void',
+            voidReason: why,
+            voidedAt: Timestamp.now(),
+            voidedByName: actor?.displayName || '',
+        });
+        return { success: true };
+    } catch (error: any) {
+        return { success: false, error: error.message || 'No se pudo anular.' };
+    }
+}
+
+/** Registros del día (hora Bogotá) y todos los pendientes. */
+export async function getAltCodeReceipts(): Promise<{ today?: AltCodeReceipt[]; pending?: AltCodeReceipt[]; error?: string }> {
+    try {
+        const bogotaNow = new Date(Date.now() - 5 * 3600 * 1000);
+        const startOfTodayUtc = new Date(Date.UTC(bogotaNow.getUTCFullYear(), bogotaNow.getUTCMonth(), bogotaNow.getUTCDate(), 5, 0, 0));
+        const [todaySnap, pendingSnap] = await Promise.all([
+            getDocs(query(collection(firestore, ALT_CODE_RECEIPTS), where('registeredAt', '>=', Timestamp.fromDate(startOfTodayUtc)))),
+            getDocs(query(collection(firestore, ALT_CODE_RECEIPTS), where('status', '==', 'pending'))),
+        ]);
+        const byNewest = (a: AltCodeReceipt, b: AltCodeReceipt) => b.registeredAt.localeCompare(a.registeredAt);
+        return {
+            today: todaySnap.docs.map((d) => toAltCodeReceipt(d.id, d.data())).sort(byNewest),
+            pending: pendingSnap.docs.map((d) => toAltCodeReceipt(d.id, d.data())).sort((a, b) => a.registeredAt.localeCompare(b.registeredAt)),
+        };
+    } catch (error: any) {
+        console.error('Error loading alt code receipts:', error);
+        return { error: error.message || 'No se pudieron cargar los registros.' };
     }
 }
 
