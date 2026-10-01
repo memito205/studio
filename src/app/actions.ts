@@ -6510,6 +6510,34 @@ export async function closeVerificationDispatch(
     }
 }
 
+/** TF con código alterno de una relación de entrega (para volver a descargar el Excel del otro sistema). */
+export async function getManifestAltCodeRows(
+    manifestDocId: string
+): Promise<{ success: boolean; rows?: Array<{ codigoAlterno: string; numeroTF: string; destino: string; cantidad: number }>; error?: string }> {
+    try {
+        const manifestSnap = await getDoc(doc(firestore, 'deliveryManifests', manifestDocId));
+        if (!manifestSnap.exists()) return { success: false, error: 'Relación no encontrada.' };
+        const ids: string[] = manifestSnap.data().transferIds || [];
+        const map = new Map<string, { codigoAlterno: string; numeroTF: string; destino: string; cantidad: number }>();
+        for (let i = 0; i < ids.length; i += 30) {
+            const snap = await getDocs(query(collection(firestore, 'transfers'), where(documentId(), 'in', ids.slice(i, i + 30))));
+            snap.forEach((d) => {
+                const t = d.data();
+                const alt = String(t.codigoAlterno || '').trim();
+                if (!alt) return;
+                const dest = String(t.bodegaDestino || 'N/A');
+                const key = `${alt}|${t.numeroTF}|${dest}`;
+                const row = map.get(key) || { codigoAlterno: alt, numeroTF: String(t.numeroTF), destino: dest, cantidad: 0 };
+                row.cantidad += Number(t.cantidad || 0) || 0;
+                map.set(key, row);
+            });
+        }
+        return { success: true, rows: Array.from(map.values()) };
+    } catch (error: any) {
+        return { success: false, error: error.message || 'No se pudieron leer los códigos alternos.' };
+    }
+}
+
 export async function deleteVerificationSession(sessionId: string): Promise<{ success: boolean; error?: string }> {
   try {
     if (!sessionId?.trim()) {

@@ -2,7 +2,6 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, onSnapshot, Timestamp } from 'firebase/firestore';
-import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
 import { ArrowLeft, Loader2, Truck, XCircle, FileArchive } from 'lucide-react';
 import { firestore } from '@/services/firebase';
@@ -31,6 +30,7 @@ import {
   downloadStoreSummaryPdfs,
   verificationItemsToSummaryRows,
 } from '@/components/dispatch-manager/utils/storeSummaryPdf';
+import { DISPATCH_CLASS_LABEL as CLASS_LABEL, downloadAltCodesExcel } from '@/components/dispatch-manager/utils/dispatchReport';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -46,14 +46,6 @@ const NOT_LOADED_REASONS = [
   'Se devolvió a la ubicación',
   'No apareció al cargar',
 ];
-
-const CLASS_LABEL: Record<VerificationDispatchClass, string> = {
-  ambas: 'Alistada y cargada',
-  solo_cargue: 'Solo cargue',
-  solo_alistamiento: 'Alistada, no cargada',
-  no_encontrada: 'No encontrada',
-  sin_leer: 'Sin leer',
-};
 
 type CargueRow = VerificationItem & {
   picked: boolean;
@@ -272,27 +264,6 @@ const VerificationCargue: React.FC<{
   const pendingReasonRows = rows.filter((r) => r.cls === 'solo_alistamiento');
   const missingReasons = pendingReasonRows.filter((r) => !reasons[r.codigo]).length;
 
-  const downloadAltCodesExcel = (
-    altRows: Array<{ codigoAlterno: string; numeroTF: string; destino: string; cantidad: number }>,
-    manifestId?: number
-  ) => {
-    const fecha = format(new Date(), 'dd/MM/yyyy HH:mm');
-    const sheet = XLSX.utils.json_to_sheet(
-      altRows.map((r) => ({
-        'Código alterno': r.codigoAlterno,
-        TF: r.numeroTF,
-        Destino: r.destino,
-        Unidades: r.cantidad,
-        'Fecha cargue': fecha,
-        'Relación #': manifestId ?? '',
-        Placa: session.cargue?.placa || '',
-      }))
-    );
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, sheet, 'Codigos alternos');
-    XLSX.writeFile(wb, `codigos_alternos_${session.name.replace(/[^\w-]+/g, '_')}_${format(new Date(), 'yyyyMMdd_HHmm')}.xlsx`);
-  };
-
   const handleCloseDispatch = async () => {
     if (!session.cargue || missingReasons > 0) return;
     if (loadedTotal === 0) {
@@ -333,7 +304,14 @@ const VerificationCargue: React.FC<{
 
     const loadedItems = results.filter((i) => i.dispatchClass === 'ambas' || i.dispatchClass === 'solo_cargue');
     await downloadStoreSummaryPdfs(verificationItemsToSummaryRows(loadedItems), { sessionName: session.name, variant: 'actual' });
-    if (res.altRows && res.altRows.length > 0) downloadAltCodesExcel(res.altRows, res.manifestId);
+    if (res.altRows && res.altRows.length > 0) {
+      downloadAltCodesExcel(res.altRows, {
+        sessionName: session.name,
+        manifestId: res.manifestId,
+        placa: session.cargue.placa,
+        fecha: now,
+      });
+    }
 
     toast({
       title: `Despacho cerrado${res.manifestId ? ` · Relación #${res.manifestId}` : ''}`,

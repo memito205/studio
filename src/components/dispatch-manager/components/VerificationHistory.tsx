@@ -32,6 +32,15 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/com
 import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAuth } from '@/hooks/use-auth-context';
+import { Badge } from '@/components/ui/badge';
+import { isClosedCargueSession, isLoadedItem } from '../utils/dispatchReport';
+import { AltCodesButton, DispatchReportPanel, DispatchSessionDetail } from './DispatchReportPanel';
+
+/** Ítems del ZIP real: lo cargado en el camión si hubo cargue; si no, lo escaneado. */
+const actualItems = (session: SavedVerification) =>
+    isClosedCargueSession(session)
+        ? (session.results || []).filter(isLoadedItem)
+        : (session.results || []).filter((item) => item.scanned);
 
 
 const VerificationDetailDialog: React.FC<{
@@ -105,9 +114,9 @@ const VerificationDetailDialog: React.FC<{
                             <Button
                                 variant="outline"
                                 size="sm"
-                                disabled={isExportingPdfs || !(session.results || []).some((i) => i.scanned)}
+                                disabled={isExportingPdfs || actualItems(session).length === 0}
                                 onClick={() => onExportStorePdfs(session, 'actual')}
-                                title="Solo unidades escaneadas (ZIP real / cerrado)"
+                                title="Solo lo leído (en el camión si hubo cargue) — ZIP real / cerrado"
                             >
                                 {isExportingPdfs
                                     ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -120,8 +129,9 @@ const VerificationDetailDialog: React.FC<{
                         </div>
                     </div>
                 </DialogHeader>
-                <Tabs defaultValue="cruzados" className="flex-grow flex flex-col">
-                    <TabsList className="w-full grid grid-cols-2">
+                <Tabs defaultValue={isClosedCargueSession(session) ? 'despacho' : 'cruzados'} className="flex-grow flex flex-col overflow-hidden">
+                    <TabsList className={cn('w-full grid', isClosedCargueSession(session) ? 'grid-cols-3' : 'grid-cols-2')}>
+                        {isClosedCargueSession(session) && <TabsTrigger value="despacho">Despacho (cargue)</TabsTrigger>}
                         <TabsTrigger value="cruzados">
                             Resultados Cruzados ({session.results.length})
                         </TabsTrigger>
@@ -129,6 +139,11 @@ const VerificationDetailDialog: React.FC<{
                             No Cruzados ({session.unmatchedResults?.length || 0})
                         </TabsTrigger>
                     </TabsList>
+                    {isClosedCargueSession(session) && (
+                        <TabsContent value="despacho" className="flex-grow overflow-hidden mt-4">
+                            <DispatchSessionDetail session={session} />
+                        </TabsContent>
+                    )}
                     <TabsContent value="cruzados" className="flex-grow overflow-hidden mt-4">
                         {renderTable(session.results, 'Código')}
                     </TabsContent>
@@ -169,10 +184,7 @@ const VerificationHistory: React.FC = () => {
     }, []);
 
     const handleExportStorePdfs = async (session: SavedVerification, variant: 'planned' | 'actual' = 'planned') => {
-        const sourceItems =
-            variant === 'actual'
-                ? (session.results || []).filter((item) => item.scanned)
-                : (session.results || []);
+        const sourceItems = variant === 'actual' ? actualItems(session) : (session.results || []);
         if (!sourceItems.length) {
             toast({
                 variant: 'destructive',
@@ -236,6 +248,8 @@ const VerificationHistory: React.FC = () => {
     }, [sessions, searchTerm]);
 
     return (
+        <>
+        {!isLoading && <DispatchReportPanel sessions={sessions} />}
         <Card className="mt-6">
             <VerificationDetailDialog
                 isOpen={!!selectedSession}
@@ -269,14 +283,15 @@ const VerificationHistory: React.FC = () => {
                                 <TableHead>Total</TableHead>
                                 <TableHead>Escaneados</TableHead>
                                 <TableHead>Pendientes</TableHead>
+                                <TableHead>Despacho</TableHead>
                                 <TableHead className="text-right">Acciones</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
                             {isLoading ? (
-                                <TableRow><TableCell colSpan={7} className="text-center p-8"><Loader2 className="h-8 w-8 animate-spin mx-auto" /></TableCell></TableRow>
+                                <TableRow><TableCell colSpan={8} className="text-center p-8"><Loader2 className="h-8 w-8 animate-spin mx-auto" /></TableCell></TableRow>
                             ) : filteredSessions.length === 0 ? (
-                                <TableRow><TableCell colSpan={7} className="h-24 text-center opacity-50">No se encontraron sesiones.</TableCell></TableRow>
+                                <TableRow><TableCell colSpan={8} className="h-24 text-center opacity-50">No se encontraron sesiones.</TableCell></TableRow>
                             ) : (
                                 filteredSessions.map(session => (
                                     <TableRow key={session.id} className="hover:bg-muted/50">
@@ -286,6 +301,18 @@ const VerificationHistory: React.FC = () => {
                                         <TableCell>{session.stats.total}</TableCell>
                                         <TableCell className="text-green-600">{session.stats.scanned}</TableCell>
                                         <TableCell className="text-orange-600">{session.stats.pending}</TableCell>
+                                        <TableCell className="text-xs">
+                                            {isClosedCargueSession(session) ? (
+                                                <div className="flex flex-col gap-0.5">
+                                                    <Badge className="w-fit bg-indigo-600 text-white">Relación #{session.dispatchClose?.manifestId ?? '—'}</Badge>
+                                                    <span className="opacity-70">{session.cargue?.placa} · {actualItems(session).length} en camión</span>
+                                                </div>
+                                            ) : session.requiresCargue ? (
+                                                <Badge variant="secondary">{session.phase === 'cargue' ? 'En cargue' : 'Alistamiento'}</Badge>
+                                            ) : (
+                                                <span className="opacity-40">—</span>
+                                            )}
+                                        </TableCell>
                                         <TableCell className="text-right">
                                             <div className="flex justify-end gap-2 flex-wrap">
                                                 <Button variant="outline" size="sm" onClick={() => setSelectedSession(session)}>
@@ -309,7 +336,7 @@ const VerificationHistory: React.FC = () => {
                                                     size="sm"
                                                     disabled={
                                                         exportingPdfId === (session.id || session.name) ||
-                                                        !(session.results || []).some((i) => i.scanned)
+                                                        actualItems(session).length === 0
                                                     }
                                                     onClick={() => handleExportStorePdfs(session, 'actual')}
                                                     title="ZIP real / cerrado (solo escaneados)"
@@ -319,6 +346,7 @@ const VerificationHistory: React.FC = () => {
                                                         : <FileText className="mr-2 h-4 w-4" />}
                                                     ZIP real
                                                 </Button>
+                                                {isClosedCargueSession(session) && <AltCodesButton session={session} />}
                                                 {isAdmin && (
                                                     <AlertDialog>
                                                         <AlertDialogTrigger asChild>
@@ -363,6 +391,7 @@ const VerificationHistory: React.FC = () => {
                 </div>
             </CardContent>
         </Card>
+        </>
     );
 };
 
