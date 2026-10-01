@@ -5,7 +5,8 @@ import JsBarcode from 'jsbarcode';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { format } from 'date-fns';
-import { AlertTriangle, CheckCircle2, Link2, Loader2, MapPin, Pencil, Printer, RefreshCw, ScanLine, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Link2, Loader2, MapPin, Pencil, Printer, RefreshCw, ScanLine, Upload, XCircle } from 'lucide-react';
+import { AltCodeBulkLoadDialog } from './AltCodeBulkLoadDialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -145,6 +146,7 @@ export function AltCodeRegistrationView() {
   const [actionValue, setActionValue] = useState('');
   const [actionDestino, setActionDestino] = useState('');
   const [isActing, setIsActing] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   const refreshLists = useCallback(async () => {
     setIsLoadingLists(true);
@@ -305,6 +307,17 @@ export function AltCodeRegistrationView() {
 
   return (
     <div className="space-y-6">
+      {role === 'admin' && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed p-3">
+          <p className="text-xs text-muted-foreground">
+            ¿Arrancando? Cargue el inventario de cajas de código alterno que ya están en bodega para enlazarlas con su TF.
+          </p>
+          <Button size="sm" variant="outline" onClick={() => setBulkOpen(true)}>
+            <Upload className="mr-2 h-4 w-4" /> Carga inicial (Excel)
+          </Button>
+          <AltCodeBulkLoadDialog open={bulkOpen} onOpenChange={setBulkOpen} actor={actor} onApplied={refreshLists} />
+        </div>
+      )}
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(320px,420px)_1fr] gap-6">
         <Card>
           <CardHeader>

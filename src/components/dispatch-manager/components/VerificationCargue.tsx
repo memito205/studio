@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, onSnapshot, Timestamp } from 'firebase/firestore';
 import { format } from 'date-fns';
 import { ArrowLeft, Loader2, Truck, XCircle, FileArchive } from 'lucide-react';
@@ -14,6 +14,7 @@ import type {
 } from '@/types';
 import {
   closeVerificationDispatch,
+  getVerificationLoadScans,
   recordVerificationLoadScan,
   removeVerificationLoadScan,
 } from '@/app/actions';
@@ -108,6 +109,25 @@ const VerificationCargue: React.FC<{
 
   const sessionDestinos = useMemo(() => new Set(session.results.map((i) => i.destino)), [session.results]);
 
+  const [polling, setPolling] = useState(false);
+
+  const refreshScans = useCallback(async () => {
+    const res = await getVerificationLoadScans(session.id);
+    if (res.success && res.scans) {
+      setScans(res.scans);
+      setScansReady(true);
+    } else if (!res.success) {
+      toast({ variant: 'destructive', title: 'Error leyendo el cargue', description: res.error });
+    }
+  }, [session.id, toast]);
+
+  useEffect(() => {
+    if (!polling) return;
+    void refreshScans();
+    const t = setInterval(() => void refreshScans(), 4000);
+    return () => clearInterval(t);
+  }, [polling, refreshScans]);
+
   useEffect(() => {
     const unsub = onSnapshot(
       collection(firestore, 'verificationSessions', session.id, 'loadScans'),
@@ -129,8 +149,8 @@ const VerificationCargue: React.FC<{
         setScansReady(true);
       },
       (err) => {
-        console.error('loadScans snapshot error', err);
-        toast({ variant: 'destructive', title: 'Error leyendo el cargue', description: err.message });
+        console.warn('loadScans snapshot no disponible, se consulta cada 4 s', err);
+        setPolling(true);
       }
     );
     return () => unsub();
@@ -198,6 +218,7 @@ const VerificationCargue: React.FC<{
       setLastScan({ type: 'error', message: 'ERROR REGISTRANDO EL CARGUE', code: codigo, detail: res.error });
       return false;
     }
+    if (polling) void refreshScans();
     return true;
   };
 
@@ -259,6 +280,7 @@ const VerificationCargue: React.FC<{
   const handleRemove = async (codigo: string) => {
     const res = await removeVerificationLoadScan(session.id, codigo);
     if (!res.success) toast({ variant: 'destructive', title: 'No se pudo quitar', description: res.error });
+    else if (polling) void refreshScans();
   };
 
   const pendingReasonRows = rows.filter((r) => r.cls === 'solo_alistamiento');

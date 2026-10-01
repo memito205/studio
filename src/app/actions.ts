@@ -6,7 +6,7 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, PackingSettings, DEFAULT_PACKING_PRODUCTIVITY_GOAL, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DeliveryManifestDraft, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem, WarehouseLocationConfig, AltCodeReceipt, AltCodeReceiptStatus, VerificationItem, VerificationCargueInfo, VerificationDispatchClass, VerificationDispatchClose } from "@/types";
+import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, PackingSettings, DEFAULT_PACKING_PRODUCTIVITY_GOAL, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DeliveryManifestDraft, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem, WarehouseLocationConfig, AltCodeReceipt, AltCodeReceiptStatus, VerificationItem, VerificationCargueInfo, VerificationDispatchClass, VerificationDispatchClose, VerificationLoadScan } from "@/types";
 import { normalizeDestination } from '@/components/dispatch-manager/utils/excel';
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
@@ -5149,6 +5149,168 @@ export async function linkPendingAltCodeReceipts(): Promise<{ success: boolean; 
     }
 }
 
+// --- Carga inicial de códigos alternos (inventario físico en bodega) ---
+
+export type AltCodeBulkInputRow = { codigoAlterno: string; ubicacion?: string; destino?: string; empacador?: string };
+
+export type AltCodeBulkAction = 'enlazar' | 'pendiente' | 'despachada' | 'antigua' | 'ya_registrado' | 'repetido' | 'vacio';
+
+export type AltCodeBulkPreviewRow = {
+    fila: number;
+    codigoAlterno: string;
+    ubicacion: string;
+    destino: string;
+    empacador: string;
+    action: AltCodeBulkAction;
+    tfs: string;
+    destinos: string;
+    estados: string;
+    fechaTf?: string;
+    nota: string;
+    ubicacionDesconocida?: boolean;
+};
+
+async function analyzeAltCodeBulk(
+    rows: AltCodeBulkInputRow[],
+    maxTfAgeDays: number
+): Promise<{ preview: AltCodeBulkPreviewRow[]; linesByCode: Map<string, Array<{ id: string; data: any }>> }> {
+    const codes = rows.map((r) => normalizeAltCode(r.codigoAlterno));
+    const unique = Array.from(new Set(codes.filter(Boolean)));
+
+    const existing = new Map<string, any>();
+    for (let i = 0; i < unique.length; i += 30) {
+        const snap = await getDocs(query(collection(firestore, ALT_CODE_RECEIPTS), where('codigoAlterno', 'in', unique.slice(i, i + 30))));
+        snap.forEach((d) => {
+            if (d.data().status !== 'void') existing.set(normalizeAltCode(d.data().codigoAlterno), d.data());
+        });
+    }
+    const matches = await findTransfersByAltCodes(unique);
+    const locSnap = await getDoc(doc(firestore, 'settings', 'warehouseLocations'));
+    const knownLocations = new Set<string>((locSnap.data()?.codes || []).map((c: string) => String(c).toUpperCase()));
+    const cutoff = Date.now() - maxTfAgeDays * 86400000;
+
+    const seen = new Set<string>();
+    const linesByCode = new Map<string, Array<{ id: string; data: any }>>();
+    const preview = rows.map((r, idx): AltCodeBulkPreviewRow => {
+        const code = codes[idx];
+        const ubicacion = String(r.ubicacion || '').trim().toUpperCase();
+        const destino = String(r.destino || '').trim().toUpperCase();
+        const base: AltCodeBulkPreviewRow = {
+            fila: idx + 2,
+            codigoAlterno: code,
+            ubicacion,
+            destino,
+            empacador: String(r.empacador || '').trim().toUpperCase(),
+            action: 'pendiente',
+            tfs: '',
+            destinos: '',
+            estados: '',
+            nota: '',
+            ...(ubicacion && knownLocations.size > 0 && !knownLocations.has(ubicacion) ? { ubicacionDesconocida: true } : {}),
+        };
+        if (!code) return { ...base, action: 'vacio', nota: 'Fila sin código' };
+        if (seen.has(code)) return { ...base, action: 'repetido', nota: 'Código repetido en el archivo' };
+        seen.add(code);
+        const prev = existing.get(code);
+        if (prev) {
+            return {
+                ...base,
+                action: 'ya_registrado',
+                nota: `Ya registrado (${prev.status === 'linked' ? `enlazado TF ${prev.linkedNumeroTF || ''}` : 'pendiente'}) en ${prev.ubicacion || 'sin ubicación'}`,
+            };
+        }
+
+        let lines = matches.get(code) || [];
+        if (destino && lines.length > 0) {
+            const byDest = lines.filter((l) => normalizeDestination(String(l.data.bodegaDestino || '')) === normalizeDestination(destino));
+            if (byDest.length > 0) lines = byDest;
+        }
+        if (lines.length === 0) return { ...base, nota: 'Sin TF todavía: queda pendiente y se enlaza al subir transferencias' };
+
+        const tfs = Array.from(new Set(lines.map((l) => String(l.data.numeroTF || '')))).join(', ');
+        const destinos = Array.from(new Set(lines.map((l) => String(l.data.bodegaDestino || '')))).join(', ');
+        const estados = Array.from(new Set(lines.map((l) => String(l.data.status || '')))).join(', ');
+        const active = lines.filter((l) => !TRANSFER_FINAL_STATUSES.includes(l.data.status));
+        const fechas = lines.map((l) => (l.data.fecha?.toDate ? l.data.fecha.toDate() : null)).filter(Boolean) as Date[];
+        const newest = fechas.length ? new Date(Math.max(...fechas.map((f) => f.getTime()))) : undefined;
+        const info = { ...base, tfs, destinos, estados, ...(newest ? { fechaTf: newest.toISOString() } : {}) };
+
+        if (active.length === 0) return { ...info, action: 'despachada', nota: 'La TF ya salió (Enviado/Entregado): no se registra' };
+        if (newest && newest.getTime() < cutoff) {
+            return { ...info, action: 'antigua', nota: `TF de hace más de ${maxTfAgeDays} días: revisar a mano (no se aplica)` };
+        }
+        linesByCode.set(code, lines);
+        const yaRecibida = active.every((l) => l.data.status === 'Recibido en Bodega');
+        return { ...info, action: 'enlazar', nota: yaRecibida ? 'Ya estaba en Recibido en Bodega: se completa ubicación' : 'Pasa a Recibido en Bodega' };
+    });
+    return { preview, linesByCode };
+}
+
+export async function previewAltCodeBulkLoad(
+    rows: AltCodeBulkInputRow[],
+    maxTfAgeDays = 90
+): Promise<{ success: boolean; preview?: AltCodeBulkPreviewRow[]; error?: string }> {
+    try {
+        if (rows.length === 0) return { success: false, error: 'El archivo no tiene filas.' };
+        if (rows.length > 5000) return { success: false, error: 'Máximo 5000 filas por carga.' };
+        const { preview } = await analyzeAltCodeBulk(rows, maxTfAgeDays);
+        return { success: true, preview };
+    } catch (error: any) {
+        console.error('Error previewing alt code bulk load:', error);
+        return { success: false, error: error.message || 'No se pudo analizar el archivo.' };
+    }
+}
+
+/** Registra los códigos del inventario físico; enlaza los que ya tienen TF activa y deja pendientes los que no. */
+export async function applyAltCodeBulkLoad(
+    rows: AltCodeBulkInputRow[],
+    maxTfAgeDays: number,
+    actor?: TransferActor
+): Promise<{ success: boolean; linked: number; pending: number; skipped: number; error?: string }> {
+    try {
+        const { preview, linesByCode } = await analyzeAltCodeBulk(rows, maxTfAgeDays);
+        const toCreate = preview.filter((p) => p.action === 'enlazar' || p.action === 'pendiente');
+        const now = Timestamp.now();
+        const created: Array<{ id: string; data: any; code: string; action: AltCodeBulkAction }> = [];
+
+        for (let i = 0; i < toCreate.length; i += 450) {
+            const batch = writeBatch(firestore);
+            toCreate.slice(i, i + 450).forEach((p) => {
+                const ref = doc(collection(firestore, ALT_CODE_RECEIPTS));
+                const data = {
+                    codigoAlterno: p.codigoAlterno,
+                    ubicacion: p.ubicacion,
+                    destinoHint: p.destino,
+                    packerId: '',
+                    packerName: p.empacador,
+                    registeredAt: now,
+                    registeredBy: actor?.userId || '',
+                    registeredByName: actor?.displayName || '',
+                    status: 'pending',
+                    bulkLoad: true,
+                };
+                batch.set(ref, data);
+                created.push({ id: ref.id, data, code: p.codigoAlterno, action: p.action });
+            });
+            await batch.commit();
+        }
+
+        const linkWrites: PendingWrite[] = [];
+        created.forEach((c) => {
+            if (c.action !== 'enlazar') return;
+            const lines = linesByCode.get(c.code);
+            if (lines?.length) linkWrites.push(...buildAltCodeLinkWrites(c.id, c.data, lines));
+        });
+        await commitWrites(linkWrites);
+
+        const linked = created.filter((c) => c.action === 'enlazar').length;
+        return { success: true, linked, pending: created.length - linked, skipped: preview.length - created.length };
+    } catch (error: any) {
+        console.error('Error applying alt code bulk load:', error);
+        return { success: false, linked: 0, pending: 0, skipped: 0, error: error.message || 'No se pudo aplicar la carga.' };
+    }
+}
+
 async function findActiveAltCodeReceipt(code: string, excludeId?: string): Promise<AltCodeReceipt | null> {
     const snap = await getDocs(query(collection(firestore, ALT_CODE_RECEIPTS), where('codigoAlterno', '==', code)));
     const hit = snap.docs.find((d) => d.id !== excludeId && d.data().status !== 'void');
@@ -6376,6 +6538,29 @@ export async function recordVerificationLoadScan(
     } catch (error: any) {
         console.error('Error recording load scan:', error);
         return { success: false, error: error.message || 'No se pudo registrar la lectura de cargue.' };
+    }
+}
+
+export async function getVerificationLoadScans(
+    sessionId: string
+): Promise<{ success: boolean; scans?: VerificationLoadScan[]; error?: string }> {
+    try {
+        const snap = await getDocs(collection(firestore, 'verificationSessions', sessionId, 'loadScans'));
+        const scans = snap.docs.map((d) => {
+            const raw = convertTimestampsToDates(d.data());
+            return {
+                id: d.id,
+                codigo: String(raw.codigo || ''),
+                at: raw.at instanceof Date ? raw.at : new Date(),
+                byId: raw.byId || '',
+                byName: raw.byName || '',
+                inPicking: !!raw.inPicking,
+                ...(raw.item ? { item: raw.item as VerificationItem } : {}),
+            } as VerificationLoadScan;
+        });
+        return { success: true, scans };
+    } catch (error: any) {
+        return { success: false, error: error.message || 'No se pudieron leer las lecturas de cargue.' };
     }
 }
 
