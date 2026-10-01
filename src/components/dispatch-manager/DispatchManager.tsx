@@ -18,7 +18,7 @@ import {
   Save,
   AlertTriangle
 } from 'lucide-react';
-import type { MerchandiseItem, TFTItem, VerificationItem, SavedVerification } from '@/types';
+import type { MerchandiseItem, TFTItem, VerificationItem, SavedVerification, AltCodeReceipt } from '@/types';
 import { parseMerchandiseExcel, exportToExcel, normalizeDestination } from './utils/excel';
 import { generatePDF } from './utils/pdf';
 import {
@@ -35,7 +35,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { loadAllTransfers, saveVerificationSession } from '@/app/actions';
+import { loadAllTransfers, saveVerificationSession, getAltCodeReceipts } from '@/app/actions';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
@@ -45,6 +45,29 @@ import { Loader2 } from 'lucide-react';
 interface DispatchManagerProps {
   onReturnToSuite: () => void;
 }
+
+/** TFs con esta cantidad o menos se incluyen siempre (no cuentan contra el límite por destino). */
+const SMALL_TF_MAX_UNITS = 5;
+
+type WarehouseInfo = { ubicacion?: string; fechaLlegada?: Date; codigoAlterno?: string };
+
+const normalizeAltCodeKey = (value: unknown) => String(value ?? '').trim().toUpperCase().replace(/\s+/g, '');
+
+const toVerificationItem = (item: MerchandiseItem, tftCruce: string): VerificationItem => ({
+  codigo: item.codigo,
+  tftCruce,
+  fechaTft: item.tftFecha ? format(item.tftFecha, 'dd/MM/yyyy') : '-',
+  cantTft: tftCruce === 'NO ENCONTRADO' ? '-' : String(item.tftCantidad || ''),
+  destino: item.destino,
+  empacador: item.empacador,
+  contenidoOriginal: item.contenido,
+  tfOriginal: item.tf,
+  marca: item.marca,
+  scanned: false,
+  ...(item.ubicacion ? { ubicacion: item.ubicacion } : {}),
+  ...(item.fechaLlegada ? { fechaLlegada: item.fechaLlegada.toISOString() } : {}),
+  ...(item.codigoAlterno ? { codigoAlterno: item.codigoAlterno } : {}),
+});
 
 const SaveVerificationDialog: React.FC<{
     isOpen: boolean;
@@ -145,6 +168,21 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
   const [merchandiseFile, setMerchandiseFile] = useState<File | null>(null);
   const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [pendingAltReceipts, setPendingAltReceipts] = useState<AltCodeReceipt[]>([]);
+
+  const pendingAltByCode = useMemo(() => {
+    const map = new Map<string, AltCodeReceipt>();
+    pendingAltReceipts.forEach((r) => map.set(normalizeAltCodeKey(r.codigoAlterno), r));
+    return map;
+  }, [pendingAltReceipts]);
+  const pendingAltByDestino = useMemo(() => {
+    const counts: Record<string, number> = {};
+    pendingAltReceipts.forEach((r) => {
+      const dest = r.destinoHint ? normalizeDestination(r.destinoHint) : 'SIN DESTINO INDICADO';
+      counts[dest] = (counts[dest] || 0) + 1;
+    });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  }, [pendingAltReceipts]);
 
 
   const handleMerchandiseUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -168,6 +206,30 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
 
         // Create virtual items from transfers 'Recibido en Bodega'
         const receivedInWarehouseTransfers = allTransfersFromDB.filter(t => t.status === 'Recibido en Bodega');
+
+        const warehouseByTfDest = new Map<string, WarehouseInfo>();
+        const warehouseByTf = new Map<string, WarehouseInfo>();
+        const upsertWarehouse = (map: Map<string, WarehouseInfo>, key: string, t: typeof receivedInWarehouseTransfers[number]) => {
+            const current = map.get(key) || {};
+            const llegada = t.recibidoAt ? new Date(t.recibidoAt as any) : undefined;
+            map.set(key, {
+                ubicacion: current.ubicacion || t.ubicacion || undefined,
+                codigoAlterno: current.codigoAlterno || t.codigoAlterno || undefined,
+                fechaLlegada:
+                    llegada && !Number.isNaN(llegada.getTime()) && (!current.fechaLlegada || llegada < current.fechaLlegada)
+                        ? llegada
+                        : current.fechaLlegada,
+            });
+        };
+        receivedInWarehouseTransfers.forEach(t => {
+            const tfKey = String(t.numeroTF || '').trim().toUpperCase();
+            if (!tfKey) return;
+            upsertWarehouse(warehouseByTfDest, `${tfKey}|${normalizeDestination(t.bodegaDestino)}`, t);
+            upsertWarehouse(warehouseByTf, tfKey, t);
+        });
+
+        const pendingRes = await getAltCodeReceipts();
+        setPendingAltReceipts(pendingRes.pending || []);
         const virtualMerchandiseItems: MerchandiseItem[] = receivedInWarehouseTransfers.map((t, index) => {
             const originalDest = t.bodegaDestino;
             const normalizedDest = normalizeDestination(originalDest);
@@ -264,12 +326,19 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                     : undefined) ||
                 (tfForMatch ? tftMapByTfOnly.get(tfForMatch) : undefined);
             
+            const warehouse =
+                (tfForMatch && destForMatch ? warehouseByTfDest.get(`${tfForMatch}|${destForMatch}`) : undefined) ||
+                (tfForMatch ? warehouseByTf.get(tfForMatch) : undefined);
+            
             return {
                 ...item,
                 tftMatch: match?.tft,
                 tftFecha: match?.fecha,
                 tftCantidad: match?.cantidad,
                 marca: item.marca || match?.marca,
+                ubicacion: warehouse?.ubicacion,
+                fechaLlegada: warehouse?.fechaLlegada,
+                codigoAlterno: warehouse?.codigoAlterno,
             };
         });
 
@@ -376,7 +445,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
           const q = Number(i.tftCantidad || 0);
           return Number.isFinite(q) ? Math.max(maxQty, q) : maxQty;
         }, 0);
-        const isLarge = groupTfQty >= 5;
+        const isLarge = groupTfQty > SMALL_TF_MAX_UNITS;
         const invalidLimit = limit === '' || limit === undefined || (typeof limit === 'number' && Number.isNaN(limit));
 
         // BDBOL and Small TFs are always included
@@ -469,30 +538,11 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
     }
     setIsSaving(true);
     
-    const verificationItems: VerificationItem[] = filteredMatchedData.map(item => ({
-        codigo: item.codigo,
-        tftCruce: item.tftMatch || '',
-        fechaTft: item.tftFecha ? format(item.tftFecha, 'dd/MM/yyyy') : '-',
-        cantTft: String(item.tftCantidad || ''),
-        destino: item.destino,
-        empacador: item.empacador,
-        contenidoOriginal: item.contenido,
-        tfOriginal: item.tf,
-        marca: item.marca,
-        scanned: false,
-    }));
+    const verificationItems: VerificationItem[] = filteredMatchedData.map(item => toVerificationItem(item, item.tftMatch || ''));
     
     const unmatchedVerificationItems: VerificationItem[] = filteredUnmatchedData.map(item => ({
-        codigo: item.codigo,
-        tftCruce: 'NO ENCONTRADO',
+        ...toVerificationItem(item, 'NO ENCONTRADO'),
         fechaTft: '-',
-        cantTft: '-',
-        destino: item.destino,
-        empacador: item.empacador,
-        contenidoOriginal: item.contenido,
-        tfOriginal: item.tf,
-        marca: item.marca,
-        scanned: false,
     }));
 
 
@@ -503,18 +553,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
         savedBy: user.displayName || user.email || 'N/A',
         results: verificationItems,
         unmatchedResults: unmatchedVerificationItems,
-        excludedResults: excludedMatchedData.map(item => ({
-            codigo: item.codigo,
-            tftCruce: item.tftMatch || '',
-            fechaTft: item.tftFecha ? format(item.tftFecha, 'dd/MM/yyyy') : '-',
-            cantTft: String(item.tftCantidad || ''),
-            destino: item.destino,
-            empacador: item.empacador,
-            contenidoOriginal: item.contenido,
-            tfOriginal: item.tf,
-            marca: item.marca,
-            scanned: false,
-        })),
+        excludedResults: excludedMatchedData.map(item => toVerificationItem(item, item.tftMatch || '')),
         originalStats: {
             totalUnits: Object.values(dispatchStats).reduce((sum, s) => sum + s.originalUnits, 0),
             totalTFs: Object.values(dispatchStats).reduce((sum, s) => sum + s.originalTFs, 0),
@@ -591,6 +630,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
       setDestLimits({});
       setPriorityBrands([]);
       setSearchTerm('');
+      setPendingAltReceipts([]);
     }
   };
   
@@ -766,7 +806,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                               {selectedDestinos.includes(dest) && (
                                 <div className="space-y-2 mt-2 ml-6">
                                   <div className="flex items-center gap-2">
-                                    <span className="text-[9px]  opacity-40 uppercase">Límite (TFs &gt;= 5 und):</span>
+                                    <span className="text-[9px]  opacity-40 uppercase">Límite (TFs &gt; {SMALL_TF_MAX_UNITS} und):</span>
                                     <input
                                       type="number"
                                       min="1"
@@ -794,7 +834,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                                       <span className="font-bold">{dispatchStats[dest]?.filteredUnits || 0} / {dispatchStats[dest]?.originalUnits || 0}</span>
                                     </div>
                                     <p className="text-[8px] italic opacity-40 leading-tight pt-1">
-                                      * BDBOL y TFs pequeñas se incluyen siempre.
+                                      * BDBOL y TFs de {SMALL_TF_MAX_UNITS} und o menos se incluyen siempre.
                                     </p>
                                   </div>
                                 </div>
@@ -863,6 +903,18 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                         </div>
                       </div>
                       
+                      {pendingAltReceipts.length > 0 && (
+                        <div className="border-l-4 border-amber-600 bg-amber-50 p-4 text-amber-950">
+                          <p className="text-sm font-bold flex items-center gap-2">
+                            <AlertTriangle size={16} /> {pendingAltReceipts.length} caja(s) de código alterno en bodega sin TF todavía
+                          </p>
+                          <p className="text-xs mt-1">
+                            No se pueden despachar hasta que aparezca su TF.{' '}
+                            {pendingAltByDestino.map(([dest, n]) => `${dest}: ${n}`).join(' · ')}
+                          </p>
+                        </div>
+                      )}
+
                       <div className="grid grid-cols-2 gap-4">
                         <div className="bg-green-50 border border-green-600 p-4">
                             <h4 className=" text-xs uppercase opacity-60">Coincidencias</h4>
@@ -890,6 +942,8 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                                           <TableHeader>
                                           <TableRow>
                                               <TableHead className="w-[20%]">Código</TableHead>
+                                              <TableHead>Ubicación</TableHead>
+                                              <TableHead>Llegada</TableHead>
                                               <TableHead>TFT (Cruce)</TableHead>
                                               <TableHead>Fecha TFT</TableHead>
                                               <TableHead>Cant TFT</TableHead>
@@ -900,6 +954,8 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                                           {itemsInDest.map(item => (
                                               <TableRow key={item.codigo}>
                                               <TableCell className=" text-xs font-bold">{item.codigo}</TableCell>
+                                              <TableCell className="text-xs font-bold">{item.ubicacion || '—'}</TableCell>
+                                              <TableCell className="text-xs">{item.fechaLlegada ? format(item.fechaLlegada, 'dd/MM HH:mm') : '—'}</TableCell>
                                               <TableCell>{item.tftMatch}</TableCell>
                                               <TableCell>{item.tftFecha ? format(item.tftFecha, 'dd/MM/yyyy') : '-'}</TableCell>
                                               <TableCell>{item.tftCantidad}</TableCell>
@@ -925,17 +981,30 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                                   <TableHead>Destino</TableHead>
                                   <TableHead>Fecha Creación</TableHead>
                                   <TableHead>Empacador</TableHead>
+                                  <TableHead>¿En bodega?</TableHead>
                               </TableRow>
                               </TableHeader>
                               <TableBody>
-                              {filteredUnmatchedData.map(item => (
+                              {filteredUnmatchedData.map(item => {
+                                  const pendingAlt = pendingAltByCode.get(normalizeAltCodeKey(item.codigo));
+                                  return (
                                   <TableRow key={item.codigo}>
                                   <TableCell className=" text-xs font-bold">{item.codigo}</TableCell>
                                   <TableCell>{item.destino}</TableCell>
                                   <TableCell>{format(item.fechaCreacion, 'dd/MM/yyyy')}</TableCell>
                                   <TableCell>{item.empacador}</TableCell>
+                                  <TableCell className="text-xs">
+                                    {pendingAlt ? (
+                                      <span className="font-semibold text-amber-700">
+                                        Sí, pendiente TF · {pendingAlt.ubicacion || 'sin ubicación'}
+                                      </span>
+                                    ) : (
+                                      <span className="opacity-50">No registrada</span>
+                                    )}
+                                  </TableCell>
                                   </TableRow>
-                              ))}
+                                  );
+                              })}
                               </TableBody>
                           </Table>
                           </div>

@@ -5309,6 +5309,86 @@ export async function getAltCodeReceipts(): Promise<{ today?: AltCodeReceipt[]; 
     }
 }
 
+export type VerificationTransferLookup = {
+    numeroTF: string;
+    bodegaDestino: string;
+    bodegaOrigen: string;
+    statuses: TransferStatus[];
+    cantidad: number;
+    fecha?: string;
+    fechaLlegada?: string;
+    ubicacion?: string;
+    codigoAlterno?: string;
+    marca?: string;
+    transferIds: string[];
+};
+
+/**
+ * Busca una lectura del pistoleo que no está en la validación:
+ * "DESTINO-TF", número de TF o código alterno. Si no hay TF, informa si es un código alterno pendiente.
+ */
+export async function lookupTransferForVerification(
+    rawCode: string
+): Promise<{ groups: VerificationTransferLookup[]; pendingAlt?: AltCodeReceipt; error?: string }> {
+    const code = String(rawCode || '').trim().toUpperCase().replace(/['\/]/g, '-');
+    if (!code) return { groups: [] };
+    try {
+        const transfersRef = collection(firestore, 'transfers');
+        let docs: Array<{ id: string; data: any }> = [];
+        let destFilter = '';
+
+        const byTf = async (tf: string) =>
+            (await getDocs(query(transfersRef, where('numeroTF', '==', tf)))).docs.map((d) => ({ id: d.id, data: d.data() }));
+
+        docs = await byTf(code);
+        if (docs.length === 0 && code.includes('-')) {
+            const idx = code.lastIndexOf('-');
+            destFilter = code.slice(0, idx).trim();
+            docs = await byTf(code.slice(idx + 1).trim());
+        }
+        if (docs.length === 0) {
+            const alt = normalizeAltCode(code);
+            docs = (await getDocs(query(transfersRef, where('codigoAlterno', '==', alt)))).docs.map((d) => ({ id: d.id, data: d.data() }));
+            if (docs.length === 0) {
+                const pending = await findActiveAltCodeReceipt(alt);
+                return { groups: [], pendingAlt: pending && pending.status === 'pending' ? pending : undefined };
+            }
+        }
+        if (destFilter) {
+            docs = docs.filter((d) => String(d.data.bodegaDestino || '').trim().toUpperCase() === destFilter);
+        }
+
+        const groups = new Map<string, VerificationTransferLookup>();
+        docs.forEach(({ id, data }) => {
+            const dest = String(data.bodegaDestino || '').trim();
+            const key = `${data.numeroTF}|${dest.toUpperCase()}`;
+            const fecha = tsToIso(data.fecha);
+            const llegada = tsToIso(data.recibidoAt);
+            const g = groups.get(key) || {
+                numeroTF: String(data.numeroTF || ''),
+                bodegaDestino: dest,
+                bodegaOrigen: String(data.bodegaOrigen || ''),
+                statuses: [],
+                cantidad: 0,
+                transferIds: [],
+            };
+            g.transferIds.push(id);
+            if (!g.statuses.includes(data.status)) g.statuses.push(data.status);
+            g.cantidad += Number(data.cantidad || 0) || 0;
+            if (fecha && (!g.fecha || fecha < g.fecha)) g.fecha = fecha;
+            if (llegada && (!g.fechaLlegada || llegada < g.fechaLlegada)) g.fechaLlegada = llegada;
+            if (!g.ubicacion && data.ubicacion) g.ubicacion = data.ubicacion;
+            if (!g.codigoAlterno && data.codigoAlterno) g.codigoAlterno = data.codigoAlterno;
+            if (!g.marca && data.marca) g.marca = String(data.marca).trim().toUpperCase();
+            groups.set(key, g);
+        });
+        return { groups: Array.from(groups.values()) };
+    } catch (error: any) {
+        console.error('Error looking up transfer for verification:', error);
+        return { groups: [], error: error.message };
+    }
+}
+
 export type BulkTransferStatusFileRow = {
     numeroTF: string;
     bodegaOrigen: string;

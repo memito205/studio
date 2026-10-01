@@ -2407,6 +2407,10 @@ export interface MerchandiseItem {
   tftMatch?: string;
   tftFecha?: Date;
   tftCantidad?: number;
+  /** Datos de bodega de la TF cruzada (líneas Recibido en Bodega). */
+  ubicacion?: string;
+  fechaLlegada?: Date;
+  codigoAlterno?: string;
 }
 
 export interface TFTItem {
@@ -2430,6 +2434,16 @@ export interface VerificationItem {
   marca?: string;
   scanned: boolean;
   scanTime?: Date;
+  /** Ubicación física de la TF al crear la validación. */
+  ubicacion?: string;
+  /** Fecha de llegada a bodega (ISO). */
+  fechaLlegada?: string;
+  codigoAlterno?: string;
+  /** Marcada por el supervisor como no encontrada en su ubicación. */
+  notFound?: boolean;
+  notFoundAt?: Date;
+  /** Agregada por lectura fuera del plan (excluida por límite o no incluida en el cruce). */
+  outOfPlan?: boolean;
 }
 
 export interface SavedVerification {
@@ -2455,6 +2469,8 @@ export interface SavedVerification {
     pending: number;
   };
   status?: 'pending' | 'in-progress' | 'completed';
+  /** Lecturas fuera del plan aún no agregadas (el supervisor las agrega al final). */
+  outOfPlanReads?: VerificationItem[];
 }
 
 

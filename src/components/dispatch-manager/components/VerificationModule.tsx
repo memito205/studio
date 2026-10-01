@@ -27,7 +27,10 @@ import {
   getOtherSessionsForTf,
   normalizeTfKey,
 } from '@/components/dispatch-manager/utils/duplicateVerifications';
-import { saveVerificationSession, loadVerificationSessions, updateVerificationSession } from '@/app/actions';
+import { saveVerificationSession, loadVerificationSessions, updateVerificationSession, lookupTransferForVerification } from '@/app/actions';
+import { normalizeDestination } from '@/components/dispatch-manager/utils/excel';
+import { weekdayShortEs } from '@/lib/warehouseLocations';
+import { Checkbox } from '@/components/ui/checkbox';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
@@ -101,6 +104,38 @@ const SaveVerificationDialog: React.FC<{
     );
 };
 
+const upperKey = (value: unknown) => String(value ?? '').trim().toUpperCase();
+const altKey = (value: unknown) => upperKey(value).replace(/\s+/g, '');
+
+type ItemMatch = { index: number } | { ambiguous: string[] } | null;
+
+/** Busca una lectura por código de rótulo, número de TF solo o código alterno. */
+const findItemForCode = (items: VerificationItem[], code: string): ItemMatch => {
+  const exact = items.findIndex((item) => upperKey(item.codigo) === code);
+  if (exact !== -1) return { index: exact };
+
+  const byTf = items
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => upperKey(item.tftCruce) === code || upperKey(item.tfOriginal) === code);
+  if (byTf.length > 0) {
+    const pending = byTf.filter(({ item }) => !item.scanned);
+    const pool = pending.length > 0 ? pending : byTf;
+    const destinos = Array.from(new Set(pool.map(({ item }) => item.destino)));
+    if (destinos.length > 1) return { ambiguous: destinos };
+    return { index: pool[0].index };
+  }
+
+  const alt = altKey(code);
+  const byAlt = items.findIndex((item) => item.codigoAlterno && altKey(item.codigoAlterno) === alt);
+  return byAlt !== -1 ? { index: byAlt } : null;
+};
+
+const arrivalLabel = (iso?: string) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '—' : `${weekdayShortEs(d)} ${format(d, 'dd/MM')}`;
+};
+
 const ScanningInterface: React.FC<{
   session: SavedVerification;
   allSessions: SavedVerification[];
@@ -109,11 +144,16 @@ const ScanningInterface: React.FC<{
   const [data, setData] = useState<VerificationItem[]>(session.results);
   const [scanInput, setScanInput] = useState('');
   const [lastScanStatus, setLastScanStatus] = useState<{
-    type: 'success' | 'error' | 'duplicate' | 'multi-session';
+    type: 'success' | 'error' | 'duplicate' | 'multi-session' | 'out-of-plan';
     message: string;
     code: string;
     detail?: string;
   } | null>(null);
+  const [outOfPlanReads, setOutOfPlanReads] = useState<VerificationItem[]>(session.outOfPlanReads || []);
+  const [allowOutOfPlan, setAllowOutOfPlan] = useState(false);
+  const [sortMode, setSortMode] = useState<'plan' | 'ubicacion'>('ubicacion');
+  const [isLookingUp, setIsLookingUp] = useState(false);
+  const sessionDestinos = useMemo(() => new Set(session.results.map((item) => item.destino)), [session.results]);
   
   const [isSaving, setIsSaving] = useState(false);
   const [isClosingDispatch, setIsClosingDispatch] = useState(false);
@@ -152,6 +192,8 @@ const ScanningInterface: React.FC<{
     const pending = total - scanned;
     return { total, scanned, pending, isComplete: total > 0 && pending === 0 };
   }, [data]);
+  const notFoundCount = useMemo(() => data.filter((item) => !item.scanned && item.notFound).length, [data]);
+  const outOfPlanAdded = useMemo(() => data.filter((item) => item.outOfPlan).length, [data]);
   
   const saveProgress = useCallback(async (isFinalizing: boolean) => {
     setIsSaving(true);
@@ -163,6 +205,7 @@ const ScanningInterface: React.FC<{
         results: data,
         stats,
         status: newStatus,
+        outOfPlanReads,
     });
 
     if (result.success) {
@@ -177,7 +220,7 @@ const ScanningInterface: React.FC<{
         toast({ variant: 'destructive', title: "Error al Guardar", description: result.error });
     }
     setIsSaving(false);
-  }, [data, onBack, session.id, session.status, stats, toast]);
+  }, [data, outOfPlanReads, onBack, session.id, session.status, stats, toast]);
 
   useEffect(() => {
     if (saveStatus === 'idle') {
@@ -191,15 +234,150 @@ const ScanningInterface: React.FC<{
     };
   }, [data, saveStatus, saveProgress]);
 
-  const handleScan = (e: React.FormEvent) => {
+  const registerOutOfPlan = (candidate: VerificationItem, code: string, reason: string) => {
+    const item: VerificationItem = { ...candidate, scanned: true, scanTime: new Date(), outOfPlan: true, notFound: false };
+    if (allowOutOfPlan) {
+      setData((prev) => [...prev, item]);
+      setLastScanStatus({ type: 'out-of-plan', message: 'AGREGADA FUERA DEL PLAN', code, detail: reason });
+    } else {
+      setOutOfPlanReads((prev) => [...prev, item]);
+      setLastScanStatus({
+        type: 'out-of-plan',
+        message: 'FUERA DEL PLAN — quedó en la lista para agregar al final',
+        code,
+        detail: reason,
+      });
+    }
+    setSaveStatus('idle');
+  };
+
+  const handleCodeNotInPlan = async (code: string) => {
+    if (findItemForCode(outOfPlanReads, code)) {
+      setLastScanStatus({ type: 'duplicate', message: 'YA ESTÁ EN LECTURAS FUERA DEL PLAN', code });
+      return;
+    }
+    const excluded = session.excludedResults || [];
+    const excludedMatch = findItemForCode(excluded, code);
+    if (excludedMatch && 'index' in excludedMatch) {
+      registerOutOfPlan(excluded[excludedMatch.index], code, 'Estaba excluida por el límite del destino.');
+      return;
+    }
+
+    setIsLookingUp(true);
+    const res = await lookupTransferForVerification(code);
+    setIsLookingUp(false);
+    if (res.error) {
+      setLastScanStatus({ type: 'error', message: 'ERROR CONSULTANDO LA TF', code, detail: res.error });
+      return;
+    }
+    if (res.pendingAlt) {
+      setLastScanStatus({
+        type: 'error',
+        message: 'CÓDIGO ALTERNO SIN TF — NO SE PUEDE DESPACHAR',
+        code,
+        detail: `Déjela en su ubicación (${res.pendingAlt.ubicacion || 'sin ubicación'}) hasta que aparezca la TF.`,
+      });
+      return;
+    }
+    if (res.groups.length === 0) {
+      setLastScanStatus({ type: 'error', message: '¡CÓDIGO NO ENCONTRADO!', code });
+      return;
+    }
+    const received = res.groups.filter((g) => g.statuses.includes('Recibido en Bodega'));
+    if (received.length === 0) {
+      const states = Array.from(new Set(res.groups.flatMap((g) => g.statuses))).join(', ');
+      setLastScanStatus({ type: 'error', message: 'TF NO ESTÁ EN RECIBIDO EN BODEGA', code, detail: `Estado actual: ${states}.` });
+      return;
+    }
+    const inSessionDest = received.filter((g) => sessionDestinos.has(normalizeDestination(g.bodegaDestino)));
+    if (inSessionDest.length === 0) {
+      setLastScanStatus({
+        type: 'error',
+        message: 'DESTINO FUERA DE ESTA VALIDACIÓN',
+        code,
+        detail: `La TF va para ${received.map((g) => normalizeDestination(g.bodegaDestino)).join(', ')}.`,
+      });
+      return;
+    }
+    if (inSessionDest.length > 1) {
+      setLastScanStatus({
+        type: 'error',
+        message: 'TF EN VARIOS DESTINOS — LEA EL RÓTULO DESTINO-TF',
+        code,
+        detail: inSessionDest.map((g) => normalizeDestination(g.bodegaDestino)).join(', '),
+      });
+      return;
+    }
+    const g = inSessionDest[0];
+    const destino = normalizeDestination(g.bodegaDestino);
+    const codigo = `${g.bodegaDestino.trim()}-${g.numeroTF}`.toUpperCase().replace(/'/g, '-');
+    if (findItemForCode(outOfPlanReads, codigo) || findItemForCode(data, codigo)) {
+      setLastScanStatus({ type: 'duplicate', message: '¡CÓDIGO YA ESCANEADO!', code });
+      return;
+    }
+    registerOutOfPlan(
+      {
+        codigo,
+        tftCruce: g.numeroTF,
+        fechaTft: g.fecha ? format(new Date(g.fecha), 'dd/MM/yyyy') : '-',
+        cantTft: String(g.cantidad || ''),
+        destino,
+        empacador: '',
+        contenidoOriginal: g.numeroTF,
+        tfOriginal: g.numeroTF,
+        scanned: true,
+        ...(g.marca ? { marca: g.marca } : {}),
+        ...(g.ubicacion ? { ubicacion: g.ubicacion } : {}),
+        ...(g.fechaLlegada ? { fechaLlegada: g.fechaLlegada } : {}),
+        ...(g.codigoAlterno ? { codigoAlterno: g.codigoAlterno } : {}),
+      },
+      code,
+      'No estaba en el cruce de esta validación.'
+    );
+  };
+
+  const addOutOfPlanToList = (items: VerificationItem[]) => {
+    if (items.length === 0) return;
+    const keys = new Set(items.map((i) => i.codigo));
+    setData((prev) => [...prev, ...items.map((i) => ({ ...i, scanned: true, outOfPlan: true }))]);
+    setOutOfPlanReads((prev) => prev.filter((i) => !keys.has(i.codigo)));
+    setSaveStatus('idle');
+  };
+
+  const discardOutOfPlan = (codigo: string) => {
+    setOutOfPlanReads((prev) => prev.filter((i) => i.codigo !== codigo));
+    setSaveStatus('idle');
+  };
+
+  const toggleNotFound = (codigo: string) => {
+    setData((prev) =>
+      prev.map((item) =>
+        item.codigo === codigo && !item.scanned
+          ? { ...item, notFound: !item.notFound, ...(item.notFound ? {} : { notFoundAt: new Date() }) }
+          : item
+      )
+    );
+    setSaveStatus('idle');
+  };
+
+  const handleScan = async (e: React.FormEvent) => {
     e.preventDefault();
     const code = scanInput.trim().toUpperCase().replace(/['\/]/g, '-');
-    if (!code) return;
+    if (!code || isLookingUp) return;
+    setScanInput('');
 
-    const index = data.findIndex(item => item.codigo.toUpperCase() === code);
+    const match = findItemForCode(data, code);
+    const index = match && 'index' in match ? match.index : -1;
 
-    if (index === -1) {
-      setLastScanStatus({ type: 'error', message: '¡CÓDIGO NO ENCONTRADO!', code });
+    if (match && 'ambiguous' in match) {
+      setLastScanStatus({
+        type: 'error',
+        message: 'TF EN VARIOS DESTINOS — LEA EL RÓTULO DESTINO-TF',
+        code,
+        detail: match.ambiguous.join(', '),
+      });
+    } else if (index === -1) {
+      await handleCodeNotInPlan(code);
     } else if (data[index].scanned) {
       setLastScanStatus({ type: 'duplicate', message: '¡CÓDIGO YA ESCANEADO!', code });
       toast({
@@ -213,7 +391,7 @@ const ScanningInterface: React.FC<{
       const otherHits = tfKey ? getOtherSessionsForTf(tfIndex, tfKey, session.id) : [];
 
       const newData = [...data];
-      newData[index] = { ...newData[index], scanned: true, scanTime: new Date() };
+      newData[index] = { ...newData[index], scanned: true, scanTime: new Date(), notFound: false };
       setData(newData);
 
       if (otherHits.length > 0) {
@@ -255,14 +433,29 @@ const ScanningInterface: React.FC<{
   }, [data]);
   
    const filteredData = useMemo(() => {
-    return data.filter(item => {
-        const statusMatch = filters.status === 'all' || (filters.status === 'scanned' && item.scanned) || (filters.status === 'pending' && !item.scanned);
-        const codigoMatch = !filters.codigo || item.codigo.toLowerCase().includes(filters.codigo.toLowerCase());
+    const rows = data.filter(item => {
+        const statusMatch =
+          filters.status === 'all' ||
+          (filters.status === 'scanned' && item.scanned) ||
+          (filters.status === 'pending' && !item.scanned) ||
+          (filters.status === 'notfound' && !item.scanned && !!item.notFound) ||
+          (filters.status === 'outofplan' && !!item.outOfPlan);
+        const codigoMatch = !filters.codigo || item.codigo.toLowerCase().includes(filters.codigo.toLowerCase()) || (item.ubicacion || '').toLowerCase().includes(filters.codigo.toLowerCase());
         const destinoMatch = !filters.destino || item.destino.toLowerCase().includes(filters.destino.toLowerCase());
         const tftMatch = !filters.tft || (item.tftCruce && item.tftCruce.toLowerCase().includes(filters.tft.toLowerCase()));
         return statusMatch && codigoMatch && destinoMatch && tftMatch;
     });
-  }, [data, filters]);
+    if (sortMode === 'ubicacion') {
+      return [...rows].sort((a, b) => {
+        const ua = a.ubicacion || '\uffff';
+        const ub = b.ubicacion || '\uffff';
+        const byUbic = ua.localeCompare(ub, 'es', { numeric: true });
+        if (byUbic !== 0) return byUbic;
+        return (a.fechaLlegada || '').localeCompare(b.fechaLlegada || '');
+      });
+    }
+    return rows;
+  }, [data, filters, sortMode]);
 
   const handleFinalize = () => {
     if (debounceTimer.current) clearTimeout(debounceTimer.current);
@@ -290,6 +483,7 @@ const ScanningInterface: React.FC<{
       results: data,
       stats,
       status: 'completed',
+      outOfPlanReads,
     });
 
     if (!result.success) {
@@ -354,8 +548,22 @@ const ScanningInterface: React.FC<{
             </CardHeader>
             <CardContent>
                 <form onSubmit={handleScan}>
-                <Input ref={inputRef} type="text" value={scanInput} onChange={(e) => setScanInput(e.target.value)} placeholder="Pistolear código..." className="w-full  text-xl focus:outline-none" autoComplete="off" />
+                <Input ref={inputRef} type="text" value={scanInput} onChange={(e) => setScanInput(e.target.value)} placeholder="Rótulo, # TF o código alterno..." className="w-full  text-xl focus:outline-none" autoComplete="off" />
                 </form>
+                {isLookingUp && (
+                  <p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin" /> Consultando TF fuera del plan...
+                  </p>
+                )}
+                <label className="mt-3 flex items-start gap-2 text-xs cursor-pointer">
+                  <Checkbox checked={allowOutOfPlan} onCheckedChange={(c) => setAllowOutOfPlan(!!c)} className="mt-0.5" />
+                  <span>
+                    <span className="font-semibold">Agregar fuera del plan</span>
+                    <span className="block text-muted-foreground">
+                      Activo: las TF fuera del plan se agregan de una vez. Inactivo: quedan en una lista para agregarlas al final.
+                    </span>
+                  </span>
+                </label>
             </CardContent>
           </Card>
           <Card>
@@ -375,6 +583,8 @@ const ScanningInterface: React.FC<{
                   <div><span className="text-sm font-medium text-muted-foreground">Escaneados</span><p className="text-2xl font-bold text-green-600">{stats.scanned}</p></div>
                   <div><span className="text-sm font-medium text-muted-foreground">Pendientes</span><p className="text-2xl font-bold text-orange-600">{stats.pending}</p></div>
                   <div><span className="text-sm font-medium text-muted-foreground">Completado</span><p className="text-2xl font-bold">{stats.total > 0 ? Math.round((stats.scanned / stats.total) * 100) : 0}%</p></div>
+                  <div><span className="text-sm font-medium text-muted-foreground">No encontradas</span><p className="text-2xl font-bold text-red-600">{notFoundCount}</p></div>
+                  <div><span className="text-sm font-medium text-muted-foreground">Fuera del plan</span><p className="text-2xl font-bold text-blue-700">{outOfPlanAdded}{outOfPlanReads.length > 0 ? ` (+${outOfPlanReads.length})` : ''}</p></div>
                 </div>
                 <div className="flex flex-col gap-2 mt-6">
                     {canCloseDispatch && isSessionOpen ? (
@@ -399,6 +609,11 @@ const ScanningInterface: React.FC<{
                               {stats.pending > 0
                                 ? `. Quedarán ${stats.pending} unidad(es) pendientes fuera del ZIP (no encontradas / no leídas).`
                                 : '.'}{' '}
+                              {outOfPlanReads.length > 0 && (
+                                <strong className="text-blue-700">
+                                  Hay {outOfPlanReads.length} lectura(s) fuera del plan sin agregar: no saldrán en el ZIP.{' '}
+                                </strong>
+                              )}
                               El ZIP planificado (cruce completo) no se modifica; puede volver a descargarlo desde el historial.
                             </AlertDialogDescription>
                           </AlertDialogHeader>
@@ -443,7 +658,8 @@ const ScanningInterface: React.FC<{
                   lastScanStatus.type === 'success' && "bg-green-50 border-green-600 text-green-800 dark:bg-green-900/20 dark:border-green-700 dark:text-green-300",
                   lastScanStatus.type === 'error' && "bg-red-50 border-red-600 text-red-800 dark:bg-red-900/20 dark:border-red-700 dark:text-red-300",
                   lastScanStatus.type === 'duplicate' && "bg-orange-50 border-orange-600 text-orange-800 dark:bg-orange-900/20 dark:border-orange-700 dark:text-orange-300",
-                  lastScanStatus.type === 'multi-session' && "bg-amber-50 border-amber-700 text-amber-950"
+                  lastScanStatus.type === 'multi-session' && "bg-amber-50 border-amber-700 text-amber-950",
+                  lastScanStatus.type === 'out-of-plan' && "bg-blue-50 border-blue-700 text-blue-950"
                 )}>
                     <p className="font-bold text-sm uppercase">{lastScanStatus.message}</p>
                     <p className=" text-xs mt-1 opacity-70">Código: {lastScanStatus.code}</p>
@@ -451,6 +667,41 @@ const ScanningInterface: React.FC<{
                       <p className="text-xs mt-2 font-medium">{lastScanStatus.detail}</p>
                     )}
                 </div>
+            )}
+            {outOfPlanReads.length > 0 && (
+              <Card className="border-blue-300">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Leídas fuera del plan ({outOfPlanReads.length})</CardTitle>
+                  <CardDescription>Revise y agréguelas a la validación cuando termine el recorrido.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <Button size="sm" className="w-full" onClick={() => addOutOfPlanToList(outOfPlanReads)} disabled={!isSessionOpen}>
+                    Agregar todas ({outOfPlanReads.length})
+                  </Button>
+                  <ScrollArea className="max-h-56">
+                    <div className="divide-y">
+                      {outOfPlanReads.map((item) => (
+                        <div key={item.codigo} className="flex items-center justify-between gap-2 py-1.5 text-xs">
+                          <div className="min-w-0">
+                            <p className="font-bold truncate">{item.codigo}</p>
+                            <p className="text-muted-foreground truncate">
+                              {item.destino} · {item.ubicacion || 'sin ubicación'} · {item.cantTft} und
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 gap-1">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => addOutOfPlanToList([item])} disabled={!isSessionOpen}>
+                              Agregar
+                            </Button>
+                            <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => discardOutOfPlan(item.codigo)}>
+                              <XCircle className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                </CardContent>
+              </Card>
             )}
             <Card>
                 <CardHeader>
@@ -481,8 +732,17 @@ const ScanningInterface: React.FC<{
             <CardDescription className="flex justify-between items-center">
                 <span>{stats.scanned} / {stats.total} LISTOS</span>
                 <div className="flex gap-2">
+                    <Select value={sortMode} onValueChange={(val) => setSortMode(val as 'plan' | 'ubicacion')}>
+                        <SelectTrigger className="w-[150px] h-8 text-xs">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="ubicacion">Orden: Ubicación</SelectItem>
+                            <SelectItem value="plan">Orden: Plan</SelectItem>
+                        </SelectContent>
+                    </Select>
                     <Input 
-                        placeholder="Filtrar por Código..." 
+                        placeholder="Código o ubicación..." 
                         value={filters.codigo} 
                         onChange={(e) => setFilters(prev => ({...prev, codigo: e.target.value}))}
                         className="max-w-[150px] h-8 text-xs"
@@ -493,7 +753,7 @@ const ScanningInterface: React.FC<{
                         onChange={(e) => setFilters(prev => ({...prev, destino: e.target.value}))}
                         className="max-w-[150px] h-8 text-xs"
                     />
-                    <Select value={filters.status} onValueChange={(val) => setFilters(prev => ({...prev, status: val as 'all' | 'scanned' | 'pending'}))}>
+                    <Select value={filters.status} onValueChange={(val) => setFilters(prev => ({...prev, status: val}))}>
                         <SelectTrigger className="w-[150px] h-8 text-xs">
                             <SelectValue />
                         </SelectTrigger>
@@ -501,6 +761,8 @@ const ScanningInterface: React.FC<{
                             <SelectItem value="all">Todos los Estados</SelectItem>
                             <SelectItem value="pending">Pendiente</SelectItem>
                             <SelectItem value="scanned">Escaneado</SelectItem>
+                            <SelectItem value="notfound">No encontrada</SelectItem>
+                            <SelectItem value="outofplan">Fuera del plan</SelectItem>
                         </SelectContent>
                     </Select>
                 </div>
@@ -509,7 +771,7 @@ const ScanningInterface: React.FC<{
           <CardContent className="flex-grow overflow-hidden p-0">
             <ScrollArea className="h-full">
             <Table>
-                <TableHeader className="sticky top-0 bg-secondary z-10"><TableRow><TableHead>Estado</TableHead><TableHead>Código</TableHead><TableHead>Destino</TableHead><TableHead>TFT</TableHead><TableHead>Cant.</TableHead></TableRow></TableHeader>
+                <TableHeader className="sticky top-0 bg-secondary z-10"><TableRow><TableHead>Ubicación</TableHead><TableHead>Llegada</TableHead><TableHead>Estado</TableHead><TableHead>Código</TableHead><TableHead>Destino</TableHead><TableHead>TFT</TableHead><TableHead>Cant.</TableHead><TableHead /></TableRow></TableHeader>
                 <TableBody>
                     {filteredData.map((item, idx) => {
                     const tfKey = normalizeTfKey(item.tftCruce) || normalizeTfKey(item.tfOriginal);
@@ -521,12 +783,24 @@ const ScanningInterface: React.FC<{
                       key={item.codigo + idx}
                       className={cn(
                         item.scanned && "bg-green-100/50 dark:bg-green-900/20",
-                        multiSession && "bg-amber-50 dark:bg-amber-950/30"
+                        multiSession && "bg-amber-50 dark:bg-amber-950/30",
+                        !item.scanned && item.notFound && "bg-red-50 dark:bg-red-950/20"
                       )}
                     >
+                        <TableCell className="text-base font-black whitespace-nowrap">{item.ubicacion || <span className="text-xs font-normal opacity-40">Sin ubicación</span>}</TableCell>
+                        <TableCell className="text-xs font-bold whitespace-nowrap">{arrivalLabel(item.fechaLlegada)}</TableCell>
                         <TableCell>
                           <div className="flex flex-col gap-1 items-start">
-                            {item.scanned ? <Badge variant="success">LISTO</Badge> : <Badge variant="outline">PENDIENTE</Badge>}
+                            {item.scanned ? (
+                              <Badge variant="success">LISTO</Badge>
+                            ) : item.notFound ? (
+                              <Badge variant="destructive">NO ENCONTRADA</Badge>
+                            ) : (
+                              <Badge variant="outline">PENDIENTE</Badge>
+                            )}
+                            {item.outOfPlan && (
+                              <Badge className="bg-blue-600 text-white text-[9px]">Fuera del plan</Badge>
+                            )}
                             {multiSession && (
                               <Badge variant="destructive" className="text-[9px]">
                                 Multi-validación
@@ -538,6 +812,18 @@ const ScanningInterface: React.FC<{
                         <TableCell className="text-xs">{item.destino}</TableCell>
                         <TableCell className=" text-xs opacity-60">{item.tftCruce}</TableCell>
                         <TableCell className="text-center font-medium">{item.cantTft}</TableCell>
+                        <TableCell>
+                          {!item.scanned && isSessionOpen && (
+                            <Button
+                              size="sm"
+                              variant={item.notFound ? 'secondary' : 'ghost'}
+                              className="h-7 px-2 text-[10px]"
+                              onClick={() => toggleNotFound(item.codigo)}
+                            >
+                              {item.notFound ? 'Deshacer' : 'No encontrada'}
+                            </Button>
+                          )}
+                        </TableCell>
                     </TableRow>
                     );
                     })}
