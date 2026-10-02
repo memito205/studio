@@ -40,7 +40,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import JsBarcode from 'jsbarcode';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import html2canvas from 'html2canvas';
+import { buildTransferLabelsPdf, openPdfForPrint } from '@/lib/labelPdf';
 import { cn } from '@/lib/utils';
 import { CollectionLogDetailsDialog } from './CollectionLogDetailsDialog';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from './ui/collapsible';
@@ -311,15 +311,8 @@ const TransferLabelDialog: React.FC<{
             Cerrar
           </Button>
           <div className="flex gap-2">
-            <Button variant={isStandalone ? 'default' : 'outline'} onClick={async () => {
-                const input = document.getElementById(`transfer-label-to-print-${transfer.id}`);
-                if (!input) return;
-                const canvas = await html2canvas(input, { scale: 3, useCORS: true, backgroundColor: '#ffffff' });
-                const imgData = canvas.toDataURL('image/png');
-                const pdf = new jsPDF({ orientation: 'landscape', unit: 'cm', format: [10, 5] });
-                pdf.addImage(imgData, 'PNG', 0, 0, 10, 5);
-                pdf.autoPrint();
-                window.open(pdf.output('bloburl'), '_blank');
+            <Button variant={isStandalone ? 'default' : 'outline'} onClick={() => {
+                openPdfForPrint(buildTransferLabelsPdf([transfer], { hideBarcode: isStandalone }));
                 if (isStandalone) onOpenChange(false);
             }} disabled={isSaving}>
               <Printer className="mr-2 h-4 w-4"/> Imprimir Rótulo FIFO
@@ -969,36 +962,7 @@ const WarehouseReceptionView: React.FC<{
             toast({ title: 'Generando PDF...', description: `Preparando ${transfersToPrint.length} rótulos para imprimir.` });
         
             try {
-                const doc = new jsPDF({
-                    orientation: 'landscape',
-                    unit: 'cm',
-                    format: [10, 5] // Matching the label size
-                });
-        
-                for (let i = 0; i < transfersToPrint.length; i++) {
-                    const transfer = transfersToPrint[i];
-                    const input = document.getElementById(`transfer-label-to-print-${transfer.id}`);
-                    if (!input) {
-                        console.error(`Element for transfer ${transfer.id} not found!`);
-                        continue;
-                    }
-            
-                    if (i > 0) {
-                        doc.addPage();
-                    }
-            
-                    const canvas = await html2canvas(input, {
-                        scale: 3, // Higher scale for better quality
-                        useCORS: true,
-                        backgroundColor: '#ffffff',
-                    });
-            
-                    const imgData = canvas.toDataURL('image/png');
-                    doc.addImage(imgData, 'PNG', 0, 0, 10, 5);
-                }
-        
-                doc.autoPrint();
-                window.open(doc.output('bloburl'), '_blank');
+                openPdfForPrint(buildTransferLabelsPdf(transfersToPrint));
             } catch (error) {
                 console.error("Error generating PDF:", error);
                 toast({
@@ -1254,18 +1218,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                 toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
                 onRefresh();
                 
-                const input = document.getElementById(`transfer-label-to-print-${transfer.id}`);
-                if (!input) {
-                    throw new Error('Elemento del rótulo no encontrado.');
-                }
-                
-                await new Promise(resolve => setTimeout(resolve, 100));
-                const canvas = await html2canvas(input, { scale: 3, useCORS: true, backgroundColor: '#ffffff' });
-                const imgData = canvas.toDataURL('image/png');
-                const pdf = new jsPDF({ orientation: 'landscape', unit: 'cm', format: [10, 5] });
-                pdf.addImage(imgData, 'PNG', 0, 0, 10, 5);
-                pdf.autoPrint();
-                window.open(pdf.output('bloburl'), '_blank');
+                openPdfForPrint(buildTransferLabelsPdf([transfer]));
             } else {
                 throw new Error(result.error);
             }
@@ -1334,32 +1287,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
 
             setIsPrinting(true);
             try {
-                await new Promise((resolve) => setTimeout(resolve, 150));
-                const doc = new jsPDF({
-                    orientation: 'landscape',
-                    unit: 'cm',
-                    format: [10, 5],
-                });
-
-                for (let i = 0; i < transfersToPrint.length; i++) {
-                    const transfer = transfersToPrint[i];
-                    const input = document.getElementById(`transfer-label-to-print-${transfer.id}`);
-                    if (!input) {
-                        console.error(`Element for transfer ${transfer.id} not found!`);
-                        continue;
-                    }
-                    if (i > 0) doc.addPage();
-                    const canvas = await html2canvas(input, {
-                        scale: 3,
-                        useCORS: true,
-                        backgroundColor: '#ffffff',
-                    });
-                    const imgData = canvas.toDataURL('image/png');
-                    doc.addImage(imgData, 'PNG', 0, 0, 10, 5);
-                }
-
-                doc.autoPrint();
-                window.open(doc.output('bloburl'), '_blank');
+                openPdfForPrint(buildTransferLabelsPdf(transfersToPrint));
             } catch (error) {
                 console.error('Error generating bulk PDF:', error);
                 toast({
@@ -2727,18 +2655,7 @@ const OperatorView: React.FC<{
                 toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
                 onRefresh();
                 
-                const input = document.getElementById(`transfer-label-to-print-${transfer.id}`);
-                if (!input) {
-                    throw new Error('Elemento del rótulo no encontrado.');
-                }
-                
-                await new Promise(resolve => setTimeout(resolve, 100));
-                const canvas = await html2canvas(input, { scale: 3, useCORS: true, backgroundColor: '#ffffff' });
-                const imgData = canvas.toDataURL('image/png');
-                const pdf = new jsPDF({ orientation: 'landscape', unit: 'cm', format: [10, 5] });
-                pdf.addImage(imgData, 'PNG', 0, 0, 10, 5);
-                pdf.autoPrint();
-                window.open(pdf.output('bloburl'), '_blank');
+                openPdfForPrint(buildTransferLabelsPdf([transfer]));
             } else {
                 throw new Error(result.error);
             }

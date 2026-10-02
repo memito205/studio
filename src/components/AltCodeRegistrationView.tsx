@@ -2,8 +2,7 @@
 
 import React, { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import JsBarcode from 'jsbarcode';
-import jsPDF from 'jspdf';
-import html2canvas from 'html2canvas';
+import { buildAltCodeStickerPdf, openPdfForPrint } from '@/lib/labelPdf';
 import { format } from 'date-fns';
 import { AlertTriangle, CheckCircle2, Link2, Loader2, MapPin, Pencil, Printer, RefreshCw, ScanLine, Upload, XCircle } from 'lucide-react';
 import { AltCodeBulkLoadDialog } from './AltCodeBulkLoadDialog';
@@ -186,14 +185,7 @@ export function AltCodeRegistrationView() {
     if (!stickerToPrint) return;
     const run = async () => {
       try {
-        await new Promise((r) => setTimeout(r, 50));
-        const el = document.getElementById(`alt-code-sticker-${stickerToPrint.id}`);
-        if (!el) return;
-        const canvas = await html2canvas(el, { scale: 3, useCORS: true, backgroundColor: '#ffffff' });
-        const pdf = new jsPDF({ orientation: 'landscape', unit: 'cm', format: [10, 5] });
-        pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, 10, 5);
-        pdf.autoPrint();
-        window.open(pdf.output('bloburl'), '_blank');
+        openPdfForPrint(buildAltCodeStickerPdf(stickerToPrint));
       } catch (error) {
         console.error('Error printing sticker', error);
         toast({ variant: 'destructive', title: 'Error de impresión', description: 'No se pudo generar el sticker.' });
