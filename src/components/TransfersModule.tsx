@@ -18,6 +18,7 @@ import { EMPTY_WAREHOUSE_LOCATION_CONFIG, suggestLocationsForDestino, suggestLoc
 import { SearchableSelect, type SearchableOption } from './SearchableSelect';
 import { WarehouseLocationsDialog } from './WarehouseLocationsDialog';
 import { AltCodeRegistrationView } from './AltCodeRegistrationView';
+import { WarehouseStockSummaryButton } from './WarehouseStockSummaryDialog';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -1954,6 +1955,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                     Actualizar Base
                                 </Button>
                             )}
+                             <WarehouseStockSummaryButton />
                              <Button onClick={() => setIsManualEntryOpen(true)}><Plus className="mr-2 h-4 w-4"/> Agregar Manual</Button>
                             <DownloadTemplateButton/>
                             {isBulkStatusAdmin && (
