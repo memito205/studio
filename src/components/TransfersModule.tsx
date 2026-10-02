@@ -210,8 +210,8 @@ const TransferLabel: React.FC<{ transfer: TransferEntry; hideBarcode?: boolean }
           format: "CODE128",
           displayValue: false,
           margin: 0,
-          height: 16,
-          width: 1.2,
+          height: 50,
+          width: 2,
         });
       } catch (e) {
         console.error('Error generating barcode', e);
@@ -221,13 +221,17 @@ const TransferLabel: React.FC<{ transfer: TransferEntry; hideBarcode?: boolean }
 
   const arrivalDate = toValidDate(transfer.recibidoAt) || toValidDate(transfer.fecha);
   const tfDate = toValidDate(transfer.fecha);
+  const tfText = `TF ${transfer.numeroTF}`;
+  const tfFontPx = tfText.length <= 10 ? 26 : tfText.length <= 13 ? 22 : 18;
+  const destinoText = `DESTINO ${transfer.bodegaDestino}`;
+  const destinoFontPx = destinoText.length <= 16 ? 14 : destinoText.length <= 22 ? 12 : 10;
 
   return (
     <div id={`transfer-label-to-print-${transfer.id}`} className="border border-gray-300 rounded-lg bg-white text-black flex overflow-hidden font-sans" style={{ width: '10cm', height: '4.8cm' }}>
       {/* Bloque del día de llegada (reemplaza el color: se lee de lejos en B/N) */}
-      <div className="bg-black text-white flex flex-col items-center justify-center shrink-0" style={{ width: '2.5cm' }}>
-        <span className="text-[30px] font-black leading-none">{arrivalDate ? weekdayShortEs(arrivalDate) : '--'}</span>
-        <span className="text-[24px] font-black leading-none mt-1">{arrivalDate ? format(arrivalDate, 'dd/MM') : '--/--'}</span>
+      <div className="bg-black text-white flex flex-col items-center justify-center shrink-0" style={{ width: '2.2cm' }}>
+        <span className="text-[28px] font-black leading-tight">{arrivalDate ? weekdayShortEs(arrivalDate) : '--'}</span>
+        <span className="text-[22px] font-black leading-tight">{arrivalDate ? format(arrivalDate, 'dd/MM') : '--/--'}</span>
       </div>
 
       <div className="flex-1 min-w-0 flex flex-col px-2 py-1">
@@ -243,23 +247,23 @@ const TransferLabel: React.FC<{ transfer: TransferEntry; hideBarcode?: boolean }
           )}
         </div>
 
-        <div className="text-[26px] font-black leading-none tracking-wider mt-0.5 truncate">TF {transfer.numeroTF}</div>
+        <div className="font-black leading-tight whitespace-nowrap" style={{ fontSize: `${tfFontPx}px` }}>{tfText}</div>
 
-        <div className="flex justify-between items-baseline mt-0.5">
-          <span className="text-[13px] font-bold leading-none truncate">DESTINO {transfer.bodegaDestino}</span>
-          <span className="text-[11px] font-bold leading-none whitespace-nowrap">UNID {transfer.cantidad || 1}</span>
+        <div className="flex justify-between items-end gap-2">
+          <span className="font-bold leading-tight break-words min-w-0" style={{ fontSize: `${destinoFontPx}px` }}>{destinoText}</span>
+          <span className="text-[12px] font-bold leading-tight whitespace-nowrap">UNID {transfer.cantidad || 1}</span>
         </div>
 
         {transfer.ubicacion && (
-          <div className="border-2 border-black rounded-sm px-1.5 py-0.5 mt-1 text-[13px] font-black leading-none truncate">
+          <div className="border-2 border-black rounded-sm px-1.5 mt-0.5 text-[13px] font-black leading-tight whitespace-nowrap overflow-hidden">
             UBIC: {transfer.ubicacion}
           </div>
         )}
 
         {!hideBarcode && (
-          <div className="flex flex-col items-center mt-auto">
-            <canvas ref={barcodeRef} style={{ maxWidth: '100%', height: 'auto' }} />
-            <div className="text-[8px] font-bold tracking-[0.25em] leading-none mt-0.5">{barcodeValue}</div>
+          <div className="flex flex-col items-center mt-auto pt-0.5">
+            <canvas ref={barcodeRef} style={{ width: '100%', height: '1.25cm' }} />
+            <div className="text-[9px] font-bold tracking-[0.15em] leading-tight">{barcodeValue}</div>
           </div>
         )}
       </div>
