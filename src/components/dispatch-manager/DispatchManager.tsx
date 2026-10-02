@@ -21,6 +21,7 @@ import {
 import type { MerchandiseItem, TFTItem, VerificationItem, SavedVerification, AltCodeReceipt } from '@/types';
 import { parseMerchandiseExcel, exportToExcel, normalizeDestination } from './utils/excel';
 import { generatePDF } from './utils/pdf';
+import { firstWarehouseArrival } from '@/lib/transferDates';
 import {
   downloadStoreSummaryPdfs,
   merchandiseItemsToSummaryRows,
@@ -211,7 +212,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
         const warehouseByTf = new Map<string, WarehouseInfo>();
         const upsertWarehouse = (map: Map<string, WarehouseInfo>, key: string, t: typeof receivedInWarehouseTransfers[number]) => {
             const current = map.get(key) || {};
-            const llegada = t.recibidoAt ? new Date(t.recibidoAt as any) : undefined;
+            const llegada = firstWarehouseArrival(t) || undefined;
             map.set(key, {
                 ubicacion: current.ubicacion || t.ubicacion || undefined,
                 codigoAlterno: current.codigoAlterno || t.codigoAlterno || undefined,

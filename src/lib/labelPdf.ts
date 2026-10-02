@@ -2,6 +2,7 @@ import jsPDF from 'jspdf';
 import JsBarcode from 'jsbarcode';
 import { format } from 'date-fns';
 import { weekdayShortEs } from '@/lib/warehouseLocations';
+import { firstWarehouseArrival } from '@/lib/transferDates';
 
 /** Papel de rótulo: 10 cm de ancho x 5 cm de alto. Todo en milímetros. */
 const PAGE_W = 100;
@@ -20,7 +21,20 @@ export type TransferLabelData = {
   codigoAlterno?: string;
   fecha?: unknown;
   recibidoAt?: unknown;
+  status?: string;
+  statusHistory?: unknown;
 };
+
+export type TransferLabelOptions = {
+  hideBarcode?: boolean;
+  /** La TF se está recibiendo en este momento: si nunca había llegado, el día es hoy. */
+  receivingNow?: boolean;
+};
+
+/** Día del bloque negro: primera llegada a bodega (estable al reimprimir); si no ha llegado, fecha de la TF. */
+export function labelArrivalDate(t: TransferLabelData, receivingNow = false): Date | null {
+  return firstWarehouseArrival(t) || (receivingNow ? new Date() : toDate(t.fecha));
+}
 
 export type AltCodeStickerData = {
   codigoAlterno: string;
@@ -85,8 +99,8 @@ function drawBarcode(doc: jsPDF, value: string, top: number, height: number) {
   doc.addImage(canvas.toDataURL('image/png'), 'PNG', CONTENT_X, top, CONTENT_W, height);
 }
 
-export function addTransferLabelPage(doc: jsPDF, t: TransferLabelData, opts: { hideBarcode?: boolean } = {}) {
-  const arrival = toDate(t.recibidoAt) || toDate(t.fecha);
+export function addTransferLabelPage(doc: jsPDF, t: TransferLabelData, opts: TransferLabelOptions = {}) {
+  const arrival = labelArrivalDate(t, opts.receivingNow);
   const tfDate = toDate(t.fecha);
   const right = CONTENT_X + CONTENT_W;
   drawDayBlock(doc, arrival);
@@ -143,7 +157,7 @@ export function addTransferLabelPage(doc: jsPDF, t: TransferLabelData, opts: { h
   }
 }
 
-export function buildTransferLabelsPdf(transfers: TransferLabelData[], opts: { hideBarcode?: boolean } = {}): jsPDF {
+export function buildTransferLabelsPdf(transfers: TransferLabelData[], opts: TransferLabelOptions = {}): jsPDF {
   const doc = newLabelDoc();
   transfers.forEach((t, i) => {
     if (i > 0) doc.addPage([PAGE_W, PAGE_H], 'landscape');

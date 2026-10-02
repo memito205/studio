@@ -8,6 +8,7 @@
 
 import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, PackingSettings, DEFAULT_PACKING_PRODUCTIVITY_GOAL, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DeliveryManifestDraft, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem, WarehouseLocationConfig, AltCodeReceipt, AltCodeReceiptStatus, VerificationItem, VerificationCargueInfo, VerificationDispatchClass, VerificationDispatchClose, VerificationLoadScan } from "@/types";
 import { normalizeDestination } from '@/components/dispatch-manager/utils/excel';
+import { firstWarehouseArrival } from '@/lib/transferDates';
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -4862,6 +4863,21 @@ function applyTransferStatusActor(
     }
 }
 
+/** Líneas que ya están en Recibido en Bodega: re-recibirlas no debe mover su fecha de llegada. */
+async function getAlreadyReceivedTransferIds(ids: string[]): Promise<Set<string>> {
+    const unique = Array.from(new Set(ids.filter(Boolean)));
+    const received = new Set<string>();
+    for (let i = 0; i < unique.length; i += 30) {
+        const snap = await getDocs(
+            query(collection(firestore, 'transfers'), where(documentId(), 'in', unique.slice(i, i + 30)))
+        );
+        snap.docs.forEach((d) => {
+            if (d.data().status === 'Recibido en Bodega') received.add(d.id);
+        });
+    }
+    return received;
+}
+
 export async function updateTransferStatus(
     transferId: string | string[],
     status: TransferStatus,
@@ -4890,9 +4906,15 @@ export async function updateTransferStatus(
 
         applyTransferStatusActor(updates, status, actor, justification, now);
 
+        const alreadyReceived = status === 'Recibido en Bodega' ? await getAlreadyReceivedTransferIds(ids) : new Set<string>();
         ids.forEach(id => {
             const transferRef = doc(firestore, "transfers", id);
-            batch.update(transferRef, updates);
+            if (alreadyReceived.has(id)) {
+                const { recibidoAt: _keep, ...rest } = updates;
+                batch.update(transferRef, rest as DocumentData);
+            } else {
+                batch.update(transferRef, updates as DocumentData);
+            }
         });
 
         await batch.commit();
@@ -4913,11 +4935,13 @@ export async function batchUpdateTransferStatus(
     }
     const batch = writeBatch(firestore);
     try {
+        const alreadyReceived =
+            status === 'Recibido en Bodega' ? await getAlreadyReceivedTransferIds(transferIds) : new Set<string>();
         transferIds.forEach(id => {
             const transferRef = doc(firestore, 'transfers', id);
             const updates: Record<string, unknown> = { status };
             const now = Timestamp.now();
-            if (status === 'Recibido en Bodega') {
+            if (status === 'Recibido en Bodega' && !alreadyReceived.has(id)) {
                 updates.recibidoAt = now;
             }
             applyTransferStatusActor(updates, status, actor, undefined, now);
@@ -4943,11 +4967,13 @@ export async function receiveTransfersInWarehouse(
     if (entries.length === 0) return { success: true, count: 0 };
     try {
         const now = Timestamp.now();
+        const alreadyReceived = await getAlreadyReceivedTransferIds(entries.map((e) => e.id));
         const CHUNK = 450;
         for (let i = 0; i < entries.length; i += CHUNK) {
             const batch = writeBatch(firestore);
             entries.slice(i, i + CHUNK).forEach(({ id, ubicacion }) => {
-                const updates: Record<string, unknown> = { status: 'Recibido en Bodega', recibidoAt: now };
+                const updates: Record<string, unknown> = { status: 'Recibido en Bodega' };
+                if (!alreadyReceived.has(id)) updates.recibidoAt = now;
                 if (ubicacion) {
                     updates.ubicacion = ubicacion;
                     updates.ubicacionAt = now;
@@ -5529,7 +5555,7 @@ export async function lookupTransferForVerification(
             const dest = String(data.bodegaDestino || '').trim();
             const key = `${data.numeroTF}|${dest.toUpperCase()}`;
             const fecha = tsToIso(data.fecha);
-            const llegada = tsToIso(data.recibidoAt);
+            const llegada = firstWarehouseArrival(data)?.toISOString();
             const g = groups.get(key) || {
                 numeroTF: String(data.numeroTF || ''),
                 bodegaDestino: dest,

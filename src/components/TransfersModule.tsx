@@ -40,7 +40,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import JsBarcode from 'jsbarcode';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { buildTransferLabelsPdf, openPdfForPrint } from '@/lib/labelPdf';
+import { buildTransferLabelsPdf, labelArrivalDate, openPdfForPrint, type TransferLabelData } from '@/lib/labelPdf';
 import { cn } from '@/lib/utils';
 import { CollectionLogDetailsDialog } from './CollectionLogDetailsDialog';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from './ui/collapsible';
@@ -231,7 +231,7 @@ const TransferLabel: React.FC<{ transfer: TransferEntry; hideBarcode?: boolean }
     }
   }, [barcodeValue, hideBarcode]);
 
-  const arrivalDate = toValidDate(transfer.recibidoAt) || toValidDate(transfer.fecha);
+  const arrivalDate = labelArrivalDate(transfer as TransferLabelData, transfer.status !== 'Recibido en Bodega');
   const tfDate = toValidDate(transfer.fecha);
   const tfText = `TF ${transfer.numeroTF}`;
   const tfFontPx = tfText.length <= 10 ? 26 : tfText.length <= 13 ? 22 : 18;
@@ -948,11 +948,9 @@ const WarehouseReceptionView: React.FC<{
             toast({ title: 'Éxito', description: `${transferIdsToUpdate.length} transferencias marcadas como 'Recibido en Bodega'.` });
             
             if (andPrint) {
-                const receivedAt = new Date();
                 setTransfersToPrint(
                     groupsToReceive.map(({ group, ubicacion }) => ({
                         ...group,
-                        recibidoAt: receivedAt,
                         ubicacion: ubicacion || undefined,
                     }))
                 );
@@ -975,7 +973,7 @@ const WarehouseReceptionView: React.FC<{
             toast({ title: 'Generando PDF...', description: `Preparando ${transfersToPrint.length} rótulos para imprimir.` });
         
             try {
-                openPdfForPrint(buildTransferLabelsPdf(transfersToPrint));
+                openPdfForPrint(buildTransferLabelsPdf(transfersToPrint, { receivingNow: true }));
             } catch (error) {
                 console.error("Error generating PDF:", error);
                 toast({
@@ -1231,7 +1229,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                 toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
                 onRefresh();
                 
-                openPdfForPrint(buildTransferLabelsPdf([transfer]));
+                openPdfForPrint(buildTransferLabelsPdf([transfer], { receivingNow: true }));
             } else {
                 throw new Error(result.error);
             }
@@ -1300,7 +1298,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
 
             setIsPrinting(true);
             try {
-                openPdfForPrint(buildTransferLabelsPdf(transfersToPrint));
+                openPdfForPrint(buildTransferLabelsPdf(transfersToPrint, { receivingNow: true }));
             } catch (error) {
                 console.error('Error generating bulk PDF:', error);
                 toast({
@@ -2701,7 +2699,7 @@ const OperatorView: React.FC<{
                 toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
                 onRefresh();
                 
-                openPdfForPrint(buildTransferLabelsPdf([transfer]));
+                openPdfForPrint(buildTransferLabelsPdf([transfer], { receivingNow: true }));
             } else {
                 throw new Error(result.error);
             }
