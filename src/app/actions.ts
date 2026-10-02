@@ -4683,15 +4683,18 @@ export async function getTransfersByStatus(status: TransferStatus, maxItems = 10
     }
 }
 
-export async function getTransfersByQuery(searchQuery: string, type: 'number' | 'origin' | 'destination'): Promise<{ data?: TransferEntry[]; error?: string }> {
+export async function getTransfersByQuery(searchQuery: string, type: 'number' | 'origin' | 'destination' | 'altCode'): Promise<{ data?: TransferEntry[]; error?: string }> {
     try {
         let field = 'numeroTF';
         if (type === 'origin') field = 'bodegaOrigen';
         if (type === 'destination') field = 'bodegaDestino';
+        if (type === 'altCode') field = 'codigoAlterno';
+        const value =
+            type === 'altCode' ? searchQuery.toUpperCase().replace(/\s+/g, '') : searchQuery.toUpperCase().trim();
 
         const q = query(
             collection(firestore, "transfers"), 
-            where(field, "==", searchQuery.toUpperCase().trim()),
+            where(field, "==", value),
             limit(1000)
         );
         

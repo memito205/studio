@@ -17,6 +17,7 @@ export type TransferLabelData = {
   cantidad?: number | string;
   ubicacion?: string;
   storageOrder?: string | number;
+  codigoAlterno?: string;
   fecha?: unknown;
   recibidoAt?: unknown;
 };
@@ -90,13 +91,23 @@ export function addTransferLabelPage(doc: jsPDF, t: TransferLabelData, opts: { h
   const right = CONTENT_X + CONTENT_W;
   drawDayBlock(doc, arrival);
 
+  const alt = String(t.codigoAlterno || '').trim();
+  const dy = alt ? 1 : 0;
+
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7);
   doc.text('TRANSFERENCIA INTERNA', CONTENT_X, 5.5);
+  const headerW = doc.getTextWidth('TRANSFERENCIA INTERNA');
   if (tfDate) {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(6.5);
-    doc.text(`TF del ${format(tfDate, 'dd/MM/yyyy')}`, CONTENT_X, 8.8);
+    const label = `TF del ${format(tfDate, 'dd/MM/yyyy')}`;
+    if (alt) doc.text(label, CONTENT_X + headerW + 2, 5.5);
+    else doc.text(label, CONTENT_X, 8.8);
+  }
+  if (alt) {
+    doc.setFont('helvetica', 'bold');
+    drawFitted(doc, `ALT ${alt}`, CONTENT_X, 10.8, CONTENT_W, 11);
   }
   if (t.storageOrder) {
     const label = `ORDEN ${t.storageOrder}`;
@@ -111,20 +122,20 @@ export function addTransferLabelPage(doc: jsPDF, t: TransferLabelData, opts: { h
   }
 
   doc.setFont('helvetica', 'bold');
-  drawFitted(doc, `TF ${t.numeroTF}`, CONTENT_X, 18.5, CONTENT_W, 28);
+  drawFitted(doc, `TF ${t.numeroTF}`, CONTENT_X, 18.5 + dy, CONTENT_W, alt ? 26 : 28);
 
   const unid = `UNID ${t.cantidad || 1}`;
   doc.setFontSize(11);
   const unidW = doc.getTextWidth(unid);
-  doc.text(unid, right, 25.5, { align: 'right' });
-  drawFitted(doc, `DESTINO ${String(t.bodegaDestino || '').trim()}`, CONTENT_X, 25.5, CONTENT_W - unidW - 3, 14);
+  doc.text(unid, right, 25.5 + dy, { align: 'right' });
+  drawFitted(doc, `DESTINO ${String(t.bodegaDestino || '').trim()}`, CONTENT_X, 25.5 + dy, CONTENT_W - unidW - 3, 14);
 
   const hasUbic = !!String(t.ubicacion || '').trim();
-  if (hasUbic) drawLocationBox(doc, String(t.ubicacion).trim(), 28);
+  if (hasUbic) drawLocationBox(doc, String(t.ubicacion).trim(), 28 + dy);
 
   if (!opts.hideBarcode) {
     const value = `${t.bodegaDestino}-${t.numeroTF}`.toUpperCase();
-    const top = hasUbic ? 36.5 : 29.5;
+    const top = (hasUbic ? 36.5 : 29.5) + dy;
     drawBarcode(doc, value, top, PAGE_H - top - 5.5);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(7);

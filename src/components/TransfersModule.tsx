@@ -48,6 +48,17 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { TransferLogDialog } from './TransferLogDialog';
 import { TransferBulkStatusChangeDialog } from './TransferBulkStatusChangeDialog';
 
+type TransferSearchFilters = {
+    numeroTF: string;
+    codigoAlterno: string;
+    bodegaOrigen: string;
+    bodegaDestino: string;
+    placa: string;
+    status: string;
+    startDate: string;
+    endDate: string;
+};
+
 interface GroupedTransfer extends TransferEntry {
     allIds: string[];
     /** Presente si las líneas del grupo no comparten el mismo estado. */
@@ -134,6 +145,7 @@ const buildFilteredTransfersExportRows = (
         'Ord. FIFO': t.storageOrder || '',
         Fecha: t.fecha instanceof Date ? format(t.fecha, 'dd/MM/yyyy') : '',
         'Numero TF': t.numeroTF,
+        'Código alterno': t.codigoAlterno || '',
         Origen: t.bodegaOrigen,
         Destino: t.bodegaDestino,
         Marca: t.marca || '',
@@ -236,9 +248,10 @@ const TransferLabel: React.FC<{ transfer: TransferEntry; hideBarcode?: boolean }
 
       <div className="flex-1 min-w-0 flex flex-col px-2 py-1">
         <div className="flex justify-between items-start">
-          <div className="leading-none">
+          <div className="leading-tight">
             <p className="text-[8px] font-bold">TRANSFERENCIA INTERNA</p>
-            {tfDate && <p className="text-[7px] text-gray-600 mt-0.5">TF del {format(tfDate, 'dd/MM/yyyy')}</p>}
+            {tfDate && <p className="text-[7px] text-gray-600">TF del {format(tfDate, 'dd/MM/yyyy')}</p>}
+            {transfer.codigoAlterno && <p className="text-[10px] font-black">ALT {transfer.codigoAlterno}</p>}
           </div>
           {transfer.storageOrder && (
             <div className="bg-black text-white px-1.5 py-0.5 rounded-sm text-[9px] font-black leading-none whitespace-nowrap">
@@ -1141,8 +1154,8 @@ interface AdminViewProps {
     operationalTransfers: TransferEntry[];
     collectionLogs: CollectionLog[];
     isLoading: boolean;
-    filters: { numeroTF: string, bodegaOrigen: string, bodegaDestino: string, placa: string, status: string, startDate?: string, endDate?: string };
-    setFilters: React.Dispatch<React.SetStateAction<{ numeroTF: string, bodegaOrigen: string, bodegaDestino: string, placa: string, status: string, startDate?: string, endDate?: string }>>;
+    filters: TransferSearchFilters;
+    setFilters: React.Dispatch<React.SetStateAction<TransferSearchFilters>>;
     onRefresh: () => void;
     onSearch: () => void;
     role: UserRole;
@@ -1555,8 +1568,10 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     ]);
 
     const filteredTransfers = useMemo(() => {
+        const altFilter = (filters.codigoAlterno || '').toUpperCase().replace(/\s+/g, '');
         const base = transfers.filter(t =>
             (filters.numeroTF ? t.numeroTF.toLowerCase().includes(filters.numeroTF.toLowerCase()) : true) &&
+            (altFilter ? String(t.codigoAlterno || '').toUpperCase().includes(altFilter) : true) &&
             (filters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(filters.bodegaOrigen.toLowerCase()) : true) &&
             (filters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(filters.bodegaDestino.toLowerCase()) : true) &&
             (filters.startDate && t.fecha instanceof Date ? t.fecha >= new Date(filters.startDate + 'T00:00:00') : true) &&
@@ -1881,7 +1896,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                 <Input type="date" value={filters.startDate} onChange={e => setFilters(prev => ({...prev, startDate: e.target.value}))} title="Fecha Inicio" />
                                 <Input type="date" value={filters.endDate} onChange={e => setFilters(prev => ({...prev, endDate: e.target.value}))} title="Fecha Fin" />
                             </div>
-                            <Button variant="outline" onClick={() => setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all', startDate: '', endDate: '' })}>
+                            <Button variant="outline" onClick={() => setFilters({ numeroTF: '', codigoAlterno: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all', startDate: '', endDate: '' })}>
                                 Limpiar Filtros {supervisorValidationTransfers.length > 0 && <span className="ml-2 opacity-50">({supervisorValidationTransfers.length})</span>}
                             </Button>
                          </div>
@@ -2042,6 +2057,15 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                             <Input placeholder="TF-..." value={filters.numeroTF} onChange={e => setFilters(prev => ({...prev, numeroTF: e.target.value}))} />
                         </div>
                         <div className="space-y-1">
+                            <Label className="text-xs">Código alterno</Label>
+                            <Input
+                                placeholder="Escanee o escriba..."
+                                value={filters.codigoAlterno || ''}
+                                onChange={e => setFilters(prev => ({...prev, codigoAlterno: e.target.value}))}
+                                onKeyDown={e => { if (e.key === 'Enter') onSearch(); }}
+                            />
+                        </div>
+                        <div className="space-y-1">
                             <Label className="text-xs">Origen</Label>
                             <Input placeholder="Bodega..." value={filters.bodegaOrigen} onChange={e => setFilters(prev => ({...prev, bodegaOrigen: e.target.value}))} />
                         </div>
@@ -2080,7 +2104,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                 {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Search className="mr-2 h-4 w-4"/>}
                                 Buscar {filteredTransfers.length > 0 && <span className="ml-2 bg-primary-foreground text-primary px-2 rounded-full text-xs">{filteredTransfers.length}</span>}
                             </Button>
-                            <Button variant="outline" size="icon" onClick={() => setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all', startDate: '', endDate: '' })} title="Limpiar Filtros">
+                            <Button variant="outline" size="icon" onClick={() => setFilters({ numeroTF: '', codigoAlterno: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all', startDate: '', endDate: '' })} title="Limpiar Filtros">
                                 <X className="h-4 w-4" />
                             </Button>
                         </div>
@@ -2124,6 +2148,20 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                         <Printer className="mr-2 h-4 w-4" />
                                     )}
                                     Imprimir y Recibir ({bulkStatusSelectionCount.tfCount})
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() =>
+                                        openPdfForPrint(
+                                            buildTransferLabelsPdf(
+                                                groupedFilteredTransfers.filter((g) => g.allIds.some((id) => selectedForBulkStatus.has(id)))
+                                            )
+                                        )
+                                    }
+                                >
+                                    <Printer className="mr-2 h-4 w-4" />
+                                    Reimprimir ({bulkStatusSelectionCount.tfCount})
                                 </Button>
                                 {isBulkStatusAdmin && (
                                 <Button
@@ -2169,12 +2207,14 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                     <TableHead className="w-[80px]">Ord.</TableHead>
                                     <TableHead>Fecha</TableHead>
                                     <TableHead>Número TF</TableHead>
+                                    <TableHead>Cód. Alterno</TableHead>
                                     <TableHead>Origen</TableHead>
                                     <TableHead>Destino</TableHead>
                                     <TableHead>Marca</TableHead>
                                     <TableHead>Grupo</TableHead>
                                     <TableHead>Cantidad</TableHead>
                                     <TableHead>Estado</TableHead>
+                                    <TableHead>Ubicación</TableHead>
                                     <TableHead>Placa Recolección</TableHead>
                                     <TableHead>Fecha Recibido</TableHead>
                                     <TableHead>Fecha Enviado</TableHead>
@@ -2183,7 +2223,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                             </TableHeader>
                             <TableBody>
                                 {isLoading ? (
-                                    <TableRow><TableCell colSpan={14} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
+                                    <TableRow><TableCell colSpan={16} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
                                 ) : filteredTransfers.length > 0 ? (
                                     groupedFilteredTransfers.map((t) => {
                                         const placa = transferIdToPlacaMap.get(t.id) || 'N/A';
@@ -2207,6 +2247,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                             <TableCell className="font-bold text-blue-600">{t.storageOrder || '---'}</TableCell>
                                             <TableCell>{t.fecha.toLocaleDateString('es-CO')}</TableCell>
                                             <TableCell className="font-medium">{t.numeroTF}</TableCell>
+                                            <TableCell className="font-mono text-xs font-semibold">{t.codigoAlterno || '-'}</TableCell>
                                             <TableCell>{t.bodegaOrigen}</TableCell>
                                             <TableCell>{t.bodegaDestino}</TableCell>
                                             <TableCell className="max-w-[150px] truncate text-xs text-muted-foreground" title={t.marca}>{t.marca || '-'}</TableCell>
@@ -2222,6 +2263,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                                     )}
                                                 </div>
                                             </TableCell>
+                                            <TableCell className="text-xs font-bold">{t.ubicacion || '-'}</TableCell>
                                             <TableCell className="font-mono text-xs">{placa}</TableCell>
                                             <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
                                             <TableCell>{t.enviadoAt ? format(t.enviadoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
@@ -2240,6 +2282,10 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                                          }} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
                                                             <Printer className="mr-2 h-4 w-4" />
                                                             Imprimir y Recibir
+                                                        </DropdownMenuItem>
+                                                        <DropdownMenuItem onSelect={() => openPdfForPrint(buildTransferLabelsPdf([t]))}>
+                                                            <Printer className="mr-2 h-4 w-4" />
+                                                            Reimprimir rótulo (sin cambiar estado)
                                                         </DropdownMenuItem>
                                                         <DropdownMenuItem onSelect={() => {
                                                             setSelectedTransferForLog(t);
@@ -2318,7 +2364,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                         </TableRow>
                                     )})
                                 ) : (
-                                    <TableRow><TableCell colSpan={14} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
+                                    <TableRow><TableCell colSpan={16} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
                                 )}
                             </TableBody>
                         </Table>
@@ -3109,7 +3155,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
     const [searchResults, setSearchResults] = useState<TransferEntry[] | null>(null); // Results from search tab
     const [allUsers, setAllUsers] = useState<AppUser[]>([]);
     const [collectionLogs, setCollectionLogs] = useState<CollectionLog[]>([]);
-    const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all', startDate: '', endDate: '' });
+    const [filters, setFilters] = useState<TransferSearchFilters>({ numeroTF: '', codigoAlterno: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all', startDate: '', endDate: '' });
     const [isLoading, setIsLoading] = useState(false);
     const { toast } = useToast();
     const { role } = useAuth();
@@ -3160,11 +3206,11 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
     }, [toast]);
 
     const handleSearch = useCallback(async () => {
-        const { numeroTF, bodegaOrigen, bodegaDestino, status, startDate, endDate } = filters;
+        const { numeroTF, codigoAlterno, bodegaOrigen, bodegaDestino, status, startDate, endDate } = filters;
         const isMixedFilter = status === MIXED_STATUS_FILTER;
 
-        if (!numeroTF && !bodegaOrigen && !bodegaDestino && status === 'all' && !startDate && !endDate) {
-            toast({ title: "Filtros vacíos", description: "Por favor ingrese al menos un criterio de búsqueda (TF, Origen, Destino, Estado o Fecha)." });
+        if (!numeroTF && !codigoAlterno && !bodegaOrigen && !bodegaDestino && status === 'all' && !startDate && !endDate) {
+            toast({ title: "Filtros vacíos", description: "Por favor ingrese al menos un criterio de búsqueda (TF, Código alterno, Origen, Destino, Estado o Fecha)." });
             return;
         }
 
@@ -3178,6 +3224,8 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             });
         } else if (numeroTF) {
             result = await getTransfersByQuery(numeroTF, 'number');
+        } else if (codigoAlterno) {
+            result = await getTransfersByQuery(codigoAlterno, 'altCode');
         } else if (bodegaOrigen) {
             result = await getTransfersByQuery(bodegaOrigen, 'origin');
         } else if (bodegaDestino) {
