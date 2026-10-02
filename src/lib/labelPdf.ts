@@ -31,9 +31,9 @@ export type TransferLabelOptions = {
   receivingNow?: boolean;
 };
 
-/** Día del bloque negro: primera llegada a bodega (estable al reimprimir); si no ha llegado, fecha de la TF. */
-export function labelArrivalDate(t: TransferLabelData, receivingNow = false): Date | null {
-  return firstWarehouseArrival(t) || (receivingNow ? new Date() : toDate(t.fecha));
+/** Día del bloque negro: fecha de la TF (no cambia al recibir ni reimprimir); sin ella, primera llegada a bodega. */
+export function labelDayDate(t: TransferLabelData, receivingNow = false): Date | null {
+  return toDate(t.fecha) || firstWarehouseArrival(t) || (receivingNow ? new Date() : null);
 }
 
 export type AltCodeStickerData = {
@@ -100,7 +100,7 @@ function drawBarcode(doc: jsPDF, value: string, top: number, height: number) {
 }
 
 export function addTransferLabelPage(doc: jsPDF, t: TransferLabelData, opts: TransferLabelOptions = {}) {
-  const arrival = labelArrivalDate(t, opts.receivingNow);
+  const arrival = labelDayDate(t, opts.receivingNow);
   const tfDate = toDate(t.fecha);
   const right = CONTENT_X + CONTENT_W;
   drawDayBlock(doc, arrival);

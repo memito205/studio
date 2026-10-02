@@ -40,7 +40,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import JsBarcode from 'jsbarcode';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { buildTransferLabelsPdf, labelArrivalDate, openPdfForPrint, type TransferLabelData } from '@/lib/labelPdf';
+import { buildTransferLabelsPdf, labelDayDate, openPdfForPrint, type TransferLabelData } from '@/lib/labelPdf';
 import { cn } from '@/lib/utils';
 import { CollectionLogDetailsDialog } from './CollectionLogDetailsDialog';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from './ui/collapsible';
@@ -231,7 +231,7 @@ const TransferLabel: React.FC<{ transfer: TransferEntry; hideBarcode?: boolean }
     }
   }, [barcodeValue, hideBarcode]);
 
-  const arrivalDate = labelArrivalDate(transfer as TransferLabelData, transfer.status !== 'Recibido en Bodega');
+  const arrivalDate = labelDayDate(transfer as TransferLabelData, transfer.status !== 'Recibido en Bodega');
   const tfDate = toValidDate(transfer.fecha);
   const tfText = `TF ${transfer.numeroTF}`;
   const tfFontPx = tfText.length <= 10 ? 26 : tfText.length <= 13 ? 22 : 18;
@@ -240,7 +240,7 @@ const TransferLabel: React.FC<{ transfer: TransferEntry; hideBarcode?: boolean }
 
   return (
     <div id={`transfer-label-to-print-${transfer.id}`} className="border border-gray-300 rounded-lg bg-white text-black flex overflow-hidden font-sans" style={{ width: '10cm', height: '4.8cm' }}>
-      {/* Bloque del día de llegada (reemplaza el color: se lee de lejos en B/N) */}
+      {/* Bloque del día de la TF (reemplaza el color: se lee de lejos en B/N) */}
       <div className="bg-black text-white flex flex-col items-center justify-center shrink-0" style={{ width: '2.2cm' }}>
         <span className="text-[28px] font-black leading-tight">{arrivalDate ? weekdayShortEs(arrivalDate) : '--'}</span>
         <span className="text-[22px] font-black leading-tight">{arrivalDate ? format(arrivalDate, 'dd/MM') : '--/--'}</span>
