@@ -54,6 +54,8 @@ type WarehouseInfo = { ubicacion?: string; fechaLlegada?: Date; codigoAlterno?: 
 
 const normalizeAltCodeKey = (value: unknown) => String(value ?? '').trim().toUpperCase().replace(/\s+/g, '');
 
+const countTfs = (items: MerchandiseItem[]) => new Set(items.map((i) => i.tftMatch || i.codigo)).size;
+
 const toVerificationItem = (item: MerchandiseItem, tftCruce: string): VerificationItem => ({
   codigo: item.codigo,
   tftCruce,
@@ -417,7 +419,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
       groupedByTF[tfKey].push(item);
     });
 
-    const stats: Record<string, { originalUnits: number, originalTFs: number, filteredUnits: number, filteredTFs: number }> = {};
+    const stats: Record<string, { originalUnits: number, originalTFs: number, filteredUnits: number, filteredTFs: number, filteredLargeTFs: number, filteredBoxes: number }> = {};
     
     // Group groups by destination to apply limits
     const destGroups: Record<string, { tfKey: string, items: MerchandiseItem[] }[]> = {};
@@ -426,7 +428,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
       if (!destGroups[dest]) destGroups[dest] = [];
       destGroups[dest].push({ tfKey, items });
 
-      if (!stats[dest]) stats[dest] = { originalUnits: 0, originalTFs: 0, filteredUnits: 0, filteredTFs: 0 };
+      if (!stats[dest]) stats[dest] = { originalUnits: 0, originalTFs: 0, filteredUnits: 0, filteredTFs: 0, filteredLargeTFs: 0, filteredBoxes: 0 };
       stats[dest].originalUnits += items.reduce((sum, i) => sum + i.cant, 0);
       stats[dest].originalTFs += 1;
     });
@@ -454,6 +456,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
           finalList.push(...group.items);
           stats[dest].filteredUnits += group.items.reduce((sum, i) => sum + i.cant, 0);
           stats[dest].filteredTFs += 1;
+          stats[dest].filteredBoxes += group.items.length;
         } else {
           // Limit only applies to large non-BDBOL transfers
           if (largeCount < limit) {
@@ -461,6 +464,8 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
             largeCount++;
             stats[dest].filteredUnits += group.items.reduce((sum, i) => sum + i.cant, 0);
             stats[dest].filteredTFs += 1;
+            stats[dest].filteredLargeTFs += 1;
+            stats[dest].filteredBoxes += group.items.length;
           } else {
             excludedList.push(...group.items);
           }
@@ -832,6 +837,18 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                                       <span className="opacity-60">TFs Seleccionadas:</span>
                                       <span className="font-bold">{dispatchStats[dest]?.filteredTFs || 0} / {dispatchStats[dest]?.originalTFs || 0}</span>
                                     </div>
+                                    <div className="flex justify-between pl-2">
+                                      <span className="opacity-60">De más de {SMALL_TF_MAX_UNITS} und (límite):</span>
+                                      <span className="font-bold">{dispatchStats[dest]?.filteredLargeTFs || 0}</span>
+                                    </div>
+                                    <div className="flex justify-between pl-2">
+                                      <span className="opacity-60">De {SMALL_TF_MAX_UNITS} und o menos / BDBOL:</span>
+                                      <span className="font-bold">{(dispatchStats[dest]?.filteredTFs || 0) - (dispatchStats[dest]?.filteredLargeTFs || 0)}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span className="opacity-60">Cajas:</span>
+                                      <span className="font-bold">{dispatchStats[dest]?.filteredBoxes || 0}</span>
+                                    </div>
                                     <div className="flex justify-between">
                                       <span className="opacity-60">Unidades Totales:</span>
                                       <span className="font-bold">{dispatchStats[dest]?.filteredUnits || 0} / {dispatchStats[dest]?.originalUnits || 0}</span>
@@ -921,7 +938,10 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                       <div className="grid grid-cols-2 gap-4">
                         <div className="bg-green-50 border border-green-600 p-4">
                             <h4 className=" text-xs uppercase opacity-60">Coincidencias</h4>
-                            <p className="text-3xl font-bold">{filteredMatchedData.length}</p>
+                            <p className="text-3xl font-bold">
+                              {countTfs(filteredMatchedData)} <span className="text-base font-semibold">TFs</span>
+                            </p>
+                            <p className="text-xs opacity-70">{filteredMatchedData.length} cajas</p>
                         </div>
                         <div className="bg-red-50 border border-red-600 p-4">
                             <h4 className=" text-xs uppercase opacity-60">Sin Cruce</h4>
@@ -930,14 +950,14 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                       </div>
 
                       <div>
-                          <h3 className="font-bold tracking-tight text-lg mb-2">Resultados del Cruce ({filteredMatchedData.length} coincidencias)</h3>
+                          <h3 className="font-bold tracking-tight text-lg mb-2">Resultados del Cruce ({countTfs(filteredMatchedData)} TFs · {filteredMatchedData.length} cajas)</h3>
                           <div className="border border-border max-h-[60vh] overflow-y-auto custom-scrollbar">
                               {Object.keys(filteredMatchedData.reduce((acc, item) => ({...acc, [item.destino]: true }), {})).sort().map(destino => {
                                   const itemsInDest = filteredMatchedData.filter(item => item.destino === destino);
                                   return (
                                   <Collapsible key={destino} className="border-b border-border" defaultOpen>
                                       <CollapsibleTrigger className="w-full bg-muted p-3 text-left  text-sm flex justify-between items-center hover:bg-accent transition-all">
-                                      <span>{destino} ({itemsInDest.length} ítems)</span>
+                                      <span>{destino} ({countTfs(itemsInDest)} TFs · {itemsInDest.length} cajas)</span>
                                       <ChevronsUpDown size={16} className="opacity-50" />
                                       </CollapsibleTrigger>
                                       <CollapsibleContent className="bg-white">
