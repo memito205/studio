@@ -31,7 +31,7 @@ const DEFAULT_FORECAST_LOOKBACK_DAYS = 14;
 /** Siempre en Próxima: aún en CEDI / no salieron a tienda. */
 const INBOUND_CEDI_STATUSES: TransferStatus[] = ['En Tránsito', 'Recibido en Bodega'];
 /** Opcional (setting): ya salieron; pueden estar o no en inventario del PDV. */
-const INBOUND_EN_RUTA_STATUSES: TransferStatus[] = ['Enviado a Destino'];
+const INBOUND_EN_RUTA_STATUSES: TransferStatus[] = ['Enviado a Destino', 'Novedad de Entrega'];
 
 function stripUndefinedDeep(value: unknown): unknown {
   if (value === undefined) return undefined;

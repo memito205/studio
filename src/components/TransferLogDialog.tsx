@@ -37,6 +37,8 @@ const STATUS_EVENT_LABELS: Record<TransferStatus, string> = {
   'Recibido en Bodega': 'Recibido en Bodega Central.',
   'Validado Supervisor': 'Validado por Supervisor.',
   'Enviado a Destino': 'Enviado a Destino (Manifiesto).',
+  'Entregado en Tienda': 'Entregado en Tienda (prueba de entrega).',
+  'Novedad de Entrega': 'Novedad de Entrega (no entregada).',
 };
 
 function resolveUserLabel(
@@ -142,6 +144,22 @@ function buildLogEvents(
       date: new Date(transfer.deliveredAt),
       description: 'Entregado en Ruta.',
       userName: resolveUserLabel(transfer.deliveredByName, transfer.deliveredBy, usersMap),
+    });
+  }
+
+  if (transfer.novedadEntregaAt) {
+    events.push({
+      date: new Date(transfer.novedadEntregaAt),
+      description: 'Novedad de Entrega (no entregada).',
+      userName: resolveUserLabel(transfer.novedadEntregaByName, transfer.novedadEntregaBy, usersMap),
+    });
+  }
+
+  if (transfer.entregadoTiendaAt) {
+    events.push({
+      date: new Date(transfer.entregadoTiendaAt),
+      description: 'Entregado en Tienda (prueba de entrega).',
+      userName: resolveUserLabel(transfer.entregadoTiendaByName, transfer.entregadoTiendaBy, usersMap),
     });
   }
 

@@ -1,0 +1,35 @@
+rules_version = '2';
+
+// Pruebas de entrega: entregas/{mes}/{tienda}/{parada}/{archivo}
+// Rol leído de Firestore users/{uid}.role (la consola pide autorizar el acceso a Firestore la primera vez).
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+    function role() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role.lower();
+    }
+    function isReviewer() {
+      return signedIn() && role() in ['admin', 'supervisor'];
+    }
+    function canUpload() {
+      return signedIn() && role() in ['conductor', 'admin', 'supervisor'];
+    }
+
+    match /entregas/{month}/{store}/{stop}/{file} {
+      allow read: if isReviewer()
+        || (signedIn() && resource.metadata.uploadedBy == request.auth.uid);
+      allow create: if canUpload()
+        && request.resource.size < 3 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*')
+        && request.resource.metadata.uploadedBy == request.auth.uid;
+      allow update: if false;
+      allow delete: if signedIn() && role() == 'admin';
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

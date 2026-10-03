@@ -32,5 +32,10 @@ export function firstWarehouseArrival(t: TransferLike): Date | null {
     if (d && (!earliest || d < earliest)) earliest = d;
   });
   if (earliest) return earliest;
-  return t.status === 'Recibido en Bodega' || t.status === 'Enviado a Destino' ? toDate(t.recibidoAt) : null;
+  return t.status === 'Recibido en Bodega' ||
+    t.status === 'Enviado a Destino' ||
+    t.status === 'Entregado en Tienda' ||
+    t.status === 'Novedad de Entrega'
+    ? toDate(t.recibidoAt)
+    : null;
 }

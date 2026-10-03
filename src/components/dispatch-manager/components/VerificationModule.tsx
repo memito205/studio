@@ -32,6 +32,7 @@ import { saveVerificationSession, loadVerificationSessions, updateVerificationSe
 import { arrivalLabel, findItemForCode, normalizeScanCode, resolveOutOfPlanCode } from '@/components/dispatch-manager/utils/verificationScan';
 import { Checkbox } from '@/components/ui/checkbox';
 import VerificationCargue from './VerificationCargue';
+import { DriverUserSelect } from '@/components/DriverUserSelect';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
@@ -137,7 +138,11 @@ const ScanningInterface: React.FC<{
   const requiresCargue = !!session.requiresCargue;
   const [cargueInfo, setCargueInfo] = useState(session.phase === 'cargue' ? session.cargue : undefined);
   const [cargueDialogOpen, setCargueDialogOpen] = useState(false);
-  const [cargueForm, setCargueForm] = useState({ placa: '', conductor: '', auxiliares: '' });
+  const [cargueForm, setCargueForm] = useState<{ placa: string; conductor: string; conductorUserId?: string; auxiliares: string }>({
+    placa: '',
+    conductor: '',
+    auxiliares: '',
+  });
   const [isStartingCargue, setIsStartingCargue] = useState(false);
   
   const [filters, setFilters] = useState({ codigo: '', destino: '', tft: '', status: 'all' });
@@ -546,7 +551,11 @@ const ScanningInterface: React.FC<{
                               </div>
                               <div>
                                 <Label htmlFor="cargue-conductor">Conductor *</Label>
-                                <Input id="cargue-conductor" value={cargueForm.conductor} onChange={(e) => setCargueForm((p) => ({ ...p, conductor: e.target.value }))} />
+                                <DriverUserSelect
+                                  id="cargue-conductor"
+                                  value={{ driverUserId: cargueForm.conductorUserId, driver: cargueForm.conductor }}
+                                  onChange={(v) => setCargueForm((p) => ({ ...p, conductor: v.driver, conductorUserId: v.driverUserId }))}
+                                />
                               </div>
                               <div>
                                 <Label htmlFor="cargue-aux">Auxiliares</Label>

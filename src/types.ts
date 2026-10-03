@@ -415,7 +415,17 @@ export interface TransferNovelty {
 
 // Types for Transfers Module
 export type UserRole = 'admin' | 'supervisor' | 'operator' | 'office' | 'conductor' | 'tiendas' | 'external_operator';
-export type TransferStatus = 'En Tránsito' | 'Recolectado en Ruta' | 'Entregado en Ruta' | 'Recibido en Bodega' | 'Validado Supervisor' | 'Enviado a Destino';
+export type TransferStatus =
+  | 'En Tránsito'
+  | 'Recolectado en Ruta'
+  | 'Entregado en Ruta'
+  | 'Recibido en Bodega'
+  | 'Validado Supervisor'
+  | 'Enviado a Destino'
+  /** Confirmada por el conductor con prueba de entrega (relación de entrega). */
+  | 'Entregado en Tienda'
+  /** El conductor no la entregó; admin/supervisor decide reprogramar o devolver a bodega. */
+  | 'Novedad de Entrega';
 
 /** Estado plataforma (Analizador) consultable por tiendas — distinto del status operativo de transfers. */
 export type TfPlatformEstado =
@@ -487,6 +497,16 @@ export interface TransferEntry {
   enviadoAt?: Date;
   validatedAt?: Date;
   deliveredAt?: Date;
+  /** Entrega confirmada en tienda (prueba de entrega del conductor). */
+  entregadoTiendaAt?: Date;
+  entregadoTiendaBy?: string;
+  entregadoTiendaByName?: string;
+  novedadEntregaAt?: Date;
+  novedadEntregaBy?: string;
+  novedadEntregaByName?: string;
+  /** Relación (doc id) y parada con la que se entregó / reportó novedad. */
+  podManifestDocId?: string;
+  podStopId?: string;
   manualStatusChangeJustification?: string;
   storageOrder?: string;
   /** Ubicación física en bodega (maestro de ubicaciones). */
@@ -527,6 +547,53 @@ export interface DeliveryManifest {
     /** Relación generada al cerrar un despacho del Gestor (alistamiento + cargue). */
     verificationSessionId?: string;
     verificationName?: string;
+    /** Usuario (perfil conductor) asignado; sin él la relación no aparece en la app del conductor. */
+    driverUserId?: string;
+    /** Ausente en relaciones anteriores a pruebas de entrega. */
+    deliveryStatus?: DeliveryManifestStatus;
+    stopsCount?: number;
+    stopsDone?: number;
+}
+
+export type DeliveryManifestStatus = 'en_ruta' | 'pendiente_validacion' | 'cerrada';
+
+export type DeliveryStopStatus = 'pendiente' | 'entregada' | 'parcial' | 'no_entregada';
+
+/** Parada por tienda de una relación: `deliveryManifests/{id}/stops/{stopId}`. */
+export interface DeliveryManifestStop {
+    id: string;
+    order: number;
+    /** Código destino tal como viene en las TF (bodegaDestino). */
+    destino: string;
+    /** Código ERP del maestro de tiendas, si se encontró. */
+    storeCode?: string;
+    storeName?: string;
+    transferIds: string[];
+    numerosTF: string[];
+    unidades: number;
+    status: DeliveryStopStatus;
+}
+
+/** Maestro de tiendas para entregas: `deliveryStores/{codigoErp}`. */
+export interface DeliveryStore {
+    id: string;
+    codigoErp: string;
+    nombreCorto: string;
+    nombreTienda: string;
+    ciudad: string;
+    direccion: string;
+    latitud: number | null;
+    longitud: number | null;
+    codigosEquivalentes: string[];
+    radioValidacionM: number;
+    diasVisita?: string;
+    horarioRecibo?: string;
+    telefono?: string;
+    quienesReciben: string[];
+    notasAcceso?: string;
+    activo: boolean;
+    updatedAt?: Date;
+    updatedByName?: string;
 }
 
 /** Borrador de cargue / relación de entrega (autoguardado antes de confirmar). */
@@ -2478,6 +2545,8 @@ export interface VerificationLoadScan {
 export interface VerificationCargueInfo {
   placa: string;
   conductor: string;
+  /** Usuario con perfil conductor, si se eligió de la lista. */
+  conductorUserId?: string;
   auxiliares?: string;
   startedAt: Date;
   startedByName?: string;

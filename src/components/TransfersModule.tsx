@@ -19,6 +19,8 @@ import { SearchableSelect, type SearchableOption } from './SearchableSelect';
 import { WarehouseLocationsDialog } from './WarehouseLocationsDialog';
 import { AltCodeRegistrationView } from './AltCodeRegistrationView';
 import { WarehouseStockSummaryButton } from './WarehouseStockSummaryDialog';
+import { DeliveryStoresView, QuickLegacyCard } from './DeliveryStoresView';
+import { DriverUserSelect } from './DriverUserSelect';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -89,7 +91,9 @@ const groupTransfersByTF = (transfers: TransferEntry[], placaMap?: Map<string, s
         'Entregado en Ruta': 3,
         'Validado Supervisor': 4,
         'Recibido en Bodega': 5,
-        'Enviado a Destino': 6
+        'Enviado a Destino': 6,
+        'Novedad de Entrega': 7,
+        'Entregado en Tienda': 8,
     };
 
     transfers.forEach(t => {
@@ -185,8 +189,14 @@ const filterToMixedStatusLines = (
 };
 
 
+/** Ya salió de bodega (o está en manos del conductor): no se recibe ni se rotula desde aquí. */
+const DISPATCHED_STATUSES: TransferStatus[] = ['Enviado a Destino', 'Entregado en Ruta', 'Entregado en Tienda', 'Novedad de Entrega'];
+const isDispatchedStatus = (status: TransferStatus) => DISPATCHED_STATUSES.includes(status);
+
 const getStatusBadge = (status: TransferStatus) => {
     switch (status) {
+        case 'Entregado en Tienda': return <Badge className="bg-emerald-700 text-white">Entregado en Tienda</Badge>;
+        case 'Novedad de Entrega': return <Badge variant="destructive">Novedad de Entrega</Badge>;
         case 'Recibido en Bodega': return <Badge variant="success">Recibido en Bodega</Badge>;
         case 'Enviado a Destino': return <Badge variant="default">Enviado a Destino</Badge>;
         case 'Recolectado en Ruta': return <Badge variant="warning">Recolectado en Ruta</Badge>;
@@ -391,6 +401,8 @@ const StatusChangeDialog: React.FC<{
                                 <SelectItem value="Validado Supervisor">Validado Supervisor</SelectItem>
                                 <SelectItem value="Recibido en Bodega">Recibido en Bodega</SelectItem>
                                 <SelectItem value="Enviado a Destino">Enviado a Destino</SelectItem>
+                                <SelectItem value="Entregado en Tienda">Entregado en Tienda</SelectItem>
+                                <SelectItem value="Novedad de Entrega">Novedad de Entrega</SelectItem>
                             </SelectContent>
                         </Select>
                     </div>
@@ -1176,6 +1188,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     const [selectedForManifest, setSelectedForManifest] = useState(new Set<string>());
     const [isCreateManifestOpen, setIsCreateManifestOpen] = useState(false);
     const [manifestDetails, setManifestDetails] = useState<{ resource: string, driver: string, assistants: string }>({ resource: '', driver: '', assistants: '' });
+    const [manifestDriverUserId, setManifestDriverUserId] = useState<string | undefined>(undefined);
     const [isSavingManifest, setIsSavingManifest] = useState(false);
     const [selectedManifest, setSelectedManifest] = useState<DeliveryManifest | null>(null);
     const [isManifestDetailsOpen, setIsManifestDetailsOpen] = useState(false);
@@ -1255,7 +1268,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
 
         const selectedLines = transfers.filter((t) => selectedForBulkStatus.has(t.id));
         const eligibleLines = selectedLines.filter(
-            (t) => t.status !== 'Enviado a Destino' && t.status !== 'Entregado en Ruta'
+            (t) => !isDispatchedStatus(t.status)
         );
         const skipped = selectedLines.length - eligibleLines.length;
 
@@ -1264,7 +1277,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                 variant: 'destructive',
                 title: 'Sin elegibles',
                 description:
-                    'Ninguna TF seleccionada se puede recibir (Enviado a Destino / Entregado en Ruta).',
+                    'Ninguna TF seleccionada se puede recibir (ya despachadas, entregadas o con novedad de entrega).',
             });
             return;
         }
@@ -1449,6 +1462,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             driver: draft.driver || '',
             assistants: draft.assistants || '',
         });
+        setManifestDriverUserId(undefined);
         setDraftSaveStatus('saved');
     }, []);
 
@@ -1468,6 +1482,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         setActiveDraftNumber(null);
         setSelectedForManifest(new Set());
         setManifestDetails({ resource: '', driver: '', assistants: '' });
+        setManifestDriverUserId(undefined);
         setDraftSaveStatus('saved');
         toast({
             title: 'Nuevo cargue',
@@ -1488,6 +1503,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         setActiveDraftNumber(null);
         setSelectedForManifest(new Set());
         setManifestDetails({ resource: '', driver: '', assistants: '' });
+        setManifestDriverUserId(undefined);
         setDraftSaveStatus('saved');
         await refreshOpenDrafts();
         toast({ title: 'Borrador descartado', description: 'La selección de cargue se limpió.' });
@@ -1671,6 +1687,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         setIsSavingManifest(true);
         const result = await createDeliveryManifest({
             ...manifestDetails,
+            ...(manifestDriverUserId ? { driverUserId: manifestDriverUserId } : {}),
             transferIds: Array.from(selectedForManifest),
             summary: {
                 totalTransfers: manifestSummary.totalItems,
@@ -1691,6 +1708,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             setActiveDraftId(null);
             setActiveDraftNumber(null);
             setManifestDetails({ resource: '', driver: '', assistants: '' });
+            setManifestDriverUserId(undefined);
             setIsCreateManifestOpen(false);
             fetchManifestData();
             void refreshOpenDrafts();
@@ -1841,7 +1859,14 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
               </div>
                <div className="space-y-2">
                 <Label htmlFor="driver">Conductor</Label>
-                <Input id="driver" value={manifestDetails.driver} onChange={(e) => setManifestDetails(prev => ({...prev, driver: e.target.value}))} />
+                <DriverUserSelect
+                    id="driver"
+                    value={{ driverUserId: manifestDriverUserId, driver: manifestDetails.driver }}
+                    onChange={(v) => {
+                        setManifestDriverUserId(v.driverUserId);
+                        setManifestDetails(prev => ({ ...prev, driver: v.driver }));
+                    }}
+                />
               </div>
                <div className="space-y-2">
                 <Label htmlFor="assistants">Auxiliares</Label>
@@ -1874,7 +1899,14 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                     </>
                 )}
                 <TabsTrigger value="history_collection">Historial de Recolecciones</TabsTrigger>
+                {isAdmin && <TabsTrigger value="delivery_stores">Tiendas (entregas)</TabsTrigger>}
             </TabsList>
+            {isAdmin && (
+                <TabsContent value="delivery_stores" className="mt-6 space-y-6">
+                    <DeliveryStoresView />
+                    {role === 'admin' && <QuickLegacyCard />}
+                </TabsContent>
+            )}
             <TabsContent value="reception" className="mt-6">
                  <WarehouseReceptionView onRefresh={onRefresh} collectionLogs={collectionLogs} />
             </TabsContent>
@@ -2086,6 +2118,8 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                     <SelectItem value="Validado Supervisor">Validado Supervisor</SelectItem>
                                     <SelectItem value="Recibido en Bodega">Recibido en Bodega</SelectItem>
                                     <SelectItem value="Enviado a Destino">Enviado a Destino</SelectItem>
+                                    <SelectItem value="Entregado en Tienda">Entregado en Tienda</SelectItem>
+                                    <SelectItem value="Novedad de Entrega">Novedad de Entrega</SelectItem>
                                 </SelectContent>
                             </Select>
                         </div>
@@ -2279,7 +2313,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                                             setTransferForLabel(t);
                                                             setPrintMode('receive');
                                                             setIsLabelDialogOpen(true);
-                                                         }} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
+                                                         }} disabled={isDispatchedStatus(t.status)}>
                                                             <Printer className="mr-2 h-4 w-4" />
                                                             Imprimir y Recibir
                                                         </DropdownMenuItem>
@@ -2298,7 +2332,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                                             setTransferForLabel(t);
                                                             setPrintMode('standalone');
                                                             setIsLabelDialogOpen(true);
-                                                        }} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
+                                                        }} disabled={isDispatchedStatus(t.status)}>
                                                             <ScanLine className="mr-2 h-4 w-4" />
                                                             Rótulo FIFO (Solo Orden)
                                                         </DropdownMenuItem>
@@ -2323,7 +2357,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                                                 )}
                                                                 <DropdownMenuItem
                                                                     onSelect={() => handleRepairStorageOrder(t)}
-                                                                    disabled={repairingTransferId === t.id || t.status === 'Enviado a Destino'}
+                                                                    disabled={repairingTransferId === t.id || t.status === 'Enviado a Destino' || t.status === 'Entregado en Tienda' || t.status === 'Novedad de Entrega'}
                                                                 >
                                                                     {repairingTransferId === t.id ? (
                                                                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -2745,6 +2779,8 @@ const OperatorView: React.FC<{
                         <SelectItem value="Validado Supervisor">Validado Supervisor</SelectItem>
                         <SelectItem value="Recibido en Bodega">Recibido en Bodega</SelectItem>
                         <SelectItem value="Enviado a Destino">Enviado a Destino</SelectItem>
+                        <SelectItem value="Entregado en Tienda">Entregado en Tienda</SelectItem>
+                        <SelectItem value="Novedad de Entrega">Novedad de Entrega</SelectItem>
                     </SelectContent>
                 </Select>
             </div>
@@ -2796,14 +2832,14 @@ const OperatorView: React.FC<{
                                                         setTransferForLabel(t);
                                                         setPrintMode('receive');
                                                         setIsLabelDialogOpen(true);
-                                                    }} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
+                                                    }} disabled={isDispatchedStatus(t.status)}>
                                                         <Printer className="mr-2 h-4 w-4" /> Imprimir y Recibir
                                                     </DropdownMenuItem>
                                                     <DropdownMenuItem onSelect={() => {
                                                         setTransferForLabel(t);
                                                         setPrintMode('standalone');
                                                         setIsLabelDialogOpen(true);
-                                                    }} disabled={t.status === 'Enviado a Destino' || t.status === 'Entregado en Ruta'}>
+                                                    }} disabled={isDispatchedStatus(t.status)}>
                                                         <ScanLine className="mr-2 h-4 w-4" /> Rótulo FIFO (Solo Orden)
                                                     </DropdownMenuItem>
                                                 </DropdownMenuContent>

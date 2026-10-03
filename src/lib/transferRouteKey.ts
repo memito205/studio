@@ -7,6 +7,8 @@ const TRANSFER_STATUSES: TransferStatus[] = [
   'Validado Supervisor',
   'Recibido en Bodega',
   'Enviado a Destino',
+  'Entregado en Tienda',
+  'Novedad de Entrega',
 ];
 
 export function normalizeTransferRoutePart(value: string | undefined | null): string {

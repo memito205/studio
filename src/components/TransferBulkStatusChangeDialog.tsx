@@ -36,6 +36,8 @@ const ALL_STATUSES: TransferStatus[] = [
     'Validado Supervisor',
     'Recibido en Bodega',
     'Enviado a Destino',
+    'Entregado en Tienda',
+    'Novedad de Entrega',
 ];
 
 function parseBulkStatusFileRows(workbook: XLSX.WorkBook): BulkTransferStatusFileRow[] {

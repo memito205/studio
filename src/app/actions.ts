@@ -6,9 +6,10 @@
 // To re-enable, you must upgrade to the Blaze plan, restore the Genkit packages
 // in package.json, and uncomment the related code in this file and in src/ai/genkit.ts.
 
-import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, PackingSettings, DEFAULT_PACKING_PRODUCTIVITY_GOAL, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DeliveryManifestDraft, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem, WarehouseLocationConfig, AltCodeReceipt, AltCodeReceiptStatus, VerificationItem, VerificationCargueInfo, VerificationDispatchClass, VerificationDispatchClose, VerificationLoadScan } from "@/types";
+import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalServiceRow, ServiceRate, ProductivitySettings, PackingSettings, DEFAULT_PACKING_PRODUCTIVITY_GOAL, ProcessedReportData, PackerProductivity, PackerReferenceProductivityDetail, IncidentLogEntry, DeadTimeEntry, WholesaleOrder, WholesaleOrderDetail, ProductDatabaseItem, PackingScanResult, OrderStatus, PackingSession, PreprintedLabel, LabelValidationResult, GeneralLabel, GeneralLabelOwnerType, ItemNovelty, ReceptionProduct, ReceptionOperation, ScannedItem, OperationPause, ReceptionExpectedItem, Location, PackingUnit, AppUser, ActivityLog, UserGoal, ReportSummary, ReportConfiguration, RemisionEntry, AlternateBarcodeUploadRow, CsvRow, PackedItem, DiscardedRecord, DispatchSessionInfo, VtexRate, RouteEntry, EcommerceOrder, SampleReference, SampleDelivery, SamplePhotoReception, SamplePhotoReceptionStatus, SamplePhotoReceptionEvent, SamplePhotoTransferSummary, ComparisonResult, SavedSampleVerification, TransferEntry, TransferActor, TransferStatusHistoryEntry, DeliveryManifest, DeliveryManifestDraft, DelayedOrderLog, Justification, SavedVerification, CollectionLog, TransferStatus, RouteStatus, OperationPulse, SmartAlert, PulseReason, ManualJustifications, ManualOperatorMappings, BagOperation, BagOperationSettings, BagItem, WarehouseLocationConfig, AltCodeReceipt, AltCodeReceiptStatus, VerificationItem, VerificationCargueInfo, VerificationDispatchClass, VerificationDispatchClose, VerificationLoadScan, DeliveryStore, DeliveryManifestStop } from "@/types";
 import { normalizeDestination } from '@/components/dispatch-manager/utils/excel';
 import { firstWarehouseArrival } from '@/lib/transferDates';
+import { buildStoreMatcher, normalizeStoreCode } from '@/lib/deliveryStores';
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -4860,6 +4861,14 @@ function applyTransferStatusActor(
             updates.deliveredBy = actor.userId;
             updates.deliveredByName = actorName;
             break;
+        case 'Entregado en Tienda':
+            updates.entregadoTiendaBy = actor.userId;
+            updates.entregadoTiendaByName = actorName;
+            break;
+        case 'Novedad de Entrega':
+            updates.novedadEntregaBy = actor.userId;
+            updates.novedadEntregaByName = actorName;
+            break;
     }
 }
 
@@ -4903,6 +4912,8 @@ export async function updateTransferStatus(
         else if (status === 'Validado Supervisor') updates.validatedAt = now;
         else if (status === 'Entregado en Ruta') updates.deliveredAt = now;
         else if (status === 'Recolectado en Ruta') updates.recibidoAt = now;
+        else if (status === 'Entregado en Tienda') updates.entregadoTiendaAt = now;
+        else if (status === 'Novedad de Entrega') updates.novedadEntregaAt = now;
 
         applyTransferStatusActor(updates, status, actor, justification, now);
 
@@ -5038,7 +5049,7 @@ export async function saveWarehouseLocationConfig(
 // --- Registro de cajas de código alterno (antes de existir la TF) ---
 
 const ALT_CODE_RECEIPTS = 'altCodeReceipts';
-const TRANSFER_FINAL_STATUSES: TransferStatus[] = ['Enviado a Destino', 'Entregado en Ruta'];
+const TRANSFER_FINAL_STATUSES: TransferStatus[] = ['Enviado a Destino', 'Entregado en Ruta', 'Entregado en Tienda', 'Novedad de Entrega'];
 
 const normalizeAltCode = (value: unknown): string => String(value ?? '').trim().toUpperCase().replace(/\s+/g, '');
 
@@ -5721,6 +5732,8 @@ export async function healInconsistentTransfers(): Promise<{ success: boolean; u
             'Validado Supervisor',
             'Recibido en Bodega',
             'Enviado a Destino',
+            'Novedad de Entrega',
+            'Entregado en Tienda',
             'Entregado en Ruta'
         ];
 
@@ -5769,6 +5782,10 @@ export async function healInconsistentTransfers(): Promise<{ success: boolean; u
                 if (templateLine.enviadoByName) metadata.enviadoByName = templateLine.enviadoByName;
                 if (templateLine.deliveredBy) metadata.deliveredBy = templateLine.deliveredBy;
                 if (templateLine.deliveredByName) metadata.deliveredByName = templateLine.deliveredByName;
+                if (templateLine.entregadoTiendaAt) metadata.entregadoTiendaAt = templateLine.entregadoTiendaAt;
+                if (templateLine.entregadoTiendaByName) metadata.entregadoTiendaByName = templateLine.entregadoTiendaByName;
+                if (templateLine.novedadEntregaAt) metadata.novedadEntregaAt = templateLine.novedadEntregaAt;
+                if (templateLine.novedadEntregaByName) metadata.novedadEntregaByName = templateLine.novedadEntregaByName;
                 if (templateLine.statusHistory) metadata.statusHistory = templateLine.statusHistory;
 
                 // Mark lines that need update
@@ -5811,6 +5828,53 @@ export async function healInconsistentTransfers(): Promise<{ success: boolean; u
     }
 }
     
+/** Una parada por destino en `deliveryManifests/{id}/stops` y la relación queda En ruta. */
+async function createManifestStops(manifestDocId: string, transferIds: string[]) {
+    const ids = Array.from(new Set(transferIds.filter(Boolean)));
+    if (ids.length === 0) return;
+
+    const lines: Array<{ id: string; data: DocumentData }> = [];
+    for (let i = 0; i < ids.length; i += 30) {
+        const snap = await getDocs(query(collection(firestore, 'transfers'), where(documentId(), 'in', ids.slice(i, i + 30))));
+        snap.forEach((d) => lines.push({ id: d.id, data: d.data() }));
+    }
+
+    const storesSnap = await getDocs(collection(firestore, 'deliveryStores'));
+    const matchStore = buildStoreMatcher(storesSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as DeliveryStore));
+
+    const byDestino = new Map<string, Omit<DeliveryManifestStop, 'order'>>();
+    lines.forEach(({ id, data }) => {
+        const destino = String(data.bodegaDestino || 'SIN DESTINO').trim();
+        const store = matchStore(destino);
+        const stopId = (store?.codigoErp || normalizeStoreCode(destino) || 'SIN-DESTINO').replace(/\//g, '-');
+        const stop = byDestino.get(stopId) || {
+            id: stopId,
+            destino,
+            ...(store ? { storeCode: store.codigoErp, storeName: store.nombreCorto } : {}),
+            transferIds: [],
+            numerosTF: [],
+            unidades: 0,
+            status: 'pendiente' as const,
+        };
+        stop.transferIds.push(id);
+        const tf = String(data.numeroTF || '').trim();
+        if (tf && !stop.numerosTF.includes(tf)) stop.numerosTF.push(tf);
+        stop.unidades += Number(data.cantidad || 0) || 0;
+        byDestino.set(stopId, stop);
+    });
+
+    const stops = Array.from(byDestino.values()).sort((a, b) =>
+        (a.storeName || a.destino).localeCompare(b.storeName || b.destino)
+    );
+    const batch = writeBatch(firestore);
+    const manifestRef = doc(firestore, 'deliveryManifests', manifestDocId);
+    stops.forEach((stop, order) => {
+        batch.set(doc(manifestRef, 'stops', stop.id), withoutUndefined({ ...stop, order }));
+    });
+    batch.update(manifestRef, { deliveryStatus: 'en_ruta', stopsCount: stops.length, stopsDone: 0 });
+    await batch.commit();
+}
+
 export async function createDeliveryManifest(
     manifestData: Omit<DeliveryManifest, 'id' | 'createdAt' | 'manifestId'>,
     actor?: TransferActor
@@ -5832,7 +5896,7 @@ export async function createDeliveryManifest(
                 ...manifestData
             };
             
-            transaction.set(manifestDocRef, convertDatesToTimestamps(manifestToSave));
+            transaction.set(manifestDocRef, convertDatesToTimestamps(withoutUndefined(manifestToSave)));
             transaction.set(counterRef, { count: newCount }, { merge: true }); // Use set with merge instead of update
 
             // Update status of all included transfers
@@ -5847,6 +5911,12 @@ export async function createDeliveryManifest(
                 transaction.update(transferRef, enviadoUpdates);
             }
         });
+
+        try {
+            await createManifestStops(manifestDocRef.id, manifestData.transferIds);
+        } catch (stopsError) {
+            console.error('Relación creada sin paradas de entrega:', stopsError);
+        }
 
         return { success: true, id: manifestDocRef.id };
 
@@ -6034,6 +6104,8 @@ export async function getTransferTraceability(
             'Validado Supervisor': 4,
             'Recibido en Bodega': 5,
             'Enviado a Destino': 6,
+            'Novedad de Entrega': 7,
+            'Entregado en Tienda': 8,
         };
 
         const primary = [...lines].sort(
@@ -6506,6 +6578,7 @@ export async function startVerificationCargue(
     payload: {
         placa: string;
         conductor: string;
+        conductorUserId?: string;
         auxiliares?: string;
         results: VerificationItem[];
         stats: SavedVerification['stats'];
@@ -6520,6 +6593,7 @@ export async function startVerificationCargue(
         const cargue: VerificationCargueInfo = {
             placa,
             conductor,
+            ...(payload.conductorUserId ? { conductorUserId: payload.conductorUserId } : {}),
             auxiliares: String(payload.auxiliares || '').trim(),
             startedAt: new Date(),
             startedByName: startedByName || '',
@@ -6683,6 +6757,7 @@ export async function closeVerificationDispatch(
             {
                 resource: payload.cargue.placa,
                 driver: payload.cargue.conductor,
+                ...(payload.cargue.conductorUserId ? { driverUserId: payload.cargue.conductorUserId } : {}),
                 assistants: payload.cargue.auxiliares || '',
                 transferIds: Array.from(transferIds),
                 summary: { totalTransfers: totalUnits, destinations },
