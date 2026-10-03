@@ -6557,6 +6557,104 @@ export async function updateVerificationSession(sessionId: string, sessionData: 
 
 // --- Despacho con doble lectura (alistamiento + cargue) ---
 
+const pickTimeMs = (v: any): number =>
+    v instanceof Timestamp ? v.toMillis() : v instanceof Date ? v.getTime() : v ? new Date(v).getTime() : NaN;
+
+/**
+ * Une el progreso de alistamiento de un equipo con lo ya guardado por otros:
+ * una caja leída en cualquier equipo queda leída; "no encontrada" solo cambia si este equipo la tocó.
+ */
+function mergePickResults(current: any[], incoming: VerificationItem[], notFoundTouched: Set<string>): any[] {
+    const out = current.map((i) => ({ ...i }));
+    const indexByCode = new Map(out.map((i, k) => [i.codigo, k]));
+    incoming.forEach((inc) => {
+        const k = indexByCode.get(inc.codigo);
+        if (k === undefined) {
+            indexByCode.set(inc.codigo, out.length);
+            out.push(inc);
+            return;
+        }
+        const ex = out[k];
+        const scanned = !!ex.scanned || !!inc.scanned;
+        let scanTime = ex.scanTime ?? inc.scanTime;
+        if (ex.scanTime && inc.scanTime && pickTimeMs(inc.scanTime) < pickTimeMs(ex.scanTime)) scanTime = inc.scanTime;
+        const notFound = scanned ? false : notFoundTouched.has(inc.codigo) ? !!inc.notFound : !!ex.notFound;
+        out[k] = {
+            ...ex,
+            scanned,
+            ...(scanned && scanTime ? { scanTime } : {}),
+            notFound,
+            ...(notFound && !ex.notFoundAt && inc.notFoundAt ? { notFoundAt: inc.notFoundAt } : {}),
+        };
+    });
+    return out;
+}
+
+export type VerificationLiveState = {
+    results: VerificationItem[];
+    outOfPlanReads: VerificationItem[];
+    status?: SavedVerification['status'];
+    phase?: SavedVerification['phase'];
+};
+
+/** Autoguardado de alistamiento multi-equipo. Nunca reabre ni pisa una sesión cerrada. */
+export async function saveVerificationPickProgress(
+    sessionId: string,
+    payload: { results: VerificationItem[]; outOfPlanReads: VerificationItem[]; notFoundTouched?: string[] }
+): Promise<{ success: boolean; closed?: boolean; state?: VerificationLiveState; error?: string }> {
+    try {
+        const ref = doc(firestore, 'verificationSessions', sessionId);
+        const touched = new Set(payload.notFoundTouched || []);
+        const result = await runTransaction(firestore, async (tx) => {
+            const snap = await tx.get(ref);
+            if (!snap.exists()) throw new Error('La validación no existe.');
+            const cur = snap.data() as any;
+            if (cur.status === 'completed' || cur.phase === 'cerrada') return { closed: true as const };
+            const merged = mergePickResults(Array.isArray(cur.results) ? cur.results : [], payload.results || [], touched);
+            const codes = new Set(merged.map((i) => i.codigo));
+            const outOfPlanReads = (payload.outOfPlanReads || []).filter((i) => !codes.has(i.codigo));
+            const scanned = merged.filter((i) => i.scanned).length;
+            const stats = { total: merged.length, scanned, pending: merged.length - scanned, isComplete: merged.length > 0 && scanned === merged.length };
+            const status = !cur.status || cur.status === 'pending' ? 'in-progress' : cur.status;
+            tx.update(ref, toSessionWrite({ results: merged, stats, outOfPlanReads, status }));
+            return { closed: false as const, merged, outOfPlanReads, status, phase: cur.phase };
+        });
+        if (result.closed) return { success: false, closed: true, error: 'La validación ya fue cerrada.' };
+        return {
+            success: true,
+            state: {
+                results: convertTimestampsToDates(result.merged),
+                outOfPlanReads: convertTimestampsToDates(result.outOfPlanReads),
+                status: result.status,
+                phase: result.phase,
+            },
+        };
+    } catch (error: any) {
+        console.error('Error saving pick progress:', error);
+        return { success: false, error: error.message || 'No se pudo guardar el avance.' };
+    }
+}
+
+/** Lectura puntual del estado vivo de la sesión (respaldo cuando no hay suscripción en tiempo real). */
+export async function getVerificationLiveState(sessionId: string): Promise<{ success: boolean; state?: VerificationLiveState; error?: string }> {
+    try {
+        const snap = await getDoc(doc(firestore, 'verificationSessions', sessionId));
+        if (!snap.exists()) return { success: false, error: 'La validación no existe.' };
+        const cur = snap.data() as any;
+        return {
+            success: true,
+            state: {
+                results: convertTimestampsToDates(Array.isArray(cur.results) ? cur.results : []),
+                outOfPlanReads: convertTimestampsToDates(Array.isArray(cur.outOfPlanReads) ? cur.outOfPlanReads : []),
+                status: cur.status,
+                phase: cur.phase,
+            },
+        };
+    } catch (error: any) {
+        return { success: false, error: error.message || 'No se pudo leer la validación.' };
+    }
+}
+
 const loadScanDocId = (codigo: string) => String(codigo || '').trim().toUpperCase().replace(/\//g, '-').slice(0, 300) || 'SIN-CODIGO';
 
 const withoutUndefined = (data: any): any => {
@@ -6583,9 +6681,10 @@ export async function startVerificationCargue(
         results: VerificationItem[];
         stats: SavedVerification['stats'];
         outOfPlanReads: VerificationItem[];
+        notFoundTouched?: string[];
     },
     startedByName?: string
-): Promise<{ success: boolean; cargue?: VerificationCargueInfo; error?: string }> {
+): Promise<{ success: boolean; cargue?: VerificationCargueInfo; results?: VerificationItem[]; error?: string }> {
     const placa = String(payload.placa || '').trim().toUpperCase();
     const conductor = String(payload.conductor || '').trim();
     if (!placa || !conductor) return { success: false, error: 'Placa y conductor son obligatorios.' };
@@ -6598,18 +6697,33 @@ export async function startVerificationCargue(
             startedAt: new Date(),
             startedByName: startedByName || '',
         };
-        await updateDoc(
-            doc(firestore, 'verificationSessions', sessionId),
-            toSessionWrite({
-                results: payload.results,
-                stats: payload.stats,
-                outOfPlanReads: payload.outOfPlanReads,
-                status: 'in-progress',
-                phase: 'cargue',
-                cargue,
-            })
-        );
-        return { success: true, cargue };
+        const ref = doc(firestore, 'verificationSessions', sessionId);
+        const merged = await runTransaction(firestore, async (tx) => {
+            const snap = await tx.get(ref);
+            if (!snap.exists()) throw new Error('La validación no existe.');
+            const cur = snap.data() as any;
+            if (cur.status === 'completed' || cur.phase === 'cerrada') throw new Error('La validación ya fue cerrada.');
+            const results = mergePickResults(
+                Array.isArray(cur.results) ? cur.results : [],
+                payload.results || [],
+                new Set(payload.notFoundTouched || [])
+            );
+            const codes = new Set(results.map((i) => i.codigo));
+            const scanned = results.filter((i) => i.scanned).length;
+            tx.update(
+                ref,
+                toSessionWrite({
+                    results,
+                    stats: { total: results.length, scanned, pending: results.length - scanned, isComplete: results.length > 0 && scanned === results.length },
+                    outOfPlanReads: (payload.outOfPlanReads || []).filter((i) => !codes.has(i.codigo)),
+                    status: 'in-progress',
+                    phase: 'cargue',
+                    cargue,
+                })
+            );
+            return results;
+        });
+        return { success: true, cargue, results: convertTimestampsToDates(merged) };
     } catch (error: any) {
         console.error('Error starting cargue:', error);
         return { success: false, error: error.message || 'No se pudo iniciar el cargue.' };

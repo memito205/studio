@@ -32,6 +32,7 @@ import {
   verificationItemsToSummaryRows,
 } from '@/components/dispatch-manager/utils/storeSummaryPdf';
 import { DISPATCH_CLASS_LABEL as CLASS_LABEL, downloadAltCodesExcel } from '@/components/dispatch-manager/utils/dispatchReport';
+import { mergeRemotePicks, useLiveVerificationSession } from '@/components/dispatch-manager/utils/liveSession';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -78,9 +79,13 @@ const VerificationCargue: React.FC<{
   session: SavedVerification;
   data: VerificationItem[];
   onBack: () => void;
-}> = ({ session, data, onBack }) => {
+}> = ({ session, data: initialData, onBack }) => {
   const { user, userName, role } = useAuth();
   const { toast } = useToast();
+  const [data, setData] = useState<VerificationItem[]>(initialData);
+  useLiveVerificationSession(session.id, (live) => {
+    setData((prev) => mergeRemotePicks(prev, live.results));
+  });
   const canClose = role === 'admin' || role === 'supervisor';
   const actor: TransferActor | undefined = useMemo(
     () =>

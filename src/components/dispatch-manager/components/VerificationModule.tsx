@@ -28,7 +28,8 @@ import {
   getOtherSessionsForTf,
   normalizeTfKey,
 } from '@/components/dispatch-manager/utils/duplicateVerifications';
-import { saveVerificationSession, loadVerificationSessions, updateVerificationSession, startVerificationCargue } from '@/app/actions';
+import { saveVerificationSession, loadVerificationSessions, updateVerificationSession, startVerificationCargue, saveVerificationPickProgress } from '@/app/actions';
+import { mergeRemotePicks, useLiveVerificationSession } from '@/components/dispatch-manager/utils/liveSession';
 import { arrivalLabel, findItemForCode, normalizeScanCode, resolveOutOfPlanCode } from '@/components/dispatch-manager/utils/verificationScan';
 import { Checkbox } from '@/components/ui/checkbox';
 import VerificationCargue from './VerificationCargue';
@@ -174,16 +175,59 @@ const ScanningInterface: React.FC<{
   const notFoundCount = useMemo(() => data.filter((item) => !item.scanned && item.notFound).length, [data]);
   const outOfPlanAdded = useMemo(() => data.filter((item) => item.outOfPlan).length, [data]);
   
+  const notFoundPendingRef = useRef<Set<string>>(new Set());
+  const [closedRemotely, setClosedRemotely] = useState(false);
+  const closedNotifiedRef = useRef(false);
+
+  const markClosedRemotely = useCallback(() => {
+    setClosedRemotely(true);
+    if (closedNotifiedRef.current) return;
+    closedNotifiedRef.current = true;
+    toast({
+      variant: 'destructive',
+      title: 'Validación cerrada',
+      description: 'Esta validación ya se cerró en otro equipo. Las nuevas lecturas no se guardan.',
+    });
+  }, [toast]);
+
+  useLiveVerificationSession(
+    session.id,
+    (live) => {
+      if (live.status === 'completed' || live.phase === 'cerrada') markClosedRemotely();
+      setData((prev) => mergeRemotePicks(prev, live.results, notFoundPendingRef.current));
+    },
+    isSessionOpen && !cargueInfo
+  );
+
   const saveProgress = useCallback(async (isFinalizing: boolean) => {
     setIsSaving(true);
     setSaveStatus('saving');
-    
-    const newStatus = isFinalizing ? 'completed' : session.status === 'pending' ? 'in-progress' : session.status;
-    
+
+    if (!isFinalizing) {
+      const sentTouched = Array.from(notFoundPendingRef.current);
+      const res = await saveVerificationPickProgress(session.id, { results: data, outOfPlanReads, notFoundTouched: sentTouched });
+      setIsSaving(false);
+      if (res.closed) {
+        setSaveStatus('saved');
+        markClosedRemotely();
+        return;
+      }
+      if (!res.success || !res.state) {
+        setSaveStatus('error');
+        toast({ variant: 'destructive', title: 'Error al Guardar', description: res.error });
+        return;
+      }
+      sentTouched.forEach((c) => notFoundPendingRef.current.delete(c));
+      const remote = res.state.results;
+      setData((prev) => mergeRemotePicks(prev, remote, notFoundPendingRef.current));
+      setSaveStatus((s) => (s === 'saving' ? 'saved' : s));
+      return;
+    }
+
     const result = await updateVerificationSession(session.id, {
         results: data,
         stats,
-        status: newStatus,
+        status: 'completed',
         outOfPlanReads,
     });
 
@@ -199,10 +243,10 @@ const ScanningInterface: React.FC<{
         toast({ variant: 'destructive', title: "Error al Guardar", description: result.error });
     }
     setIsSaving(false);
-  }, [data, outOfPlanReads, onBack, session.id, session.status, stats, toast]);
+  }, [data, outOfPlanReads, onBack, session.id, stats, toast, markClosedRemotely]);
 
   useEffect(() => {
-    if (saveStatus === 'idle') {
+    if (saveStatus === 'idle' && !closedRemotely) {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
       debounceTimer.current = setTimeout(() => {
         saveProgress(false);
@@ -211,7 +255,7 @@ const ScanningInterface: React.FC<{
     return () => {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
     };
-  }, [data, saveStatus, saveProgress]);
+  }, [data, saveStatus, saveProgress, closedRemotely]);
 
   const registerOutOfPlan = (candidate: VerificationItem, code: string, reason: string) => {
     const item: VerificationItem = { ...candidate, scanned: true, scanTime: new Date(), outOfPlan: true, notFound: false };
@@ -263,6 +307,7 @@ const ScanningInterface: React.FC<{
   };
 
   const toggleNotFound = (codigo: string) => {
+    notFoundPendingRef.current.add(codigo);
     setData((prev) =>
       prev.map((item) =>
         item.codigo === codigo && !item.scanned
@@ -278,6 +323,10 @@ const ScanningInterface: React.FC<{
     const code = normalizeScanCode(scanInput);
     if (!code || isLookingUp) return;
     setScanInput('');
+    if (closedRemotely) {
+      setLastScanStatus({ type: 'error', message: 'VALIDACIÓN CERRADA EN OTRO EQUIPO', code, detail: 'La lectura no se guardó.' });
+      return;
+    }
 
     const match = findItemForCode(data, code);
     const index = match && 'index' in match ? match.index : -1;
@@ -438,7 +487,7 @@ const ScanningInterface: React.FC<{
     setIsStartingCargue(true);
     const res = await startVerificationCargue(
       session.id,
-      { ...cargueForm, results: data, stats, outOfPlanReads },
+      { ...cargueForm, results: data, stats, outOfPlanReads, notFoundTouched: Array.from(notFoundPendingRef.current) },
       (userName || '').trim() || user?.displayName || user?.email || ''
     );
     setIsStartingCargue(false);
@@ -446,6 +495,8 @@ const ScanningInterface: React.FC<{
       toast({ variant: 'destructive', title: 'No se pudo pasar a cargue', description: res.error });
       return;
     }
+    notFoundPendingRef.current.clear();
+    if (res.results) setData(res.results);
     setSaveStatus('saved');
     setCargueDialogOpen(false);
     setCargueInfo(res.cargue);
