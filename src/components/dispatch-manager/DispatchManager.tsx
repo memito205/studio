@@ -168,7 +168,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
-  const [merchandiseFile, setMerchandiseFile] = useState<File | null>(null);
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
   const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [pendingAltReceipts, setPendingAltReceipts] = useState<AltCodeReceipt[]>([]);
@@ -188,17 +188,12 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
   }, [pendingAltReceipts]);
 
 
-  const handleMerchandiseUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setMerchandiseFile(file);
-    
+  const handleLoadFromWarehouse = async () => {
     setIsUploading(true);
     setAllMatchedData([]);
     setAllUnmatchedData([]);
 
     try {
-        const parsedMerchandise = await parseMerchandiseExcel(file);
         const transfersResult = await loadAllTransfers();
 
         if (transfersResult.error || !transfersResult.data) {
@@ -233,11 +228,22 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
 
         const pendingRes = await getAltCodeReceipts();
         setPendingAltReceipts(pendingRes.pending || []);
-        const virtualMerchandiseItems: MerchandiseItem[] = receivedInWarehouseTransfers.map((t, index) => {
+        const linesByTfDest = new Map<string, typeof receivedInWarehouseTransfers>();
+        receivedInWarehouseTransfers.forEach((t) => {
+            const tfKey = String(t.numeroTF || '').trim().toUpperCase();
+            if (!tfKey) return;
+            const key = `${tfKey}|${normalizeDestination(t.bodegaDestino)}`;
+            if (!linesByTfDest.has(key)) linesByTfDest.set(key, []);
+            linesByTfDest.get(key)!.push(t);
+        });
+
+        // Una fila por TF + destino (una TF = una caja); el código coincide con el de la etiqueta DESTINO-TF.
+        const consolidatedMerchandiseData: MerchandiseItem[] = Array.from(linesByTfDest.values()).map((lines) => {
+            const t = lines[0];
             const originalDest = t.bodegaDestino;
             const normalizedDest = normalizeDestination(originalDest);
-            // The `codigo` MUST be created with the original destination code for matching
             const codigo = `${originalDest.trim()}-${t.numeroTF}`.toUpperCase();
+            const units = lines.reduce((sum, l) => sum + (Number(l.cantidad || 0) || 0), 0);
 
             return {
                 codigo: codigo.replace(/'/g, '-'),
@@ -250,11 +256,11 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                 tf: t.numeroTF,
                 origen: t.bodegaOrigen,
                 destino: normalizedDest,
-                cant: t.cantidad || 1,
+                cant: units || 1,
                 pKg: 0,
                 vM3: 0,
                 estado: 'VIRTUAL',
-                detalle: 'Añadido desde transferencias recibidas',
+                detalle: 'Recibido en bodega',
                 etiqueta: '',
                 relacion: '',
                 verLog: '',
@@ -264,20 +270,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                 marca: String(t.marca || '').trim().toUpperCase() || undefined,
             };
         });
-        
-        const merchandiseMap = new Map<string, MerchandiseItem>();
-        parsedMerchandise.forEach(item => {
-            const key = item.codigo.toUpperCase();
-            if (key) merchandiseMap.set(key, item);
-        });
-        virtualMerchandiseItems.forEach(item => {
-            const key = item.codigo.toUpperCase();
-            if (key && !merchandiseMap.has(key)) {
-                merchandiseMap.set(key, item);
-            }
-        });
-        const consolidatedMerchandiseData = Array.from(merchandiseMap.values());
-        
+
         const tftMapByTfDest = new Map<string, TFTItem>();
         const tftMapByTfOnly = new Map<string, TFTItem>();
 
@@ -348,7 +341,8 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
         setAllMatchedData(joined.filter(item => !!item.tftMatch));
         setAllUnmatchedData(joined.filter(item => !item.tftMatch));
 
-        toast({ title: 'Éxito', description: `Cruce completado. Se procesaron ${consolidatedMerchandiseData.length} ítems de mercancía.` });
+        setLoadedAt(new Date());
+        toast({ title: 'Mercancía en bodega cargada', description: `${consolidatedMerchandiseData.length} TFs en estado Recibido en Bodega.` });
 
     } catch (error) {
       console.error('Error processing merchandise excel:', error);
@@ -631,7 +625,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
 
   const clearData = () => {
     if (confirm('¿Estás seguro de que deseas borrar todos los datos?')) {
-      setMerchandiseFile(null);
+      setLoadedAt(null);
       setAllMatchedData([]);
       setAllUnmatchedData([]);
       setSelectedDestinos([]);
@@ -728,14 +722,19 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
               
               {activeModule === 'cruce' && isAdmin && (
                 <div className="flex flex-col sm:flex-row gap-2">
-                  <label className={cn(
-                    "flex items-center gap-2 px-4 py-2 border border-white/30 cursor-pointer hover:bg-white/10 transition-all  text-xs",
-                    merchandiseFile && "bg-green-300/20 border-green-300 text-green-200"
-                  )}>
-                    {merchandiseFile ? <CheckCircle2 size={16} /> : <Upload size={16} />}
-                    {merchandiseFile ? 'MERCANCÍA CARGADA' : 'CARGAR MERCANCÍA'}
-                    <input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleMerchandiseUpload} disabled={isUploading} />
-                  </label>
+                  <button
+                    type="button"
+                    onClick={() => void handleLoadFromWarehouse()}
+                    disabled={isUploading}
+                    title={loadedAt ? `Cargado ${format(loadedAt, 'HH:mm')}. Clic para actualizar.` : undefined}
+                    className={cn(
+                      "flex items-center gap-2 px-4 py-2 border border-white/30 cursor-pointer hover:bg-white/10 transition-all  text-xs",
+                      loadedAt && "bg-green-300/20 border-green-300 text-green-200"
+                    )}
+                  >
+                    {isUploading ? <Loader2 size={16} className="animate-spin" /> : loadedAt ? <CheckCircle2 size={16} /> : <Upload size={16} />}
+                    {loadedAt ? `ACTUALIZAR BODEGA (${format(loadedAt, 'HH:mm')})` : 'CARGAR MERCANCÍA EN BODEGA'}
+                  </button>
 
                   {(filteredMatchedData.length > 0 || filteredUnmatchedData.length > 0) && (
                     <div className="flex gap-2">
@@ -780,13 +779,17 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
         {(isAdmin || isSupervisor) ? (
           <>
             {activeModule === 'cruce' && isAdmin && (
-              !merchandiseFile ? (
+              !loadedAt ? (
                 <div 
                   className="flex flex-col items-center justify-center py-32 border-2 border-dashed border-border"
                 >
                   <FileSpreadsheet size={64} strokeWidth={1} />
-                  <p className="mt-4 font-bold tracking-tight text-xl">Inicia cargando el archivo de Mercancía</p>
-                  <p className="text-sm  mt-2">El sistema se encargará de obtener las transferencias automáticamente.</p>
+                  <p className="mt-4 font-bold tracking-tight text-xl">Inicia cargando la mercancía en bodega</p>
+                  <p className="text-sm  mt-2">Se toman las TFs en estado Recibido en Bodega (una fila por TF y destino). Ya no se sube el reporte antiguo.</p>
+                  <Button className="mt-6" onClick={() => void handleLoadFromWarehouse()} disabled={isUploading}>
+                    {isUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                    Cargar mercancía en bodega
+                  </Button>
                 </div>
               ) : (
                 <div className="space-y-12">
