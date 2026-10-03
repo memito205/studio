@@ -138,6 +138,7 @@ const ScanningInterface: React.FC<{
   const isSessionOpen = session.status !== 'completed';
   const requiresCargue = !!session.requiresCargue;
   const [cargueInfo, setCargueInfo] = useState(session.phase === 'cargue' ? session.cargue : undefined);
+  const [showCargue, setShowCargue] = useState(session.phase === 'cargue');
   const [cargueDialogOpen, setCargueDialogOpen] = useState(false);
   const [cargueForm, setCargueForm] = useState<{ placa: string; conductor: string; conductorUserId?: string; auxiliares: string }>({
     placa: '',
@@ -194,9 +195,10 @@ const ScanningInterface: React.FC<{
     session.id,
     (live) => {
       if (live.status === 'completed' || live.phase === 'cerrada') markClosedRemotely();
+      if (live.phase === 'cargue' && live.cargue) setCargueInfo((prev) => prev || live.cargue);
       setData((prev) => mergeRemotePicks(prev, live.results, notFoundPendingRef.current));
     },
-    isSessionOpen && !cargueInfo
+    isSessionOpen && !(cargueInfo && showCargue)
   );
 
   const saveProgress = useCallback(async (isFinalizing: boolean) => {
@@ -500,6 +502,7 @@ const ScanningInterface: React.FC<{
     setSaveStatus('saved');
     setCargueDialogOpen(false);
     setCargueInfo(res.cargue);
+    setShowCargue(true);
     toast({ title: 'Cargue iniciado', description: `Placa ${res.cargue.placa}. Lea cada caja al subirla al camión.` });
   };
 
@@ -518,8 +521,15 @@ const ScanningInterface: React.FC<{
     }
   };
 
-  if (cargueInfo && isSessionOpen) {
-    return <VerificationCargue session={{ ...session, cargue: cargueInfo }} data={data} onBack={onBack} />;
+  if (cargueInfo && isSessionOpen && showCargue) {
+    return (
+      <VerificationCargue
+        session={{ ...session, cargue: cargueInfo }}
+        data={data}
+        onBack={onBack}
+        onGoToPicking={() => setShowCargue(false)}
+      />
+    );
   }
 
   return (
@@ -573,7 +583,16 @@ const ScanningInterface: React.FC<{
                   <div><span className="text-sm font-medium text-muted-foreground">Fuera del plan</span><p className="text-2xl font-bold text-blue-700">{outOfPlanAdded}{outOfPlanReads.length > 0 ? ` (+${outOfPlanReads.length})` : ''}</p></div>
                 </div>
                 <div className="flex flex-col gap-2 mt-6">
-                    {requiresCargue && canCloseDispatch && isSessionOpen ? (
+                    {cargueInfo && isSessionOpen ? (
+                      <>
+                        <Button className="bg-indigo-600 hover:bg-indigo-700 text-white" onClick={() => setShowCargue(true)}>
+                          <Truck size={14} className="mr-2" /> Ir al cargue · {cargueInfo.placa}
+                        </Button>
+                        <p className="text-[10px] text-muted-foreground leading-snug">
+                          El cargue ya empezó. Lo que se siga alistando aquí se refleja en el cargue en vivo.
+                        </p>
+                      </>
+                    ) : requiresCargue && canCloseDispatch && isSessionOpen ? (
                       <>
                         <Button
                           disabled={isSaving || isStartingCargue || stats.scanned === 0}

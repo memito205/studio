@@ -49,6 +49,7 @@ export function useLiveVerificationSession(
           outOfPlanReads: stripTimestamps(Array.isArray(raw.outOfPlanReads) ? raw.outOfPlanReads : []),
           status: raw.status,
           phase: raw.phase,
+          ...(raw.cargue ? { cargue: stripTimestamps(raw.cargue) } : {}),
         });
       },
       (err) => {

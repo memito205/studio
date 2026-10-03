@@ -6595,6 +6595,7 @@ export type VerificationLiveState = {
     outOfPlanReads: VerificationItem[];
     status?: SavedVerification['status'];
     phase?: SavedVerification['phase'];
+    cargue?: VerificationCargueInfo;
 };
 
 /** Autoguardado de alistamiento multi-equipo. Nunca reabre ni pisa una sesión cerrada. */
@@ -6648,6 +6649,7 @@ export async function getVerificationLiveState(sessionId: string): Promise<{ suc
                 outOfPlanReads: convertTimestampsToDates(Array.isArray(cur.outOfPlanReads) ? cur.outOfPlanReads : []),
                 status: cur.status,
                 phase: cur.phase,
+                ...(cur.cargue ? { cargue: convertTimestampsToDates(cur.cargue) } : {}),
             },
         };
     } catch (error: any) {

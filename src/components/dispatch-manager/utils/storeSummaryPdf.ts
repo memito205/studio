@@ -9,12 +9,14 @@ export type StoreSummarySourceRow = {
   tft: string;
   cantTft: number;
   marca?: string;
+  codigoAlterno?: string;
 };
 
 type UniqueTf = {
   tft: string;
   cantTft: number;
   marca: string;
+  altCodes: string[];
 };
 
 type StoreSummary = {
@@ -61,14 +63,16 @@ export function buildStoreSummaries(rows: StoreSummarySourceRow[]): StoreSummary
     const destino = normalizeDest(row.destino);
     const cantTft = parseCant(row.cantTft);
     const marca = normalizeMarca(row.marca);
+    const alt = String(row.codigoAlterno || '').trim().toUpperCase();
 
     if (!byDest.has(destino)) byDest.set(destino, new Map());
     const tfMap = byDest.get(destino)!;
     const existing = tfMap.get(tft);
     if (!existing) {
-      tfMap.set(tft, { tft, cantTft, marca });
+      tfMap.set(tft, { tft, cantTft, marca, altCodes: alt ? [alt] : [] });
       return;
     }
+    if (alt && !existing.altCodes.includes(alt)) existing.altCodes.push(alt);
     if (cantTft > existing.cantTft) existing.cantTft = cantTft;
     if (existing.marca === 'SIN MARCA' && marca !== 'SIN MARCA') existing.marca = marca;
   });
@@ -146,14 +150,15 @@ function createStorePdf(
 
   autoTable(doc, {
     startY: y,
-    head: [['# TF', 'Cant. TFT', 'Marca']],
-    body: summary.documents.map((d) => [d.tft, String(d.cantTft), d.marca]),
+    head: [['# TF', 'Código alterno', 'Cant. TFT', 'Marca']],
+    body: summary.documents.map((d) => [d.tft, d.altCodes.join(', ') || '—', String(d.cantTft), d.marca]),
     theme: 'grid',
     headStyles: { fillColor: [30, 30, 30], fontSize: 9 },
     styles: { fontSize: 9, cellPadding: 2 },
     columnStyles: {
-      0: { cellWidth: 45 },
-      1: { cellWidth: 28, halign: 'right' },
+      0: { cellWidth: 40 },
+      1: { cellWidth: 45 },
+      2: { cellWidth: 24, halign: 'right' },
     },
   });
 
@@ -204,6 +209,7 @@ export function verificationItemsToSummaryRows(items: VerificationItem[]): Store
     tft: item.tftCruce,
     cantTft: parseCant(item.cantTft),
     marca: item.marca,
+    codigoAlterno: item.codigoAlterno,
   }));
 }
 

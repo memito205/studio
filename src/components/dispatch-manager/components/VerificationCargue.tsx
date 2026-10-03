@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, onSnapshot, Timestamp } from 'firebase/firestore';
 import { format } from 'date-fns';
-import { ArrowLeft, Loader2, Truck, XCircle, FileArchive } from 'lucide-react';
+import { ArrowLeft, Loader2, Truck, XCircle, FileArchive, ScanLine } from 'lucide-react';
 import { firestore } from '@/services/firebase';
 import type {
   SavedVerification,
@@ -79,7 +79,8 @@ const VerificationCargue: React.FC<{
   session: SavedVerification;
   data: VerificationItem[];
   onBack: () => void;
-}> = ({ session, data: initialData, onBack }) => {
+  onGoToPicking?: () => void;
+}> = ({ session, data: initialData, onBack, onGoToPicking }) => {
   const { user, userName, role } = useAuth();
   const { toast } = useToast();
   const [data, setData] = useState<VerificationItem[]>(initialData);
@@ -366,6 +367,11 @@ const VerificationCargue: React.FC<{
         <Button onClick={onBack} variant="outline" className="justify-start">
           <ArrowLeft className="mr-2 h-4 w-4" /> Volver a la Lista de Sesiones
         </Button>
+        {onGoToPicking && (
+          <Button onClick={onGoToPicking} variant="secondary" className="justify-start">
+            <ScanLine className="mr-2 h-4 w-4" /> Seguir alistando (validación)
+          </Button>
+        )}
         <Card className="border-indigo-300">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2">

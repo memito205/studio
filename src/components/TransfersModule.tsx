@@ -578,6 +578,15 @@ const ManifestDetailsDialog: React.FC<{
     return finalGrouped;
   }, [transfers]);
 
+  const altCodeById = useMemo(
+    () => new Map(transfers.map((t) => [t.id, String(t.codigoAlterno || '').trim()])),
+    [transfers]
+  );
+  const altCodesOf = useCallback(
+    (t: GroupedTransfer) => Array.from(new Set(t.allIds.map((id) => altCodeById.get(id) || '').filter(Boolean))).join(', '),
+    [altCodeById]
+  );
+
   const handlePrint = async () => {
       if (!manifest) {
         toast({ variant: 'destructive', title: 'Error', description: 'No hay datos de manifiesto.' });
@@ -618,6 +627,7 @@ const ManifestDetailsDialog: React.FC<{
               const tableBody = transferList.map(t => [
                   '', // Checkbox placeholder
                   t.numeroTF,
+                  altCodesOf(t) || '—',
                   t.bodegaOrigen,
               ]);
   
@@ -639,7 +649,7 @@ const ManifestDetailsDialog: React.FC<{
   
               autoTable(doc, {
                   startY: y,
-                  head: [['Recibido', '# TF', 'Origen']],
+                  head: [['Recibido', '# TF', 'Código alterno', 'Origen']],
                   body: tableBody,
                   theme: 'grid',
                   headStyles: { fillColor: [22, 22, 22], textColor: 255, fontSize: 9 },
@@ -705,6 +715,7 @@ const ManifestDetailsDialog: React.FC<{
     const groupedTransfers = groupTransfersByTF(transfers);
     const dataToExport = groupedTransfers.map(t => ({
       'Numero TF': t.numeroTF,
+      'Codigo Alterno': altCodesOf(t),
       'Origen': t.bodegaOrigen,
       'Destino': t.bodegaDestino,
       'Marcas': t.marca,
@@ -746,6 +757,7 @@ const ManifestDetailsDialog: React.FC<{
                               <TableHeader>
                                 <TableRow>
                                   <TableHead># TF</TableHead>
+                                  <TableHead>Código alterno</TableHead>
                                   <TableHead>Origen</TableHead>
                                 </TableRow>
                               </TableHeader>
@@ -753,6 +765,7 @@ const ManifestDetailsDialog: React.FC<{
                                 {transferList.map(t => (
                                   <TableRow key={t.id}>
                                     <TableCell>{t.numeroTF}</TableCell>
+                                    <TableCell className="font-mono">{altCodesOf(t) || '—'}</TableCell>
                                     <TableCell>{t.bodegaOrigen}</TableCell>
                                   </TableRow>
                                 ))}
