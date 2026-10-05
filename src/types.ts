@@ -505,6 +505,13 @@ export interface TransferEntry {
   novedadEntregaBy?: string;
   novedadEntregaByName?: string;
   novedadEntregaMotivo?: string;
+  /** Decisión del admin sobre la novedad (la TF vuelve a Recibido en Bodega). */
+  novedadResolucion?: 'reprogramar' | 'devolver';
+  novedadResueltaAt?: Date;
+  novedadResueltaByName?: string;
+  novedadResolucionNota?: string;
+  /** Reprogramada tras novedad: sale de primera en el Gestor hasta que se vuelva a entregar. */
+  reprogramada?: boolean;
   /** Relación (doc id) y parada con la que se entregó / reportó novedad. */
   podManifestDocId?: string;
   podStopId?: string;
@@ -555,6 +562,22 @@ export interface DeliveryManifest {
     stopsCount?: number;
     stopsDone?: number;
     deliveryCompletedAt?: Date;
+    validatedAt?: Date;
+    validatedById?: string;
+    validatedByName?: string;
+    validationNote?: string;
+    /** Cerrada por admin sin terminar en la app (relaciones antiguas o paradas que no se completaron). */
+    closedWithoutApp?: boolean;
+    closedAt?: Date;
+    closedByName?: string;
+    closedNote?: string;
+}
+
+export interface DeliveryStopRejection {
+    at: Date;
+    byId: string;
+    byName: string;
+    note: string;
 }
 
 export type DeliveryManifestStatus = 'en_ruta' | 'pendiente_validacion' | 'cerrada';
@@ -589,6 +612,8 @@ export interface DeliveryManifestStop {
     completedByName?: string;
     /** Id del envío desde el celular (evita doble registro al reintentar sin señal). */
     submissionId?: string;
+    /** Último rechazo del admin; el conductor debe registrar la parada de nuevo. */
+    lastRejection?: DeliveryStopRejection;
 }
 
 export type DeliveryPhotoCategory = 'remision' | 'mercancia' | 'fachada' | 'otra';
@@ -1324,7 +1349,7 @@ export interface CyclicInventoryCountRecord {
   consolidatedLineIds?: string[];
 }
 
-export type AppStep = 'driver_deliveries' | 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'distribution_compare' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'dashboards_gastos_transporte' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'tf_platform_lookup' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory' | 'store_capacity' | 'tallado_mercancia';
+export type AppStep = 'driver_deliveries' | 'pod_admin' | 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'distribution_compare' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'dashboards_gastos_transporte' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'tf_platform_lookup' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory' | 'store_capacity' | 'tallado_mercancia';
 
 /** Fase 1: comparar físico (recepción) vs reparto comercial → remanente bodega. */
 export type DistributionComparePhysicalSource = 'reception_scan' | 'excel_stock';
@@ -2523,6 +2548,8 @@ export interface MerchandiseItem {
   ubicacion?: string;
   fechaLlegada?: Date;
   codigoAlterno?: string;
+  /** No se entregó en una ruta anterior y el admin la reprogramó. */
+  reprogramada?: boolean;
 }
 
 export interface TFTItem {

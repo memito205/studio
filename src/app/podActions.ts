@@ -3,6 +3,8 @@
 import {
   arrayUnion,
   collection,
+  deleteDoc,
+  deleteField,
   doc,
   getDoc,
   getDocs,
@@ -15,7 +17,7 @@ import {
   type DocumentData,
 } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
-import { buildStoreMatcher } from '@/lib/deliveryStores';
+import { buildStoreMatcher, DEFAULT_STORE_RADIUS_M } from '@/lib/deliveryStores';
 import { MAX_DELIVERY_PHOTOS, POD_START_AT } from '@/lib/pod';
 
 const PLATFORM_COLLECTION = 'tf_platform_status';
@@ -197,9 +199,22 @@ async function publishPodToPlatform({ lines, at, pod, photoUrls }: PlatformPubli
     await setDoc(
       ref,
       clean({
+        ...(cur && cur.podSource !== 'app'
+          ? {
+              podPrev: {
+                estadoPlataforma: cur.estadoPlataforma ?? null,
+                evidenceLinks: previousLinks,
+                entregaInferida: cur.entregaInferida ?? null,
+                entregaInferidaMotivo: cur.entregaInferidaMotivo ?? null,
+                fechaFinalizado: cur.fechaFinalizado ?? null,
+                source: cur.source ?? null,
+              },
+            }
+          : {}),
         ...(cur
           ? {}
           : {
+              podCreated: true,
               id: l.id,
               numeroTF: l.numeroTF,
               bodegaDestino: l.bodegaDestino,
@@ -324,6 +339,7 @@ export async function submitDeliveryStop(
             entregadoTiendaAt: now,
             entregadoTiendaBy: actor.userId,
             entregadoTiendaByName: actorName,
+            reprogramada: false,
             podManifestDocId: manifestDocId,
             podStopId: stopId,
             statusHistory: arrayUnion({ status: 'Entregado en Tienda', at: now, userId: actor.userId, userName: actorName }),
@@ -337,6 +353,7 @@ export async function submitDeliveryStop(
             novedadEntregaBy: actor.userId,
             novedadEntregaByName: actorName,
             novedadEntregaMotivo: notDelivered.get(tf) || '',
+            reprogramada: false,
             podManifestDocId: manifestDocId,
             podStopId: stopId,
             statusHistory: arrayUnion({ status: 'Novedad de Entrega', at: now, userId: actor.userId, userName: actorName }),
@@ -430,5 +447,447 @@ export async function submitDeliveryStop(
   } catch (error: any) {
     console.error('Error registrando entrega:', error);
     return { success: false, error: error.message || 'No se pudo registrar la entrega.' };
+  }
+}
+
+const actorNameOf = (actor: TransferActor) => (actor.displayName || '').trim() || actor.userId;
+
+export type AdminStop = DeliveryManifestStop & {
+  radiusM: number;
+  distanceAlert: boolean;
+  deliveredTfs: string[];
+  notDeliveredTfs: string[];
+};
+export type AdminManifest = DeliveryManifest & {
+  /** Creada antes de pruebas de entrega: no se puede terminar desde la app. */
+  legacy: boolean;
+  stops: AdminStop[];
+};
+
+/** Relaciones con paradas: todas las abiertas + las creadas en el rango. */
+export async function getPodAdminManifests(opts: {
+  from: string;
+  to: string;
+}): Promise<{ data?: AdminManifest[]; error?: string }> {
+  try {
+    const col = collection(firestore, 'deliveryManifests');
+    const [openSnap, rangeSnap, storesSnap] = await Promise.all([
+      getDocs(query(col, where('deliveryStatus', 'in', ['en_ruta', 'pendiente_validacion']))),
+      getDocs(
+        query(
+          col,
+          where('createdAt', '>=', Timestamp.fromDate(new Date(opts.from))),
+          where('createdAt', '<=', Timestamp.fromDate(new Date(opts.to)))
+        )
+      ),
+      getDocs(collection(firestore, 'deliveryStores')),
+    ]);
+    const matchStore = buildStoreMatcher(storesSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as DeliveryStore));
+    const docs = new Map<string, (typeof openSnap.docs)[number]>();
+    [...openSnap.docs, ...rangeSnap.docs].forEach((d) => {
+      if (d.data().deliveryStatus) docs.set(d.id, d);
+    });
+
+    const data = await Promise.all(
+      Array.from(docs.values()).map(async (d) => {
+        const m = toDates({ id: d.id, ...d.data() }) as DeliveryManifest;
+        const stopsSnap = await getDocs(collection(d.ref, 'stops'));
+        const stops: AdminStop[] = stopsSnap.docs
+          .map((s) => {
+            const st = toDates({ id: s.id, ...s.data() }) as DeliveryManifestStop;
+            const store = matchStore(st.storeCode || st.destino);
+            const radiusM = store?.radioValidacionM || DEFAULT_STORE_RADIUS_M;
+            const notDeliveredTfs = Object.keys(st.notDeliveredReasons || {});
+            const done = !!st.status && st.status !== 'pendiente';
+            return {
+              ...st,
+              ...(store && !st.storeName ? { storeCode: store.codigoErp, storeName: store.nombreCorto } : {}),
+              radiusM,
+              distanceAlert: typeof st.distanceM === 'number' && st.distanceM > radiusM,
+              notDeliveredTfs,
+              deliveredTfs: done ? (st.numerosTF || []).filter((tf) => !notDeliveredTfs.includes(String(tf).trim())) : [],
+            };
+          })
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        return { ...m, legacy: !(m.createdAt instanceof Date && m.createdAt >= POD_START_AT), stops };
+      })
+    );
+    data.sort((a, b) => (b.manifestId || 0) - (a.manifestId || 0));
+    return { data };
+  } catch (error: any) {
+    return { error: error.message || 'No se pudieron cargar las relaciones.' };
+  }
+}
+
+/** Aprueba la relación completa (todas las paradas registradas) y la cierra. */
+export async function approveDeliveryManifest(input: {
+  manifestDocId: string;
+  note?: string;
+  actor: TransferActor;
+}): Promise<{ success: boolean; error?: string }> {
+  if (!input.actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  try {
+    const ref = doc(firestore, 'deliveryManifests', input.manifestDocId);
+    await runTransaction(firestore, async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists()) throw new Error('La relación no existe.');
+      if (snap.data().deliveryStatus !== 'pendiente_validacion') {
+        throw new Error('Solo se aprueban relaciones con todas las paradas registradas.');
+      }
+      tx.update(
+        ref,
+        clean({
+          deliveryStatus: 'cerrada',
+          validatedAt: Timestamp.now(),
+          validatedById: input.actor.userId,
+          validatedByName: actorNameOf(input.actor),
+          validationNote: String(input.note || '').trim() || undefined,
+        })
+      );
+    });
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'No se pudo aprobar la relación.' };
+  }
+}
+
+/** Cierra una relación en ruta sin terminarla en la app. No cambia el estado de las TF. */
+export async function closeDeliveryManifestWithoutApp(input: {
+  manifestDocId: string;
+  note: string;
+  actor: TransferActor;
+}): Promise<{ success: boolean; error?: string }> {
+  if (!input.actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  const note = String(input.note || '').trim();
+  if (!note) return { success: false, error: 'Escriba el motivo del cierre.' };
+  try {
+    const ref = doc(firestore, 'deliveryManifests', input.manifestDocId);
+    await runTransaction(firestore, async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists()) throw new Error('La relación no existe.');
+      if (snap.data().deliveryStatus !== 'en_ruta') throw new Error('La relación ya no está en ruta.');
+      tx.update(ref, {
+        deliveryStatus: 'cerrada',
+        closedWithoutApp: true,
+        closedAt: Timestamp.now(),
+        closedById: input.actor.userId,
+        closedByName: actorNameOf(input.actor),
+        closedNote: note,
+      });
+    });
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'No se pudo cerrar la relación.' };
+  }
+}
+
+/** Deshace en plataforma la entrega publicada por la parada rechazada (vuelve al último estado de Quick). */
+async function revertPodPlatform(ids: string[], manifestDocId: string, stopId: string) {
+  for (const id of ids) {
+    const ref = doc(firestore, PLATFORM_COLLECTION, id);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) continue;
+    const r = snap.data() as any;
+    if (r.podSource === 'app' && r.pod?.stopId === stopId && r.pod?.manifestDocId === manifestDocId) {
+      const prev = r.podPrev;
+      if (!prev && r.podCreated) {
+        await deleteDoc(ref);
+        continue;
+      }
+      await setDoc(
+        ref,
+        {
+          estadoPlataforma: prev?.estadoPlataforma ?? 'EN BODEGA',
+          evidenceLinks: prev?.evidenceLinks ?? r.quickEvidenceLinks ?? [],
+          entregaInferida: prev?.entregaInferida ?? false,
+          entregaInferidaMotivo: prev?.entregaInferidaMotivo ?? deleteField(),
+          fechaFinalizado: prev?.fechaFinalizado ?? null,
+          source: prev?.source ?? deleteField(),
+          podSource: deleteField(),
+          pod: deleteField(),
+          podPrev: deleteField(),
+          podCreated: deleteField(),
+          quickEvidenceLinks: deleteField(),
+          updatedAt: Timestamp.now(),
+        },
+        { merge: true }
+      );
+    } else if (r.podNovedad?.stopId === stopId && r.podNovedad?.manifestDocId === manifestDocId) {
+      await setDoc(ref, { podNovedad: null, updatedAt: Timestamp.now() }, { merge: true });
+    }
+  }
+}
+
+/**
+ * Rechaza el registro de una parada: vuelve a pendiente para que el conductor la registre de nuevo
+ * y sus TF regresan a Enviado a Destino. El registro anterior queda en `rejections`.
+ */
+export async function rejectDeliveryStop(input: {
+  manifestDocId: string;
+  stopId: string;
+  note: string;
+  actor: TransferActor;
+}): Promise<{ success: boolean; reverted?: number; skipped?: number; error?: string }> {
+  const { manifestDocId, stopId, actor } = input;
+  if (!actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  const note = String(input.note || '').trim();
+  if (!note) return { success: false, error: 'Escriba el motivo del rechazo para el conductor.' };
+  try {
+    const manifestRef = doc(firestore, 'deliveryManifests', manifestDocId);
+    const stopRef = doc(manifestRef, 'stops', stopId);
+    const actorName = actorNameOf(actor);
+    const platformIds: { value: string[] } = { value: [] };
+
+    const result = await runTransaction(firestore, async (tx) => {
+      const [mSnap, sSnap] = await Promise.all([tx.get(manifestRef), tx.get(stopRef)]);
+      if (!mSnap.exists() || !sSnap.exists()) throw new Error('La relación o la parada ya no existe.');
+      const manifest = mSnap.data() as any;
+      const stop = sSnap.data() as any;
+      if (manifest.deliveryStatus === 'cerrada') throw new Error('La relación ya está cerrada; no se puede rechazar.');
+      if (!stop.status || stop.status === 'pendiente') throw new Error('La parada no tiene entrega registrada.');
+
+      const transferIds: string[] = Array.isArray(stop.transferIds) ? stop.transferIds : [];
+      const tSnaps = await Promise.all(transferIds.map((id) => tx.get(doc(firestore, 'transfers', id))));
+      const now = Timestamp.now();
+      const ids = new Set<string>();
+      let reverted = 0;
+      let skipped = 0;
+      tSnaps.forEach((d) => {
+        if (!d.exists()) return;
+        const t = d.data() as any;
+        ids.add(platformDocId(t.numeroTF, t.bodegaDestino));
+        const fromThisStop = t.podManifestDocId === manifestDocId && t.podStopId === stopId;
+        if (!fromThisStop || (t.status !== 'Entregado en Tienda' && t.status !== 'Novedad de Entrega')) {
+          skipped++;
+          return;
+        }
+        tx.update(d.ref, {
+          status: 'Enviado a Destino',
+          entregadoTiendaAt: deleteField(),
+          entregadoTiendaBy: deleteField(),
+          entregadoTiendaByName: deleteField(),
+          novedadEntregaAt: deleteField(),
+          novedadEntregaBy: deleteField(),
+          novedadEntregaByName: deleteField(),
+          novedadEntregaMotivo: deleteField(),
+          podRechazadaAt: now,
+          statusHistory: arrayUnion({ status: 'Enviado a Destino', at: now, userId: actor.userId, userName: actorName }),
+        });
+        reverted++;
+      });
+
+      const rejection = { at: now, byId: actor.userId, byName: actorName, note };
+      tx.update(stopRef, {
+        status: 'pendiente',
+        lastRejection: rejection,
+        rejections: arrayUnion({
+          ...rejection,
+          previous: clean({
+            status: stop.status,
+            completedAt: stop.completedAt ?? null,
+            completedByName: stop.completedByName ?? null,
+            receivedByName: stop.receivedByName ?? null,
+            submissionId: stop.submissionId ?? null,
+            photos: stop.photos || [],
+            gps: stop.gps ?? null,
+            distanceM: stop.distanceM ?? null,
+            notes: stop.notes ?? null,
+            deliveredTransferIds: stop.deliveredTransferIds || [],
+            notDeliveredTransferIds: stop.notDeliveredTransferIds || [],
+            notDeliveredReasons: stop.notDeliveredReasons || {},
+          }),
+        }),
+        deliveredTransferIds: deleteField(),
+        notDeliveredTransferIds: deleteField(),
+        notDeliveredReasons: deleteField(),
+        photos: deleteField(),
+        gps: deleteField(),
+        distanceM: deleteField(),
+        receivedByName: deleteField(),
+        notes: deleteField(),
+        completedAt: deleteField(),
+        completedById: deleteField(),
+        completedByName: deleteField(),
+        submissionId: deleteField(),
+      });
+      tx.update(manifestRef, {
+        stopsDone: Math.max(0, Number(manifest.stopsDone || 0) - 1),
+        deliveryStatus: 'en_ruta',
+        deliveryCompletedAt: deleteField(),
+      });
+      platformIds.value = Array.from(ids);
+      return { success: true, reverted, skipped };
+    });
+
+    await revertPodPlatform(platformIds.value, manifestDocId, stopId).catch((e) =>
+      console.error('Parada rechazada sin revertir estado plataforma:', e)
+    );
+    return result;
+  } catch (error: any) {
+    return { success: false, error: error.message || 'No se pudo rechazar la parada.' };
+  }
+}
+
+export type PodNovedadLine = {
+  id: string;
+  numeroTF: string;
+  bodegaDestino: string;
+  cantidad: number;
+  codigoAlterno?: string;
+  motivo: string;
+  at: string | null;
+  byName?: string;
+  manifestDocId?: string;
+  manifestId?: number;
+  placa?: string;
+};
+
+/** Líneas en Novedad de Entrega pendientes de decisión del admin. */
+export async function getPodNovedades(): Promise<{ data?: PodNovedadLine[]; error?: string }> {
+  try {
+    const snap = await getDocs(query(collection(firestore, 'transfers'), where('status', '==', 'Novedad de Entrega')));
+    const manifestIds = Array.from(
+      new Set(snap.docs.map((d) => String(d.data().podManifestDocId || '')).filter(Boolean))
+    );
+    const manifests = new Map<string, DocumentData>();
+    for (let i = 0; i < manifestIds.length; i += 30) {
+      const ms = await getDocs(
+        query(collection(firestore, 'deliveryManifests'), where(documentId(), 'in', manifestIds.slice(i, i + 30)))
+      );
+      ms.forEach((m) => manifests.set(m.id, m.data()));
+    }
+    const data: PodNovedadLine[] = snap.docs.map((d) => {
+      const t = d.data() as any;
+      const m = t.podManifestDocId ? manifests.get(t.podManifestDocId) : undefined;
+      const at = t.novedadEntregaAt instanceof Timestamp ? t.novedadEntregaAt.toDate() : null;
+      return {
+        id: d.id,
+        numeroTF: String(t.numeroTF || '').trim(),
+        bodegaDestino: String(t.bodegaDestino || '').trim(),
+        cantidad: Number(t.cantidad || 0) || 0,
+        codigoAlterno: String(t.codigoAlterno || '').trim() || undefined,
+        motivo: String(t.novedadEntregaMotivo || '').trim(),
+        at: at ? at.toISOString() : null,
+        byName: t.novedadEntregaByName || undefined,
+        manifestDocId: t.podManifestDocId || undefined,
+        manifestId: m?.manifestId,
+        placa: m?.resource,
+      };
+    });
+    return { data };
+  } catch (error: any) {
+    return { error: error.message || 'No se pudieron cargar las novedades.' };
+  }
+}
+
+/**
+ * Decide sobre TF en Novedad de Entrega; ambas vuelven a Recibido en Bodega.
+ * Reprogramar además la marca para que salga de primera en el Gestor.
+ */
+export async function resolvePodNovedades(input: {
+  transferIds: string[];
+  action: 'reprogramar' | 'devolver';
+  note?: string;
+  actor: TransferActor;
+}): Promise<{ success: boolean; updated?: number; skipped?: number; error?: string }> {
+  const { actor, action } = input;
+  if (!actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  const ids = Array.from(new Set((input.transferIds || []).filter(Boolean)));
+  if (ids.length === 0) return { success: false, error: 'Seleccione al menos una TF.' };
+  const actorName = actorNameOf(actor);
+  const note = String(input.note || '').trim() || undefined;
+  let updated = 0;
+  let skipped = 0;
+  try {
+    for (let i = 0; i < ids.length; i += 100) {
+      const chunk = ids.slice(i, i + 100);
+      const res = await runTransaction(firestore, async (tx) => {
+        const snaps = await Promise.all(chunk.map((id) => tx.get(doc(firestore, 'transfers', id))));
+        const now = Timestamp.now();
+        let ok = 0;
+        let skip = 0;
+        const touched: string[] = [];
+        snaps.forEach((s) => {
+          const t = s.data() as any;
+          if (!s.exists() || t?.status !== 'Novedad de Entrega') {
+            skip++;
+            return;
+          }
+          tx.update(
+            s.ref,
+            clean({
+              status: 'Recibido en Bodega',
+              reprogramada: action === 'reprogramar',
+              novedadResolucion: action,
+              novedadResueltaAt: now,
+              novedadResueltaBy: actor.userId,
+              novedadResueltaByName: actorName,
+              novedadResolucionNota: note,
+              statusHistory: arrayUnion({ status: 'Recibido en Bodega', at: now, userId: actor.userId, userName: actorName }),
+            })
+          );
+          touched.push(platformDocId(t.numeroTF, t.bodegaDestino));
+          ok++;
+        });
+        return { ok, skip, touched, now };
+      });
+      updated += res.ok;
+      skipped += res.skip;
+      for (const id of res.touched) {
+        const ref = doc(firestore, PLATFORM_COLLECTION, id);
+        const snap = await getDoc(ref).catch(() => null);
+        if (snap?.exists() && snap.data()?.podNovedad) {
+          await setDoc(
+            ref,
+            { podNovedad: { resolucion: action, resueltaAt: res.now, resueltaByName: actorName }, updatedAt: res.now },
+            { merge: true }
+          ).catch(() => undefined);
+        }
+      }
+    }
+    return { success: true, updated, skipped };
+  } catch (error: any) {
+    return { success: false, updated, skipped, error: error.message || 'No se pudo aplicar la decisión.' };
+  }
+}
+
+/** Números TF etiquetados con el código alterno (para la búsqueda). */
+export async function findTfsByAltCode(code: string): Promise<{ data?: string[]; error?: string }> {
+  const raw = String(code || '').trim();
+  if (!raw) return { data: [] };
+  try {
+    const variants = Array.from(new Set([raw, raw.toUpperCase(), raw.toUpperCase().replace(/\s+/g, '')]));
+    const snap = await getDocs(query(collection(firestore, 'transfers'), where('codigoAlterno', 'in', variants)));
+    return { data: Array.from(new Set(snap.docs.map((d) => String(d.data().numeroTF || '').trim()).filter(Boolean))) };
+  } catch (error: any) {
+    return { error: error.message || 'No se pudo buscar el código alterno.' };
+  }
+}
+
+/** Entregas del periodo en plataforma: con prueba de la app vs Quick vs inferidas. */
+export async function getPodPlatformShare(opts: {
+  from: string;
+  to: string;
+}): Promise<{ data?: { entregados: number; app: number; quick: number; inferidos: number }; error?: string }> {
+  try {
+    const snap = await getDocs(
+      query(
+        collection(firestore, PLATFORM_COLLECTION),
+        where('fechaFinalizado', '>=', Timestamp.fromDate(new Date(opts.from))),
+        where('fechaFinalizado', '<=', Timestamp.fromDate(new Date(opts.to)))
+      )
+    );
+    const out = { entregados: 0, app: 0, quick: 0, inferidos: 0 };
+    snap.forEach((d) => {
+      const r = d.data() as any;
+      if (r.estadoPlataforma !== 'ENTREGADO') return;
+      out.entregados++;
+      if (r.podSource === 'app') out.app++;
+      else if (r.entregaInferida) out.inferidos++;
+      else out.quick++;
+    });
+    return { data: out };
+  } catch (error: any) {
+    return { error: error.message || 'No se pudo calcular la fuente de las entregas.' };
   }
 }

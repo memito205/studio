@@ -2,7 +2,7 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle, Timer, ClipboardList, Store, Warehouse, ScanLine, Scale } from 'lucide-react';
+import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, Map, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle, Timer, ClipboardList, ClipboardCheck, Store, Warehouse, ScanLine, Scale } from 'lucide-react';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -71,6 +71,7 @@ interface SuiteDashboardProps {
     onNavigateToStoreCapacity: () => void;
     onNavigateToTalladoMercancia: () => void;
     onNavigateToDriverDeliveries?: () => void;
+    onNavigateToPodAdmin?: () => void;
 }
 
 export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({ 
@@ -101,6 +102,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToStoreCapacity,
     onNavigateToTalladoMercancia,
     onNavigateToDriverDeliveries,
+    onNavigateToPodAdmin,
 }) => {
     const { role } = useAuth();
     const { toast } = useToast();
@@ -236,6 +238,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Abrir",
             onAction: () => onNavigateToDriverDeliveries?.(),
             roles: ['admin', 'supervisor', 'conductor']
+        },
+        {
+            key: 'pod_admin',
+            icon: ClipboardCheck,
+            title: "Entregas · validación",
+            description: "Revise fotos y registros de los conductores, apruebe o rechace paradas, decida novedades y vea indicadores de entrega.",
+            actionText: "Abrir",
+            onAction: () => onNavigateToPodAdmin?.(),
+            roles: ['admin', 'supervisor']
         },
         {
             key: 'tf_platform_lookup',

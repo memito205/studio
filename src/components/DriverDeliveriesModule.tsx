@@ -596,6 +596,12 @@ export const DriverDeliveriesModule: React.FC<{ onReturn: () => void }> = ({ onR
                       <p>{s.photos?.length || 0} foto(s){typeof s.distanceM === 'number' ? ` · a ${s.distanceM} m de la tienda` : ''}</p>
                     </div>
                   ) : (
+                    <>
+                    {s.lastRejection && (
+                      <p className="text-xs text-red-800 bg-red-50 border border-red-200 rounded-md px-2 py-1.5">
+                        Registro rechazado por {s.lastRejection.byName}: {s.lastRejection.note}. Vuelva a registrar esta parada.
+                      </p>
+                    )}
                     <div className="grid grid-cols-2 gap-2">
                       <Button variant="outline" asChild>
                         <a href={mapsUrl(s)} target="_blank" rel="noreferrer">
@@ -606,6 +612,7 @@ export const DriverDeliveriesModule: React.FC<{ onReturn: () => void }> = ({ onR
                         <Truck className="mr-2 h-4 w-4" /> Registrar
                       </Button>
                     </div>
+                    </>
                   )}
                 </CardContent>
               </Card>

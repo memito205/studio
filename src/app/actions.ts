@@ -4542,15 +4542,26 @@ export async function persistTfPlatformStatuses(
                 const record = appPodIds.has(r.id)
                     ? (() => {
                           const {
-                              estadoPlataforma: _e,
-                              entregaInferida: _i,
-                              entregaInferidaMotivo: _m,
+                              estadoPlataforma,
+                              entregaInferida,
+                              entregaInferidaMotivo,
                               evidenceLinks,
-                              fechaFinalizado: _f,
-                              source: _s,
+                              fechaFinalizado,
+                              source,
                               ...rest
                           } = r as typeof r & { entregaInferida?: unknown; entregaInferidaMotivo?: unknown };
-                          return { ...rest, quickEvidenceLinks: evidenceLinks || [] };
+                          return {
+                              ...rest,
+                              quickEvidenceLinks: evidenceLinks || [],
+                              podPrev: {
+                                  estadoPlataforma: estadoPlataforma ?? null,
+                                  evidenceLinks: evidenceLinks || [],
+                                  entregaInferida: entregaInferida ?? null,
+                                  entregaInferidaMotivo: entregaInferidaMotivo ?? null,
+                                  fechaFinalizado: fechaFinalizado ?? null,
+                                  source: source ?? null,
+                              },
+                          };
                       })()
                     : r;
                 batch.set(

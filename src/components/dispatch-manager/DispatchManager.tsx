@@ -268,6 +268,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                 fechaEmpaque: '',
                 empacador: 'SISTEMA',
                 marca: String(t.marca || '').trim().toUpperCase() || undefined,
+                ...(lines.some((l) => l.reprogramada) ? { reprogramada: true } : {}),
             };
         });
 
@@ -385,6 +386,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
       });
 
     const sortForSelection = (a: MerchandiseItem, b: MerchandiseItem) => {
+      if (!!a.reprogramada !== !!b.reprogramada) return a.reprogramada ? -1 : 1;
       if (prioritySet.size > 0) {
         const aPri = groupHasPriorityBrand([a]) ? 0 : 1;
         const bPri = groupHasPriorityBrand([b]) ? 0 : 1;
@@ -397,6 +399,9 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
       a: { items: MerchandiseItem[] },
       b: { items: MerchandiseItem[] }
     ) => {
+      const aRep = a.items.some((i) => i.reprogramada);
+      const bRep = b.items.some((i) => i.reprogramada);
+      if (aRep !== bRep) return aRep ? -1 : 1;
       if (prioritySet.size > 0) {
         const aPri = groupHasPriorityBrand(a.items) ? 0 : 1;
         const bPri = groupHasPriorityBrand(b.items) ? 0 : 1;
@@ -445,8 +450,10 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
         const isLarge = groupTfQty > SMALL_TF_MAX_UNITS;
         const invalidLimit = limit === '' || limit === undefined || (typeof limit === 'number' && Number.isNaN(limit));
 
-        // BDBOL and Small TFs are always included
-        if (isBdbol || !isLarge || invalidLimit || (typeof limit === 'number' && limit < 0)) {
+        const isReprogrammed = group.items.some((i) => i.reprogramada);
+
+        // BDBOL, small and reprogrammed TFs are always included
+        if (isBdbol || isReprogrammed || !isLarge || invalidLimit || (typeof limit === 'number' && limit < 0)) {
           finalList.push(...group.items);
           stats[dest].filteredUnits += group.items.reduce((sum, i) => sum + i.cant, 0);
           stats[dest].filteredTFs += 1;
@@ -979,7 +986,12 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                                           <TableBody>
                                           {itemsInDest.map(item => (
                                               <TableRow key={item.codigo}>
-                                              <TableCell className=" text-xs font-bold">{item.codigo}</TableCell>
+                                              <TableCell className=" text-xs font-bold">
+                                                {item.codigo}
+                                                {item.reprogramada && (
+                                                  <span className="ml-2 rounded bg-orange-100 px-1.5 py-0.5 text-[10px] font-bold text-orange-800">REPROGRAMADA</span>
+                                                )}
+                                              </TableCell>
                                               <TableCell className="text-xs font-bold">{item.ubicacion || '—'}</TableCell>
                                               <TableCell className="text-xs">{item.fechaLlegada ? format(item.fechaLlegada, 'dd/MM HH:mm') : '—'}</TableCell>
                                               <TableCell>{item.tftMatch}</TableCell>
