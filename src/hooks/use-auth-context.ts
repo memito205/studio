@@ -13,6 +13,8 @@ interface AuthContextType {
     userName: string | null;
     /** Permiso puntual: ver/validar devoluciones pendientes en Físico vs Distribución. */
     canViewDistributionPendingValidation: boolean;
+    /** Tienda fija del usuario (rol tiendas). */
+    storeCode: string | null;
     loading: boolean;
 }
 
@@ -21,6 +23,7 @@ export const AuthContext = createContext<AuthContextType>({
     role: null,
     userName: null,
     canViewDistributionPendingValidation: false,
+    storeCode: null,
     loading: true,
 });
 

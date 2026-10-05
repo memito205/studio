@@ -3,7 +3,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { AlertCircle, CheckCircle2, Download, Loader2, MapPin, Save, UploadCloud, X } from 'lucide-react';
-import { getDeliveryStores, getQuickLegacyEvidence, saveDeliveryStores, snapshotQuickLegacyEvidence } from '@/app/deliveryActions';
+import {
+  assignStoreToUser,
+  getDeliveryStores,
+  getQuickLegacyEvidence,
+  getStoreUsers,
+  saveDeliveryStores,
+  snapshotQuickLegacyEvidence,
+  type StoreUser,
+} from '@/app/deliveryActions';
 import type { DeliveryStore } from '@/types';
 import {
   parseStoreRows,
@@ -17,6 +25,7 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const INSTRUCTIONS = [
   ['Columna', 'Obligatoria', 'Descripción'],
@@ -100,6 +109,118 @@ export function QuickLegacyCard() {
           {busy === 'download' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
           Descargar base (Excel)
         </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+const NO_STORE = '__none__';
+
+/** Usuarios con rol tiendas: cada uno queda fijo a una tienda para recibir escaneando. */
+export function StoreUsersCard() {
+  const { user, userName } = useAuth();
+  const { toast } = useToast();
+  const [users, setUsers] = useState<StoreUser[]>([]);
+  const [stores, setStores] = useState<DeliveryStore[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [savingUid, setSavingUid] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const [u, s] = await Promise.all([getStoreUsers(), getDeliveryStores()]);
+    setLoading(false);
+    if (u.error) toast({ variant: 'destructive', title: 'Error', description: u.error });
+    setUsers(u.data || []);
+    setStores((s.data || []).filter((x) => x.activo));
+  }, [toast]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const assignedTo = useMemo(() => {
+    const m = new Map<string, string>();
+    users.forEach((u) => u.storeCode && m.set(u.storeCode, u.uid));
+    return m;
+  }, [users]);
+
+  const handleAssign = async (uid: string, value: string) => {
+    const storeCode = value === NO_STORE ? null : value;
+    setSavingUid(uid);
+    const actor = user?.uid ? { userId: user.uid, displayName: userName || user.email || 'Usuario' } : undefined;
+    const res = await assignStoreToUser({ uid, storeCode, actor });
+    setSavingUid(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'No se asignó', description: res.error });
+      return;
+    }
+    setUsers((prev) => prev.map((u) => (u.uid === uid ? { ...u, storeCode: storeCode || undefined } : u)));
+    toast({ title: storeCode ? 'Tienda asignada' : 'Tienda retirada' });
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Usuarios de tienda</CardTitle>
+        <CardDescription>
+          Cada usuario con rol &quot;tiendas&quot; queda fijo a una tienda (una tienda = un usuario). Con eso recibe la mercancía escaneando
+          en &quot;Consulta Estado TF&quot;.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <div className="py-6 text-center">
+            <Loader2 className="inline h-5 w-5 animate-spin" />
+          </div>
+        ) : users.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No hay usuarios con rol tiendas.</p>
+        ) : (
+          <div className="border rounded-md overflow-auto max-h-[50vh]">
+            <Table>
+              <TableHeader className="sticky top-0 bg-background">
+                <TableRow>
+                  <TableHead>Usuario</TableHead>
+                  <TableHead className="w-[280px]">Tienda</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {users.map((u) => (
+                  <TableRow key={u.uid}>
+                    <TableCell>
+                      <div className="font-medium">{u.displayName}</div>
+                      {u.email && <div className="text-xs text-muted-foreground">{u.email}</div>}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <Select
+                          value={u.storeCode || NO_STORE}
+                          onValueChange={(v) => void handleAssign(u.uid, v)}
+                          disabled={savingUid === u.uid}
+                        >
+                          <SelectTrigger className="h-9">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={NO_STORE}>Sin tienda</SelectItem>
+                            {stores.map((s) => {
+                              const owner = assignedTo.get(s.codigoErp);
+                              return (
+                                <SelectItem key={s.id} value={s.codigoErp} disabled={Boolean(owner && owner !== u.uid)}>
+                                  {s.nombreCorto} ({s.codigoErp}){owner && owner !== u.uid ? ' · asignada' : ''}
+                                </SelectItem>
+                              );
+                            })}
+                          </SelectContent>
+                        </Select>
+                        {savingUid === u.uid && <Loader2 className="h-4 w-4 animate-spin" />}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

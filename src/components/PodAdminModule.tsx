@@ -15,6 +15,7 @@ import {
   getPodAdminManifests,
   getPodNovedades,
   getPodPlatformShare,
+  getStoreReceipts,
   rejectDeliveryStop,
   resolvePodNovedades,
   type AdminManifest,
@@ -23,7 +24,8 @@ import {
   type StopWithTfs,
 } from '@/app/podActions';
 import { PHOTO_CATEGORIES, STOP_STATUS_LABEL } from '@/lib/pod';
-import type { DeliveryManifestStatus, DeliveryPhoto, DeliveryStopStatus, TransferActor } from '@/types';
+import type { DeliveryManifestStatus, DeliveryPhoto, DeliveryStopStatus, StoreReceipt, TransferActor } from '@/types';
+import { RECEIPT_LABEL } from '@/components/StoreReceiveCard';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -721,6 +723,110 @@ function IndicatorsTab({ manifests, month, share }: { manifests: AdminManifest[]
   );
 }
 
+/** Escaneos de recibo en tienda de un día; las advertencias primero. */
+function StoreReceiptsTab() {
+  const [day, setDay] = useState(() => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10));
+  const [rows, setRows] = useState<StoreReceipt[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [onlyWarnings, setOnlyWarnings] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const res = await getStoreReceipts({ day });
+    setLoading(false);
+    setRows(res.data || []);
+  }, [day]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const warnings = rows.filter((r) => r.result !== 'recibida');
+  const shown = (onlyWarnings ? warnings : rows)
+    .slice()
+    .sort((a, b) => Number(a.result === 'recibida') - Number(b.result === 'recibida') || String(b.at).localeCompare(String(a.at)));
+  const byStore = new Map<string, number>();
+  rows.filter((r) => r.result === 'recibida').forEach((r) => byStore.set(r.storeName, (byStore.get(r.storeName) || 0) + 1));
+
+  const exportXlsx = () => {
+    const data = rows.map((r) => ({
+      Hora: format(new Date(r.at), 'dd/MM/yyyy HH:mm:ss'),
+      Tienda: r.storeName,
+      Código: r.code,
+      TF: r.numeroTF || '',
+      'Código alterno': r.codigoAlterno || '',
+      Unidades: r.unidades ?? '',
+      Resultado: RECEIPT_LABEL[r.result]?.label || r.result,
+      'Destino real': r.otherDestino || '',
+      Usuario: r.byName,
+    }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data), 'Recibido');
+    XLSX.writeFile(wb, `Recibido_tienda_${day}.xlsx`);
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Input type="date" className="w-44" value={day} onChange={(e) => setDay(e.target.value)} />
+        <label className="flex items-center gap-2 text-sm">
+          <Checkbox checked={onlyWarnings} onCheckedChange={(v) => setOnlyWarnings(Boolean(v))} /> Solo advertencias
+        </label>
+        <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+          {loading ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />} Actualizar
+        </Button>
+        <Button variant="outline" size="sm" onClick={exportXlsx} disabled={!rows.length}>
+          <Download className="mr-1 h-3.5 w-3.5" /> Excel
+        </Button>
+      </div>
+      <p className="text-sm text-muted-foreground">
+        <b className="text-green-700">{rows.length - warnings.length}</b> recibida(s) ·{' '}
+        <b className="text-red-700">{warnings.length}</b> advertencia(s)
+        {byStore.size > 0 && ` · ${[...byStore.entries()].map(([s, n]) => `${s}: ${n}`).join(' · ')}`}
+      </p>
+      <div className="max-h-[60vh] overflow-auto rounded-md border">
+        <Table>
+          <TableHeader className="sticky top-0 bg-background">
+            <TableRow>
+              <TableHead>Hora</TableHead>
+              <TableHead>Tienda</TableHead>
+              <TableHead>Código</TableHead>
+              <TableHead>TF</TableHead>
+              <TableHead>Und</TableHead>
+              <TableHead>Resultado</TableHead>
+              <TableHead>Usuario</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {shown.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                  {loading ? <Loader2 className="inline h-5 w-5 animate-spin" /> : 'Sin escaneos este día.'}
+                </TableCell>
+              </TableRow>
+            ) : (
+              shown.map((r) => (
+                <TableRow key={r.id}>
+                  <TableCell className="text-xs">{format(new Date(r.at), 'HH:mm:ss')}</TableCell>
+                  <TableCell>{r.storeName}</TableCell>
+                  <TableCell className="text-xs">{r.code}</TableCell>
+                  <TableCell className="font-bold">{r.numeroTF || '—'}</TableCell>
+                  <TableCell>{r.unidades ?? '—'}</TableCell>
+                  <TableCell>
+                    <Badge className={RECEIPT_LABEL[r.result]?.className}>{RECEIPT_LABEL[r.result]?.label || r.result}</Badge>
+                    {r.otherDestino && <span className="ml-1 text-xs text-red-700">{r.otherDestino}</span>}
+                  </TableCell>
+                  <TableCell className="text-xs">{r.byName}</TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
 type StatusFilter = 'todas' | DeliveryManifestStatus | 'novedad' | 'alerta';
 
 /** Una fila por parada de las relaciones filtradas. */
@@ -866,6 +972,7 @@ export const PodAdminModule: React.FC<{ onReturn: () => void }> = ({ onReturn })
           <TabsTrigger value="relaciones">Relaciones</TabsTrigger>
           <TabsTrigger value="novedades">Novedades</TabsTrigger>
           <TabsTrigger value="indicadores">Indicadores</TabsTrigger>
+          <TabsTrigger value="tienda">Recibido en tienda</TabsTrigger>
           <TabsTrigger value="respaldo">Respaldo de fotos</TabsTrigger>
         </TabsList>
 
@@ -968,6 +1075,10 @@ export const PodAdminModule: React.FC<{ onReturn: () => void }> = ({ onReturn })
 
         <TabsContent value="indicadores">
           <IndicatorsTab manifests={manifests} month={month} share={share} />
+        </TabsContent>
+
+        <TabsContent value="tienda">
+          <StoreReceiptsTab />
         </TabsContent>
 
         <TabsContent value="respaldo">

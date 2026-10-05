@@ -35,6 +35,8 @@ import type {
   DeliveryStopStatus,
   DeliveryStopTf,
   DeliveryStore,
+  StoreReceipt,
+  StoreReceiptResult,
   TransferActor,
   TransferStatus,
 } from '@/types';
@@ -848,6 +850,236 @@ export async function resolvePodNovedades(input: {
     return { success: true, updated, skipped };
   } catch (error: any) {
     return { success: false, updated, skipped, error: error.message || 'No se pudo aplicar la decisión.' };
+  }
+}
+
+const STORE_RECEIPTS = 'storeReceipts';
+const bogotaDay = (d = new Date()) => new Date(d.getTime() - 5 * 3600 * 1000).toISOString().slice(0, 10);
+const normalizeAlt = (v: unknown) => String(v ?? '').trim().toUpperCase().replace(/\s+/g, '');
+
+export type StoreReceiveResponse = {
+  result: StoreReceiptResult | 'error';
+  message: string;
+  numeroTF?: string;
+  codigoAlterno?: string;
+  lines?: number;
+  unidades?: number;
+  otherDestino?: string;
+  previousAt?: string;
+  previousByName?: string;
+};
+
+/**
+ * Lectura en tienda (etiqueta DESTINO-TF, número TF o código alterno).
+ * Si la TF es de esta tienda y no estaba recibida -> Entregado en Tienda. Siempre deja registro.
+ */
+export async function receiveAtStore(input: {
+  code: string;
+  storeCode: string;
+  actor: TransferActor;
+}): Promise<StoreReceiveResponse> {
+  const { actor } = input;
+  if (!actor?.userId) return { result: 'error', message: 'Sesión no válida.' };
+  const code = String(input.code || '').trim().toUpperCase().replace(/['\/]/g, '-');
+  if (!code) return { result: 'error', message: 'Escanee un código.' };
+  const actorName = actorNameOf(actor);
+
+  try {
+    const storesSnap = await getDocs(collection(firestore, 'deliveryStores'));
+    const stores = storesSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as DeliveryStore);
+    const store = stores.find((s) => s.codigoErp === input.storeCode);
+    if (!store) return { result: 'error', message: 'Su usuario no tiene una tienda válida asignada.' };
+    const matchStore = buildStoreMatcher(stores);
+    const isMine = (dest: unknown) => {
+      const s = matchStore(String(dest || ''));
+      return s ? s.codigoErp === store.codigoErp : String(dest || '').trim().toUpperCase() === store.codigoErp.toUpperCase();
+    };
+
+    const now = Timestamp.now();
+    const day = bogotaDay(now.toDate());
+    const log = (data: Record<string, unknown>) =>
+      setDoc(
+        doc(collection(firestore, STORE_RECEIPTS)),
+        clean({
+          code,
+          storeCode: store.codigoErp,
+          storeName: store.nombreCorto,
+          at: now,
+          day,
+          storeDay: `${store.codigoErp}|${day}`,
+          byId: actor.userId,
+          byName: actorName,
+          ...data,
+        })
+      ).catch((e) => console.error('No se pudo guardar la lectura de tienda:', e));
+
+    const transfersRef = collection(firestore, 'transfers');
+    const byTf = async (tf: string) => (await getDocs(query(transfersRef, where('numeroTF', '==', tf)))).docs;
+    let docs = await byTf(code);
+    if (docs.length === 0 && code.includes('-')) {
+      docs = await byTf(code.slice(code.lastIndexOf('-') + 1).trim());
+    }
+    if (docs.length === 0 && /^\d+$/.test(code) && String(Number(code)) !== code) {
+      docs = await byTf(String(Number(code)));
+    }
+    let altCode: string | undefined;
+    if (docs.length === 0) {
+      altCode = normalizeAlt(code);
+      docs = (await getDocs(query(transfersRef, where('codigoAlterno', '==', altCode)))).docs;
+      if (docs.length === 0) {
+        const receipts = await getDocs(query(collection(firestore, 'altCodeReceipts'), where('codigoAlterno', '==', altCode)));
+        const pending = receipts.docs.find((d) => d.data().status !== 'void');
+        if (pending) {
+          await setDoc(
+            pending.ref,
+            { storeReceivedAt: now, storeReceivedByName: actorName, storeReceivedStoreCode: store.codigoErp },
+            { merge: true }
+          );
+          await log({ result: 'alterno_sin_tf', codigoAlterno: altCode });
+          return {
+            result: 'alterno_sin_tf',
+            codigoAlterno: altCode,
+            message: `El código alterno ${altCode} todavía no está enlazado a una TF. Quedó registrado; avise a logística.`,
+          };
+        }
+        await log({ result: 'no_encontrada' });
+        return { result: 'no_encontrada', message: `No se encontró ninguna TF ni código alterno con "${code}".` };
+      }
+    }
+
+    const mine = docs.filter((d) => isMine(d.data().bodegaDestino));
+    const numeroTF = String((mine[0] || docs[0]).data().numeroTF || '').trim();
+    if (mine.length === 0) {
+      const destinos = Array.from(new Set(docs.map((d) => String(d.data().bodegaDestino || '').trim())));
+      const names = destinos.map((dest) => matchStore(dest)?.nombreCorto || dest).join(', ');
+      await log({ result: 'otro_destino', numeroTF, codigoAlterno: altCode, otherDestino: destinos.join(', ') });
+      return {
+        result: 'otro_destino',
+        numeroTF,
+        codigoAlterno: altCode,
+        otherDestino: names,
+        message: `La TF ${numeroTF} va para ${names}, no para ${store.nombreCorto}. No se registró como recibida.`,
+      };
+    }
+
+    const pendingDocs = mine.filter((d) => d.data().status !== 'Entregado en Tienda');
+    const unidades = mine.reduce((n, d) => n + (Number(d.data().cantidad || 0) || 0), 0);
+    if (pendingDocs.length === 0) {
+      const first = mine
+        .map((d) => d.data())
+        .sort((a, b) => (a.entregadoTiendaAt?.toMillis?.() || 0) - (b.entregadoTiendaAt?.toMillis?.() || 0))[0];
+      const prevAt = first?.entregadoTiendaAt instanceof Timestamp ? first.entregadoTiendaAt.toDate().toISOString() : undefined;
+      await log({ result: 'ya_recibida', numeroTF, codigoAlterno: altCode, transferIds: mine.map((d) => d.id), unidades });
+      return {
+        result: 'ya_recibida',
+        numeroTF,
+        codigoAlterno: altCode,
+        unidades,
+        previousAt: prevAt,
+        previousByName: first?.entregadoTiendaByName,
+        message: `La TF ${numeroTF} ya estaba recibida.`,
+      };
+    }
+
+    const previousStatuses = new Set<string>();
+    const updatedIds: string[] = [];
+    await runTransaction(firestore, async (tx) => {
+      previousStatuses.clear();
+      updatedIds.length = 0;
+      const snaps = await Promise.all(pendingDocs.map((d) => tx.get(d.ref)));
+      snaps.forEach((s) => {
+        const t = s.data() as any;
+        if (!s.exists() || t.status === 'Entregado en Tienda') return;
+        previousStatuses.add(String(t.status || ''));
+        updatedIds.push(s.id);
+        tx.update(s.ref, {
+          status: 'Entregado en Tienda',
+          entregadoTiendaAt: now,
+          entregadoTiendaBy: actor.userId,
+          entregadoTiendaByName: actorName,
+          storeReceivedAt: now,
+          storeReceivedBy: actor.userId,
+          storeReceivedByName: actorName,
+          storeReceivedCode: code,
+          reprogramada: false,
+          statusHistory: arrayUnion({ status: 'Entregado en Tienda', at: now, userId: actor.userId, userName: actorName }),
+        });
+      });
+    });
+
+    const lines = new Map<string, PlatformLine>();
+    mine.forEach((d) => {
+      const t = d.data() as any;
+      const id = platformDocId(t.numeroTF, t.bodegaDestino);
+      const cur = lines.get(id) || {
+        id,
+        numeroTF: platformTf(t.numeroTF),
+        bodegaDestino: platformWhs(t.bodegaDestino),
+        bodegaOrigen: platformWhs(t.bodegaOrigen) || undefined,
+        cantidad: 0,
+        fechaDocumento: t.fecha ?? null,
+        marca: String(t.marca || '').trim() || undefined,
+        grupo: String(t.grupo || '').trim() || undefined,
+        delivered: true,
+      };
+      cur.cantidad += Number(t.cantidad || 0) || 0;
+      lines.set(id, cur);
+    });
+    const storeReceipt = { at: now, byId: actor.userId, byName: actorName, storeCode: store.codigoErp, storeName: store.nombreCorto };
+    for (const line of lines.values()) {
+      const ref = doc(firestore, PLATFORM_COLLECTION, line.id);
+      const cur = await getDoc(ref).catch(() => null);
+      if (cur?.exists() && cur.data()?.podSource === 'app') {
+        await setDoc(ref, { storeReceipt, updatedAt: now }, { merge: true }).catch(() => undefined);
+      } else {
+        await publishPodToPlatform({
+          lines: [line],
+          at: now,
+          pod: { at: now, byId: actor.userId, byName: actorName, kind: 'tienda', storeCode: store.codigoErp, storeName: store.nombreCorto, photosCount: 0 },
+          photoUrls: [],
+        }).catch((e) => console.error('Recibido en tienda sin estado plataforma:', e));
+        await setDoc(ref, { storeReceipt }, { merge: true }).catch(() => undefined);
+      }
+    }
+
+    await log({
+      result: 'recibida',
+      numeroTF,
+      codigoAlterno: altCode,
+      transferIds: updatedIds,
+      unidades,
+      previousStatuses: Array.from(previousStatuses),
+    });
+    return {
+      result: 'recibida',
+      numeroTF,
+      codigoAlterno: altCode,
+      lines: updatedIds.length,
+      unidades,
+      message: `TF ${numeroTF} recibida en ${store.nombreCorto}.`,
+    };
+  } catch (error: any) {
+    console.error('Error recibiendo en tienda:', error);
+    return { result: 'error', message: error.message || 'No se pudo registrar la lectura.' };
+  }
+}
+
+/** Lecturas en tienda de un día (todas las tiendas, o solo una). */
+export async function getStoreReceipts(opts: {
+  day: string;
+  storeCode?: string;
+}): Promise<{ data?: StoreReceipt[]; error?: string }> {
+  try {
+    const q = opts.storeCode
+      ? query(collection(firestore, STORE_RECEIPTS), where('storeDay', '==', `${opts.storeCode}|${opts.day}`))
+      : query(collection(firestore, STORE_RECEIPTS), where('day', '==', opts.day));
+    const snap = await getDocs(q);
+    const data = snap.docs
+      .map((d) => toDates({ id: d.id, ...d.data() }) as StoreReceipt)
+      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+    return { data };
+  } catch (error: any) {
+    return { error: error.message || 'No se pudieron cargar las lecturas.' };
   }
 }
 

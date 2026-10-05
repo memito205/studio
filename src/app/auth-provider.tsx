@@ -17,6 +17,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [userName, setUserName] = useState<string | null>(null);
     const [canViewDistributionPendingValidation, setCanViewDistributionPendingValidation] =
         useState(false);
+    const [storeCode, setStoreCode] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -50,6 +51,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                             const userData = userDocSnap.data();
                             const rawRole = String(userData.role || '').trim().toLowerCase();
                             setRole((rawRole as UserRole) || null);
+                            setStoreCode(String(userData.storeCode || '').trim() || null);
                             setUserName(
                                 userData.displayName ||
                                     authUser.displayName ||
@@ -67,6 +69,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                                 `User document not found in Firestore for UID: ${authUser.uid}`
                             );
                             setRole(null);
+                            setStoreCode(null);
                             setUserName(authUser.displayName || authUser.email || 'Operario');
                             setCanViewDistributionPendingValidation(
                                 emailAllowsPendingValidation(authUser.email)
@@ -87,6 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             } else {
                 setUser(null);
                 setRole(null);
+                setStoreCode(null);
                 setUserName(null);
                 setCanViewDistributionPendingValidation(false);
                 setLoading(false);
@@ -104,8 +108,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         role,
         userName,
         canViewDistributionPendingValidation,
+        storeCode,
         loading
-    }), [user, role, userName, canViewDistributionPendingValidation, loading]);
+    }), [user, role, userName, canViewDistributionPendingValidation, storeCode, loading]);
 
     return (
         <AuthContext.Provider value={value}>

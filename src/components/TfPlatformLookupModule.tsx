@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { getTfPlatformStatusByTf, getTfPlatformStatusByWarehouse } from '@/app/actions';
 import type { TfPlatformEstado } from '@/types';
 import { format } from 'date-fns';
+import { StoreReceiveCard } from '@/components/StoreReceiveCard';
 
 const statusBadge = (status: string, entregaInferida?: boolean) => {
   switch (status as TfPlatformEstado) {
@@ -127,6 +128,8 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
         </Button>
       </div>
 
+      <StoreReceiveCard />
+
       <Card>
         <CardHeader>
           <CardTitle>Buscar</CardTitle>
@@ -198,20 +201,29 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
                     <p className="text-xl font-bold">{row.numeroTF}</p>
                   </div>
                   {row.podSource === 'app' && row.estadoPlataforma === 'ENTREGADO' ? (
-                    <Badge className="bg-green-700 hover:bg-green-700">ENTREGADO · app conductor</Badge>
+                    <Badge className="bg-green-700 hover:bg-green-700">
+                      {row.pod?.kind === 'tienda' ? 'ENTREGADO · recibido en tienda' : 'ENTREGADO · app conductor'}
+                    </Badge>
                   ) : (
                     statusBadge(row.estadoPlataforma, Boolean(row.entregaInferida))
                   )}
                 </div>
                 {row.podSource === 'app' && row.pod && (
                   <p className="text-xs text-green-900 bg-green-50 border border-green-200 rounded-md px-2 py-1.5">
-                    Entregado con la app del conductor
+                    {row.pod.kind === 'tienda' ? `Recibido escaneando en ${row.pod.storeName || 'la tienda'}` : 'Entregado con la app del conductor'}
                     {row.pod.at ? ` el ${formatMaybeDateTime(row.pod.at)}` : ''}
-                    {row.pod.byName ? ` · Conductor: ${row.pod.byName}` : ''}
+                    {row.pod.byName ? ` · ${row.pod.kind === 'tienda' ? 'Usuario' : 'Conductor'}: ${row.pod.byName}` : ''}
                     {row.pod.receivedByName ? ` · Recibió: ${row.pod.receivedByName}` : ''}
                     {row.pod.manifestId ? ` · Relación #${row.pod.manifestId}` : ''}
                     {typeof row.pod.distanceM === 'number' ? ` · a ${row.pod.distanceM} m de la tienda` : ''}
                     {row.podPhotosArchived ? ' · Fotos de la app archivadas en el PC (pedir a logística)' : ''}
+                  </p>
+                )}
+                {row.storeReceipt && row.pod?.kind !== 'tienda' && (
+                  <p className="text-xs text-green-900 bg-green-50 border border-green-200 rounded-md px-2 py-1.5">
+                    Confirmada por la tienda {row.storeReceipt.storeName || ''}
+                    {row.storeReceipt.at ? ` el ${formatMaybeDateTime(row.storeReceipt.at)}` : ''}
+                    {row.storeReceipt.byName ? ` · ${row.storeReceipt.byName}` : ''}
                   </p>
                 )}
                 {row.podNovedad && row.estadoPlataforma !== 'ENTREGADO' && (

@@ -1267,6 +1267,29 @@ export interface AppUser {
      * No otorga Ver/asignar, Cerrar operación ni Desasignar.
      */
     canViewDistributionPendingValidation?: boolean;
+    /** Rol tiendas: Código ERP de la tienda fija del usuario (recibido por escaneo). */
+    storeCode?: string;
+}
+
+export type StoreReceiptResult = 'recibida' | 'ya_recibida' | 'otro_destino' | 'alterno_sin_tf' | 'no_encontrada';
+
+/** Lectura en tienda: `storeReceipts/{id}` (también las que no cambian nada, como advertencia). */
+export interface StoreReceipt {
+    id: string;
+    code: string;
+    storeCode: string;
+    storeName: string;
+    result: StoreReceiptResult;
+    numeroTF?: string;
+    codigoAlterno?: string;
+    transferIds?: string[];
+    unidades?: number;
+    previousStatuses?: string[];
+    otherDestino?: string;
+    at: Date;
+    day: string;
+    byId: string;
+    byName: string;
 }
 
 export type GeneralLabelOwnerType = 'packer' | 'store';

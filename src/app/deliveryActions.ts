@@ -1,6 +1,6 @@
 'use server';
 
-import { collection, doc, getDocs, Timestamp, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDocs, query, Timestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
 import type { DeliveryStore, TransferActor } from '@/types';
 
@@ -28,6 +28,56 @@ export async function getDeliveryStores(): Promise<{ data?: DeliveryStore[]; err
   } catch (error: any) {
     console.error('Error loading delivery stores:', error);
     return { error: error.message || 'No se pudo cargar el maestro de tiendas.' };
+  }
+}
+
+export type StoreUser = { uid: string; displayName: string; email?: string; storeCode?: string };
+
+/** Usuarios con rol tiendas y su tienda asignada. */
+export async function getStoreUsers(): Promise<{ data?: StoreUser[]; error?: string }> {
+  try {
+    const snap = await getDocs(query(collection(firestore, 'users'), where('role', 'in', ['tiendas', 'TIENDAS', 'Tiendas'])));
+    return {
+      data: snap.docs
+        .map((d) => {
+          const r = d.data() as Record<string, any>;
+          return {
+            uid: d.id,
+            displayName: String(r.displayName || r.email || d.id),
+            email: r.email || undefined,
+            storeCode: String(r.storeCode || '').trim() || undefined,
+          };
+        })
+        .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+    };
+  } catch (error: any) {
+    return { error: error.message || 'No se pudieron cargar los usuarios de tienda.' };
+  }
+}
+
+/** Un usuario por tienda: si la tienda ya tiene otro usuario, no se asigna. */
+export async function assignStoreToUser(input: {
+  uid: string;
+  storeCode: string | null;
+  actor?: TransferActor;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const storeCode = String(input.storeCode || '').trim();
+    if (storeCode) {
+      const taken = await getDocs(query(collection(firestore, 'users'), where('storeCode', '==', storeCode)));
+      const other = taken.docs.find((d) => d.id !== input.uid);
+      if (other) {
+        return { success: false, error: `La tienda ya está asignada a ${other.data().displayName || other.data().email || other.id}.` };
+      }
+    }
+    await updateDoc(doc(firestore, 'users', input.uid), {
+      storeCode: storeCode || null,
+      storeAssignedAt: Timestamp.now(),
+      storeAssignedByName: input.actor?.displayName || null,
+    });
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'No se pudo asignar la tienda.' };
   }
 }
 

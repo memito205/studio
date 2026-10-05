@@ -19,7 +19,7 @@ import { SearchableSelect, type SearchableOption } from './SearchableSelect';
 import { WarehouseLocationsDialog } from './WarehouseLocationsDialog';
 import { AltCodeRegistrationView } from './AltCodeRegistrationView';
 import { WarehouseStockSummaryButton } from './WarehouseStockSummaryDialog';
-import { DeliveryStoresView, QuickLegacyCard } from './DeliveryStoresView';
+import { DeliveryStoresView, QuickLegacyCard, StoreUsersCard } from './DeliveryStoresView';
 import { DriverUserSelect } from './DriverUserSelect';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
@@ -1917,6 +1917,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             {isAdmin && (
                 <TabsContent value="delivery_stores" className="mt-6 space-y-6">
                     <DeliveryStoresView />
+                    <StoreUsersCard />
                     {role === 'admin' && <QuickLegacyCard />}
                 </TabsContent>
             )}
