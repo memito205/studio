@@ -647,6 +647,56 @@ export interface DeliveryStopTf {
     storeReceivedByName?: string;
 }
 
+/** Tarea de ruta (recoger / entregar) para la app del conductor o mensajero: `routeTasks/{id}`. */
+export type DriverRouteTaskStatus = 'por_recoger' | 'por_entregar' | 'entregada' | 'no_recogida' | 'no_entregada' | 'cancelada';
+
+export interface DriverRouteTaskPhoto {
+    path: string;
+    url: string;
+    category?: string;
+}
+
+export interface DriverRouteTask {
+    id: string;
+    numeroTF: string;
+    transferIds: string[];
+    bodegaOrigen?: string;
+    bodegaDestino?: string;
+    unidades: number;
+    /** Punto donde se recoge (vacío = ya va en el vehículo, solo entregar). */
+    pickupPoint?: string;
+    pickupStoreCode?: string;
+    /** Punto donde se entrega. `bodega` = la deja en bodega (sigue la recepción normal). */
+    deliverPoint: string;
+    deliverStoreCode?: string;
+    deliverType: 'tienda' | 'bodega';
+    status: DriverRouteTaskStatus;
+    driverId: string;
+    driverName: string;
+    placa: string;
+    day: string;
+    order?: number;
+    source: 'transferencias' | 'planificador';
+    notes?: string;
+    createdAt: Date;
+    createdByName?: string;
+    pickedAt?: Date;
+    pickedByName?: string;
+    pickupPhotos?: DriverRouteTaskPhoto[];
+    collectionLogId?: string;
+    deliveredAt?: Date;
+    deliveredByName?: string;
+    deliveryPhotos?: DriverRouteTaskPhoto[];
+    receivedByName?: string;
+    distanceM?: number;
+    tfMarkedDelivered?: boolean;
+    failedAt?: Date;
+    failedByName?: string;
+    failReason?: string;
+    reassignedFrom?: string;
+    reassignedTo?: string;
+}
+
 /** Maestro de tiendas para entregas: `deliveryStores/{codigoErp}`. */
 export interface DeliveryStore {
     id: string;
@@ -694,6 +744,9 @@ export interface CollectionLog {
     destinations: { [key: string]: number };
   };
   recolectadoPor: string;
+  recolectadoPorNombre?: string;
+  photos?: Array<{ path: string; url: string }>;
+  routeTaskIds?: string[];
 }
 
 export type AltCodeReceiptStatus = 'pending' | 'linked' | 'void';

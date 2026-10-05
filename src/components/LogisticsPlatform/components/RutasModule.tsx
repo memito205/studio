@@ -7,6 +7,7 @@ import Loader from './Loader';
 import { findHeader, generateVehiclePlanPdf, generateCajonReportPdf, docNumberMapping, exportToExcel, generateMainRouteTemplate, generateAdditionalRouteTemplate } from '../utils/helpers';
 import { TruckIcon, FileClockIcon, GripVerticalIcon, DownloadIcon, ArrowRightIcon, SortAscIcon, ClipboardPasteIcon, PlusCircleIcon, PdfFileIcon, CheckCircleIcon, AlertTriangleIcon } from './icons';
 import type { ExcelDataRow, VehiclePlan, RouteTask } from '../types';
+import { SendRouteToAppModal } from './SendRouteToAppModal';
 
 const addressMapping: { [key: string]: string } = {
     'B1': 'CC COMERCIAL DIAMANTE', 'B2': 'EDIFICIO NUEVO GUAYAQUIL', 'B3': 'CC COMERCIAL VIVA CAUCACIA',
@@ -657,6 +658,7 @@ const VehicleColumn: React.FC<{
 }> = ({ plan, onDragStart, onDragOver, onDrop, onAddTask }) => {
     const isAssignable = plan.name.toUpperCase() !== 'TAREAS SIN ASIGNAR';
     const isNorteVehicle = checkIsNorte(plan.name);
+    const [sendOpen, setSendOpen] = useState(false);
     return (
         <div className={`bg-slate-100 rounded-xl w-[380px] flex-shrink-0 flex flex-col shadow-md ${isNorteVehicle ? 'border-t-4 border-blue-500' : ''}`} onDragOver={onDragOver} onDrop={(e) => onDrop(e, plan.name)}>
             <div className="p-4 border-b border-slate-200 space-y-3">
@@ -706,8 +708,14 @@ const VehicleColumn: React.FC<{
                             <DownloadIcon className="h-4 w-4 mr-2" /> Exportar Ruta Mensajero (Excel)
                         </button>
                     )}
+                    {isNorteVehicle && (
+                         <button onClick={() => setSendOpen(true)} className="w-full inline-flex items-center justify-center px-3 py-1.5 shadow-sm text-sm font-semibold rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50" disabled={plan.tasks.length === 0}>
+                            <ArrowRightIcon className="h-4 w-4 mr-2" /> Enviar a la app
+                        </button>
+                    )}
                 </div>
             )}
+            {sendOpen && <SendRouteToAppModal plan={plan} onClose={() => setSendOpen(false)} />}
         </div>
     );
 };

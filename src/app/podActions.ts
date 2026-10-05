@@ -173,7 +173,7 @@ export type SubmitDeliveryStopInput = {
 
 const DELIVERABLE: TransferStatus[] = ['Enviado a Destino', 'Novedad de Entrega'];
 
-type PlatformLine = {
+export type PlatformLine = {
   id: string;
   numeroTF: string;
   bodegaDestino: string;
@@ -185,13 +185,13 @@ type PlatformLine = {
   delivered: boolean;
   motivo?: string;
 };
-type PlatformPublish = { lines: PlatformLine[]; at: Timestamp; pod: Record<string, unknown>; photoUrls: string[] };
+export type PlatformPublish = { lines: PlatformLine[]; at: Timestamp; pod: Record<string, unknown>; photoUrls: string[] };
 
 /**
  * Entregada en la app -> ENTREGADO con fuente app (manda sobre Quick e inferida).
  * No entregada -> solo deja la novedad; el estado plataforma no cambia.
  */
-async function publishPodToPlatform({ lines, at, pod, photoUrls }: PlatformPublish) {
+export async function publishPodToPlatform({ lines, at, pod, photoUrls }: PlatformPublish) {
   for (const l of lines) {
     const ref = doc(firestore, PLATFORM_COLLECTION, l.id);
     const snap = await getDoc(ref);

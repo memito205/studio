@@ -14,7 +14,7 @@ service firebase.storage {
       return signedIn() && role() in ['admin', 'supervisor'];
     }
     function canUpload() {
-      return signedIn() && role() in ['conductor', 'admin', 'supervisor'];
+      return signedIn() && role() in ['conductor', 'admin', 'supervisor', 'operator', 'office'];
     }
 
     match /entregas/{month}/{store}/{stop}/{file} {

@@ -81,7 +81,18 @@ export const CollectionLogDetailsDialog: React.FC<CollectionLogDetailsDialogProp
             Mostrando {log.summary.totalTransfers} transferencia(s) recolectada(s) el {new Date(log.createdAt).toLocaleString('es-CO')}.
           </DialogDescription>
         </DialogHeader>
-        <div className="py-4">
+        <div className="py-4 space-y-3">
+          {(log.photos?.length || 0) > 0 && (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Fotos{log.recolectadoPorNombre ? ` (${log.recolectadoPorNombre})` : ''}:</span>
+              {log.photos!.map((p, i) => (
+                <a key={p.path} href={p.url} target="_blank" rel="noreferrer" className="h-14 w-14 overflow-hidden rounded border">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={p.url} alt={`Foto ${i + 1}`} className="h-full w-full object-cover" />
+                </a>
+              ))}
+            </div>
+          )}
           <ScrollArea className="h-96 border rounded-md">
             {isLoading ? (
               <div className="flex justify-center items-center h-full">

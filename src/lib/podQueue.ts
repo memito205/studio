@@ -1,6 +1,7 @@
 import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import { app } from '@/services/firebase';
 import { submitDeliveryStop, type SubmitDeliveryStopInput } from '@/app/podActions';
+import { submitRouteTasks, type SubmitRouteTasksInput } from '@/app/routeTaskActions';
 import type { DeliveryPhotoCategory } from '@/types';
 
 export type QueuedPhoto = {
@@ -12,6 +13,7 @@ export type QueuedPhoto = {
 };
 
 export type QueuedDelivery = {
+  kind?: 'stop';
   submissionId: string;
   label: string;
   storeKey: string;
@@ -21,6 +23,21 @@ export type QueuedDelivery = {
   createdAt: number;
   lastError?: string;
 };
+
+/** Registro de tareas de ruta (recoger / entregar / no recogida) pendiente de enviar. */
+export type QueuedRouteSubmission = {
+  kind: 'route';
+  submissionId: string;
+  label: string;
+  storeKey: string;
+  monthKey: string;
+  input: Omit<SubmitRouteTasksInput, 'photos'>;
+  photos: QueuedPhoto[];
+  createdAt: number;
+  lastError?: string;
+};
+
+export type QueuedItem = QueuedDelivery | QueuedRouteSubmission;
 
 export type QueueResult = { submissionId: string; label: string; ok: boolean; conflict?: boolean; error?: string };
 
@@ -64,11 +81,13 @@ export function onQueueChange(cb: () => void) {
   };
 }
 
-export const listQueued = () => withStore<QueuedDelivery[]>('readonly', (s) => s.getAll());
-const putQueued = (r: QueuedDelivery) => withStore('readwrite', (s) => s.put(r));
+export const listQueuedAll = () => withStore<QueuedItem[]>('readonly', (s) => s.getAll());
+export const listQueued = () => listQueuedAll().then((all) => all.filter((r): r is QueuedDelivery => r.kind !== 'route'));
+export const listQueuedRoute = () => listQueuedAll().then((all) => all.filter((r): r is QueuedRouteSubmission => r.kind === 'route'));
+const putQueued = (r: QueuedItem) => withStore('readwrite', (s) => s.put(r));
 const deleteQueued = (id: string) => withStore('readwrite', (s) => s.delete(id));
 
-export async function enqueueDelivery(r: QueuedDelivery) {
+export async function enqueueDelivery(r: QueuedItem) {
   await putQueued(r);
   notify();
 }
@@ -80,27 +99,29 @@ export function processQueue(uid: string): Promise<QueueResult[]> {
   if (running) return running;
   running = (async () => {
     const results: QueueResult[] = [];
-    const items = await listQueued().catch(() => [] as QueuedDelivery[]);
+    const items = await listQueuedAll().catch(() => [] as QueuedItem[]);
     const storage = getStorage(app);
     for (const item of items.sort((a, b) => a.createdAt - b.createdAt)) {
       try {
+        const folder = item.kind === 'route' ? `rt-${item.input.taskIds[0]}` : item.input.stopId;
+        const manifest = item.kind === 'route' ? 'ruta' : item.input.manifestDocId;
         for (let i = 0; i < item.photos.length; i++) {
           const p = item.photos[i];
           if (p.url) continue;
-          const path = `entregas/${item.monthKey}/${item.storeKey}/${item.input.stopId}/${item.submissionId}-${i + 1}.jpg`;
+          const path = `entregas/${item.monthKey}/${item.storeKey}/${folder}/${item.submissionId}-${i + 1}.jpg`;
           const r = ref(storage, path);
           await uploadBytes(r, p.blob, {
             contentType: 'image/jpeg',
-            customMetadata: { uploadedBy: uid, category: p.category, manifest: item.input.manifestDocId },
+            customMetadata: { uploadedBy: uid, category: p.category, manifest },
           });
           p.path = path;
           p.url = await getDownloadURL(r);
           await putQueued(item);
         }
-        const res = await submitDeliveryStop({
-          ...item.input,
-          photos: item.photos.map((p) => ({ path: p.path!, url: p.url!, category: p.category })),
-        });
+        const photos = item.photos.map((p) => ({ path: p.path!, url: p.url!, category: p.category }));
+        const res = item.kind === 'route'
+          ? await submitRouteTasks({ ...item.input, photos })
+          : await submitDeliveryStop({ ...item.input, photos });
         if (res.success || res.conflict) {
           await deleteQueued(item.submissionId);
           results.push({ submissionId: item.submissionId, label: item.label, ok: !!res.success, conflict: res.conflict, error: res.error });
@@ -121,6 +142,26 @@ export function processQueue(uid: string): Promise<QueueResult[]> {
     notify();
   });
   return running;
+}
+
+/** Sube fotos directo (sin cola) para flujos de escritorio; devuelve rutas y URLs. */
+export async function uploadPhotosNow(
+  uid: string,
+  monthKey: string,
+  storeKey: string,
+  folder: string,
+  files: Array<{ blob: Blob; category: DeliveryPhotoCategory }>
+): Promise<Array<{ path: string; url: string; category: DeliveryPhotoCategory }>> {
+  const storage = getStorage(app);
+  const stamp = Date.now();
+  return Promise.all(
+    files.map(async (f, i) => {
+      const path = `entregas/${monthKey}/${storeKey}/${folder}/${stamp}-${i + 1}.jpg`;
+      const r = ref(storage, path);
+      await uploadBytes(r, f.blob, { contentType: 'image/jpeg', customMetadata: { uploadedBy: uid, category: f.category, manifest: 'recoleccion' } });
+      return { path, url: await getDownloadURL(r), category: f.category };
+    })
+  );
 }
 
 /** Reduce la foto (lado mayor 1600 px, JPEG) para subir rápido y ocupar poco espacio. */

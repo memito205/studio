@@ -18,18 +18,22 @@ import {
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import { getManifestStopsDetail, getOpenDeliveryManifests, type StopWithTfs } from '@/app/podActions';
+import { getMyRouteTasks, type RouteTaskAction } from '@/app/routeTaskActions';
 import {
   compressImage,
   enqueueDelivery,
   listQueued,
+  listQueuedRoute,
   onQueueChange,
   processQueue,
   type QueuedDelivery,
   type QueuedPhoto,
+  type QueuedRouteSubmission,
 } from '@/lib/podQueue';
+import { DriverRouteTasksSection, RouteTaskForm, type RouteTaskGroup } from '@/components/DriverRouteTasks';
 import { MAX_DELIVERY_PHOTOS, NOT_DELIVERED_REASONS, PHOTO_CATEGORIES, STOP_STATUS_LABEL } from '@/lib/pod';
 import { DEFAULT_STORE_RADIUS_M } from '@/lib/deliveryStores';
-import type { DeliveryManifest, DeliveryPhotoCategory, DeliveryStopStatus, TransferActor } from '@/types';
+import type { DeliveryManifest, DeliveryPhotoCategory, DeliveryStopStatus, DriverRouteTask, TransferActor } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -451,8 +455,21 @@ export const DriverDeliveriesModule: React.FC<{ onReturn: () => void }> = ({ onR
   const [loadingStops, setLoadingStops] = useState(false);
   const [formStop, setFormStop] = useState<StopWithTfs | null>(null);
   const [queued, setQueued] = useState<QueuedDelivery[]>([]);
+  const [queuedRoute, setQueuedRoute] = useState<QueuedRouteSubmission[]>([]);
+  const [routeTasks, setRouteTasks] = useState<DriverRouteTask[]>([]);
+  const [loadingRoute, setLoadingRoute] = useState(true);
+  const [routeForm, setRouteForm] = useState<{ group: RouteTaskGroup; action: RouteTaskAction } | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [online, setOnline] = useState(true);
+
+  const loadRouteTasks = useCallback(async () => {
+    if (!user?.uid) return;
+    setLoadingRoute(true);
+    const res = await getMyRouteTasks(user.uid);
+    if (res.error) toast({ variant: 'destructive', title: 'Error', description: res.error });
+    setRouteTasks(res.data || []);
+    setLoadingRoute(false);
+  }, [user?.uid, toast]);
 
   const loadManifests = useCallback(async () => {
     if (!user?.uid) return;
@@ -477,6 +494,7 @@ export const DriverDeliveriesModule: React.FC<{ onReturn: () => void }> = ({ onR
 
   const refreshQueued = useCallback(() => {
     listQueued().then(setQueued).catch(() => setQueued([]));
+    listQueuedRoute().then(setQueuedRoute).catch(() => setQueuedRoute([]));
   }, []);
 
   const sync = useCallback(async () => {
@@ -491,13 +509,15 @@ export const DriverDeliveriesModule: React.FC<{ onReturn: () => void }> = ({ onR
     });
     if (results.some((r) => r.ok || r.conflict)) {
       void loadManifests();
+      void loadRouteTasks();
       if (active) void loadStops(active);
     }
-  }, [user?.uid, refreshQueued, toast, loadManifests, loadStops, active]);
+  }, [user?.uid, refreshQueued, toast, loadManifests, loadRouteTasks, loadStops, active]);
 
   useEffect(() => {
     void loadManifests();
-  }, [loadManifests]);
+    void loadRouteTasks();
+  }, [loadManifests, loadRouteTasks]);
 
   useEffect(() => {
     refreshQueued();
@@ -517,16 +537,36 @@ export const DriverDeliveriesModule: React.FC<{ onReturn: () => void }> = ({ onR
     };
   }, [refreshQueued, sync]);
 
+  const pendingCount = queued.length + queuedRoute.length;
   useEffect(() => {
-    if (queued.length === 0) return;
+    if (pendingCount === 0) return;
     const t = setInterval(() => void sync(), 30000);
     return () => clearInterval(t);
-  }, [queued.length, sync]);
+  }, [pendingCount, sync]);
 
   const queuedStopIds = useMemo(() => new Set(queued.map((q) => `${q.input.manifestDocId}|${q.input.stopId}`)), [queued]);
+  const queuedTaskIds = useMemo(() => new Set(queuedRoute.flatMap((q) => q.input.taskIds)), [queuedRoute]);
 
   if (!actor) {
     return <p className="p-8 text-center text-muted-foreground">Inicie sesión para ver sus entregas.</p>;
+  }
+
+  if (routeForm) {
+    return (
+      <div className="mx-auto max-w-xl p-4">
+        <RouteTaskForm
+          group={routeForm.group}
+          action={routeForm.action}
+          actor={actor}
+          onCancel={() => setRouteForm(null)}
+          onQueued={() => {
+            setRouteForm(null);
+            toast({ title: 'Registro guardado', description: 'Se está enviando. Si no hay señal, se envía solo al volver.' });
+            void sync();
+          }}
+        />
+      </div>
+    );
   }
 
   if (active && formStop) {
@@ -547,11 +587,11 @@ export const DriverDeliveriesModule: React.FC<{ onReturn: () => void }> = ({ onR
     );
   }
 
-  const queueBanner = queued.length > 0 && (
+  const queueBanner = pendingCount > 0 && (
     <div className="flex items-center justify-between gap-2 rounded-md border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">
       <span className="flex items-center gap-2">
         <CloudOff className="h-4 w-4" />
-        {queued.length} entrega(s) guardada(s) en el celular sin enviar{!online ? ' (sin señal)' : ''}.
+        {pendingCount} registro(s) guardado(s) en el celular sin enviar{!online ? ' (sin señal)' : ''}.
       </span>
       <Button size="sm" variant="outline" disabled={syncing} onClick={() => void sync()}>
         {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Enviar ahora'}
@@ -650,7 +690,15 @@ export const DriverDeliveriesModule: React.FC<{ onReturn: () => void }> = ({ onR
         </Button>
       </div>
       {queueBanner}
-      <div className="flex justify-end">
+      <DriverRouteTasksSection
+        tasks={routeTasks}
+        loading={loadingRoute}
+        queuedTaskIds={queuedTaskIds}
+        onReload={() => void loadRouteTasks()}
+        onOpenForm={setRouteForm}
+      />
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-bold">Relaciones de entrega</h2>
         <Button size="sm" variant="ghost" onClick={() => void loadManifests()} disabled={loading}>
           <RefreshCw className={cn('mr-2 h-4 w-4', loading && 'animate-spin')} /> Actualizar
         </Button>

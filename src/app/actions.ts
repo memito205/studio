@@ -6486,9 +6486,13 @@ export async function createCollectionLog(
     placa: string,
     transferIds: string[],
     userId: string,
-    userDisplayName?: string
+    userDisplayName?: string,
+    photos?: Array<{ path: string; url: string }>
 ): Promise<{ success: boolean; error?: string; }> {
     const normalizedPlaca = String(placa || '').trim().toUpperCase();
+    if (!photos?.length) {
+        return { success: false, error: 'Tome la foto de la mercancía recolectada.' };
+    }
     if (!normalizedPlaca) {
         return { success: false, error: 'La placa es obligatoria para registrar una recolección en ruta.' };
     }
@@ -6522,6 +6526,8 @@ export async function createCollectionLog(
             placa: normalizedPlaca,
             transferIds,
             recolectadoPor: userId,
+            recolectadoPorNombre: (userDisplayName || '').trim() || userId,
+            photos: photos.map((p) => ({ path: p.path, url: p.url })),
             summary: {
                 totalTransfers: transferIds.length,
                 destinations

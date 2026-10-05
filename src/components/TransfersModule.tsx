@@ -21,6 +21,8 @@ import { AltCodeRegistrationView } from './AltCodeRegistrationView';
 import { WarehouseStockSummaryButton } from './WarehouseStockSummaryDialog';
 import { DeliveryStoresView, QuickLegacyCard, StoreUsersCard } from './DeliveryStoresView';
 import { DriverUserSelect } from './DriverUserSelect';
+import { RouteTasksAssignView } from './RouteTasksAssignView';
+import { compressImage, uploadPhotosNow } from '@/lib/podQueue';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
 import { Badge } from './ui/badge';
@@ -1902,6 +1904,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             <TabsList className="flex flex-wrap h-auto justify-start">
                 <TabsTrigger value="general">Consulta General</TabsTrigger>
                 <TabsTrigger value="collection">Registrar Recolección</TabsTrigger>
+                {isAdmin && <TabsTrigger value="route_tasks">Asignar a ruta</TabsTrigger>}
                 {isAdmin && <TabsTrigger value="validation">Validación Supervisor</TabsTrigger>}
                 <TabsTrigger value="reception">Recepción en Bodega</TabsTrigger>
                 <TabsTrigger value="alt_code">Registrar Código Alterno</TabsTrigger>
@@ -1919,6 +1922,11 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                     <DeliveryStoresView />
                     <StoreUsersCard />
                     {role === 'admin' && <QuickLegacyCard />}
+                </TabsContent>
+            )}
+            {isAdmin && (
+                <TabsContent value="route_tasks" className="mt-6">
+                    <RouteTasksAssignView />
                 </TabsContent>
             )}
             <TabsContent value="reception" className="mt-6">
@@ -2897,6 +2905,7 @@ const CollectionTabView: React.FC<{
     const [isLoading, setIsLoading] = useState(false);
     const [transfers, setTransfers] = useState<TransferEntry[]>([]);
     const [selectedPlate, setSelectedPlate] = useState('');
+    const [collectionPhotos, setCollectionPhotos] = useState<Array<{ blob: Blob; preview: string }>>([]);
     const [selectedTransfers, setSelectedTransfers] = useState(new Set<string>());
     const [debouncedFilters, setDebouncedFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' });
     const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' });
@@ -2985,12 +2994,31 @@ const CollectionTabView: React.FC<{
             toast({ variant: 'destructive', title: 'Error', description: 'Debe seleccionar al menos una transferencia.' });
             return;
         }
+        if (collectionPhotos.length === 0) {
+            toast({ variant: 'destructive', title: 'Foto obligatoria', description: 'Tome la foto de la mercancía recolectada.' });
+            return;
+        }
         setIsLoading(true);
+        let photos: Array<{ path: string; url: string }>;
+        try {
+            photos = await uploadPhotosNow(
+                user.uid,
+                format(new Date(), 'yyyy-MM'),
+                'RECOLECCIONES',
+                placa.replace(/[^A-Z0-9]/g, '') || 'SIN-PLACA',
+                collectionPhotos.map((p) => ({ blob: p.blob, category: 'mercancia' as const }))
+            );
+        } catch (e: any) {
+            toast({ variant: 'destructive', title: 'No se pudo subir la foto', description: e?.message || 'Revise la conexión.' });
+            setIsLoading(false);
+            return;
+        }
         const result = await createCollectionLog(
             placa,
             Array.from(selectedTransfers),
             user.uid,
-            userName || user.displayName || user.email || undefined
+            userName || user.displayName || user.email || undefined,
+            photos
         );
         if (result.success) {
             toast({ title: 'Éxito', description: `${uniqueSelectedTfCount} transferencias marcadas como recolectadas.` });
@@ -2998,6 +3026,8 @@ const CollectionTabView: React.FC<{
             onRefresh(); // Refresh parent if needed
             setSelectedTransfers(new Set());
             setSelectedPlate('');
+            collectionPhotos.forEach((p) => URL.revokeObjectURL(p.preview));
+            setCollectionPhotos([]);
         } else {
             toast({ variant: 'destructive', title: 'Error', description: result.error });
         }
@@ -3047,9 +3077,49 @@ const CollectionTabView: React.FC<{
                             <p className="text-xs text-muted-foreground">Obligatoria para asociar la recolección al vehículo.</p>
                         )}
                     </div>
+                    <div className="space-y-1.5">
+                        <Label htmlFor="collection-photo" className="text-sm font-medium">
+                            Foto de la mercancía <span className="text-destructive">*</span>
+                        </Label>
+                        <Input
+                            id="collection-photo"
+                            type="file"
+                            accept="image/*"
+                            capture="environment"
+                            multiple
+                            onChange={async (e) => {
+                                const files = Array.from(e.target.files || []).slice(0, 5);
+                                e.target.value = '';
+                                const added = await Promise.all(files.map(async (f) => {
+                                    const blob = await compressImage(f);
+                                    return { blob, preview: URL.createObjectURL(blob) };
+                                }));
+                                setCollectionPhotos((prev) => [...prev, ...added].slice(0, 5));
+                            }}
+                        />
+                        {collectionPhotos.length > 0 && (
+                            <div className="flex gap-1">
+                                {collectionPhotos.map((p, i) => (
+                                    <button
+                                        key={p.preview}
+                                        type="button"
+                                        title="Quitar"
+                                        className="h-10 w-10 overflow-hidden rounded border"
+                                        onClick={() => {
+                                            URL.revokeObjectURL(p.preview);
+                                            setCollectionPhotos((prev) => prev.filter((_, j) => j !== i));
+                                        }}
+                                    >
+                                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                                        <img src={p.preview} alt="Recolección" className="h-full w-full object-cover" />
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                    </div>
                     <Button
                         onClick={handleConfirmCollection}
-                        disabled={isLoading || selectedTransfers.size === 0 || selectedPlate.trim().length < 3}
+                        disabled={isLoading || selectedTransfers.size === 0 || selectedPlate.trim().length < 3 || collectionPhotos.length === 0}
                     >
                         {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}
                         Confirmar Recolección de ({uniqueSelectedTfCount}) TFs

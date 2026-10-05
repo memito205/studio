@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
 import { AlertTriangle, ArrowLeft, CheckCircle2, Download, Loader2, MapPin, RefreshCw, Search, Undo2, XCircle } from 'lucide-react';
 import { PodArchiveTab } from '@/components/PodArchiveTab';
+import { RouteTasksAdminTab } from '@/components/RouteTasksAdminTab';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -973,6 +974,7 @@ export const PodAdminModule: React.FC<{ onReturn: () => void }> = ({ onReturn })
           <TabsTrigger value="novedades">Novedades</TabsTrigger>
           <TabsTrigger value="indicadores">Indicadores</TabsTrigger>
           <TabsTrigger value="tienda">Recibido en tienda</TabsTrigger>
+          <TabsTrigger value="recolecciones">Recolecciones</TabsTrigger>
           <TabsTrigger value="respaldo">Respaldo de fotos</TabsTrigger>
         </TabsList>
 
@@ -1079,6 +1081,10 @@ export const PodAdminModule: React.FC<{ onReturn: () => void }> = ({ onReturn })
 
         <TabsContent value="tienda">
           <StoreReceiptsTab />
+        </TabsContent>
+
+        <TabsContent value="recolecciones">
+          <RouteTasksAdminTab />
         </TabsContent>
 
         <TabsContent value="respaldo">
