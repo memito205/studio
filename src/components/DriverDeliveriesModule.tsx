@@ -132,10 +132,12 @@ const DeliveryForm: React.FC<{
 
   const deliveredTfs = useMemo(() => {
     if (mode === 'todo') return stop.tfs.map((t) => t.numeroTF);
-    if (mode === 'ninguno') return [];
-    return stop.tfs.filter((t) => selected.has(t.numeroTF)).map((t) => t.numeroTF);
+    return stop.tfs
+      .filter((t) => t.storeReceivedAt || (mode === 'parcial' && selected.has(t.numeroTF)))
+      .map((t) => t.numeroTF);
   }, [mode, selected, stop.tfs]);
   const notDeliveredTfs = stop.tfs.filter((t) => !deliveredTfs.includes(t.numeroTF));
+  const needsProof = stop.tfs.some((t) => deliveredTfs.includes(t.numeroTF) && !t.storeReceivedAt);
   const reasonOf = (tf: string) => reasons[tf] || bulkReason;
 
   const distance =
@@ -176,10 +178,10 @@ const DeliveryForm: React.FC<{
     });
 
   const problems: string[] = [];
-  if (deliveredTfs.length > 0 && !photos.some((p) => p.category === 'remision')) problems.push('Tome al menos una foto de la remisión firmada.');
-  if (deliveredTfs.length > 0 && !receivedBy.trim()) problems.push('Escriba el nombre de quien recibe.');
+  if (needsProof && !photos.some((p) => p.category === 'remision')) problems.push('Tome al menos una foto de la remisión firmada.');
+  if (needsProof && !receivedBy.trim()) problems.push('Escriba el nombre de quien recibe.');
   if (notDeliveredTfs.some((t) => !reasonOf(t.numeroTF))) problems.push('Indique el motivo de las TF no entregadas.');
-  if (mode === 'parcial' && deliveredTfs.length === 0) problems.push('En entrega parcial marque al menos una TF entregada.');
+  if (mode === 'parcial' && !needsProof) problems.push('En entrega parcial marque al menos una TF entregada.');
 
   const handleConfirm = async () => {
     if (problems.length > 0) return;
@@ -263,7 +265,9 @@ const DeliveryForm: React.FC<{
               return (
                 <div key={t.numeroTF} className="p-2 space-y-1">
                   <label className="flex items-center gap-3">
-                    {mode === 'parcial' ? (
+                    {t.storeReceivedAt ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-600" />
+                    ) : mode === 'parcial' ? (
                       <Checkbox
                         checked={selected.has(t.numeroTF)}
                         onCheckedChange={(c) =>
@@ -283,6 +287,11 @@ const DeliveryForm: React.FC<{
                     <span className="flex-1">
                       <span className="font-semibold">TF {t.numeroTF}</span>
                       {t.codigoAlterno && <span className="ml-2 font-mono text-xs text-muted-foreground">{t.codigoAlterno}</span>}
+                      {t.storeReceivedAt && (
+                        <span className="block text-xs text-green-700">
+                          Ya recibida por la tienda{t.storeReceivedByName ? ` (${t.storeReceivedByName})` : ''}
+                        </span>
+                      )}
                     </span>
                     <span className="text-xs text-muted-foreground">{t.unidades} und</span>
                   </label>
@@ -307,7 +316,11 @@ const DeliveryForm: React.FC<{
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Fotos ({photos.length}/{MAX_DELIVERY_PHOTOS})</CardTitle>
           <CardDescription>
-            {deliveredTfs.length > 0 ? 'La remisión firmada es obligatoria (puede tomar varias hojas).' : 'Opcional cuando no se entrega.'}
+            {needsProof
+              ? 'La remisión firmada es obligatoria (puede tomar varias hojas).'
+              : deliveredTfs.length > 0
+                ? 'Opcional: la tienda ya registró el recibo escaneando.'
+                : 'Opcional cuando no se entrega.'}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -318,7 +331,7 @@ const DeliveryForm: React.FC<{
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm font-medium">
                     {c.label}
-                    {c.required && deliveredTfs.length > 0 && <span className="text-red-600"> *</span>}
+                    {c.required && needsProof && <span className="text-red-600"> *</span>}
                   </span>
                   <div className="flex gap-2">
                     <Button type="button" size="sm" variant="secondary" disabled={busyPhotos} onClick={() => cameraRefs.current[c.id]?.click()}>
@@ -377,7 +390,7 @@ const DeliveryForm: React.FC<{
         <CardContent className="space-y-3 pt-6">
           {deliveredTfs.length > 0 && (
             <div className="space-y-1">
-              <Label htmlFor="pod-received">Nombre de quien recibe *</Label>
+              <Label htmlFor="pod-received">Nombre de quien recibe{needsProof ? ' *' : ''}</Label>
               <Input id="pod-received" value={receivedBy} onChange={(e) => setReceivedBy(e.target.value)} />
             </div>
           )}

@@ -12,6 +12,7 @@ import {
   runTransaction,
   setDoc,
   Timestamp,
+  updateDoc,
   where,
   documentId,
   type DocumentData,
@@ -136,6 +137,10 @@ export async function getManifestStopsDetail(
           cur.unidades += Number(t?.cantidad || 0) || 0;
           const alt = String(t?.codigoAlterno || '').trim();
           if (alt && !cur.codigoAlterno) cur.codigoAlterno = alt;
+          if (t?.storeReceivedAt instanceof Timestamp && !cur.storeReceivedAt) {
+            cur.storeReceivedAt = t.storeReceivedAt.toDate();
+            cur.storeReceivedByName = t.storeReceivedByName || undefined;
+          }
           byTf.set(tf, cur);
         });
         const store = matchStore(s.storeCode || s.destino);
@@ -192,7 +197,7 @@ async function publishPodToPlatform({ lines, at, pod, photoUrls }: PlatformPubli
     const snap = await getDoc(ref);
     const cur = snap.exists() ? (snap.data() as any) : null;
     if (!l.delivered) {
-      if (cur) await setDoc(ref, { podNovedad: clean({ at, motivo: l.motivo, ...pod }), updatedAt: at }, { merge: true });
+      if (cur) await updateDoc(ref, { podNovedad: clean({ at, motivo: l.motivo, ...pod }), updatedAt: at });
       continue;
     }
     const previousLinks: string[] = Array.isArray(cur?.evidenceLinks) ? cur.evidenceLinks : [];
@@ -233,13 +238,13 @@ async function publishPodToPlatform({ lines, at, pod, photoUrls }: PlatformPubli
         evidenceLinks: [...photoUrls, ...quickLinks.filter((u) => !photoUrls.includes(u))],
         quickEvidenceLinks: quickLinks,
         podSource: 'app',
-        pod,
         podNovedad: null,
         source: 'pod_app',
         updatedAt: at,
       }),
       { merge: true }
     );
+    await updateDoc(ref, { pod: clean(pod) });
   }
 }
 
@@ -281,12 +286,6 @@ export async function submitDeliveryStop(
   const notDelivered = new Map(Object.entries(input.notDelivered || {}).map(([k, v]) => [String(k).trim(), String(v || '').trim()]));
   const photos = (input.photos || []).slice(0, MAX_DELIVERY_PHOTOS);
 
-  if (delivered.size > 0 && !photos.some((p) => p.category === 'remision')) {
-    return { success: false, error: 'Falta la foto de la remisión firmada.' };
-  }
-  if (delivered.size > 0 && !String(input.receivedByName || '').trim()) {
-    return { success: false, error: 'Falta el nombre de quien recibe.' };
-  }
   if (Array.from(notDelivered.values()).some((r) => !r)) {
     return { success: false, error: 'Cada TF no entregada necesita un motivo.' };
   }
@@ -323,8 +322,15 @@ export async function submitDeliveryStop(
       const tSnaps = await Promise.all(transferIds.map((id) => tx.get(doc(firestore, 'transfers', id))));
       const tfOf = (d: (typeof tSnaps)[number]) => String(d.data()?.numeroTF || d.id).trim();
 
-      const missing = Array.from(new Set(tSnaps.map(tfOf))).filter((tf) => !delivered.has(tf) && !notDelivered.has(tf));
+      const storeReceivedTfs = new Set(tSnaps.filter((d) => d.data()?.storeReceivedAt).map(tfOf));
+      const missing = Array.from(new Set(tSnaps.map(tfOf))).filter(
+        (tf) => !delivered.has(tf) && !notDelivered.has(tf) && !storeReceivedTfs.has(tf)
+      );
       if (missing.length > 0) throw new Error(`Falta marcar ${missing.length} TF como entregada o no entregada.`);
+      storeReceivedTfs.forEach((tf) => notDelivered.delete(tf));
+      const needsProof = Array.from(delivered).some((tf) => !storeReceivedTfs.has(tf));
+      if (needsProof && !photos.some((p) => p.category === 'remision')) throw new Error('Falta la foto de la remisión firmada.');
+      if (needsProof && !String(input.receivedByName || '').trim()) throw new Error('Falta el nombre de quien recibe.');
 
       const now = Timestamp.now();
       const deliveredIds: string[] = [];
@@ -333,7 +339,7 @@ export async function submitDeliveryStop(
         if (!d.exists()) return;
         const status = d.data()?.status as TransferStatus;
         const tf = tfOf(d);
-        if (delivered.has(tf)) {
+        if (delivered.has(tf) || storeReceivedTfs.has(tf)) {
           deliveredIds.push(d.id);
           if (!DELIVERABLE.includes(status)) return;
           tx.update(d.ref, {
@@ -406,6 +412,8 @@ export async function submitDeliveryStop(
       tSnaps.forEach((d) => {
         if (!d.exists()) return;
         const t = d.data() as any;
+        // Recibida por la tienda y el conductor no la entregó con fotos: se deja la constancia de la tienda.
+        if (storeReceivedTfs.has(tfOf(d)) && (!delivered.has(tfOf(d)) || photos.length === 0)) return;
         const id = platformDocId(t.numeroTF, t.bodegaDestino);
         const cur = lines.get(id) || {
           id,
@@ -416,7 +424,7 @@ export async function submitDeliveryStop(
           fechaDocumento: t.fecha ?? null,
           marca: String(t.marca || '').trim() || undefined,
           grupo: String(t.grupo || '').trim() || undefined,
-          delivered: delivered.has(tfOf(d)),
+          delivered: delivered.has(tfOf(d)) || storeReceivedTfs.has(tfOf(d)),
           motivo: notDelivered.get(tfOf(d)),
         };
         cur.cantidad += Number(t.cantidad || 0) || 0;
@@ -591,6 +599,17 @@ async function revertPodPlatform(ids: string[], manifestDocId: string, stopId: s
     if (!snap.exists()) continue;
     const r = snap.data() as any;
     if (r.podSource === 'app' && r.pod?.stopId === stopId && r.pod?.manifestDocId === manifestDocId) {
+      const sr = r.storeReceipt;
+      if (sr?.at) {
+        await updateDoc(ref, {
+          estadoPlataforma: 'ENTREGADO',
+          evidenceLinks: r.quickEvidenceLinks ?? [],
+          fechaFinalizado: sr.at,
+          pod: clean({ at: sr.at, byId: sr.byId, byName: sr.byName, kind: 'tienda', storeCode: sr.storeCode, storeName: sr.storeName, photosCount: 0 }),
+          updatedAt: Timestamp.now(),
+        });
+        continue;
+      }
       const prev = r.podPrev;
       if (!prev && r.podCreated) {
         await deleteDoc(ref);
@@ -659,7 +678,7 @@ export async function rejectDeliveryStop(input: {
         const t = d.data() as any;
         ids.add(platformDocId(t.numeroTF, t.bodegaDestino));
         const fromThisStop = t.podManifestDocId === manifestDocId && t.podStopId === stopId;
-        if (!fromThisStop || (t.status !== 'Entregado en Tienda' && t.status !== 'Novedad de Entrega')) {
+        if (!fromThisStop || t.storeReceivedAt || (t.status !== 'Entregado en Tienda' && t.status !== 'Novedad de Entrega')) {
           skipped++;
           return;
         }
@@ -964,6 +983,29 @@ export async function receiveAtStore(input: {
 
     const pendingDocs = mine.filter((d) => d.data().status !== 'Entregado en Tienda');
     const unidades = mine.reduce((n, d) => n + (Number(d.data().cantidad || 0) || 0), 0);
+    const unconfirmed = mine.filter((d) => !d.data().storeReceivedAt);
+    if (pendingDocs.length === 0 && unconfirmed.length > 0) {
+      const deliveredBy = unconfirmed[0].data().entregadoTiendaByName as string | undefined;
+      await Promise.all(
+        unconfirmed.map((d) =>
+          updateDoc(d.ref, { storeReceivedAt: now, storeReceivedBy: actor.userId, storeReceivedByName: actorName, storeReceivedCode: code })
+        )
+      );
+      const storeReceipt = { at: now, byId: actor.userId, byName: actorName, storeCode: store.codigoErp, storeName: store.nombreCorto };
+      const platformIds = new Set(unconfirmed.map((d) => platformDocId(d.data().numeroTF, d.data().bodegaDestino)));
+      for (const id of platformIds) {
+        await setDoc(doc(firestore, PLATFORM_COLLECTION, id), { storeReceipt, updatedAt: now }, { merge: true }).catch(() => undefined);
+      }
+      await log({ result: 'recibida', numeroTF, codigoAlterno: altCode, transferIds: unconfirmed.map((d) => d.id), unidades, previousStatuses: ['Entregado en Tienda'] });
+      return {
+        result: 'recibida',
+        numeroTF,
+        codigoAlterno: altCode,
+        lines: unconfirmed.length,
+        unidades,
+        message: `TF ${numeroTF} confirmada en ${store.nombreCorto}${deliveredBy ? ` (la entregó ${deliveredBy})` : ''}.`,
+      };
+    }
     if (pendingDocs.length === 0) {
       const first = mine
         .map((d) => d.data())

@@ -642,6 +642,9 @@ export interface DeliveryStopTf {
     unidades: number;
     codigoAlterno?: string;
     status: TransferStatus;
+    /** La tienda ya la escaneó como recibida (cuenta como entregada). */
+    storeReceivedAt?: Date;
+    storeReceivedByName?: string;
 }
 
 /** Maestro de tiendas para entregas: `deliveryStores/{codigoErp}`. */
