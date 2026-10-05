@@ -623,6 +623,9 @@ export interface DeliveryPhoto {
     url: string;
     category: DeliveryPhotoCategory;
     uploadedAt?: Date;
+    /** Borrada del Storage tras respaldo local; `archivedFile` = ruta dentro de la carpeta/ZIP del mes. */
+    archived?: boolean;
+    archivedFile?: string;
 }
 
 export interface DeliveryGps {

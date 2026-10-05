@@ -1,8 +1,10 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
-import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, MapPin, RefreshCw, Search, Undo2, XCircle } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, CheckCircle2, Download, Loader2, MapPin, RefreshCw, Search, Undo2, XCircle } from 'lucide-react';
+import { PodArchiveTab } from '@/components/PodArchiveTab';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -305,13 +307,21 @@ function ManifestDetail({
 
                   {(s.photos?.length || 0) > 0 && (
                     <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
-                      {s.photos!.map((p, i) => (
+                      {s.photos!.map((p, i) =>
+                        p.archived ? (
+                          <div key={p.path || i} className="flex h-20 flex-col justify-center rounded border bg-muted p-1 text-[10px] text-muted-foreground" title={p.archivedFile}>
+                            <span className="font-bold">{photoLabel(p.category)}</span>
+                            Archivada en el PC
+                            <span className="truncate">{p.archivedFile?.split('/').slice(-2).join('/')}</span>
+                          </div>
+                        ) : (
                         <button key={p.path || i} type="button" className="text-left" onClick={() => setPhoto(p)}>
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img src={p.url} alt={photoLabel(p.category)} loading="lazy" className="h-20 w-full rounded border object-cover" />
                           <span className="block truncate text-[10px] text-muted-foreground">{photoLabel(p.category)}</span>
                         </button>
-                      ))}
+                        )
+                      )}
                     </div>
                   )}
 
@@ -713,8 +723,41 @@ function IndicatorsTab({ manifests, month, share }: { manifests: AdminManifest[]
 
 type StatusFilter = 'todas' | DeliveryManifestStatus | 'novedad' | 'alerta';
 
+/** Una fila por parada de las relaciones filtradas. */
+function exportRelations(list: AdminManifest[], month: string) {
+  const rows = list.flatMap((m) =>
+    m.stops.map((s) => ({
+      Relación: m.manifestId,
+      Creada: fmt(m.createdAt),
+      Placa: m.resource || '',
+      Conductor: m.driver || '',
+      'Estado relación': MANIFEST_STATUS[m.deliveryStatus || 'en_ruta'].label,
+      'Anterior a la app': m.legacy ? 'Sí' : '',
+      Tienda: s.storeName || s.destino,
+      'Estado parada': STOP_STATUS_LABEL[s.status || 'pendiente'],
+      'TF entregadas': s.deliveredTfs.join(', '),
+      'TF no entregadas': s.notDeliveredTfs.map((tf) => `${tf} (${s.notDeliveredReasons?.[tf] || ''})`).join(', '),
+      Unidades: s.unidades,
+      Registrada: s.completedAt ? fmt(s.completedAt) : '',
+      Registró: s.completedByName || '',
+      'Quién recibió': s.receivedByName || '',
+      'Distancia (m)': typeof s.distanceM === 'number' ? s.distanceM : '',
+      'Alerta distancia': s.distanceAlert ? 'Sí' : '',
+      Fotos: s.photos?.length || 0,
+      'Fotos archivadas': s.photos?.filter((p) => p.archived).length || 0,
+      Notas: s.notes || '',
+      'Último rechazo': s.lastRejection ? `${s.lastRejection.byName}: ${s.lastRejection.note}` : '',
+      Aprobada: m.validatedAt ? `${fmt(m.validatedAt)} · ${m.validatedByName || ''}` : '',
+      'Cerrada sin app': m.closedWithoutApp ? `${fmt(m.closedAt)} · ${m.closedByName || ''} · ${m.closedNote || ''}` : '',
+    }))
+  );
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Paradas');
+  XLSX.writeFile(wb, `Entregas_${month}.xlsx`);
+}
+
 export const PodAdminModule: React.FC<{ onReturn: () => void }> = ({ onReturn }) => {
-  const { user, userName } = useAuth();
+  const { user, userName, role } = useAuth();
   const { toast } = useToast();
   const actor: TransferActor | undefined = useMemo(
     () =>
@@ -823,6 +866,7 @@ export const PodAdminModule: React.FC<{ onReturn: () => void }> = ({ onReturn })
           <TabsTrigger value="relaciones">Relaciones</TabsTrigger>
           <TabsTrigger value="novedades">Novedades</TabsTrigger>
           <TabsTrigger value="indicadores">Indicadores</TabsTrigger>
+          <TabsTrigger value="respaldo">Respaldo de fotos</TabsTrigger>
         </TabsList>
 
         <TabsContent value="relaciones" className="space-y-3">
@@ -849,6 +893,9 @@ export const PodAdminModule: React.FC<{ onReturn: () => void }> = ({ onReturn })
                 <SelectItem value="alerta">Con alerta de distancia</SelectItem>
               </SelectContent>
             </Select>
+            <Button variant="outline" disabled={filtered.length === 0} onClick={() => exportRelations(filtered, month)}>
+              <Download className="mr-2 h-4 w-4" /> Exportar Excel
+            </Button>
           </div>
 
           <div className="rounded-md border">
@@ -921,6 +968,10 @@ export const PodAdminModule: React.FC<{ onReturn: () => void }> = ({ onReturn })
 
         <TabsContent value="indicadores">
           <IndicatorsTab manifests={manifests} month={month} share={share} />
+        </TabsContent>
+
+        <TabsContent value="respaldo">
+          <PodArchiveTab actor={actor} isAdmin={role === 'admin'} />
         </TabsContent>
       </Tabs>
 

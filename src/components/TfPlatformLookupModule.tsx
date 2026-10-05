@@ -211,6 +211,7 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
                     {row.pod.receivedByName ? ` · Recibió: ${row.pod.receivedByName}` : ''}
                     {row.pod.manifestId ? ` · Relación #${row.pod.manifestId}` : ''}
                     {typeof row.pod.distanceM === 'number' ? ` · a ${row.pod.distanceM} m de la tienda` : ''}
+                    {row.podPhotosArchived ? ' · Fotos de la app archivadas en el PC (pedir a logística)' : ''}
                   </p>
                 )}
                 {row.podNovedad && row.estadoPlataforma !== 'ENTREGADO' && (
