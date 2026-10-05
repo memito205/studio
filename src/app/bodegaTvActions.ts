@@ -1659,8 +1659,55 @@ async function buildRemainderAssignments(
   }
 }
 
-/** Snapshot unificado del día para el Modo TV Bodega (sin auth de UI). */
+const TV_CACHE_COLLECTION = 'bodegaTvCache';
+const TV_CACHE_TTL_MS = 3 * 60 * 1000;
+const TV_BUILD_LOCK_MS = 2 * 60 * 1000;
+
+/**
+ * Snapshot del Modo TV Bodega con caché compartida en Firestore: todas las pantallas leen 1 documento
+ * y el tablero completo (miles de lecturas) se recalcula como máximo cada TV_CACHE_TTL_MS.
+ */
 export async function getBodegaTvSnapshot(options?: {
+  mode?: BodegaTvMode;
+}): Promise<{ success: boolean; data?: BodegaTvSnapshot; error?: string }> {
+  const mode: BodegaTvMode = options?.mode === 'externos' ? 'externos' : 'full';
+  const { doc, getDoc, runTransaction, setDoc } = await import('firebase/firestore');
+  const { firestore } = await import('@/services/firebase');
+  const ref = doc(firestore, TV_CACHE_COLLECTION, mode);
+  const dayKey = todayKeyLocal();
+  let cached: BodegaTvSnapshot | null = null;
+  try {
+    const snap = await getDoc(ref);
+    const c = snap.exists() ? (snap.data() as { json?: string; builtAtMs?: number; dayKey?: string }) : null;
+    if (c?.json && c.dayKey === dayKey) {
+      cached = JSON.parse(c.json) as BodegaTvSnapshot;
+      if (Date.now() - Number(c.builtAtMs || 0) < TV_CACHE_TTL_MS) return { success: true, data: cached };
+    }
+    const claimed = await runTransaction(firestore, async (tx) => {
+      const s = await tx.get(ref);
+      const lockAt = Number(s.exists() ? s.data().buildingAtMs || 0 : 0);
+      const builtAt = Number(s.exists() ? s.data().builtAtMs || 0 : 0);
+      const fresh = s.exists() && s.data().dayKey === dayKey && Date.now() - builtAt < TV_CACHE_TTL_MS;
+      if (fresh || Date.now() - lockAt < TV_BUILD_LOCK_MS) return false;
+      tx.set(ref, { buildingAtMs: Date.now() }, { merge: true });
+      return true;
+    });
+    if (!claimed && cached) return { success: true, data: cached };
+  } catch (e) {
+    console.error('bodegaTv cache:', e);
+  }
+
+  const built = await buildBodegaTvSnapshot({ mode });
+  if (built.success && built.data) {
+    await setDoc(ref, { json: JSON.stringify(built.data), builtAtMs: Date.now(), dayKey, buildingAtMs: 0 }).catch((e) =>
+      console.error('bodegaTv cache write:', e)
+    );
+  }
+  return built;
+}
+
+/** Snapshot unificado del día para el Modo TV Bodega (sin auth de UI). */
+async function buildBodegaTvSnapshot(options?: {
   mode?: BodegaTvMode;
 }): Promise<{
   success: boolean;

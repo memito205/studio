@@ -1345,10 +1345,12 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     if (mainTab === 'vivo' && canAdmin) void loadLiveMonitor(true);
   }, [mainTab, canAdmin, loadLiveMonitor]);
 
-  // Auto-refresh del monitor en vivo cada 20s + tick para tiempos transcurridos
+  // Auto-refresh del monitor en vivo cada 60s (solo con la pestaña visible) + tick para tiempos transcurridos
   useEffect(() => {
     if (mainTab !== 'vivo' || !canAdmin) return;
-    const refreshId = setInterval(() => void loadLiveMonitor(false), 20000);
+    const refreshId = setInterval(() => {
+      if (document.visibilityState === 'visible') void loadLiveMonitor(false);
+    }, 60000);
     const tickId = setInterval(() => setLiveTick((n) => n + 1), 1000);
     return () => {
       clearInterval(refreshId);

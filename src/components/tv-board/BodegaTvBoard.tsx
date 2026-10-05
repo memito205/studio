@@ -24,7 +24,7 @@ import {
 } from './bodega/BodegaTvSlides';
 
 const SLIDE_DURATION_MS = 7000;
-const DATA_SYNC_INTERVAL = 45 * 1000;
+const DATA_SYNC_INTERVAL = 60 * 1000;
 
 export default function BodegaTvBoard({ mode = 'full' }: { mode?: BodegaTvMode }) {
   const [data, setData] = useState<BodegaTvSnapshot | null>(null);
@@ -54,8 +54,17 @@ export default function BodegaTvBoard({ mode = 'full' }: { mode?: BodegaTvMode }
 
   useEffect(() => {
     fetchSnapshot();
-    const id = setInterval(fetchSnapshot, DATA_SYNC_INTERVAL);
-    return () => clearInterval(id);
+    const id = setInterval(() => {
+      if (document.visibilityState === 'visible') void fetchSnapshot();
+    }, DATA_SYNC_INTERVAL);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void fetchSnapshot();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [fetchSnapshot]);
 
   const slides = useMemo(() => {
