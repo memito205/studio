@@ -4527,6 +4527,11 @@ export async function persistTfPlatformStatuses(
             };
         });
 
+        const appPodSnap = await getDocs(
+            query(collection(firestore, TF_PLATFORM_STATUS_COLLECTION), where('podSource', '==', 'app'))
+        );
+        const appPodIds = new Set(appPodSnap.docs.map((d) => d.id));
+
         const CHUNK = 400;
         let written = 0;
         for (let i = 0; i < normalizedRecords.length; i += CHUNK) {
@@ -4534,12 +4539,26 @@ export async function persistTfPlatformStatuses(
             const batch = writeBatch(firestore);
             chunk.forEach((r) => {
                 const ref = doc(firestore, TF_PLATFORM_STATUS_COLLECTION, r.id);
+                const record = appPodIds.has(r.id)
+                    ? (() => {
+                          const {
+                              estadoPlataforma: _e,
+                              entregaInferida: _i,
+                              entregaInferidaMotivo: _m,
+                              evidenceLinks,
+                              fechaFinalizado: _f,
+                              source: _s,
+                              ...rest
+                          } = r as typeof r & { entregaInferida?: unknown; entregaInferidaMotivo?: unknown };
+                          return { ...rest, quickEvidenceLinks: evidenceLinks || [] };
+                      })()
+                    : r;
                 batch.set(
                     ref,
-                    convertDatesToTimestamps({
-                        ...r,
+                    convertDatesToTimestamps(withoutUndefined({
+                        ...record,
                         updatedAt: new Date(),
-                    }),
+                    })),
                     { merge: true }
                 );
             });

@@ -2,6 +2,9 @@ import type { DeliveryPhotoCategory, DeliveryStopStatus } from '@/types';
 
 export const MAX_DELIVERY_PHOTOS = 20;
 
+/** Solo las relaciones creadas desde aquí aparecen en la app del conductor (05/10/2026 9:45 a. m. Colombia). */
+export const POD_START_AT = new Date('2026-10-05T14:45:00Z');
+
 export const PHOTO_CATEGORIES: Array<{ id: DeliveryPhotoCategory; label: string; required?: boolean }> = [
   { id: 'remision', label: 'Remisión firmada', required: true },
   { id: 'mercancia', label: 'Mercancía entregada' },

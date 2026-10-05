@@ -8,6 +8,7 @@ import {
   getDocs,
   query,
   runTransaction,
+  setDoc,
   Timestamp,
   where,
   documentId,
@@ -15,7 +16,16 @@ import {
 } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
 import { buildStoreMatcher } from '@/lib/deliveryStores';
-import { MAX_DELIVERY_PHOTOS } from '@/lib/pod';
+import { MAX_DELIVERY_PHOTOS, POD_START_AT } from '@/lib/pod';
+
+const PLATFORM_COLLECTION = 'tf_platform_status';
+const platformTf = (v: unknown) => {
+  const digits = String(v || '').replace(/\D/g, '');
+  return digits ? String(Number(digits)) : '';
+};
+const platformWhs = (v: unknown) => String(v || '').trim().toUpperCase();
+/** Mismo id que publica el analizador (`buildTfPlatformDocId`). */
+const platformDocId = (tf: unknown, whs: unknown) => `${platformTf(tf)}_${platformWhs(whs).replace(/[^A-Z0-9]/g, '_')}`;
 import type {
   DeliveryManifest,
   DeliveryManifestStop,
@@ -66,6 +76,7 @@ export async function getOpenDeliveryManifests(opts: {
     const snap = await getDocs(query(collection(firestore, 'deliveryManifests'), where('deliveryStatus', '==', 'en_ruta')));
     const data = snap.docs
       .map((d) => toDates({ id: d.id, ...d.data() }) as DeliveryManifest)
+      .filter((m) => m.createdAt instanceof Date && m.createdAt >= POD_START_AT)
       .filter((m) => opts.all || (!!opts.driverUserId && m.driverUserId === opts.driverUserId))
       .sort((a, b) => (b.manifestId || 0) - (a.manifestId || 0));
     return { data };
@@ -153,6 +164,93 @@ export type SubmitDeliveryStopInput = {
 
 const DELIVERABLE: TransferStatus[] = ['Enviado a Destino', 'Novedad de Entrega'];
 
+type PlatformLine = {
+  id: string;
+  numeroTF: string;
+  bodegaDestino: string;
+  bodegaOrigen?: string;
+  cantidad: number;
+  fechaDocumento: unknown;
+  marca?: string;
+  grupo?: string;
+  delivered: boolean;
+  motivo?: string;
+};
+type PlatformPublish = { lines: PlatformLine[]; at: Timestamp; pod: Record<string, unknown>; photoUrls: string[] };
+
+/**
+ * Entregada en la app -> ENTREGADO con fuente app (manda sobre Quick e inferida).
+ * No entregada -> solo deja la novedad; el estado plataforma no cambia.
+ */
+async function publishPodToPlatform({ lines, at, pod, photoUrls }: PlatformPublish) {
+  for (const l of lines) {
+    const ref = doc(firestore, PLATFORM_COLLECTION, l.id);
+    const snap = await getDoc(ref);
+    const cur = snap.exists() ? (snap.data() as any) : null;
+    if (!l.delivered) {
+      if (cur) await setDoc(ref, { podNovedad: clean({ at, motivo: l.motivo, ...pod }), updatedAt: at }, { merge: true });
+      continue;
+    }
+    const previousLinks: string[] = Array.isArray(cur?.evidenceLinks) ? cur.evidenceLinks : [];
+    const quickLinks: string[] =
+      cur?.podSource === 'app' ? (Array.isArray(cur?.quickEvidenceLinks) ? cur.quickEvidenceLinks : []) : previousLinks;
+    await setDoc(
+      ref,
+      clean({
+        ...(cur
+          ? {}
+          : {
+              id: l.id,
+              numeroTF: l.numeroTF,
+              bodegaDestino: l.bodegaDestino,
+              bodegaOrigen: l.bodegaOrigen,
+              cantidad: l.cantidad,
+              fechaDocumento: l.fechaDocumento,
+              marca: l.marca,
+              grupo: l.grupo,
+            }),
+        estadoPlataforma: 'ENTREGADO',
+        entregaInferida: false,
+        entregaInferidaMotivo: null,
+        fechaFinalizado: at,
+        evidenceLinks: [...photoUrls, ...quickLinks.filter((u) => !photoUrls.includes(u))],
+        quickEvidenceLinks: quickLinks,
+        podSource: 'app',
+        pod,
+        podNovedad: null,
+        source: 'pod_app',
+        updatedAt: at,
+      }),
+      { merge: true }
+    );
+  }
+}
+
+/** Entregas registradas en la app, para que el analizador las use como evidencia (manda sobre Quick). */
+export async function getAppPodIndex(): Promise<{
+  data?: Array<{ numeroTF: string; bodegaDestino: string; at: string; photoUrl?: string; byName?: string; manifestId?: number }>;
+  error?: string;
+}> {
+  try {
+    const snap = await getDocs(query(collection(firestore, PLATFORM_COLLECTION), where('podSource', '==', 'app')));
+    const data = snap.docs.map((d) => {
+      const r = d.data() as any;
+      const at = r.pod?.at instanceof Timestamp ? r.pod.at.toDate() : r.fechaFinalizado instanceof Timestamp ? r.fechaFinalizado.toDate() : null;
+      return {
+        numeroTF: String(r.numeroTF || ''),
+        bodegaDestino: String(r.bodegaDestino || ''),
+        at: at ? at.toISOString() : '',
+        photoUrl: Array.isArray(r.evidenceLinks) ? r.evidenceLinks[0] : undefined,
+        byName: r.pod?.byName,
+        manifestId: r.pod?.manifestId,
+      };
+    });
+    return { data };
+  } catch (error: any) {
+    return { error: error.message || 'No se pudieron leer las entregas de la app.' };
+  }
+}
+
 /**
  * Registra la entrega de una parada: TF entregadas -> Entregado en Tienda, no entregadas -> Novedad de Entrega.
  * Reintentos con el mismo submissionId devuelven éxito sin repetir nada.
@@ -183,8 +281,10 @@ export async function submitDeliveryStop(
     const manifestRef = doc(firestore, 'deliveryManifests', manifestDocId);
     const stopRef = doc(manifestRef, 'stops', stopId);
     const actorName = (actor.displayName || '').trim() || actor.userId;
+    const publish: { value: PlatformPublish | null } = { value: null };
 
-    return await runTransaction(firestore, async (tx) => {
+    const result = await runTransaction(firestore, async (tx) => {
+      publish.value = null;
       const [mSnap, sSnap] = await Promise.all([tx.get(manifestRef), tx.get(stopRef)]);
       if (!mSnap.exists() || !sSnap.exists()) throw new Error('La relación o la parada ya no existe.');
       const manifest = mSnap.data() as any;
@@ -283,8 +383,50 @@ export async function submitDeliveryStop(
         ...(stopsCount > 0 && stopsDone >= stopsCount ? { deliveryStatus: 'pendiente_validacion', deliveryCompletedAt: now } : {}),
       });
 
+      const lines = new Map<string, PlatformLine>();
+      tSnaps.forEach((d) => {
+        if (!d.exists()) return;
+        const t = d.data() as any;
+        const id = platformDocId(t.numeroTF, t.bodegaDestino);
+        const cur = lines.get(id) || {
+          id,
+          numeroTF: platformTf(t.numeroTF),
+          bodegaDestino: platformWhs(t.bodegaDestino),
+          bodegaOrigen: platformWhs(t.bodegaOrigen) || undefined,
+          cantidad: 0,
+          fechaDocumento: t.fecha ?? null,
+          marca: String(t.marca || '').trim() || undefined,
+          grupo: String(t.grupo || '').trim() || undefined,
+          delivered: delivered.has(tfOf(d)),
+          motivo: notDelivered.get(tfOf(d)),
+        };
+        cur.cantidad += Number(t.cantidad || 0) || 0;
+        lines.set(id, cur);
+      });
+      publish.value = {
+        lines: Array.from(lines.values()),
+        at: now,
+        pod: clean({
+          at: now,
+          byId: actor.userId,
+          byName: actorName,
+          receivedByName: String(input.receivedByName || '').trim() || undefined,
+          manifestDocId,
+          manifestId: manifest.manifestId,
+          stopId,
+          photosCount: photos.length,
+          distanceM,
+        }),
+        photoUrls: [...photos.filter((p) => p.category === 'remision'), ...photos.filter((p) => p.category !== 'remision')].map((p) => p.url),
+      };
+
       return { success: true, stopStatus };
     });
+
+    if (result.success && !result.already && publish.value) {
+      await publishPodToPlatform(publish.value).catch((e) => console.error('Entrega registrada sin estado plataforma:', e));
+    }
+    return result;
   } catch (error: any) {
     console.error('Error registrando entrega:', error);
     return { success: false, error: error.message || 'No se pudo registrar la entrega.' };

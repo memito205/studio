@@ -22,6 +22,8 @@ import type { ExcelDataRow, BreaksReportData, ProcessedBreak, EmployeeDailyAnaly
 import type { TransferEntry } from '@/types';
 import { loadAnalysisRecords, syncAnalysisRecords, persistTfPlatformStatuses, getTfKeysReceivedInWarehouse, getTfKeysCollectedOnRoute } from '@/app/actions';
 import { buildTfPlatformStatusRecords } from '@/lib/tfPlatformStatus';
+import { getAppPodIndex } from '@/app/podActions';
+import { buildAppPodIndex, overlayAppPods, type AppPodEntry } from '@/lib/podPlatform';
 import { FileIcon, PackageIcon, TruckIcon, ChartIcon, CheckCircleIcon, TableIcon, UserCheckIcon, PdfFileIcon } from './components/icons';
 import { Button } from '@/components/ui/button';
 import { RefreshCw, Database, CloudUpload, Store } from 'lucide-react';
@@ -69,6 +71,19 @@ const WarehouseAnalyzer: React.FC = () => {
   const [receivedInWarehouseKeys, setReceivedInWarehouseKeys] = React.useState<string[]>([]);
   const [collectedOnRouteKeys, setCollectedOnRouteKeys] = React.useState<string[]>([]);
   const { user, userName } = useAuth();
+  const [appPodIndex, setAppPodIndex] = React.useState<Map<string, AppPodEntry>>(new Map());
+
+  React.useEffect(() => {
+    let alive = true;
+    getAppPodIndex()
+      .then((res) => {
+        if (alive && res.data) setAppPodIndex(buildAppPodIndex(res.data));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // Las claves TF se cargan junto con el snapshot en fetchTransfersFromDB (una sola vez).
 
@@ -843,8 +858,13 @@ const WarehouseAnalyzer: React.FC = () => {
 
   const applyUnresolvedPlatformStatus = Boolean(platformFileName || warehousePackFileName || routeFileName);
 
+  const analyzedData = React.useMemo(
+    () => overlayAppPods(baseData, columnMap, appPodIndex),
+    [baseData, columnMap, appPodIndex]
+  );
+
   const { kpiData, analysisData, dailyChartData, slaAnalysisData, pendingDocsAnalysisData, generalReport, deliveredDocsReport, brandReport, brandSummaryByWarehouse, deliveredDocsByWarehouse, pendingRows } = useReportData(
-    baseData,
+    analyzedData,
     columnMap,
     selectedWarehouse,
     startDate,

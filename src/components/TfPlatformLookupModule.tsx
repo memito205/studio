@@ -60,6 +60,11 @@ const formatMaybeDate = (value: any): string => {
   }
 };
 
+const formatMaybeDateTime = (value: any): string => {
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? String(value) : format(d, 'dd/MM/yyyy HH:mm');
+};
+
 interface TfPlatformLookupModuleProps {
   onReturn: () => void;
 }
@@ -192,8 +197,29 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
                     <p className="text-sm text-muted-foreground">Número TF</p>
                     <p className="text-xl font-bold">{row.numeroTF}</p>
                   </div>
-                  {statusBadge(row.estadoPlataforma, Boolean(row.entregaInferida))}
+                  {row.podSource === 'app' && row.estadoPlataforma === 'ENTREGADO' ? (
+                    <Badge className="bg-green-700 hover:bg-green-700">ENTREGADO · app conductor</Badge>
+                  ) : (
+                    statusBadge(row.estadoPlataforma, Boolean(row.entregaInferida))
+                  )}
                 </div>
+                {row.podSource === 'app' && row.pod && (
+                  <p className="text-xs text-green-900 bg-green-50 border border-green-200 rounded-md px-2 py-1.5">
+                    Entregado con la app del conductor
+                    {row.pod.at ? ` el ${formatMaybeDateTime(row.pod.at)}` : ''}
+                    {row.pod.byName ? ` · Conductor: ${row.pod.byName}` : ''}
+                    {row.pod.receivedByName ? ` · Recibió: ${row.pod.receivedByName}` : ''}
+                    {row.pod.manifestId ? ` · Relación #${row.pod.manifestId}` : ''}
+                    {typeof row.pod.distanceM === 'number' ? ` · a ${row.pod.distanceM} m de la tienda` : ''}
+                  </p>
+                )}
+                {row.podNovedad && row.estadoPlataforma !== 'ENTREGADO' && (
+                  <p className="text-xs text-red-900 bg-red-50 border border-red-200 rounded-md px-2 py-1.5">
+                    Novedad de entrega: {row.podNovedad.motivo || 'sin motivo'}
+                    {row.podNovedad.at ? ` (${formatMaybeDateTime(row.podNovedad.at)})` : ''}
+                    {row.podNovedad.byName ? ` · ${row.podNovedad.byName}` : ''}
+                  </p>
+                )}
                 {row.estadoPlataforma === 'ENTREGADO' && row.entregaInferida && (
                   <p className="text-xs text-teal-900 bg-teal-50 border border-teal-200 border-dashed rounded-md px-2 py-1.5">
                     {inferidoMotivoLabel(row.entregaInferidaMotivo)}
@@ -251,7 +277,7 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
                         rel="noopener noreferrer"
                         className="text-sm text-blue-600 hover:underline bg-blue-50 border border-blue-200 px-2 py-1 rounded"
                       >
-                        Evidencia {idx + 1}
+                        {row.podSource === 'app' && idx < Number(row.pod?.photosCount || 0) ? `Foto ${idx + 1}` : `Evidencia ${idx + 1}`}
                       </a>
                     ))}
                   </div>
