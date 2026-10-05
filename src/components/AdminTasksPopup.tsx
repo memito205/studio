@@ -103,6 +103,7 @@ export function AdminTasksPopup() {
     if (!isAdmin || !actor.uid) return;
     let cancelled = false;
     const refreshBadge = async () => {
+      if (document.visibilityState !== 'visible') return;
       try {
         const result = await listLogisticsAdminTasks(actor);
         if (!cancelled && result.data) setTasks(result.data);
@@ -111,7 +112,7 @@ export function AdminTasksPopup() {
       }
     };
     void refreshBadge();
-    const id = window.setInterval(refreshBadge, 60_000);
+    const id = window.setInterval(refreshBadge, 5 * 60_000);
     return () => {
       cancelled = true;
       window.clearInterval(id);

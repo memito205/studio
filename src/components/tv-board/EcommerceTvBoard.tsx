@@ -88,15 +88,13 @@ export default function EcommerceTvBoard() {
 
   useEffect(() => {
     fetchOrders();
-    const fetchInterval = setInterval(fetchOrders, AUTO_SYNC_INTERVAL);
-    
-    // Sync at minute 5 of every hour
+    // Una sola sincronización por hora (minuto 5), solo en horario de operación (6:00–20:59).
     const minuteSyncCheck = setInterval(() => {
-        if (new Date().getMinutes() === 5) fetchOrders();
+        const now = new Date();
+        if (now.getMinutes() === 5 && now.getHours() >= 6 && now.getHours() <= 20) fetchOrders();
     }, 60000);
 
     return () => {
-      clearInterval(fetchInterval);
       clearInterval(minuteSyncCheck);
     };
   }, [fetchOrders]);

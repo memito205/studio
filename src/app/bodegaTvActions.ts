@@ -1307,12 +1307,21 @@ async function buildRecepcion(
       .filter((o) => o.status !== 'cancelled' && o.status !== 'pending')
       .slice(0, 40);
 
-    const scannedBatches = await Promise.all(
-      targetOps.map(async (op) => {
-        const res = await getScannedItemsByReception(op.id);
-        return res.success && res.data ? res.data : [];
-      })
+    // Solo lecturas de hoy (scanned_at es ISO UTC): una consulta en vez de toda la historia de cada recepción.
+    const { collection, getDocs, query, where } = await import('firebase/firestore');
+    const { firestore } = await import('@/services/firebase');
+    const todaySnap = await getDocs(
+      query(collection(firestore, 'scannedItems'), where('scanned_at', '>=', `${dayKey}T00:00:00.000Z`))
     );
+    const todayByOp = new Map<string, Array<{ scanned_at: string; quantity: number; user_id?: string }>>();
+    todaySnap.forEach((d) => {
+      const it = d.data() as { reception_id?: string; scanned_at: string; quantity: number; user_id?: string };
+      if (!it.reception_id) return;
+      const list = todayByOp.get(it.reception_id) || [];
+      list.push(it);
+      todayByOp.set(it.reception_id, list);
+    });
+    const scannedBatches = targetOps.map((op) => todayByOp.get(op.id) || []);
 
     const byUser = new Map<
       string,
@@ -1660,7 +1669,7 @@ async function buildRemainderAssignments(
 }
 
 const TV_CACHE_COLLECTION = 'bodegaTvCache';
-const TV_CACHE_TTL_MS = 3 * 60 * 1000;
+const TV_CACHE_TTL_MS = 5 * 60 * 1000;
 const TV_BUILD_LOCK_MS = 2 * 60 * 1000;
 
 /**

@@ -579,8 +579,8 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     );
     if (!hasLivePack) return;
     const id = window.setInterval(() => {
-      void fetchOperationsAndProductivity({ soft: true });
-    }, 45000);
+      if (document.visibilityState === 'visible') void fetchOperationsAndProductivity({ soft: true });
+    }, 120000);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [

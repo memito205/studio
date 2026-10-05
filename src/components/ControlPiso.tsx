@@ -62,7 +62,9 @@ export const ControlPiso: React.FC<{ onReturn: () => void }> = ({ onReturn }) =>
 
     useEffect(() => {
         fetchData();
-        const fetchInterval = setInterval(fetchData, 45000); // 45s: evita saturar Firebase (antes 15s + getAllUserStatuses completo)
+        const fetchInterval = setInterval(() => {
+            if (document.visibilityState === 'visible') fetchData();
+        }, 120000);
         const timerInterval = setInterval(() => setNow(new Date()), 1000); // Tick every second
         
         return () => {

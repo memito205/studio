@@ -4593,6 +4593,25 @@ export async function persistTfPlatformStatuses(
     }
 }
 
+const RECONCILE_EVERY_MS = 30 * 60 * 1000;
+
+/** En consultas: reconciliar como máximo cada 30 min (cuesta ~800 lecturas) usando un documento de control. */
+async function reconcileStaleEnRutaHoyThrottled(): Promise<void> {
+    try {
+        const ref = doc(firestore, 'systemJobs', 'reconcileEnRutaHoy');
+        const claimed = await runTransaction(firestore, async (tx) => {
+            const s = await tx.get(ref);
+            const last = Number(s.exists() ? s.data().lastRunMs || 0 : 0);
+            if (Date.now() - last < RECONCILE_EVERY_MS) return false;
+            tx.set(ref, { lastRunMs: Date.now() }, { merge: true });
+            return true;
+        });
+        if (claimed) await reconcileStaleEnRutaHoyStatuses();
+    } catch (e) {
+        console.error('reconcileStaleEnRutaHoyThrottled:', e);
+    }
+}
+
 export async function getTfPlatformStatusByTf(
     numeroTF: string
 ): Promise<{ data?: any[]; error?: string }> {
@@ -4601,7 +4620,7 @@ export async function getTfPlatformStatusByTf(
         const normalized = digits ? String(Number(digits)) : '';
         if (!normalized) return { error: 'Número TF inválido.' };
 
-        await reconcileStaleEnRutaHoyStatuses();
+        await reconcileStaleEnRutaHoyThrottled();
 
         const q = query(
             collection(firestore, TF_PLATFORM_STATUS_COLLECTION),
@@ -4624,7 +4643,7 @@ export async function getTfPlatformStatusByWarehouse(
         const whs = String(bodegaDestino || '').trim().toUpperCase();
         if (!whs) return { error: 'Bodega destino inválida.' };
 
-        await reconcileStaleEnRutaHoyStatuses();
+        await reconcileStaleEnRutaHoyThrottled();
 
         const q = query(
             collection(firestore, TF_PLATFORM_STATUS_COLLECTION),
@@ -4819,6 +4838,32 @@ export async function findMixedStatusTransfers(options?: {
     }
 }
 
+
+/** Gestor de despachos: líneas Recibido en Bodega + todas las líneas de esas mismas TF (no toda la colección). */
+export async function loadTransfersForDispatch(): Promise<{ data?: TransferEntry[]; error?: string }> {
+    try {
+        const receivedSnap = await getDocs(
+            query(collection(firestore, 'transfers'), where('status', '==', 'Recibido en Bodega'), limit(10000))
+        );
+        const byId = new Map<string, DocumentData>();
+        receivedSnap.docs.forEach((d) => byId.set(d.id, d.data()));
+        const tfs = Array.from(new Set(receivedSnap.docs.map((d) => d.data().numeroTF).filter((v) => v !== undefined && v !== null && v !== '')));
+        for (let i = 0; i < tfs.length; i += 30) {
+            const snap = await getDocs(query(collection(firestore, 'transfers'), where('numeroTF', 'in', tfs.slice(i, i + 30))));
+            snap.docs.forEach((d) => byId.set(d.id, d.data()));
+        }
+        const transfers = Array.from(byId.entries()).map(([id, data]) => ({
+            id,
+            ...convertTimestampsToDates(data),
+        })) as TransferEntry[];
+        const ms = (v: unknown) => (v instanceof Date ? v.getTime() : new Date(v as any).getTime() || 0);
+        transfers.sort((a, b) => ms(b.fecha) - ms(a.fecha));
+        return { data: transfers };
+    } catch (error: any) {
+        console.error('Error loadTransfersForDispatch:', error);
+        return { error: `No se pudieron cargar las transferencias: ${error.message}` };
+    }
+}
 
 export async function loadAllTransfers(): Promise<{ data?: TransferEntry[]; error?: string }> {
     try {

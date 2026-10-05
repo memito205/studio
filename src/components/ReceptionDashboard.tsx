@@ -8,8 +8,7 @@ import { Package, CheckCircle, Percent } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Legend, Tooltip } from 'recharts';
 import { useToast } from '@/hooks/use-toast';
 import { loadReceptionOperations } from '@/app/reception/actions';
-import { getAllScannedItems } from '@/app/reception/actions';
-import type { ReceptionOperation, ScannedItem } from '@/types';
+import type { ReceptionOperation } from '@/types';
 import { Button } from './ui/button';
 import { ArrowLeft } from 'lucide-react';
 
@@ -45,20 +44,15 @@ export const ReceptionDashboard: React.FC<ReceptionDashboardProps> = ({ onReturn
   const fetchDashboardMetrics = useCallback(async () => {
     setLoading(true);
     try {
-      const [opsResult, scannedItemsResult] = await Promise.all([
-          loadReceptionOperations({ limit: 10000 }), // Fetch all operations for dashboard
-          getAllScannedItems()
-      ]);
+      // Usa el contador de cada operación: leer scannedItems completo son cientos de miles de lecturas.
+      const opsResult = await loadReceptionOperations({ limit: 1000 });
 
       if (!opsResult.success || !opsResult.data) {
         throw new Error(opsResult.error || 'Failed to load operations');
       }
-      if (!scannedItemsResult.success || !scannedItemsResult.data) {
-          throw new Error(scannedItemsResult.error || 'Failed to load scanned items');
-      }
-      
-      const allOperations = opsResult.data.operations;
-      const allScannedItems = scannedItemsResult.data;
+
+      const allOperations: ReceptionOperation[] = opsResult.data.operations;
+      const scannedOf = (op: ReceptionOperation) => Number(op.totalScannedQuantity) || 0;
 
       const totalOperations = allOperations.length;
       const pendingOperations = allOperations.filter(op => op.status === 'pending').length;
@@ -66,15 +60,13 @@ export const ReceptionDashboard: React.FC<ReceptionDashboardProps> = ({ onReturn
       const completedOperations = allOperations.filter(op => op.status === 'completed').length;
       const cancelledOperations = allOperations.filter(op => op.status === 'cancelled').length;
 
-      const totalScannedItems = allScannedItems.reduce((sum, item) => sum + item.quantity, 0);
+      const totalScannedItems = allOperations.reduce((sum, op) => sum + scannedOf(op), 0);
 
       const operationsWithExpectedQty = allOperations.filter(op => op.expected_quantity > 0 && op.status === 'completed');
       let totalCompliance = 0;
       if (operationsWithExpectedQty.length > 0) {
         operationsWithExpectedQty.forEach(op => {
-            const itemsForOp = allScannedItems.filter(item => item.reception_id === op.id);
-            const scannedForOp = itemsForOp.reduce((sum, item) => sum + item.quantity, 0);
-            totalCompliance += (scannedForOp / op.expected_quantity) * 100;
+            totalCompliance += (scannedOf(op) / op.expected_quantity) * 100;
         });
       }
       const averageCompliance = operationsWithExpectedQty.length > 0 ? totalCompliance / operationsWithExpectedQty.length : 0;
@@ -99,7 +91,9 @@ export const ReceptionDashboard: React.FC<ReceptionDashboardProps> = ({ onReturn
 
   useEffect(() => {
     fetchDashboardMetrics();
-    const interval = setInterval(() => fetchDashboardMetrics(), 60000); // Refresh every minute
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') void fetchDashboardMetrics();
+    }, 10 * 60 * 1000);
     return () => clearInterval(interval);
   }, [fetchDashboardMetrics]);
 

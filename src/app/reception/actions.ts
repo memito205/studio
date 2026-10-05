@@ -63,30 +63,16 @@ const convertTimestampsToDates = (data: any): any => {
 };
 
 // --- Product Database Actions ---
-export async function getAllProducts(): Promise<{ success: boolean; data?: ReceptionProduct[]; error?: string }> {
-    try {
-        const querySnapshot = await getDocs(collection(firestore, "productDatabase"));
-        const products = querySnapshot.docs.map(doc => {
-            const data = doc.data();
-            return {
-                id: doc.id,
-                ...data,
-                created_at: (data.created_at as Timestamp)?.toDate().toISOString() || new Date().toISOString(),
-                updated_at: (data.updated_at as Timestamp)?.toDate().toISOString() || new Date().toISOString(),
-            } as ReceptionProduct;
-        });
-        return { success: true, data: products };
-    } catch (error: any) {
-        console.error("Error loading all products:", error);
-        return { success: false, error: `Failed to load all products: ${error.message}` };
-    }
-}
-
 /** Productos del catálogo maestro cuya marca comercial es IMPORTADA o NACIONAL (requieren corrección). */
 export async function getImportedBrandCatalogProducts(): Promise<{ success: boolean; data?: ProductDatabaseItem[]; error?: string }> {
     try {
         const PLACEHOLDER_BRANDS = new Set(['IMPORTADA', 'NACIONAL']);
-        const querySnapshot = await getDocs(collection(firestore, "productDatabase"));
+        const querySnapshot = await getDocs(
+            query(
+                collection(firestore, "productDatabase"),
+                where('marca', 'in', ['IMPORTADA', 'NACIONAL', 'Importada', 'Nacional', 'importada', 'nacional', 'IMPORTADA ', 'NACIONAL '])
+            )
+        );
         const products = querySnapshot.docs
             .map((docSnap) => {
                 const data = convertTimestampsToDates(docSnap.data()) as Record<string, unknown>;
@@ -489,20 +475,6 @@ export async function getScannedItemsByReception(receptionId: string): Promise<{
     try {
         if (!receptionId) return { success: false, error: "ID de recepción no proporcionado." };
         const q = query(collection(firestore, "scannedItems"), where("reception_id", "==", receptionId));
-        const querySnapshot = await getDocs(q);
-        const items = querySnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...convertTimestampsToDates(doc.data())
-        } as ScannedItem));
-        return { success: true, data: items };
-    } catch (error: any) {
-        return { success: false, error: `Error al buscar ítems escaneados: ${error.message}` };
-    }
-}
-
-export async function getAllScannedItems(): Promise<{ success: boolean; data?: ScannedItem[]; error?: string; }> {
-    try {
-        const q = query(collection(firestore, "scannedItems"));
         const querySnapshot = await getDocs(q);
         const items = querySnapshot.docs.map(doc => ({
             id: doc.id,

@@ -36,7 +36,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { loadAllTransfers, saveVerificationSession, getAltCodeReceipts } from '@/app/actions';
+import { loadTransfersForDispatch, saveVerificationSession, getAltCodeReceipts } from '@/app/actions';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
@@ -194,7 +194,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
     setAllUnmatchedData([]);
 
     try {
-        const transfersResult = await loadAllTransfers();
+        const transfersResult = await loadTransfersForDispatch();
 
         if (transfersResult.error || !transfersResult.data) {
             throw new Error(transfersResult.error || "No se pudieron cargar las transferencias desde la base de datos.");
