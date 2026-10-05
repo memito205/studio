@@ -504,6 +504,7 @@ export interface TransferEntry {
   novedadEntregaAt?: Date;
   novedadEntregaBy?: string;
   novedadEntregaByName?: string;
+  novedadEntregaMotivo?: string;
   /** Relación (doc id) y parada con la que se entregó / reportó novedad. */
   podManifestDocId?: string;
   podStopId?: string;
@@ -553,6 +554,7 @@ export interface DeliveryManifest {
     deliveryStatus?: DeliveryManifestStatus;
     stopsCount?: number;
     stopsDone?: number;
+    deliveryCompletedAt?: Date;
 }
 
 export type DeliveryManifestStatus = 'en_ruta' | 'pendiente_validacion' | 'cerrada';
@@ -572,6 +574,46 @@ export interface DeliveryManifestStop {
     numerosTF: string[];
     unidades: number;
     status: DeliveryStopStatus;
+    deliveredTransferIds?: string[];
+    notDeliveredTransferIds?: string[];
+    /** numeroTF -> motivo de no entrega. */
+    notDeliveredReasons?: Record<string, string>;
+    photos?: DeliveryPhoto[];
+    gps?: DeliveryGps | null;
+    /** Distancia a la tienda (m), si la tienda tiene coordenadas en el maestro. */
+    distanceM?: number;
+    receivedByName?: string;
+    notes?: string;
+    completedAt?: Date;
+    completedById?: string;
+    completedByName?: string;
+    /** Id del envío desde el celular (evita doble registro al reintentar sin señal). */
+    submissionId?: string;
+}
+
+export type DeliveryPhotoCategory = 'remision' | 'mercancia' | 'fachada' | 'otra';
+
+export interface DeliveryPhoto {
+    path: string;
+    url: string;
+    category: DeliveryPhotoCategory;
+    uploadedAt?: Date;
+}
+
+export interface DeliveryGps {
+    lat: number;
+    lng: number;
+    accuracyM?: number;
+    at: Date;
+}
+
+/** TF dentro de una parada, para que el conductor marque entregada / no entregada. */
+export interface DeliveryStopTf {
+    numeroTF: string;
+    transferIds: string[];
+    unidades: number;
+    codigoAlterno?: string;
+    status: TransferStatus;
 }
 
 /** Maestro de tiendas para entregas: `deliveryStores/{codigoErp}`. */
@@ -1282,7 +1324,7 @@ export interface CyclicInventoryCountRecord {
   consolidatedLineIds?: string[];
 }
 
-export type AppStep = 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'distribution_compare' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'dashboards_gastos_transporte' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'tf_platform_lookup' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory' | 'store_capacity' | 'tallado_mercancia';
+export type AppStep = 'driver_deliveries' | 'suite' | 'upload' | 'configure' | 'dashboard' | 'historical' | 'plant_view' | 'supervisor_view' | 'wholesale' | 'packing' | 'packed_orders_dashboard' | 'logistics_submenu' | 'general_settings' | 'label_control' | 'merchandise_labeling' | 'bag_distribution' | 'merchandise_reception' | 'reception_dashboard' | 'reception_reading' | 'novelty_management' | 'novelty_reports' | 'products_management' | 'time_reports' | 'time_reports_menu' | 'idle_time_report' | 'other_features' | 'bag_counting' | 'credit_simulator' | 'dispatching' | 'dispatch_manager' | 'returns_module' | 'dispatch_dashboard' | 'dispatch_report' | 'fletes_vtex' | 'routes' | 'dashboards' | 'dashboards_main_menu' | 'dashboards_ecommerce_menu' | 'sample_control' | 'transfers' | 'propuesta_transportadora' | 'distributor' | 'distributor_module' | 'distribution_compare' | 'dashboards_bodega' | 'dashboards_remision' | 'dashboards_labeling' | 'dashboards_gastos_transporte' | 'control_piso' | 'external_labeling_portal' | 'logistics_platform' | 'tf_platform_lookup' | 'service_conciliation' | 'remision' | 'transfer_novelties' | 'cyclic_inventory' | 'store_capacity' | 'tallado_mercancia';
 
 /** Fase 1: comparar físico (recepción) vs reparto comercial → remanente bodega. */
 export type DistributionComparePhysicalSource = 'reception_scan' | 'excel_stock';

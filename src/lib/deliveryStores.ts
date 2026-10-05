@@ -126,7 +126,7 @@ export function parseStoreRows(rows: Record<string, unknown>[]): { stores: Deliv
 export function buildStoreMatcher(stores: DeliveryStore[]) {
   const map = new Map<string, DeliveryStore>();
   stores.forEach((s) => {
-    [s.codigoErp, s.nombreCorto, ...s.codigosEquivalentes].forEach((c) => {
+    [s.codigoErp, s.nombreCorto, ...(s.codigosEquivalentes || [])].forEach((c) => {
       const k = normalizeStoreCode(c);
       if (k && !map.has(k)) map.set(k, s);
     });

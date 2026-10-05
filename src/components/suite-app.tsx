@@ -76,6 +76,7 @@ const ControlPiso = dynamic(() => import('@/components/ControlPiso').then(mod =>
 const ExternalLabelingPortal = dynamic(() => import('@/components/ExternalLabelingPortal').then(mod => mod.ExternalLabelingPortal), { loading: () => <LoadingSpinner /> });
 const LabelingDashboard = dynamic(() => import('@/components/LabelingDashboard').then(mod => mod.LabelingDashboard), { loading: () => <LoadingSpinner /> });
 const LogisticsPlatform = dynamic(() => import('@/components/LogisticsPlatform/LogisticsPlatform'), { loading: () => <LoadingSpinner /> });
+const DriverDeliveriesModule = dynamic(() => import('@/components/DriverDeliveriesModule').then(mod => mod.DriverDeliveriesModule), { loading: () => <LoadingSpinner /> });
 const TfPlatformLookupModule = dynamic(() => import('@/components/TfPlatformLookupModule').then(mod => mod.TfPlatformLookupModule), { loading: () => <LoadingSpinner /> });
 const OperatorMappingsManager = dynamic(() => import('@/components/OperatorMappingsManager').then(mod => mod.OperatorMappingsManager), { loading: () => <LoadingSpinner /> });
 const ServiceConciliation = dynamic(() => import('@/components/ServiceConciliation').then(mod => mod.ServiceConciliation), { loading: () => <LoadingSpinner /> });
@@ -748,6 +749,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const handleNavigateToCyclicInventory = () => setAppStep('cyclic_inventory');
   const handleNavigateToStoreCapacity = () => setAppStep('store_capacity');
   const handleNavigateToTalladoMercancia = () => setAppStep('tallado_mercancia');
+  const handleNavigateToDriverDeliveries = () => setAppStep('driver_deliveries');
 
   const handleStartPacking = async (order: WholesaleOrder) => {
       if (!user) {
@@ -912,6 +914,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToCyclicInventory={handleNavigateToCyclicInventory}
                 onNavigateToStoreCapacity={handleNavigateToStoreCapacity}
                 onNavigateToTalladoMercancia={handleNavigateToTalladoMercancia}
+                onNavigateToDriverDeliveries={handleNavigateToDriverDeliveries}
             />;
           case 'upload': return <FileUpload onProcessFile={handleFileProcess} isLoading={isLoading} onGoToHistorical={handleGoToHistorical} onReturnToSuite={handleReturnToSuite} reportDate={reportDate} onDateChange={setReportDate} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} />;
           case 'configure': return rawData && <ConfigurationScreen onCalculate={handleCalculate} fileName={fileName} rawData={rawData} productDB={productDB} goals={productivityGoals} onGoalsChange={setProductivityGoals} onSuggestGoals={handleSuggestGoals} brandProductTypeGoals={brandProductTypeGoals} onBrandProductTypeGoalsChange={setBrandProductTypeGoals} initialPackers={initialPackers} manualClassifications={manualClassifications} onManualClassificationsChange={setManualClassifications} manualJustifications={manualJustifications} onManualJustificationsChange={handleManualJustificationsChange} uniqueReferences={uniqueReferences} referenceCorrections={referenceCorrections} learnedCorrections={learnedCorrections} manualOperatorMappings={manualOperatorMappings} onManualOperatorMappingChange={handleManualOperatorMappingChange} incidentLog={incidentLog} onIncidentLogChange={handleIncidentLogChange} reportDate={reportDate} onReportDateChange={setReportDate} reportStartTime={reportStartTime} onReportStartTimeChange={setReportStartTime} reportEndTime={reportEndTime} onReportEndTimeChange={setReportEndTime} configSelectedPacker={configSelectedPacker} onConfigSelectedPackerChange={handleConfigSelectedPackerChange} onReset={handleNavigateToPackingModule} onReturnToSuite={handleReturnToSuite} isLoading={isLoading} isSavingJustifications={isSavingJustifications} onLoadConfiguration={handleLoadConfiguration} annotations={annotations} onReferenceCorrectionsChange={setReferenceCorrections} onAcceptSuggestion={handleAcceptSuggestion} sanitizedRecordCount={sanitizedRecordCount} discardedRecords={discardedRecords} deadTimes={deadTimes} onReloadJustificationsFromServer={handleReloadJustificationsFromServer} referenceGoals={referenceGoals} onReferenceGoalsChange={setReferenceGoals} operationPulses={pulsesForDay} isReportContextLoading={isReportContextLoading} isReportContextReady={isReportContextReady} />;
@@ -960,6 +963,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           case 'cyclic_inventory': return <CyclicInventoryModule onReturnToSuite={handleReturnToSuite} />;
           case 'store_capacity': return <StoreCapacityModule onReturnToSuite={handleReturnToSuite} />;
           case 'tallado_mercancia': return <TalladoMercanciaModule onReturnToSuite={handleReturnToSuite} />;
+          case 'driver_deliveries': return <DriverDeliveriesModule onReturn={handleReturnToSuite} />;
           case 'routes': return <RoutesModule onReturnToSuite={handleReturnToSuite} />;
           case 'dashboards': return <DashboardsModule onReturnToSuite={handleNavigateToDashboardsEcommerceMenu} />;
           case 'dashboards_main_menu': return <DashboardsMainMenu onNavigateEcommerce={handleNavigateToDashboardsEcommerceMenu} onNavigateBodega={handleNavigateToDashboardsBodegaMenu} onReturnToSuite={handleReturnToSuite} />;
@@ -1018,6 +1022,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToCyclicInventory={handleNavigateToCyclicInventory}
                 onNavigateToStoreCapacity={handleNavigateToStoreCapacity}
                 onNavigateToTalladoMercancia={handleNavigateToTalladoMercancia}
+                onNavigateToDriverDeliveries={handleNavigateToDriverDeliveries}
             />;
       }
     }

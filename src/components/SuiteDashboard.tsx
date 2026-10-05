@@ -70,6 +70,7 @@ interface SuiteDashboardProps {
     onNavigateToCyclicInventory: () => void;
     onNavigateToStoreCapacity: () => void;
     onNavigateToTalladoMercancia: () => void;
+    onNavigateToDriverDeliveries?: () => void;
 }
 
 export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({ 
@@ -99,6 +100,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToCyclicInventory,
     onNavigateToStoreCapacity,
     onNavigateToTalladoMercancia,
+    onNavigateToDriverDeliveries,
 }) => {
     const { role } = useAuth();
     const { toast } = useToast();
@@ -225,6 +227,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Acceder",
             onAction: onNavigateToTransfersModule,
             roles: ['admin', 'supervisor', 'operator', 'conductor']
+        },
+        {
+            key: 'driver_deliveries',
+            icon: Truck,
+            title: "Mis entregas",
+            description: "Relaciones en ruta por tienda: fotos de la remisión firmada, entrega total, parcial o no entregada, con ubicación.",
+            actionText: "Abrir",
+            onAction: () => onNavigateToDriverDeliveries?.(),
+            roles: ['admin', 'supervisor', 'conductor']
         },
         {
             key: 'tf_platform_lookup',
@@ -398,7 +409,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     );
 
     if (normalizedRole === 'conductor') {
-      visibleModules = modules.filter((module) => module.key === 'transfers');
+      visibleModules = modules.filter((module) => module.key === 'driver_deliveries' || module.key === 'transfers');
     }
     if (normalizedRole === 'tiendas') {
       visibleModules = modules.filter((module) => module.key === 'tf_platform_lookup');
