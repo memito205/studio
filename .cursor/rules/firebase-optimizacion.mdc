@@ -1,0 +1,26 @@
+---
+description: PREMISA OBLIGATORIA - todo cambio debe minimizar lecturas/escrituras de Firebase (Firestore/Storage). No borrar.
+alwaysApply: true
+---
+
+# Premisa: consumo mínimo de Firebase (no borrar)
+
+En septiembre 2026 la factura subió ~10x (206M lecturas) por pantallas mal diseñadas: el Dashboard de Recepción leía 864k `scannedItems` cada minuto y Bodega Live recalculaba todo cada 45 s por pantalla. Todo desarrollo nuevo o cambio debe quedar optimizado desde el inicio.
+
+## Reglas
+
+- Nunca `getDocs(collection(...))` sin filtro sobre colecciones grandes (`scannedItems` 864k, `productDatabase` 95k, `packingUnits` 80k, `packedItems` 68k, `ecommerceOrders` 56k, `transfers` 25k, `operation_pulses` 17k, `tf_platform_status` 13k). Filtrar con `where` / `documentId() in` (lotes de 30) / `limit`.
+- Usar contadores o resúmenes ya guardados (`totalScannedQuantity`, `referenceStats`, docs resumen) en vez de recorrer detalles.
+- Tableros/TV/monitores: caché compartida en un documento (patrón `bodegaTvCache` en `bodegaTvActions.ts`, TTL ≥ 5 min) para que N pantallas lean 1 doc.
+- Refrescos automáticos: mínimo 60 s (preferible 2–10 min), solo con `document.visibilityState === 'visible'`. Nada de polling cada pocos segundos; si se necesita tiempo real, `onSnapshot` acotado a pocos docs.
+- Tareas costosas recurrentes (reconciliaciones) con throttle en documento de control (patrón `systemJobs/*`).
+- Consultas por día: rango sobre un campo indexado (ej. `scanned_at >= díaT00:00Z`), no traer historia para filtrar en memoria.
+- Llaves de igualdad simple (ej. `storeDay`) para evitar índices compuestos y lecturas extra.
+- Antes de cerrar un cambio: estimar lecturas = docs por consulta × frecuencia × pantallas/usuarios, y mencionarlo al usuario si es relevante. Medir tamaños con `getCountFromServer` si hay duda.
+
+```ts
+// ❌ MAL: toda la colección cada minuto
+setInterval(() => getAllScannedItems(), 60000);
+// ✅ BIEN: contador ya guardado, 10 min y solo visible
+setInterval(() => { if (document.visibilityState === 'visible') void load(); }, 600000);
+```
