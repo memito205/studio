@@ -658,8 +658,14 @@ export interface DriverRouteTaskPhoto {
 
 export interface DriverRouteTask {
     id: string;
+    /** En envíos sin TF guarda el código propio MSJ-AAAAMMDD-###. */
     numeroTF: string;
     transferIds: string[];
+    /** 'libre' = envío sin TF (sobres, documentos, oficina…). Sin campo = TF. */
+    kind?: 'tf' | 'libre';
+    description?: string;
+    /** Texto original de la columna TF del planificador. */
+    refText?: string;
     bodegaOrigen?: string;
     bodegaDestino?: string;
     unidades: number;

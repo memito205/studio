@@ -5,7 +5,7 @@ import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
 import { Download, Loader2, Search } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { getRouteTasksByDay } from '@/app/routeTaskActions';
+import { getRouteTasksByRange } from '@/app/routeTaskActions';
 import { ROUTE_TASK_STATUS } from '@/components/RouteTasksAssignView';
 import type { DriverRouteTask, DriverRouteTaskPhoto, DriverRouteTaskStatus } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -32,14 +32,17 @@ const Photos: React.FC<{ list?: DriverRouteTaskPhoto[] }> = ({ list }) =>
 /** Recolecciones de ruta por día: 1 consulta por día (sin carga automática). */
 export function RouteTasksAdminTab() {
   const { toast } = useToast();
-  const [day, setDay] = useState(() => format(new Date(), 'yyyy-MM-dd'));
+  const [from, setFrom] = useState(() => format(new Date(), 'yyyy-MM-dd'));
+  const [to, setTo] = useState(() => format(new Date(), 'yyyy-MM-dd'));
+  const [text, setText] = useState('');
   const [tasks, setTasks] = useState<DriverRouteTask[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<DriverRouteTaskStatus | 'todas'>('todas');
+  const day = from === to ? from : `${from}_a_${to}`;
 
   const load = async () => {
     setLoading(true);
-    const res = await getRouteTasksByDay(day);
+    const res = await getRouteTasksByRange(from, to);
     setLoading(false);
     if (res.error) toast({ variant: 'destructive', title: 'Error', description: res.error });
     setTasks(res.data || []);
@@ -54,11 +57,21 @@ export function RouteTasksAdminTab() {
     return { c, assigned, picked, withPickup };
   }, [tasks]);
 
-  const visible = (tasks || []).filter((t) => filter === 'todas' || t.status === filter);
+  const needle = text.trim().toUpperCase();
+  const visible = (tasks || []).filter(
+    (t) =>
+      (filter === 'todas' || t.status === filter) &&
+      (!needle ||
+        [t.numeroTF, t.description, t.refText, t.pickupPoint, t.deliverPoint, t.driverName, t.placa, t.receivedByName, t.notes]
+          .some((v) => String(v || '').toUpperCase().includes(needle)))
+  );
 
   const exportXlsx = () => {
     const rows = visible.map((t) => ({
-      TF: t.numeroTF,
+      Día: t.day,
+      Tipo: t.kind === 'libre' ? 'Sin TF' : 'TF',
+      'TF / código': t.numeroTF,
+      Descripción: t.description || '',
       Conductor: t.driverName,
       Placa: t.placa,
       Origen: t.source,
@@ -87,10 +100,19 @@ export function RouteTasksAdminTab() {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-end gap-2">
-          <Input type="date" className="w-44" value={day} onChange={(e) => setDay(e.target.value)} />
+          <Input type="date" className="w-44" value={from} onChange={(e) => setFrom(e.target.value)} title="Desde" />
+          <Input type="date" className="w-44" value={to} onChange={(e) => setTo(e.target.value)} title="Hasta (máx. 31 días)" />
           <Button onClick={() => void load()} disabled={loading}>
             {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />} Consultar
           </Button>
+          {tasks && (
+            <Input
+              className="w-72"
+              placeholder="Buscar: TF, código MSJ, descripción, punto, conductor…"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+          )}
           {tasks && tasks.length > 0 && (
             <Button variant="outline" onClick={exportXlsx}>
               <Download className="mr-2 h-4 w-4" /> Excel
@@ -147,7 +169,13 @@ export function RouteTasksAdminTab() {
                   ) : (
                     visible.map((t) => (
                       <TableRow key={t.id}>
-                        <TableCell className="font-medium">{t.numeroTF}<span className="block text-xs text-muted-foreground">{t.unidades} und</span></TableCell>
+                        <TableCell className="font-medium">
+                          {t.kind === 'libre' ? t.description : t.numeroTF}
+                          <span className="block text-xs text-muted-foreground">
+                            {t.kind === 'libre' ? `Sin TF · ${t.numeroTF}` : `${t.unidades} und`}
+                            {from !== to ? ` · ${t.day}` : ''}
+                          </span>
+                        </TableCell>
                         <TableCell>{t.driverName}<span className="block text-xs text-muted-foreground">{t.placa}</span></TableCell>
                         <TableCell>{t.pickupPoint || '—'}</TableCell>
                         <TableCell>{t.deliverPoint}</TableCell>

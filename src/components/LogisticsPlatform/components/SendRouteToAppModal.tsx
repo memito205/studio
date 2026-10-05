@@ -5,17 +5,25 @@ import { format } from 'date-fns';
 import { useAuth } from '@/hooks/use-auth-context';
 import { createRouteTasks, type NewRouteTask } from '@/app/routeTaskActions';
 import { DriverUserSelect, type DriverValue } from '@/components/DriverUserSelect';
+import { looksLikeTfNumber } from '@/lib/pod';
 import type { VehiclePlan } from '../types';
 
 const cleanPoint = (v: string) => String(v || '').trim().toUpperCase().replace(/-[RP]$/, '');
 
-/** Una tarea por TF: RECOGER = punto de recogida, ENTREGAR = punto de entrega. Solo RECOGER → se deja en bodega. */
+/**
+ * Una tarea por TF: RECOGER = punto de recogida, ENTREGAR = punto de entrega. Solo RECOGER → se deja en bodega.
+ * Filas cuyo "TF" es texto (SOBRE, DOCUMENTOS…) = envío sin TF, una tarea por fila.
+ */
 export function planToRouteTasks(plan: VehiclePlan): NewRouteTask[] {
   const byTf = new Map<string, NewRouteTask & { idx: number }>();
   plan.tasks.forEach((t, idx) => {
     const tf = String(t.tf || '').trim();
     if (!tf) return;
-    const cur = byTf.get(tf) || { numeroTF: tf, deliverPoint: '', idx };
+    const isTf = looksLikeTfNumber(tf);
+    const key = isTf ? tf.replace(/^TF[-\s]?/i, '') : `row-${t.id}`;
+    const cur = byTf.get(key) || (isTf
+      ? { numeroTF: key, deliverPoint: '', idx }
+      : { kind: 'libre' as const, description: tf, refText: tf, deliverPoint: '', idx });
     if (t.type === 'RECOGER') {
       cur.pickupPoint = cleanPoint(t.valor || '');
       const para = (t.observaciones || '').match(/PARA ENTREGA EN ([^-\s]+)/);
@@ -25,7 +33,7 @@ export function planToRouteTasks(plan: VehiclePlan): NewRouteTask[] {
     }
     const extra = [t.seEnviaCon, t.observaciones].filter(Boolean).join(' · ');
     if (extra) cur.notes = cur.notes ? `${cur.notes} · ${extra}` : extra;
-    byTf.set(tf, cur);
+    byTf.set(key, cur);
   });
   return Array.from(byTf.values())
     .sort((a, b) => a.idx - b.idx)
@@ -68,7 +76,9 @@ export const SendRouteToAppModal: React.FC<{ plan: VehiclePlan; onClose: () => v
       <div className="w-full max-w-lg space-y-4 rounded-lg bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
         <h3 className="text-xl font-bold text-gray-800">Enviar ruta a la app · {plan.name}</h3>
         <p className="text-sm text-gray-600">
-          {tasks.length} TF. El mensajero las verá en &quot;Mis entregas&quot; agrupadas por punto, con foto al recoger y prueba de entrega en tienda.
+          {tasks.filter((t) => t.kind !== 'libre').length} TF y {tasks.filter((t) => t.kind === 'libre').length} envío(s) sin TF. El mensajero los verá
+          en &quot;Mis entregas&quot; agrupados por punto. Los números que no existan como TF también se registran como envío sin TF, con código propio
+          para buscarlos después.
         </p>
         <div className="space-y-1">
           <label className="text-sm font-medium">Mensajero (usuario conductor) *</label>
@@ -85,9 +95,11 @@ export const SendRouteToAppModal: React.FC<{ plan: VehiclePlan; onClose: () => v
           </div>
         </div>
         <div className="max-h-48 overflow-auto rounded border text-xs">
-          {tasks.map((t) => (
-            <div key={t.numeroTF} className="flex justify-between border-b px-2 py-1">
-              <span className="font-semibold">TF {t.numeroTF}</span>
+          {tasks.map((t, i) => (
+            <div key={`${t.numeroTF || t.description}-${i}`} className="flex justify-between gap-2 border-b px-2 py-1">
+              <span className="font-semibold">
+                {t.kind === 'libre' ? <><span className="mr-1 rounded bg-amber-100 px-1 text-amber-800">Sin TF</span>{t.description}</> : `TF ${t.numeroTF}`}
+              </span>
               <span>{t.pickupPoint ? `${t.pickupPoint} → ` : ''}{t.deliverPoint}</span>
             </div>
           ))}

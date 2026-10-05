@@ -52,6 +52,36 @@ export const RouteTasksAssignView: React.FC = () => {
   const [dayTasks, setDayTasks] = useState<DriverRouteTask[] | null>(null);
   const [loadingDay, setLoadingDay] = useState(false);
   const [taskSel, setTaskSel] = useState<Set<string>>(new Set());
+  const [free, setFree] = useState({ description: '', pickup: '', deliver: '', notes: '' });
+  const [savingFree, setSavingFree] = useState(false);
+
+  const handleAddFree = async () => {
+    if (!actor || !driverReady) return;
+    setSavingFree(true);
+    const res = await createRouteTasks({
+      tasks: [{
+        kind: 'libre',
+        description: free.description.trim(),
+        pickupPoint: free.pickup.trim() || undefined,
+        deliverPoint: free.deliver.trim(),
+        notes: free.notes.trim() || undefined,
+      }],
+      driverId: driver.driverUserId!,
+      driverName: driver.driver,
+      placa,
+      day,
+      source: 'transferencias',
+      actor,
+    });
+    setSavingFree(false);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'No se creó', description: res.error });
+      return;
+    }
+    toast({ title: 'Envío sin TF asignado', description: `${free.description} · ${driver.driver}` });
+    setFree({ description: '', pickup: '', deliver: '', notes: '' });
+    void loadDay(day);
+  };
 
   const groups = useMemo(() => {
     const map = new Map<string, TfGroup>();
@@ -258,6 +288,42 @@ export const RouteTasksAssignView: React.FC = () => {
 
       <Card>
         <CardHeader>
+          <CardTitle>Agregar envío sin TF</CardTitle>
+          <CardDescription>
+            Sobres, documentos, encargos de oficina, garantías… Usa el conductor, placa y día de arriba. Queda con código MSJ para buscarlo después.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <datalist id="route-points">
+            {(stores || []).map((s) => <option key={s.id} value={s.nombreCorto} />)}
+            {['OFICINA', 'TRASLADOS', 'GARANTIAS', 'RECEPCION', 'SISTEMAS', 'BODEGA'].map((p) => <option key={p} value={p} />)}
+          </datalist>
+          <div className="grid gap-3 md:grid-cols-4">
+            <div className="space-y-1 md:col-span-2">
+              <Label>Qué se envía *</Label>
+              <Input value={free.description} maxLength={200} placeholder="Ej: Sobre contabilidad, 2 cajas garantía" onChange={(e) => setFree((f) => ({ ...f, description: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label>Recoger en</Label>
+              <Input list="route-points" value={free.pickup} placeholder="Vacío = ya lo lleva" onFocus={() => void ensureStores()} onChange={(e) => setFree((f) => ({ ...f, pickup: e.target.value.toUpperCase() }))} />
+            </div>
+            <div className="space-y-1">
+              <Label>Entregar en *</Label>
+              <Input list="route-points" value={free.deliver} onFocus={() => void ensureStores()} onChange={(e) => setFree((f) => ({ ...f, deliver: e.target.value.toUpperCase() }))} />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <Input className="max-w-md" placeholder="Observación (a quién, teléfono, etc.)" value={free.notes} onChange={(e) => setFree((f) => ({ ...f, notes: e.target.value }))} />
+            <Button onClick={() => void handleAddFree()} disabled={savingFree || !driverReady || !free.description.trim() || !free.deliver.trim()}>
+              {savingFree ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />} Asignar envío
+            </Button>
+            {!driverReady && <span className="text-xs text-muted-foreground">Elija arriba conductor, placa y día.</span>}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <CardTitle>Tareas del día {day}</CardTitle>
@@ -288,7 +354,7 @@ export const RouteTasksAssignView: React.FC = () => {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-10" />
-                    <TableHead># TF</TableHead>
+                    <TableHead>TF / envío</TableHead>
                     <TableHead>Conductor / placa</TableHead>
                     <TableHead>Recoger</TableHead>
                     <TableHead>Entregar</TableHead>
@@ -317,7 +383,9 @@ export const RouteTasksAssignView: React.FC = () => {
                             />
                           )}
                         </TableCell>
-                        <TableCell className="font-medium">{t.numeroTF}</TableCell>
+                        <TableCell className="font-medium">
+                          {t.kind === 'libre' ? <>{t.description}<span className="block text-xs text-amber-700">Sin TF · {t.numeroTF}</span></> : t.numeroTF}
+                        </TableCell>
                         <TableCell>{t.driverName} · {t.placa}</TableCell>
                         <TableCell>{t.pickupPoint || '—'}</TableCell>
                         <TableCell>{t.deliverPoint}</TableCell>

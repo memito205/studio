@@ -6,7 +6,7 @@ import { ArrowLeft, Camera, CheckCircle2, ImagePlus, Loader2, MapPin, PackageChe
 import { useToast } from '@/hooks/use-toast';
 import type { RouteTaskAction } from '@/app/routeTaskActions';
 import { compressImage, enqueueDelivery, type QueuedPhoto, type QueuedRouteSubmission } from '@/lib/podQueue';
-import { MAX_DELIVERY_PHOTOS, NOT_DELIVERED_REASONS, PHOTO_CATEGORIES } from '@/lib/pod';
+import { MAX_DELIVERY_PHOTOS, NOT_DELIVERED_REASONS, PHOTO_CATEGORIES, routeTaskLabel } from '@/lib/pod';
 import type { DeliveryPhotoCategory, DriverRouteTask, TransferActor } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -88,7 +88,9 @@ const RouteTaskForm: React.FC<{
   const galleryRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const failing = action === 'no_recoger' || action === 'no_entregar';
-  const toStore = action === 'entregar' && group.deliverType === 'tienda';
+  const chosenTasks = group.tasks.filter((t) => selected.has(t.id));
+  const toStore = action === 'entregar' && group.deliverType === 'tienda' && chosenTasks.some((t) => t.kind !== 'libre');
+  const libreDelivery = action === 'entregar' && chosenTasks.some((t) => t.kind === 'libre');
   const categories = action === 'recoger'
     ? [{ id: 'mercancia' as DeliveryPhotoCategory, label: 'Mercancía recogida', required: true }]
     : action === 'entregar'
@@ -138,7 +140,8 @@ const RouteTaskForm: React.FC<{
   if (failing && !reason) problems.push('Indique el motivo.');
   if (action === 'recoger' && photos.length === 0) problems.push('Tome la foto de lo que recoge.');
   if (toStore && !photos.some((p) => p.category === 'remision')) problems.push('Tome la foto de la remisión firmada.');
-  if (toStore && !receivedBy.trim()) problems.push('Escriba el nombre de quien recibe.');
+  if (libreDelivery && photos.length === 0) problems.push('Tome la foto de la entrega.');
+  if ((toStore || libreDelivery) && !receivedBy.trim()) problems.push('Escriba el nombre de quien recibe.');
 
   const handleConfirm = async () => {
     if (problems.length > 0) return;
@@ -205,13 +208,13 @@ const RouteTaskForm: React.FC<{
                 }
               />
               <span className="flex-1">
-                <span className="font-semibold">TF {t.numeroTF}</span>
+                <span className="font-semibold">{routeTaskLabel(t)}</span>
                 <span className="block text-xs text-muted-foreground">
                   {group.kind === 'recoger' ? `Entregar en ${t.deliverPoint}` : t.bodegaOrigen ? `Desde ${t.bodegaOrigen}` : ''}
                   {t.notes ? ` · ${t.notes}` : ''}
                 </span>
               </span>
-              <span className="text-xs text-muted-foreground">{t.unidades} und</span>
+              {t.kind !== 'libre' && <span className="text-xs text-muted-foreground">{t.unidades} und</span>}
             </label>
           ))}
         </CardContent>
@@ -291,7 +294,7 @@ const RouteTaskForm: React.FC<{
 
       <Card>
         <CardContent className="space-y-3 pt-6">
-          {toStore && (
+          {(toStore || libreDelivery) && (
             <div className="space-y-1">
               <Label htmlFor="rt-received">Nombre de quien recibe *</Label>
               <Input id="rt-received" value={receivedBy} onChange={(e) => setReceivedBy(e.target.value)} />
@@ -366,7 +369,7 @@ export const DriverRouteTasksSection: React.FC<{
                 <div>
                   <CardTitle className="text-base">{g.point}</CardTitle>
                   <CardDescription>
-                    {g.tasks.length} TF · {g.tasks.reduce((n, t) => n + (t.unidades || 0), 0)} und · placa {g.tasks[0].placa}
+                    {g.tasks.length} envío(s) · {g.tasks.reduce((n, t) => n + (t.unidades || 0), 0)} und · placa {g.tasks[0].placa}
                   </CardDescription>
                 </div>
                 <Badge className={g.kind === 'recoger' ? 'bg-blue-600 text-white' : 'bg-emerald-600 text-white'}>
@@ -376,7 +379,7 @@ export const DriverRouteTasksSection: React.FC<{
             </CardHeader>
             <CardContent className="space-y-2">
               <p className="text-xs text-muted-foreground">
-                {g.tasks.map((t) => `TF ${t.numeroTF}${g.kind === 'recoger' ? ` → ${t.deliverPoint}` : ''}`).join(' · ')}
+                {g.tasks.map((t) => `${routeTaskLabel(t)}${g.kind === 'recoger' ? ` → ${t.deliverPoint}` : ''}`).join(' · ')}
               </p>
               <div className="grid grid-cols-2 gap-2">
                 <Button onClick={() => onOpenForm({ group: g, action: g.kind === 'recoger' ? 'recoger' : 'entregar' })}>

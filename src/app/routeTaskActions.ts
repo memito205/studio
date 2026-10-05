@@ -98,7 +98,11 @@ async function ensureNonStorePoints(points: string[], stores: DeliveryStore[], a
 }
 
 export type NewRouteTask = {
-  numeroTF: string;
+  /** TF, o en envíos sin TF el código MSJ ya asignado (reasignación). */
+  numeroTF?: string;
+  kind?: 'tf' | 'libre';
+  description?: string;
+  refText?: string;
   transferIds?: string[];
   bodegaDestino?: string;
   pickupPoint?: string;
@@ -127,7 +131,9 @@ export async function createRouteTasks(input: {
   const placa = normPoint(input.placa);
   if (placa.length < 3) return { success: false, error: 'La placa es obligatoria (mínimo 3 caracteres).' };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.day)) return { success: false, error: 'Día inválido.' };
-  const tasks = input.tasks.filter((t) => String(t.numeroTF || '').trim() && normPoint(t.deliverPoint));
+  const tasks = input.tasks.filter(
+    (t) => normPoint(t.deliverPoint) && (t.kind === 'libre' ? String(t.description || t.refText || '').trim() : String(t.numeroTF || '').trim())
+  );
   if (tasks.length === 0) return { success: false, error: 'No hay tareas para asignar.' };
   const actorName = actorNameOf(actor);
 
@@ -145,7 +151,7 @@ export async function createRouteTasks(input: {
       }
     }
 
-    const tfs = Array.from(new Set(tasks.map((t) => String(t.numeroTF).trim())));
+    const tfs = Array.from(new Set(tasks.filter((t) => t.kind !== 'libre').map((t) => String(t.numeroTF).trim())));
     const linesByTf = new Map<string, Array<{ id: string; data: DocumentData }>>();
     const openTfs = new Set<string>();
     for (let i = 0; i < tfs.length; i += 30) {
@@ -163,21 +169,46 @@ export async function createRouteTasks(input: {
       open.docs.forEach((d) => openTfs.add(String(d.data().openKey)));
     }
 
+    // En el planificador, lo que no existe como TF se registra como envío sin TF.
+    const prepared = tasks.map((t) => {
+      if (t.kind === 'libre') return { ...t, kind: 'libre' as const };
+      const tf = String(t.numeroTF).trim();
+      if (input.source === 'planificador' && !linesByTf.has(tf)) {
+        return { ...t, kind: 'libre' as const, numeroTF: undefined, refText: tf, description: t.description || tf };
+      }
+      return { ...t, kind: 'tf' as const };
+    });
+    const needCodes = prepared.filter((t) => t.kind === 'libre' && !/^MSJ-/.test(String(t.numeroTF || ''))).length;
+    let nextSeq = 0;
+    if (needCodes > 0) {
+      const seqRef = doc(firestore, 'systemJobs', `routeFreeSeq_${input.day}`);
+      nextSeq = await runTransaction(firestore, async (tx) => {
+        const s = await tx.get(seqRef);
+        const last = s.exists() ? Number(s.data().seq) || 0 : 0;
+        tx.set(seqRef, { seq: last + needCodes, day: input.day, updatedAt: Timestamp.now() });
+        return last + 1;
+      });
+    }
+    const dayCode = input.day.replace(/-/g, '');
+
     const skipped: Array<{ numeroTF: string; reason: string }> = [];
     const batch = writeBatch(firestore);
     const now = Timestamp.now();
     let created = 0;
     const seen = new Set<string>();
-    for (const t of tasks) {
-      const tf = String(t.numeroTF).trim();
-      if (openTfs.has(tf) || seen.has(tf)) {
+    for (const t of prepared) {
+      const isLibre = t.kind === 'libre';
+      const tf = isLibre
+        ? /^MSJ-/.test(String(t.numeroTF || '')) ? String(t.numeroTF) : `MSJ-${dayCode}-${String(nextSeq++).padStart(3, '0')}`
+        : String(t.numeroTF).trim();
+      if (!isLibre && (openTfs.has(tf) || seen.has(tf))) {
         skipped.push({ numeroTF: tf, reason: 'Ya tiene una tarea abierta' });
         continue;
       }
       seen.add(tf);
       const deliverStore = match(t.deliverPoint);
       const pickupStore = t.pickupPoint ? match(t.pickupPoint) : undefined;
-      const allLines = linesByTf.get(tf) || [];
+      const allLines = isLibre ? [] : linesByTf.get(tf) || [];
       let lines = t.transferIds?.length ? allLines.filter((l) => t.transferIds!.includes(l.id)) : allLines;
       if (!t.transferIds?.length && t.bodegaDestino) {
         lines = lines.filter((l) => platformWhs(l.data.bodegaDestino) === platformWhs(t.bodegaDestino));
@@ -192,6 +223,9 @@ export async function createRouteTasks(input: {
         ref,
         clean({
           numeroTF: tf,
+          kind: isLibre ? 'libre' : undefined,
+          description: isLibre ? String(t.description || t.refText || '').trim().slice(0, 200) : undefined,
+          refText: isLibre ? t.refText?.trim() || undefined : undefined,
           transferIds: lines.map((l) => l.id),
           bodegaOrigen: first ? platformWhs(first.bodegaOrigen) || undefined : undefined,
           bodegaDestino: first ? platformWhs(first.bodegaDestino) || undefined : t.bodegaDestino,
@@ -205,7 +239,7 @@ export async function createRouteTasks(input: {
           driverId: input.driverId,
           driverName: input.driverName,
           driverOpen: `${input.driverId}|open`,
-          openKey: tf,
+          openKey: isLibre ? undefined : tf,
           placa,
           day: input.day,
           order: t.order,
@@ -235,6 +269,22 @@ export async function getMyRouteTasks(driverId: string): Promise<{ data?: Driver
     const data = snap.docs
       .map((d) => toTask(d.id, d.data()))
       .sort((a, b) => a.day.localeCompare(b.day) || (a.order ?? 9999) - (b.order ?? 9999) || a.numeroTF.localeCompare(b.numeroTF, undefined, { numeric: true }));
+    return { data };
+  } catch (error: any) {
+    return { error: error.message || 'No se pudieron cargar las tareas.' };
+  }
+}
+
+/** Tareas en un rango de días (máx. 31) para el buscador; filtra texto en memoria. */
+export async function getRouteTasksByRange(from: string, to: string): Promise<{ data?: DriverRouteTask[]; error?: string }> {
+  try {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return { error: 'Rango de fechas inválido.' };
+    const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000;
+    if (days > 31) return { error: 'Consulte máximo 31 días.' };
+    const snap = await getDocs(query(collection(firestore, TASKS), where('day', '>=', from), where('day', '<=', to)));
+    const data = snap.docs
+      .map((d) => toTask(d.id, d.data()))
+      .sort((a, b) => b.day.localeCompare(a.day) || a.driverName.localeCompare(b.driverName) || (a.order ?? 9999) - (b.order ?? 9999));
     return { data };
   } catch (error: any) {
     return { error: error.message || 'No se pudieron cargar las tareas.' };
@@ -304,9 +354,11 @@ export async function submitRouteTasks(
       if (tasks.some((x) => x.t.driverId !== actor.userId)) {
         return { success: false, conflict: true, error: 'Estas tareas están asignadas a otro conductor.' };
       }
-      const toStore = action === 'entregar' && tasks.some((x) => x.t.deliverType === 'tienda');
+      const toStore = action === 'entregar' && tasks.some((x) => x.t.kind !== 'libre' && x.t.deliverType === 'tienda');
+      const libreDelivery = action === 'entregar' && tasks.some((x) => x.t.kind === 'libre');
       if (toStore && !input.photos.some((p) => p.category === 'remision')) throw new Error('Falta la foto de la remisión firmada.');
-      if (toStore && !String(input.receivedByName || '').trim()) throw new Error('Falta el nombre de quien recibe.');
+      if (libreDelivery && input.photos.length === 0) throw new Error('Tome la foto de la entrega.');
+      if ((toStore || libreDelivery) && !String(input.receivedByName || '').trim()) throw new Error('Falta el nombre de quien recibe.');
 
       const lineIds = action === 'recoger' || action === 'entregar' ? Array.from(new Set(tasks.flatMap((x) => x.t.transferIds || []))) : [];
       const lineSnaps = await Promise.all(lineIds.map((id) => tx.get(doc(firestore, 'transfers', id))));
@@ -536,6 +588,9 @@ export async function reassignRouteTasks(input: {
     const res = await createRouteTasks({
       tasks: olds.map(({ t }) => ({
         numeroTF: t.numeroTF,
+        kind: t.kind,
+        description: t.description,
+        refText: t.refText,
         transferIds: t.transferIds,
         // Si ya la recogió (no entregada), la nueva tarea es solo entregar.
         pickupPoint: t.pickedAt ? undefined : t.pickupPoint,
