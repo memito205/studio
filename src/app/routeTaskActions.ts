@@ -12,6 +12,7 @@ import {
   where,
   writeBatch,
   type DocumentData,
+  type DocumentReference,
 } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
 import { buildStoreMatcher } from '@/lib/deliveryStores';
@@ -192,7 +193,13 @@ export async function createRouteTasks(input: {
     const dayCode = input.day.replace(/-/g, '');
 
     const skipped: Array<{ numeroTF: string; reason: string }> = [];
-    const batch = writeBatch(firestore);
+    const batches = [writeBatch(firestore)];
+    const batch = {
+      set: (ref: DocumentReference, data: DocumentData) => {
+        if (created > 0 && created % 450 === 0) batches.push(writeBatch(firestore));
+        batches[batches.length - 1].set(ref, data);
+      },
+    };
     const now = Timestamp.now();
     let created = 0;
     const seen = new Set<string>();
@@ -253,7 +260,7 @@ export async function createRouteTasks(input: {
       );
       created++;
     }
-    if (created > 0) await batch.commit();
+    if (created > 0) for (const b of batches) await b.commit();
     return { success: true, created, skipped };
   } catch (error: any) {
     console.error('createRouteTasks:', error);

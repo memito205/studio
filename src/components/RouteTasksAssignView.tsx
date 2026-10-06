@@ -5,7 +5,7 @@ import { format } from 'date-fns';
 import { Ban, Loader2, RefreshCw, Search, Send, Shuffle } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
-import { getTransfersByQuery, getTransfersByStatus } from '@/app/actions';
+import { getTransfersByStatus } from '@/app/actions';
 import { getDeliveryStores } from '@/app/deliveryActions';
 import { cancelRouteTasks, createRouteTasks, getRouteTasksByDay, reassignRouteTasks } from '@/app/routeTaskActions';
 import { DriverUserSelect, type DriverValue } from '@/components/DriverUserSelect';
@@ -30,6 +30,7 @@ export const ROUTE_TASK_STATUS: Record<DriverRouteTaskStatus, { label: string; c
 
 type TfGroup = { key: string; numeroTF: string; bodegaOrigen: string; bodegaDestino: string; ids: string[]; unidades: number };
 type DeliverTo = 'bodega' | 'destino' | 'otra';
+const ALL = '__todas__';
 
 export const RouteTasksAssignView: React.FC = () => {
   const { user, userName } = useAuth();
@@ -39,6 +40,8 @@ export const RouteTasksAssignView: React.FC = () => {
     [user, userName]
   );
   const [search, setSearch] = useState('');
+  const [fOrigin, setFOrigin] = useState(ALL);
+  const [fDest, setFDest] = useState(ALL);
   const [lines, setLines] = useState<TransferEntry[]>([]);
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -95,20 +98,42 @@ export const RouteTasksAssignView: React.FC = () => {
     return Array.from(map.values()).sort((a, b) => a.numeroTF.localeCompare(b.numeroTF, undefined, { numeric: true }));
   }, [lines]);
 
-  const runSearch = async () => {
+  const origins = useMemo(() => Array.from(new Set(groups.map((g) => g.bodegaOrigen))).sort(), [groups]);
+  const destinations = useMemo(() => Array.from(new Set(groups.map((g) => g.bodegaDestino))).sort(), [groups]);
+  const visibleGroups = useMemo(() => {
+    const tf = search.trim().toUpperCase();
+    return groups.filter(
+      (g) =>
+        (fOrigin === ALL || g.bodegaOrigen === fOrigin) &&
+        (fDest === ALL || g.bodegaDestino === fDest) &&
+        (!tf || g.numeroTF.toUpperCase().includes(tf))
+    );
+  }, [groups, fOrigin, fDest, search]);
+  const allVisibleSelected = visibleGroups.length > 0 && visibleGroups.every((g) => selected.has(g.key));
+  const selectedUnits = groups.filter((g) => selected.has(g.key)).reduce((n, g) => n + g.unidades, 0);
+
+  /** Trae todas las TF En Tránsito una vez (~800 líneas); los filtros trabajan en pantalla sin nuevas lecturas. */
+  const loadInTransit = async () => {
     setSearching(true);
-    const q = search.trim();
-    const res = q ? await getTransfersByQuery(q, /^\d+$/.test(q) ? 'number' : 'origin') : await getTransfersByStatus('En Tránsito');
+    const res = await getTransfersByStatus('En Tránsito', 3000);
     setSearching(false);
     if (res.error) {
       toast({ variant: 'destructive', title: 'Error', description: res.error });
       return;
     }
-    const found = (res.data || []).filter((t) => t.status === 'En Tránsito');
-    setLines(found);
+    setLines(res.data || []);
     setSelected(new Set());
-    if (found.length === 0) toast({ title: 'Sin resultados', description: 'No hay TF En Tránsito con ese criterio.' });
+    setFOrigin(ALL);
+    setFDest(ALL);
+    if (!res.data?.length) toast({ title: 'Sin resultados', description: 'No hay TF En Tránsito.' });
   };
+
+  const toggleVisible = (on: boolean) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      visibleGroups.forEach((g) => (on ? next.add(g.key) : next.delete(g.key)));
+      return next;
+    });
 
   const ensureStores = async () => {
     if (stores) return;
@@ -158,6 +183,9 @@ export const RouteTasksAssignView: React.FC = () => {
       title: `${res.created} TF asignadas a ${driver.driver}`,
       description: res.skipped?.length ? `Omitidas: ${res.skipped.map((s) => `TF ${s.numeroTF} (${s.reason})`).join(', ')}` : undefined,
     });
+    const skippedTfs = new Set((res.skipped || []).map((s) => s.numeroTF));
+    const assignedIds = new Set(chosen.filter((g) => !skippedTfs.has(g.numeroTF)).flatMap((g) => g.ids));
+    setLines((prev) => prev.filter((l) => !assignedIds.has(l.id)));
     setSelected(new Set());
     void loadDay(day);
   };
@@ -229,16 +257,48 @@ export const RouteTasksAssignView: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-end gap-2 rounded-lg border bg-muted/50 p-3">
-            <Input className="max-w-xs" placeholder="# TF u origen (vacío = todas En Tránsito)" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void runSearch()} />
-            <Button onClick={() => void runSearch()} disabled={searching}>
-              {searching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />} Buscar
+          <div className="grid gap-2 rounded-lg border bg-muted/50 p-3 md:grid-cols-[auto_1fr_1fr_1fr]">
+            <Button onClick={() => void loadInTransit()} disabled={searching}>
+              {searching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
+              {lines.length ? 'Recargar En Tránsito' : 'Cargar TF En Tránsito'}
             </Button>
-            <div className="flex-1" />
-            <Button onClick={() => void handleAssign()} disabled={saving || selected.size === 0 || !driverReady}>
-              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />} Asignar ({selected.size}) TF
-            </Button>
+            <Select value={fOrigin} onValueChange={setFOrigin} disabled={!groups.length}>
+              <SelectTrigger><SelectValue placeholder="Bodega origen" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>Todas las bodegas origen</SelectItem>
+                {origins.map((o) => <SelectItem key={o} value={o}>{o}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={fDest} onValueChange={setFDest} disabled={!groups.length}>
+              <SelectTrigger><SelectValue placeholder="Bodega destino" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>Todas las bodegas destino</SelectItem>
+                {destinations.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Input placeholder="Filtrar # TF" value={search} onChange={(e) => setSearch(e.target.value)} disabled={!groups.length} />
           </div>
+
+          {groups.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="text-muted-foreground">
+                Mostrando {visibleGroups.length} de {groups.length} TF · seleccionadas <b>{selected.size}</b> ({selectedUnits} und)
+              </span>
+              <Button size="sm" variant="outline" onClick={() => toggleVisible(true)} disabled={!visibleGroups.length || allVisibleSelected}>
+                Seleccionar las {visibleGroups.length} filtradas
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())} disabled={!selected.size}>
+                Quitar selección
+              </Button>
+              <div className="flex-1" />
+              <Button onClick={() => void handleAssign()} disabled={saving || selected.size === 0 || !driverReady}>
+                {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />} Asignar {selected.size} TF
+              </Button>
+            </div>
+          )}
+          {groups.length > 0 && !driverReady && selected.size > 0 && (
+            <p className="text-xs text-amber-700">Para asignar elija arriba conductor (usuario de la app), placa y día.</p>
+          )}
 
           {groups.length > 0 && (
             <div className="max-h-[50vh] overflow-auto rounded-md border">
@@ -246,10 +306,7 @@ export const RouteTasksAssignView: React.FC = () => {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-10">
-                      <Checkbox
-                        checked={groups.length > 0 && groups.every((g) => selected.has(g.key))}
-                        onCheckedChange={(c) => setSelected(c ? new Set(groups.map((g) => g.key)) : new Set())}
-                      />
+                      <Checkbox checked={allVisibleSelected} onCheckedChange={(c) => toggleVisible(!!c)} />
                     </TableHead>
                     <TableHead># TF</TableHead>
                     <TableHead>Recoger en (origen)</TableHead>
@@ -258,8 +315,11 @@ export const RouteTasksAssignView: React.FC = () => {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {groups.map((g) => (
-                    <TableRow key={g.key}>
+                  {visibleGroups.length === 0 && (
+                    <TableRow><TableCell colSpan={5} className="h-16 text-center text-muted-foreground">Ninguna TF con esos filtros.</TableCell></TableRow>
+                  )}
+                  {visibleGroups.map((g) => (
+                    <TableRow key={g.key} data-state={selected.has(g.key) ? 'selected' : undefined}>
                       <TableCell>
                         <Checkbox
                           checked={selected.has(g.key)}
