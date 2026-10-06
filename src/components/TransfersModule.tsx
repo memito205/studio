@@ -1190,9 +1190,12 @@ interface AdminViewProps {
     onFileChange: (e: ChangeEvent<HTMLInputElement>) => void;
     fileInputRef: React.RefObject<HTMLInputElement>;
     setIsManualEntryOpen: (open: boolean) => void;
+    onNeedOperational: () => void;
 }
 
-const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, collectionLogs, isLoading, filters, setFilters, onRefresh, onSearch, role, users, isUploading, onFileChange, fileInputRef, setIsManualEntryOpen }) => {
+const OPERATIONAL_TABS = new Set(['validation', 'manifest']);
+
+const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, collectionLogs, isLoading, filters, setFilters, onRefresh, onSearch, role, users, isUploading, onFileChange, fileInputRef, setIsManualEntryOpen, onNeedOperational }) => {
     const { user, userName } = useAuth();
     const { toast } = useToast();
     const actor = useMemo(() => toTransferActor(user, userName), [user, userName]);
@@ -1900,7 +1903,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
       <ManifestDetailsDialog manifest={selectedManifest} isOpen={isManifestDetailsOpen} onOpenChange={setIsManifestDetailsOpen} />
       <CollectionLogDetailsDialog log={selectedCollectionLog} isOpen={!!selectedCollectionLog} onOpenChange={() => setSelectedCollectionLog(null)} />
       
-        <Tabs defaultValue="general">
+        <Tabs defaultValue="general" onValueChange={(v) => { if (OPERATIONAL_TABS.has(v)) onNeedOperational(); }}>
             <TabsList className="flex flex-wrap h-auto justify-start">
                 <TabsTrigger value="general">Consulta General</TabsTrigger>
                 <TabsTrigger value="collection">Registrar Recolección</TabsTrigger>
@@ -3286,44 +3289,71 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
     const [isManualEntryOpen, setIsManualEntryOpen] = useState(false);
     const [isSavingManualEntry, setIsSavingManualEntry] = useState(false);
 
+    // Recolectado + Validado + Recibido en Bodega (~2.3k docs): only for the tabs that use it.
+    const operationalWantedRef = useRef(false);
+    const usersLoadedRef = useRef(false);
+    const fetchInFlightRef = useRef(false);
+    const fetchPendingRef = useRef(false);
+
     const fetchData = useCallback(async () => {
+        if (fetchInFlightRef.current) {
+            fetchPendingRef.current = true;
+            return;
+        }
+        fetchInFlightRef.current = true;
         setIsLoading(true);
-        // Only load users and logs initially. Transfers load ONLY by search or specific status tabs.
-        const [usersResult, collectionLogsResult, recollectionRes, validatedRes, receivedRes] = await Promise.all([
-          getAllUserProfiles(),
-          getCollectionLogs(),
-          getTransfersByStatus('Recolectado en Ruta'),
-          getTransfersByStatus('Validado Supervisor'),
-          getTransfersByStatus('Recibido en Bodega', 10000)
-        ]);
-        
-        if (usersResult) {
-            setAllUsers(usersResult);
-        } else {
-            toast({ variant: 'destructive', title: 'Error al cargar usuarios' });
+        try {
+            const withOperational = operationalWantedRef.current;
+            const withUsers = !usersLoadedRef.current;
+            const [usersResult, collectionLogsResult, recollectionRes, validatedRes, receivedRes] = await Promise.all([
+              withUsers ? getAllUserProfiles() : Promise.resolve(null),
+              getCollectionLogs(),
+              withOperational ? getTransfersByStatus('Recolectado en Ruta') : Promise.resolve(null),
+              withOperational ? getTransfersByStatus('Validado Supervisor') : Promise.resolve(null),
+              withOperational ? getTransfersByStatus('Recibido en Bodega', 10000) : Promise.resolve(null),
+            ]);
+
+            if (withUsers) {
+                if (usersResult) {
+                    setAllUsers(usersResult);
+                    usersLoadedRef.current = true;
+                } else {
+                    toast({ variant: 'destructive', title: 'Error al cargar usuarios' });
+                }
+            }
+
+            if (collectionLogsResult.success && collectionLogsResult.data) {
+                setCollectionLogs(collectionLogsResult.data);
+            } else {
+                toast({ variant: 'destructive', title: 'Error al cargar historial de recolecciones', description: collectionLogsResult.error });
+            }
+
+            if (withOperational && recollectionRes && validatedRes && receivedRes) {
+                const combinedTransfers = [
+                    ...(recollectionRes.data || []),
+                    ...(validatedRes.data || []),
+                    ...(receivedRes.data || [])
+                ];
+                setAllTransfers(combinedTransfers.sort((a, b) => b.fecha.getTime() - a.fecha.getTime()));
+                if (recollectionRes.error || validatedRes.error || receivedRes.error) {
+                    toast({ variant: 'destructive', title: 'Error al cargar transferencias', description: 'Algunas listas no pudieron cargarse correctamente.' });
+                }
+            }
+        } finally {
+            setIsLoading(false);
+            fetchInFlightRef.current = false;
         }
-
-        if (collectionLogsResult.success && collectionLogsResult.data) {
-            setCollectionLogs(collectionLogsResult.data);
-        } else {
-            toast({ variant: 'destructive', title: 'Error al cargar historial de recolecciones', description: collectionLogsResult.error });
+        if (fetchPendingRef.current) {
+            fetchPendingRef.current = false;
+            void fetchData();
         }
-
-        const combinedTransfers = [
-            ...(recollectionRes.data || []),
-            ...(validatedRes.data || []),
-            ...(receivedRes.data || [])
-        ];
-
-        const sorted = combinedTransfers.sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
-        setAllTransfers(sorted);
-
-        if (recollectionRes.error || validatedRes.error || receivedRes.error) {
-            toast({ variant: 'destructive', title: 'Error al cargar transferencias', description: 'Algunas listas no pudieron cargarse correctamente.' });
-        }
-
-        setIsLoading(false);
     }, [toast]);
+
+    const ensureOperational = useCallback(() => {
+        if (operationalWantedRef.current) return;
+        operationalWantedRef.current = true;
+        void fetchData();
+    }, [fetchData]);
 
     const handleSearch = useCallback(async () => {
         const { numeroTF, codigoAlterno, bodegaOrigen, bodegaDestino, status, startDate, endDate } = filters;
@@ -3510,8 +3540,10 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
     }, [fetchData, toast]);
 
     useEffect(() => {
+        if (role === 'conductor') return;
+        if (!canSeeAdminView) operationalWantedRef.current = true;
         fetchData();
-    }, [fetchData]);
+    }, [fetchData, role, canSeeAdminView]);
     
     return (
     <div className="space-y-8">
@@ -3552,6 +3584,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             onFileChange={handleFileChange}
             fileInputRef={fileInputRef}
             setIsManualEntryOpen={setIsManualEntryOpen}
+            onNeedOperational={ensureOperational}
           />
       ) : role === 'conductor' ? (
         <CollectionTabView

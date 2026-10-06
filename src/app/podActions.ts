@@ -19,6 +19,7 @@ import {
 } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
 import { buildStoreMatcher, DEFAULT_STORE_RADIUS_M } from '@/lib/deliveryStores';
+import { getDeliveryStoresCached } from '@/lib/deliveryStoresCache';
 import { MAX_DELIVERY_PHOTOS, POD_START_AT } from '@/lib/pod';
 
 const PLATFORM_COLLECTION = 'tf_platform_status';
@@ -103,15 +104,15 @@ export async function getManifestStopsDetail(
 ): Promise<{ manifest?: DeliveryManifest; stops?: StopWithTfs[]; error?: string }> {
   try {
     const manifestRef = doc(firestore, 'deliveryManifests', manifestDocId);
-    const [mSnap, stopsSnap, storesSnap] = await Promise.all([
+    const [mSnap, stopsSnap, stores] = await Promise.all([
       getDoc(manifestRef),
       getDocs(collection(manifestRef, 'stops')),
-      getDocs(collection(firestore, 'deliveryStores')),
+      getDeliveryStoresCached(),
     ]);
     if (!mSnap.exists()) return { error: 'La relación no existe.' };
     const manifest = toDates({ id: mSnap.id, ...mSnap.data() }) as DeliveryManifest;
     const stops = stopsSnap.docs.map((d) => toDates({ id: d.id, ...d.data() }) as DeliveryManifestStop);
-    const matchStore = buildStoreMatcher(storesSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as DeliveryStore));
+    const matchStore = buildStoreMatcher(stores);
 
     const ids = Array.from(new Set(stops.flatMap((s) => s.transferIds || [])));
     const lines = new Map<string, DocumentData>();
@@ -291,8 +292,7 @@ export async function submitDeliveryStop(
   }
 
   try {
-    const storesSnap = await getDocs(collection(firestore, 'deliveryStores'));
-    const matchStore = buildStoreMatcher(storesSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as DeliveryStore));
+    const matchStore = buildStoreMatcher(await getDeliveryStoresCached());
 
     const manifestRef = doc(firestore, 'deliveryManifests', manifestDocId);
     const stopRef = doc(manifestRef, 'stops', stopId);
@@ -481,7 +481,7 @@ export async function getPodAdminManifests(opts: {
 }): Promise<{ data?: AdminManifest[]; error?: string }> {
   try {
     const col = collection(firestore, 'deliveryManifests');
-    const [openSnap, rangeSnap, storesSnap] = await Promise.all([
+    const [openSnap, rangeSnap, stores] = await Promise.all([
       getDocs(query(col, where('deliveryStatus', 'in', ['en_ruta', 'pendiente_validacion']))),
       getDocs(
         query(
@@ -490,9 +490,9 @@ export async function getPodAdminManifests(opts: {
           where('createdAt', '<=', Timestamp.fromDate(new Date(opts.to)))
         )
       ),
-      getDocs(collection(firestore, 'deliveryStores')),
+      getDeliveryStoresCached(),
     ]);
-    const matchStore = buildStoreMatcher(storesSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as DeliveryStore));
+    const matchStore = buildStoreMatcher(stores);
     const docs = new Map<string, (typeof openSnap.docs)[number]>();
     [...openSnap.docs, ...rangeSnap.docs].forEach((d) => {
       if (d.data().deliveryStatus) docs.set(d.id, d);
@@ -904,8 +904,7 @@ export async function receiveAtStore(input: {
   const actorName = actorNameOf(actor);
 
   try {
-    const storesSnap = await getDocs(collection(firestore, 'deliveryStores'));
-    const stores = storesSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as DeliveryStore);
+    const stores = await getDeliveryStoresCached();
     const store = stores.find((s) => s.codigoErp === input.storeCode);
     if (!store) return { result: 'error', message: 'Su usuario no tiene una tienda válida asignada.' };
     const matchStore = buildStoreMatcher(stores);

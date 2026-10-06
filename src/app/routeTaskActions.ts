@@ -16,6 +16,7 @@ import {
 } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
 import { buildStoreMatcher } from '@/lib/deliveryStores';
+import { getDeliveryStoresCached, invalidateDeliveryStoresCache } from '@/lib/deliveryStoresCache';
 import { publishPodToPlatform, type PlatformLine } from '@/app/podActions';
 import type { DeliveryStore, DriverRouteTask, DriverRouteTaskPhoto, TransferActor, TransferStatus } from '@/types';
 
@@ -68,8 +69,7 @@ const distanceMeters = (a: { lat: number; lng: number }, b: { lat: number; lng: 
 const toTask = (id: string, data: DocumentData) => toDates({ id, ...data }) as DriverRouteTask;
 
 async function loadStores() {
-  const snap = await getDocs(collection(firestore, 'deliveryStores'));
-  const stores = snap.docs.map((d) => ({ id: d.id, ...d.data() }) as DeliveryStore);
+  const stores = await getDeliveryStoresCached();
   return { stores, match: buildStoreMatcher(stores) };
 }
 
@@ -95,6 +95,7 @@ async function ensureNonStorePoints(points: string[], stores: DeliveryStore[], a
   }));
   created.forEach((s) => batch.set(doc(firestore, 'deliveryStores', s.id), { ...s, updatedAt: Timestamp.now(), updatedByName: actorName }));
   await batch.commit();
+  invalidateDeliveryStoresCache();
   return created;
 }
 

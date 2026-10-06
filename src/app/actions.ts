@@ -10,6 +10,7 @@ import { TransferNovelty, TransferNoveltyStatus, TransferNoveltyType, ExternalSe
 import { normalizeDestination } from '@/components/dispatch-manager/utils/excel';
 import { firstWarehouseArrival } from '@/lib/transferDates';
 import { buildStoreMatcher, normalizeStoreCode } from '@/lib/deliveryStores';
+import { getDeliveryStoresCached } from '@/lib/deliveryStoresCache';
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { parseISO } from 'date-fns';
@@ -4049,16 +4050,32 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
     });
     
     try {
-        // 1. Get ALL current transfers to build an existence map
-        const existingSnapshot = await getDocs(transfersCollection); 
-        
+        // 1. Existence map limited to the incoming TFs (string and numeric variants) + every
+        //    line still "En Tránsito" (deletion candidates). Never the whole collection (~25k).
+        const tfValues = new Set<string | number>();
+        for (const t of transfers) {
+            const raw = String(t.numeroTF ?? '').trim();
+            if (!raw) continue;
+            tfValues.add(raw);
+            if (/^\d+$/.test(raw)) tfValues.add(Number(raw));
+        }
+        const tfList = Array.from(tfValues);
+        const snapshots = await Promise.all([
+            getDocs(query(transfersCollection, where('status', '==', 'En Tránsito'))),
+            ...Array.from({ length: Math.ceil(tfList.length / 30) }, (_, i) =>
+                getDocs(query(transfersCollection, where('numeroTF', 'in', tfList.slice(i * 30, i * 30 + 30))))
+            ),
+        ]);
+
         const existingTransfersByKey = new Map<string, { id: string, data: TransferEntry }>();
-        existingSnapshot.forEach(doc => {
-            const data = doc.data() as TransferEntry;
-            // Composite Key: TF + Marca + Grupo (Normalized)
-            const key = `${data.numeroTF}-${(data.marca || '').trim().toUpperCase()}-${(data.grupo || '').trim().toUpperCase()}`;
-            existingTransfersByKey.set(key, { id: doc.id, data });
-        });
+        for (const snap of snapshots) {
+            snap.forEach(doc => {
+                const data = doc.data() as TransferEntry;
+                // Composite Key: TF + Marca + Grupo (Normalized)
+                const key = `${data.numeroTF}-${(data.marca || '').trim().toUpperCase()}-${(data.grupo || '').trim().toUpperCase()}`;
+                existingTransfersByKey.set(key, { id: doc.id, data });
+            });
+        }
 
         // Unique keys in the incoming file
         const incomingKeys = new Set(transfers.map(t => 
@@ -5914,8 +5931,7 @@ async function createManifestStops(manifestDocId: string, transferIds: string[])
         snap.forEach((d) => lines.push({ id: d.id, data: d.data() }));
     }
 
-    const storesSnap = await getDocs(collection(firestore, 'deliveryStores'));
-    const matchStore = buildStoreMatcher(storesSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as DeliveryStore));
+    const matchStore = buildStoreMatcher(await getDeliveryStoresCached());
 
     const byDestino = new Map<string, Omit<DeliveryManifestStop, 'order'>>();
     lines.forEach(({ id, data }) => {

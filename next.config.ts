@@ -1,4 +1,5 @@
 
+import path from 'path';
 import type {NextConfig} from 'next';
 
 const nextConfig: NextConfig = {
@@ -61,6 +62,11 @@ const nextConfig: NextConfig = {
     if (isServer) {
       config.externals.push('handlebars');
     }
+    // Medidor de lecturas Firestore (ver src/lib/firestoreMeter.ts).
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      'firebase/firestore$': path.join(process.cwd(), 'src/lib/firestoreMeter.ts'),
+    };
 
     return config
   },

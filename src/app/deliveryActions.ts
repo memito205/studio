@@ -3,6 +3,7 @@
 import { collection, doc, getDocs, query, Timestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
 import type { DeliveryStore, TransferActor } from '@/types';
+import { invalidateDeliveryStoresCache } from '@/lib/deliveryStoresCache';
 
 const STORES_COLLECTION = 'deliveryStores';
 
@@ -199,6 +200,7 @@ export async function saveDeliveryStores(
       });
       await batch.commit();
     }
+    invalidateDeliveryStoresCache();
     return { success: true, created, updated: stores.length - created };
   } catch (error: any) {
     console.error('Error saving delivery stores:', error);
