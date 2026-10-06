@@ -554,8 +554,8 @@ const VerificationCargue: React.FC<{
               <p className="text-sm font-semibold text-orange-700">
                 {pendingReasonRows.length} caja(s) alistadas no se cargaron. Indique el motivo de cada una:
               </p>
-              <ScrollArea className="max-h-72">
-                <div className="divide-y">
+              <div className="max-h-72 overflow-y-auto rounded-md border pr-1">
+                <div className="divide-y px-2">
                   {pendingReasonRows.map((r) => (
                     <div key={r.codigo} className="flex items-center justify-between gap-3 py-2 text-xs">
                       <div className="min-w-0">
@@ -575,7 +575,7 @@ const VerificationCargue: React.FC<{
                     </div>
                   ))}
                 </div>
-              </ScrollArea>
+              </div>
               <div className="flex gap-2">
                 {NOT_LOADED_REASONS.map((m) => (
                   <Button

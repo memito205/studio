@@ -731,8 +731,8 @@ const ScanningInterface: React.FC<{
                   <Button size="sm" className="w-full" onClick={() => addOutOfPlanToList(outOfPlanReads)} disabled={!isSessionOpen}>
                     Agregar todas ({outOfPlanReads.length})
                   </Button>
-                  <ScrollArea className="max-h-56">
-                    <div className="divide-y">
+                  <div className="max-h-80 overflow-y-auto rounded-md border pr-1">
+                    <div className="divide-y px-2">
                       {outOfPlanReads.map((item) => (
                         <div key={item.codigo} className="flex items-center justify-between gap-2 py-1.5 text-xs">
                           <div className="min-w-0">
@@ -752,7 +752,7 @@ const ScanningInterface: React.FC<{
                         </div>
                       ))}
                     </div>
-                  </ScrollArea>
+                  </div>
                 </CardContent>
               </Card>
             )}
