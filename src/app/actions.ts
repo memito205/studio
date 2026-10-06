@@ -5216,13 +5216,18 @@ function buildAltCodeLinkWrites(
                 updates.ubicacionAt = registeredAt;
             }
         } else {
+            // Carga inicial (inventario físico): la llegada real es desconocida y anterior a la carga;
+            // usar la fecha del documento TF para no perder el orden "lo más viejo primero".
+            const docDate: Timestamp | null = data.fecha?.toMillis ? data.fecha : null;
+            const arrival = receipt.bulkLoad && docDate && docDate.toMillis() < registeredAt.toMillis() ? docDate : registeredAt;
             updates.status = 'Recibido en Bodega';
-            updates.recibidoAt = registeredAt;
+            updates.recibidoAt = arrival;
+            if (receipt.bulkLoad) updates.llegadaEstimadaCargaInicial = true;
             if (ubicacion) {
                 updates.ubicacion = ubicacion;
                 updates.ubicacionAt = registeredAt;
             }
-            applyTransferStatusActor(updates, 'Recibido en Bodega', actor, undefined, registeredAt);
+            applyTransferStatusActor(updates, 'Recibido en Bodega', actor, undefined, arrival);
         }
         if (receipt.packerId && !data.recibidoPackerId) {
             updates.recibidoPackerId = receipt.packerId;
