@@ -1667,7 +1667,10 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     
     const filteredTransfersForManifest = useMemo(() => {
         return transfersForManifest.filter(t =>
-            (manifestFilters.numeroTF ? t.numeroTF.toLowerCase().includes(manifestFilters.numeroTF.toLowerCase()) : true) &&
+            (manifestFilters.numeroTF
+                ? t.numeroTF.toLowerCase().includes(manifestFilters.numeroTF.toLowerCase()) ||
+                  String(t.codigoAlterno || '').toLowerCase().replace(/\s+/g, '').includes(manifestFilters.numeroTF.toLowerCase().replace(/\s+/g, ''))
+                : true) &&
             (manifestFilters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(manifestFilters.bodegaOrigen.toLowerCase()) : true) &&
             (manifestFilters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(manifestFilters.bodegaDestino.toLowerCase()) : true)
         );
@@ -1757,9 +1760,27 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
       const tfToFind = (codeParts.length > 1 ? codeParts.slice(1).join('-') : normalizedCode).trim();
       const destinoScanned = (codeParts.length > 1 ? codeParts[0] : null);
 
-      const matchingTransfers = transfersForManifest.filter(t => t.numeroTF.trim().toUpperCase() === tfToFind);
+      let matchingTransfers = transfersForManifest.filter(t => t.numeroTF.trim().toUpperCase() === tfToFind);
+      let altCode: string | null = null;
+      if (matchingTransfers.length === 0) {
+          const altVariants = new Set([
+              scanInput.trim().toUpperCase().replace(/\s+/g, ''),
+              normalizedCode.replace(/\s+/g, ''),
+          ]);
+          matchingTransfers = transfersForManifest.filter(t => altVariants.has(String(t.codigoAlterno || '').trim().toUpperCase().replace(/\s+/g, '')));
+          if (matchingTransfers.length > 0) altCode = normalizedCode;
+      }
 
-      if (matchingTransfers.length > 0) {
+      if (matchingTransfers.length > 0 && altCode) {
+          const allMatchingIds = matchingTransfers.map(t => t.id);
+          const tfLabel = Array.from(new Set(matchingTransfers.map(t => t.numeroTF))).join(', ');
+          if (allMatchingIds.every(id => selectedForManifest.has(id))) {
+              toast({ variant: 'default', title: 'Ya Seleccionado', description: `El código alterno '${altCode}' (TF ${tfLabel}) ya está en la lista.` });
+          } else {
+              allMatchingIds.forEach(id => handleSelectForManifest(id, true));
+              toast({ title: 'TF Agregada', description: `Código alterno '${altCode}' → TF ${tfLabel} (${matchingTransfers.length} líneas) agregada al manifiesto.` });
+          }
+      } else if (matchingTransfers.length > 0) {
           const firstTransfer = matchingTransfers[0];
           if (destinoScanned && firstTransfer.bodegaDestino.toUpperCase() !== destinoScanned) {
               toast({
@@ -1779,7 +1800,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
               }
           }
       } else {
-          toast({ variant: 'destructive', title: 'No Encontrada', description: `La TF '${tfToFind}' no está disponible o no coincide con los filtros.` });
+          toast({ variant: 'destructive', title: 'No Encontrada', description: `'${normalizedCode}' no coincide con ninguna TF ni código alterno recibido en bodega (Recibido en Bodega / Validado Supervisor).` });
       }
       setScanInput('');
     };
@@ -2527,14 +2548,14 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
                          <div className="md:col-span-2 space-y-4">
                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                             <Input placeholder="Filtrar por # TF..." value={manifestFilters.numeroTF} onChange={(e) => setManifestFilters(prev => ({...prev, numeroTF: e.target.value}))} />
+                             <Input placeholder="Filtrar por # TF o código alterno..." value={manifestFilters.numeroTF} onChange={(e) => setManifestFilters(prev => ({...prev, numeroTF: e.target.value}))} />
                              <Input placeholder="Filtrar por Origen..." value={manifestFilters.bodegaOrigen} onChange={(e) => setManifestFilters(prev => ({...prev, bodegaOrigen: e.target.value}))} />
                              <Input placeholder="Filtrar por Destino..." value={manifestFilters.bodegaDestino} onChange={(e) => setManifestFilters(prev => ({...prev, bodegaDestino: e.target.value}))} />
                            </div>
                            <form onSubmit={handleScanForManifest}>
                              <div className="flex gap-2">
                                <Input
-                                   placeholder="Escanear o digitar TF para agregar..."
+                                   placeholder="Escanear o digitar TF o código alterno para agregar..."
                                    value={scanInput}
                                    onChange={e => setScanInput(e.target.value)}
                                    className="font-mono"
