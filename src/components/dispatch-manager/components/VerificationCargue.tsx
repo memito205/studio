@@ -21,6 +21,7 @@ import {
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/components/dispatch-manager/utils/cn';
+import { ScanResultFlash, SCAN_PANEL_CLASS } from './ScanResultFlash';
 import {
   arrivalLabel,
   findItemForCode,
@@ -402,19 +403,12 @@ const VerificationCargue: React.FC<{
           </CardContent>
         </Card>
 
+        <ScanResultFlash result={lastScan} />
         {lastScan && (
-          <div
-            className={cn(
-              'p-4 border-l-4 rounded-md',
-              lastScan.type === 'success' && 'bg-green-50 border-green-600 text-green-800',
-              lastScan.type === 'warning' && 'bg-blue-50 border-blue-700 text-blue-950',
-              lastScan.type === 'error' && 'bg-red-50 border-red-600 text-red-800',
-              lastScan.type === 'duplicate' && 'bg-orange-50 border-orange-600 text-orange-800'
-            )}
-          >
-            <p className="font-bold text-sm uppercase">{lastScan.message}</p>
-            <p className="text-xs mt-1 opacity-70">Código: {lastScan.code}</p>
-            {lastScan.detail && <p className="text-xs mt-2 font-medium">{lastScan.detail}</p>}
+          <div className={cn('p-5 border-l-8 rounded-md', SCAN_PANEL_CLASS[lastScan.type])}>
+            <p className="text-2xl font-black uppercase leading-tight">{lastScan.message}</p>
+            <p className="mt-2 font-mono text-xl font-bold">{lastScan.code}</p>
+            {lastScan.detail && <p className="mt-2 text-base font-semibold">{lastScan.detail}</p>}
           </div>
         )}
 

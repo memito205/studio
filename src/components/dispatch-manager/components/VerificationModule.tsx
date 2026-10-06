@@ -23,6 +23,7 @@ import {
 import type { VerificationItem, SavedVerification } from '@/types';
 import { parseVerificationExcel, exportVerificationToExcel } from '@/components/dispatch-manager/utils/excel';
 import { cn } from '@/components/dispatch-manager/utils/cn';
+import { ScanResultFlash, SCAN_PANEL_CLASS } from './ScanResultFlash';
 import {
   buildTfVerificationIndex,
   getOtherSessionsForTf,
@@ -710,19 +711,13 @@ const ScanningInterface: React.FC<{
                     </p>
                 </div>
             )}
+           <ScanResultFlash result={lastScanStatus} />
            {lastScanStatus && (
-                <div className={cn(
-                  "p-4 border-l-4 rounded-md",
-                  lastScanStatus.type === 'success' && "bg-green-50 border-green-600 text-green-800 dark:bg-green-900/20 dark:border-green-700 dark:text-green-300",
-                  lastScanStatus.type === 'error' && "bg-red-50 border-red-600 text-red-800 dark:bg-red-900/20 dark:border-red-700 dark:text-red-300",
-                  lastScanStatus.type === 'duplicate' && "bg-orange-50 border-orange-600 text-orange-800 dark:bg-orange-900/20 dark:border-orange-700 dark:text-orange-300",
-                  lastScanStatus.type === 'multi-session' && "bg-amber-50 border-amber-700 text-amber-950",
-                  lastScanStatus.type === 'out-of-plan' && "bg-blue-50 border-blue-700 text-blue-950"
-                )}>
-                    <p className="font-bold text-sm uppercase">{lastScanStatus.message}</p>
-                    <p className=" text-xs mt-1 opacity-70">Código: {lastScanStatus.code}</p>
+                <div className={cn("p-5 border-l-8 rounded-md", SCAN_PANEL_CLASS[lastScanStatus.type])}>
+                    <p className="text-2xl font-black uppercase leading-tight">{lastScanStatus.message}</p>
+                    <p className="mt-2 font-mono text-xl font-bold">{lastScanStatus.code}</p>
                     {lastScanStatus.detail && (
-                      <p className="text-xs mt-2 font-medium">{lastScanStatus.detail}</p>
+                      <p className="mt-2 text-base font-semibold">{lastScanStatus.detail}</p>
                     )}
                 </div>
             )}
