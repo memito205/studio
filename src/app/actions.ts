@@ -959,6 +959,7 @@ export async function loadWholesaleOrders(): Promise<{ data?: WholesaleOrder[]; 
                 status: data.status || 'Pte Empaque', // Default status if missing
                 details: data.details,
             packingForceClosed: !!data.packingForceClosed,
+            ...(data.packingData ? { packingData: data.packingData } : {}),
             } as WholesaleOrder;
         });
         return { data: orders };
@@ -1708,6 +1709,50 @@ export async function getPackedItemsForOrders(orderIds: string[]): Promise<{ dat
         return { data: all };
     } catch (error: any) {
         console.error('Error getting packed items for orders:', error);
+        return { error: error.message };
+    }
+}
+
+/**
+ * Pedidos cerrados (Despachado/Cancelado): calcula una sola vez packedUnits/boxCount y lo guarda en
+ * `wholesaleOrders/{id}.packingData`, para que el tablero no vuelva a leer sus packedItems.
+ */
+export async function backfillWholesalePackingData(orderIds: string[]): Promise<{ data?: Record<string, NonNullable<WholesaleOrder['packingData']>>; error?: string }> {
+    try {
+        const { computeWholesalePackingTotals } = await import('@/lib/wholesalePacking');
+        const unique = [...new Set(orderIds.map((id) => String(id || '').trim()).filter(Boolean))].slice(0, 300);
+        const out: Record<string, NonNullable<WholesaleOrder['packingData']>> = {};
+        for (let i = 0; i < unique.length; i += PACKED_ITEMS_ORDER_IN_CHUNK) {
+            const chunk = unique.slice(i, i + PACKED_ITEMS_ORDER_IN_CHUNK);
+            const [packedSnap, orderSnaps] = await Promise.all([
+                getDocs(query(collection(firestore, 'packedItems'), where('orderId', 'in', chunk))),
+                getDocs(query(collection(firestore, 'wholesaleOrders'), where(documentId(), 'in', chunk))),
+            ]);
+            const byOrder = new Map<string, Array<{ quantity: number; packingUnitId: string }>>();
+            packedSnap.docs.forEach((d) => {
+                const data = d.data();
+                const oid = String(data.orderId || '');
+                if (!byOrder.has(oid)) byOrder.set(oid, []);
+                byOrder.get(oid)!.push({ quantity: Number(data.quantity ?? 1), packingUnitId: String(data.packingUnitId || '') });
+            });
+            const batch = writeBatch(firestore);
+            orderSnaps.docs.forEach((orderDoc) => {
+                const od = orderDoc.data();
+                const items = byOrder.get(orderDoc.id) || [];
+                const totals = computeWholesalePackingTotals({ details: od.details || [], cantidadTotal: od.cantidadTotal || 0 }, items);
+                const packingData = {
+                    packedUnits: totals.packedTotal,
+                    totalUnits: totals.orderTotal,
+                    boxCount: new Set(items.map((it) => it.packingUnitId).filter(Boolean)).size,
+                };
+                out[orderDoc.id] = packingData;
+                batch.update(orderDoc.ref, { packingData });
+            });
+            await batch.commit();
+        }
+        return { data: out };
+    } catch (error: any) {
+        console.error('Error backfilling wholesale packingData:', error);
         return { error: error.message };
     }
 }
@@ -2523,6 +2568,30 @@ export async function loadEcommerceOrders(fullHistory = false): Promise<{ succes
         return { success: true, data: orders };
     } catch (error: any) {
         console.error("Error loading ecommerce orders:", error);
+        return { success: false, error: `Failed to load ecommerce orders: ${error.message}` };
+    }
+}
+
+/** Solo los pedidos indicados (1 lectura por pedido existente), para comparar al subir el reporte. */
+export async function loadEcommerceOrdersByIds(ids: string[]): Promise<{ success: boolean; data?: EcommerceOrder[]; error?: string }> {
+    try {
+        const unique = [...new Set(ids.map((id) => String(id || '').trim()).filter(Boolean))];
+        const chunks: string[][] = [];
+        for (let i = 0; i < unique.length; i += 30) chunks.push(unique.slice(i, i + 30));
+        const orders: EcommerceOrder[] = [];
+        for (let i = 0; i < chunks.length; i += 10) {
+            const snaps = await Promise.all(
+                chunks.slice(i, i + 10).map((chunk) =>
+                    getDocs(query(collection(firestore, 'ecommerceOrders'), where(documentId(), 'in', chunk)))
+                )
+            );
+            snaps.forEach((snap) => snap.docs.forEach((d) => {
+                orders.push(convertTimestampsToDates({ id: d.id, ...d.data() }) as EcommerceOrder);
+            }));
+        }
+        return { success: true, data: orders };
+    } catch (error: any) {
+        console.error('Error loading ecommerce orders by id:', error);
         return { success: false, error: `Failed to load ecommerce orders: ${error.message}` };
     }
 }

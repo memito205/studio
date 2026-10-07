@@ -13,7 +13,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { WholesaleOrder, WholesaleOrderDetail, OrderStatus, ProductDatabaseItem, PackingSession, PreprintedLabel, PackedItem, OperationPulse } from '@/types';
-import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, generateAndSaveLabels, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrders, getPackedItemsForDate, getUserPulsesForDay, getGlobalPulsesForDay, loadOperatorMappings, syncWholesaleOrderPackingStatus } from '@/app/actions';
+import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, generateAndSaveLabels, addSingleLabel, loadAllPackingSessions, getPackedItemsForOrders, backfillWholesalePackingData, getPackedItemsForDate, getUserPulsesForDay, getGlobalPulsesForDay, loadOperatorMappings, syncWholesaleOrderPackingStatus } from '@/app/actions';
 import {
   getOrBuildBoxAuditReport,
   getOrBuildCargueProgressReport,
@@ -36,6 +36,8 @@ import { excelSerialDateToJSDate } from '@/lib/parsingUtils';
 import { Checkbox } from './ui/checkbox';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 
+
+const CLOSED_WHOLESALE_STATUSES = new Set<string>(['Despachado', 'Cancelado']);
 
 interface WholesaleDashboardProps {
     orders: WholesaleOrder[];
@@ -99,12 +101,13 @@ const OrderTable: React.FC<{
         </TableHeader>
         <TableBody>
             {orders.map(order => {
-                const orderPacked = allPackedItems.filter(item => item.orderId === order.id);
+                const saved = CLOSED_WHOLESALE_STATUSES.has(order.status) ? order.packingData : undefined;
+                const orderPacked = saved ? [] : allPackedItems.filter(item => item.orderId === order.id);
                 const totals = computeWholesalePackingTotals(order, orderPacked);
-                const packedUnits = totals.packedTotal;
-                const totalUnits = totals.orderTotal;
+                const packedUnits = saved ? saved.packedUnits : totals.packedTotal;
+                const totalUnits = saved ? saved.totalUnits : totals.orderTotal;
                 const progress = totalUnits > 0 ? (packedUnits / totalUnits) * 100 : (packedUnits > 0 ? 100 : 0);
-                const boxCount = new Set(orderPacked.map(item => item.packingUnitId).filter(Boolean)).size;
+                const boxCount = saved ? saved.boxCount : new Set(orderPacked.map(item => item.packingUnitId).filter(Boolean)).size;
                 const isSelected = selectedOrders.has(order.id);
 
                 return (
@@ -294,19 +297,45 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
   const { toast } = useToast();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   
-  // Ítems empaquetados: una consulta por lote de pedidos (orderId in), no una por pedido.
+  const [closedPackingData, setClosedPackingData] = useState<Record<string, NonNullable<WholesaleOrder['packingData']>>>({});
+
+  // Solo pedidos activos leen packedItems; Despachado/Cancelado usan el resumen guardado `packingData`.
+  const activeOrderIdsKey = React.useMemo(
+    () => orders.filter((o) => !CLOSED_WHOLESALE_STATUSES.has(o.status)).map((o) => o.id).sort().join('|'),
+    [orders]
+  );
   useEffect(() => {
-    const fetchAllPackedItems = async () => {
-        const orderIds = orders.map((o) => o.id);
-        if (orderIds.length === 0) {
-            setAllPackedItems([]);
-            return;
-        }
-        const result = await getPackedItemsForOrders(orderIds);
-        setAllPackedItems(result.data ?? []);
-    };
-    void fetchAllPackedItems();
-  }, [orders]);
+    const orderIds = activeOrderIdsKey ? activeOrderIdsKey.split('|') : [];
+    if (orderIds.length === 0) {
+        setAllPackedItems([]);
+        return;
+    }
+    let cancelled = false;
+    void getPackedItemsForOrders(orderIds).then((result) => {
+        if (!cancelled) setAllPackedItems(result.data ?? []);
+    });
+    return () => { cancelled = true; };
+  }, [activeOrderIdsKey]);
+
+  const closedMissingKey = React.useMemo(
+    () => orders.filter((o) => CLOSED_WHOLESALE_STATUSES.has(o.status) && !o.packingData).map((o) => o.id).sort().join('|'),
+    [orders]
+  );
+  useEffect(() => {
+    if (!closedMissingKey) return;
+    let cancelled = false;
+    void backfillWholesalePackingData(closedMissingKey.split('|')).then((res) => {
+        if (!cancelled && res.data) setClosedPackingData((prev) => ({ ...prev, ...res.data }));
+    });
+    return () => { cancelled = true; };
+  }, [closedMissingKey]);
+
+  const ordersWithPackingData = React.useMemo(
+    () => orders.map((o) => (CLOSED_WHOLESALE_STATUSES.has(o.status) && !o.packingData && closedPackingData[o.id]
+        ? { ...o, packingData: closedPackingData[o.id] }
+        : o)),
+    [orders, closedPackingData]
+  );
 
   const handleOpenPrintDialog = (order: WholesaleOrder) => {
     setOrderForPrinting(order);
@@ -629,7 +658,7 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
   const onUploadClick = () => fileInputRef.current?.click();
 
   const ordersByStatus = React.useMemo(() => {
-    return orders.reduce((acc, order) => {
+    return ordersWithPackingData.reduce((acc, order) => {
         const packedForOrder = allPackedItems.filter(item => item.orderId === order.id);
         const totals = computeWholesalePackingTotals(order, packedForOrder);
         let status = order.status || 'Pte Empaque';
@@ -650,20 +679,21 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
         acc[status].push({ ...order, status });
         return acc;
     }, {} as Record<string, WholesaleOrder[]>);
-  }, [orders, allPackedItems]);
+  }, [ordersWithPackingData, allPackedItems]);
 
-  // Background sync: server recalcula Empacado (cantidades exactas + cajas etiquetadas).
+  // Background sync: server recalcula Empacado (cantidades exactas + cajas etiquetadas). Una vez por conjunto de pedidos activos.
   useEffect(() => {
-    const syncStatuses = async () => {
-        for (const order of orders) {
-            if (order.status === 'En Cargue' || order.status === 'Despachado' || order.status === 'Cancelado') continue;
-            await syncWholesaleOrderPackingStatus(order.id);
+    if (!activeOrderIdsKey) return;
+    const activeIds = orders
+        .filter((o) => o.status !== 'En Cargue' && !CLOSED_WHOLESALE_STATUSES.has(o.status))
+        .map((o) => o.id);
+    void (async () => {
+        for (const id of activeIds) {
+            await syncWholesaleOrderPackingStatus(id);
         }
-    };
-    if (orders.length > 0) {
-        syncStatuses();
-    }
-  }, [orders.length, allPackedItems.length]);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeOrderIdsKey]);
   
   return (
     <div className="space-y-8">

@@ -221,9 +221,11 @@ export function AltCodeRegistrationView() {
       toast({ variant: 'destructive', title: 'No se registró', description: res.error });
       return;
     } else {
-      setLastResult({ type: 'ok', receipt: res.receipt });
-      if (autoPrint) setStickerToPrint(res.receipt);
-      refreshLists();
+      const saved = res.receipt;
+      setLastResult({ type: 'ok', receipt: saved });
+      if (autoPrint) setStickerToPrint(saved);
+      setTodayList((prev) => [saved, ...prev.filter((r) => r.id !== saved.id)]);
+      if (saved.status === 'pending') setPendingList((prev) => [...prev.filter((r) => r.id !== saved.id), saved]);
     }
     setCode('');
     codeInputRef.current?.focus();
@@ -239,7 +241,9 @@ export function AltCodeRegistrationView() {
     setLastResult({ type: 'ok', receipt: updated });
     toast({ title: 'Reubicado', description: `${receipt.codigoAlterno} → ${ubicacion}` });
     if (autoPrint) setStickerToPrint(updated);
-    refreshLists();
+    const patch = (list: AltCodeReceipt[]) => list.map((r) => (r.id === updated.id ? updated : r));
+    setTodayList(patch);
+    setPendingList(patch);
   };
 
   const handleRelink = async () => {

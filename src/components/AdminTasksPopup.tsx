@@ -38,6 +38,10 @@ function formatShortDate(iso?: string | null): string {
   });
 }
 
+// The shell remounts this popup on every module change; share the badge result across mounts.
+const BADGE_TTL_MS = 5 * 60_000;
+let badgeCache: { uid: string; at: number; tasks: LogisticsAdminTask[] } | null = null;
+
 /**
  * Floating admin-only pendientes panel for the Suite shell.
  * Failures never block Suite load — errors stay inside the panel.
@@ -104,15 +108,21 @@ export function AdminTasksPopup() {
     let cancelled = false;
     const refreshBadge = async () => {
       if (document.visibilityState !== 'visible') return;
+      const cached = badgeCache;
+      if (cached && cached.uid === actor.uid && Date.now() - cached.at < BADGE_TTL_MS) {
+        setTasks(cached.tasks);
+        return;
+      }
       try {
         const result = await listLogisticsAdminTasks(actor);
+        if (result.data) badgeCache = { uid: actor.uid, at: Date.now(), tasks: result.data };
         if (!cancelled && result.data) setTasks(result.data);
       } catch {
         // Ignore — Suite must keep working.
       }
     };
     void refreshBadge();
-    const id = window.setInterval(refreshBadge, 5 * 60_000);
+    const id = window.setInterval(refreshBadge, BADGE_TTL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(id);

@@ -1205,12 +1205,12 @@ interface AdminViewProps {
     onFileChange: (e: ChangeEvent<HTMLInputElement>) => void;
     fileInputRef: React.RefObject<HTMLInputElement>;
     setIsManualEntryOpen: (open: boolean) => void;
-    onNeedOperational: () => void;
+    onTabChange: (tab: string) => void;
 }
 
 const OPERATIONAL_TABS = new Set(['validation', 'manifest']);
 
-const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, collectionLogs, isLoading, filters, setFilters, onRefresh, onSearch, role, users, isUploading, onFileChange, fileInputRef, setIsManualEntryOpen, onNeedOperational }) => {
+const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, collectionLogs, isLoading, filters, setFilters, onRefresh, onSearch, role, users, isUploading, onFileChange, fileInputRef, setIsManualEntryOpen, onTabChange }) => {
     const { user, userName } = useAuth();
     const { toast } = useToast();
     const actor = useMemo(() => toTransferActor(user, userName), [user, userName]);
@@ -1939,7 +1939,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
       <ManifestDetailsDialog manifest={selectedManifest} isOpen={isManifestDetailsOpen} onOpenChange={setIsManifestDetailsOpen} />
       <CollectionLogDetailsDialog log={selectedCollectionLog} isOpen={!!selectedCollectionLog} onOpenChange={() => setSelectedCollectionLog(null)} />
       
-        <Tabs defaultValue="general" onValueChange={(v) => { if (OPERATIONAL_TABS.has(v)) onNeedOperational(); }}>
+        <Tabs defaultValue="general" onValueChange={onTabChange}>
             <TabsList className="flex flex-wrap h-auto justify-start">
                 <TabsTrigger value="general">Consulta General</TabsTrigger>
                 <TabsTrigger value="collection">Registrar Recolección</TabsTrigger>
@@ -3326,8 +3326,12 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
     const [isManualEntryOpen, setIsManualEntryOpen] = useState(false);
     const [isSavingManualEntry, setIsSavingManualEntry] = useState(false);
 
-    // Recolectado + Validado + Recibido en Bodega (~2.3k docs): only for the tabs that use it.
+    // Recolectado + Validado + Recibido en Bodega (~2.3k docs): solo mientras se está en una pestaña que lo usa;
+    // acciones en otras pestañas solo lo marcan como desactualizado.
     const operationalWantedRef = useRef(false);
+    const adminTabRef = useRef('general');
+    const operationalStaleRef = useRef(true);
+    const operationalLoadedAtRef = useRef(0);
     const usersLoadedRef = useRef(false);
     const fetchInFlightRef = useRef(false);
     const fetchPendingRef = useRef(false);
@@ -3340,7 +3344,10 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
         fetchInFlightRef.current = true;
         setIsLoading(true);
         try {
-            const withOperational = operationalWantedRef.current;
+            const withOperational = canSeeAdminView
+                ? OPERATIONAL_TABS.has(adminTabRef.current)
+                : operationalWantedRef.current;
+            if (!withOperational) operationalStaleRef.current = true;
             const withUsers = !usersLoadedRef.current;
             const [usersResult, collectionLogsResult, recollectionRes, validatedRes, receivedRes] = await Promise.all([
               withUsers ? getAllUserProfiles() : Promise.resolve(null),
@@ -3372,6 +3379,8 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
                     ...(receivedRes.data || [])
                 ];
                 setAllTransfers(combinedTransfers.sort((a, b) => b.fecha.getTime() - a.fecha.getTime()));
+                operationalStaleRef.current = false;
+                operationalLoadedAtRef.current = Date.now();
                 if (recollectionRes.error || validatedRes.error || receivedRes.error) {
                     toast({ variant: 'destructive', title: 'Error al cargar transferencias', description: 'Algunas listas no pudieron cargarse correctamente.' });
                 }
@@ -3384,12 +3393,13 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             fetchPendingRef.current = false;
             void fetchData();
         }
-    }, [toast]);
+    }, [toast, canSeeAdminView]);
 
-    const ensureOperational = useCallback(() => {
-        if (operationalWantedRef.current) return;
-        operationalWantedRef.current = true;
-        void fetchData();
+    const handleAdminTabChange = useCallback((tab: string) => {
+        adminTabRef.current = tab;
+        if (!OPERATIONAL_TABS.has(tab)) return;
+        const tooOld = Date.now() - operationalLoadedAtRef.current > 5 * 60 * 1000;
+        if (operationalStaleRef.current || tooOld) void fetchData();
     }, [fetchData]);
 
     const handleSearch = useCallback(async () => {
@@ -3629,7 +3639,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             onFileChange={handleFileChange}
             fileInputRef={fileInputRef}
             setIsManualEntryOpen={setIsManualEntryOpen}
-            onNeedOperational={ensureOperational}
+            onTabChange={handleAdminTabChange}
           />
       ) : role === 'conductor' ? (
         <CollectionTabView

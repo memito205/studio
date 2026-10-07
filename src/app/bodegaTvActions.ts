@@ -1669,12 +1669,17 @@ async function buildRemainderAssignments(
 }
 
 const TV_CACHE_COLLECTION = 'bodegaTvCache';
-const TV_CACHE_TTL_MS = 5 * 60 * 1000;
 const TV_BUILD_LOCK_MS = 2 * 60 * 1000;
+
+/** ~2k lecturas por reconstrucción: 10 min en horario operativo (6–20 h Bogotá), 60 min fuera de él. */
+function tvCacheTtlMs(): number {
+  const bogotaHour = new Date(Date.now() - 5 * 3600 * 1000).getUTCHours();
+  return bogotaHour >= 6 && bogotaHour < 20 ? 10 * 60 * 1000 : 60 * 60 * 1000;
+}
 
 /**
  * Snapshot del Modo TV Bodega con caché compartida en Firestore: todas las pantallas leen 1 documento
- * y el tablero completo (miles de lecturas) se recalcula como máximo cada TV_CACHE_TTL_MS.
+ * y el tablero completo (miles de lecturas) se recalcula como máximo cada tvCacheTtlMs().
  */
 export async function getBodegaTvSnapshot(options?: {
   mode?: BodegaTvMode;
@@ -1690,13 +1695,13 @@ export async function getBodegaTvSnapshot(options?: {
     const c = snap.exists() ? (snap.data() as { json?: string; builtAtMs?: number; dayKey?: string }) : null;
     if (c?.json && c.dayKey === dayKey) {
       cached = JSON.parse(c.json) as BodegaTvSnapshot;
-      if (Date.now() - Number(c.builtAtMs || 0) < TV_CACHE_TTL_MS) return { success: true, data: cached };
+      if (Date.now() - Number(c.builtAtMs || 0) < tvCacheTtlMs()) return { success: true, data: cached };
     }
     const claimed = await runTransaction(firestore, async (tx) => {
       const s = await tx.get(ref);
       const lockAt = Number(s.exists() ? s.data().buildingAtMs || 0 : 0);
       const builtAt = Number(s.exists() ? s.data().builtAtMs || 0 : 0);
-      const fresh = s.exists() && s.data().dayKey === dayKey && Date.now() - builtAt < TV_CACHE_TTL_MS;
+      const fresh = s.exists() && s.data().dayKey === dayKey && Date.now() - builtAt < tvCacheTtlMs();
       if (fresh || Date.now() - lockAt < TV_BUILD_LOCK_MS) return false;
       tx.set(ref, { buildingAtMs: Date.now() }, { merge: true });
       return true;

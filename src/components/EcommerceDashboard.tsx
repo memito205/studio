@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { ArrowLeft, Loader2, UploadCloud, Package, CheckCircle, Clock, AlertTriangle, PackageCheck, XCircle, ChevronsUpDown, Calendar as CalendarIcon, Send, ClipboardEdit, History, TimerOff, ShieldCheck, Download, FileDown, Timer, BarChart2, GaugeCircle, RefreshCw } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
-import { saveEcommerceOrders, loadEcommerceOrders, getDelayedOrderLogs, upsertDelayedOrderLog, addJustificationToLog, resolveDelayedOrderLog, batchResolveDelayedOrderLogs, batchUpsertDelayedOrderLogs } from '@/app/actions';
+import { saveEcommerceOrders, loadEcommerceOrders, loadEcommerceOrdersByIds, getDelayedOrderLogs, upsertDelayedOrderLog, addJustificationToLog, resolveDelayedOrderLog, batchResolveDelayedOrderLogs, batchUpsertDelayedOrderLogs } from '@/app/actions';
 import type { EcommerceOrder, FilterCategory, DelayedOrderLog, Justification, Filters } from '@/types';
 import { excelSerialDateToJSDate, findCaseInsensitiveKey, parseFlexibleDate, calculateSlaHours, parseRobustNumber } from '@/lib/parsingUtils';
 import {
@@ -575,7 +575,7 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
             bodega: String(findCaseInsensitiveKey(row, 'BODEGA', 'ALMACEN', 'BODEGA_ORIGEN', 'AGENCIA') ? row[findCaseInsensitiveKey(row, 'BODEGA', 'ALMACEN', 'BODEGA_ORIGEN', 'AGENCIA')!] : ''),
         })).filter(o => o.id);
 
-        const storedOrdersResult = await loadEcommerceOrders(true); // Load EVERYTHING only for sync diffing to avoid redundant writes
+        const storedOrdersResult = await loadEcommerceOrdersByIds(parsedOrders.map((o) => o.id));
         if (!storedOrdersResult.success || !storedOrdersResult.data) {
             throw new Error("No se pudo cargar el estado actual de los pedidos desde la base de datos.");
         }
