@@ -571,6 +571,18 @@ export interface DeliveryManifest {
     closedAt?: Date;
     closedByName?: string;
     closedNote?: string;
+    /** Cambios de conductor/placa hechos por el admin mientras estaba en ruta. */
+    driverHistory?: Array<{
+        fromUserId?: string | null;
+        fromName?: string;
+        fromPlaca?: string;
+        toUserId: string;
+        toName: string;
+        toPlaca?: string;
+        at: Date;
+        byName: string;
+        note: string;
+    }>;
 }
 
 export interface DeliveryStopRejection {

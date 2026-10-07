@@ -591,6 +591,54 @@ export async function closeDeliveryManifestWithoutApp(input: {
   }
 }
 
+/** Cambia el conductor (y opcionalmente la placa) de una relación en ruta; las paradas ya registradas no cambian. */
+export async function reassignDeliveryManifestDriver(input: {
+  manifestDocId: string;
+  driverUserId: string;
+  driverName: string;
+  placa?: string;
+  note: string;
+  actor: TransferActor;
+}): Promise<{ success: boolean; error?: string }> {
+  if (!input.actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  const note = String(input.note || '').trim();
+  if (!input.driverUserId) return { success: false, error: 'Elija un usuario conductor.' };
+  if (!note) return { success: false, error: 'Escriba el motivo del cambio.' };
+  try {
+    const ref = doc(firestore, 'deliveryManifests', input.manifestDocId);
+    await runTransaction(firestore, async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists()) throw new Error('La relación no existe.');
+      const m = snap.data() as any;
+      if (m.deliveryStatus !== 'en_ruta') throw new Error('Solo se puede cambiar el conductor de una relación en ruta.');
+      const placa = String(input.placa || '').trim().toUpperCase();
+      if (m.driverUserId === input.driverUserId && (!placa || placa === m.resource)) {
+        throw new Error('La relación ya está asignada a ese conductor.');
+      }
+      tx.update(ref, {
+        driverUserId: input.driverUserId,
+        driver: input.driverName,
+        ...(placa ? { resource: placa } : {}),
+        driverHistory: arrayUnion({
+          fromUserId: m.driverUserId || null,
+          fromName: m.driver || '',
+          fromPlaca: m.resource || '',
+          toUserId: input.driverUserId,
+          toName: input.driverName,
+          toPlaca: placa || m.resource || '',
+          at: Timestamp.now(),
+          byId: input.actor.userId,
+          byName: actorNameOf(input.actor),
+          note,
+        }),
+      });
+    });
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'No se pudo cambiar el conductor.' };
+  }
+}
+
 /** Deshace en plataforma la entrega publicada por la parada rechazada (vuelve al último estado de Quick). */
 async function revertPodPlatform(ids: string[], manifestDocId: string, stopId: string) {
   for (const id of ids) {

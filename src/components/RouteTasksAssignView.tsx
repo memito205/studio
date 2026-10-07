@@ -387,7 +387,10 @@ export const RouteTasksAssignView: React.FC = () => {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <CardTitle>Tareas del día {day}</CardTitle>
-              <CardDescription>Seleccione no recogidas / no entregadas para reasignarlas con el conductor, placa y día de arriba.</CardDescription>
+              <CardDescription>
+                Seleccione tareas (pendientes, no recogidas o no entregadas) y pulse Reasignar para pasarlas al conductor, placa y día
+                elegidos arriba. Sirve también si se asignó al conductor equivocado: salen de su app y le aparecen al nuevo.
+              </CardDescription>
             </div>
             <div className="flex gap-2">
               <Button variant="outline" onClick={() => void loadDay(day)} disabled={loadingDay}>

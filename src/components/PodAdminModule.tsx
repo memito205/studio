@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
-import { AlertTriangle, ArrowLeft, CheckCircle2, Download, Loader2, MapPin, RefreshCw, Search, Undo2, XCircle } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, CheckCircle2, Download, Loader2, MapPin, RefreshCw, Search, Undo2, UserCog, XCircle } from 'lucide-react';
 import { PodArchiveTab } from '@/components/PodArchiveTab';
 import { RouteTasksAdminTab } from '@/components/RouteTasksAdminTab';
 import { useAuth } from '@/hooks/use-auth-context';
@@ -17,6 +17,7 @@ import {
   getPodNovedades,
   getPodPlatformShare,
   getStoreReceipts,
+  reassignDeliveryManifestDriver,
   rejectDeliveryStop,
   resolvePodNovedades,
   type AdminManifest,
@@ -27,6 +28,7 @@ import {
 import { PHOTO_CATEGORIES, STOP_STATUS_LABEL } from '@/lib/pod';
 import type { DeliveryManifestStatus, DeliveryPhoto, DeliveryStopStatus, StoreReceipt, TransferActor } from '@/types';
 import { RECEIPT_LABEL } from '@/components/StoreReceiveCard';
+import { DriverUserSelect, type DriverValue } from '@/components/DriverUserSelect';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -118,6 +120,80 @@ function NoteDialog({ request, onClose }: { request: NoteRequest | null; onClose
   );
 }
 
+function ChangeDriverDialog({
+  manifest,
+  actor,
+  onClose,
+  onDone,
+}: {
+  manifest: AdminManifest;
+  actor: TransferActor;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { toast } = useToast();
+  const [driver, setDriver] = useState<DriverValue>({ driver: '' });
+  const [placa, setPlaca] = useState(manifest.resource || '');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    if (!driver.driverUserId) return;
+    setBusy(true);
+    const res = await reassignDeliveryManifestDriver({
+      manifestDocId: manifest.id,
+      driverUserId: driver.driverUserId,
+      driverName: driver.driver,
+      placa,
+      note,
+      actor,
+    });
+    setBusy(false);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'No se cambió el conductor', description: res.error });
+      return;
+    }
+    toast({ title: `Relación #${manifest.manifestId} asignada a ${driver.driver}`, description: 'Le aparece en "Mis entregas" al actualizar.' });
+    onDone();
+  };
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Cambiar conductor · Relación #{manifest.manifestId}</DialogTitle>
+          <DialogDescription>
+            Actual: {manifest.driver || 'sin conductor'} · placa {manifest.resource || '—'}. La relación sale de la app del conductor
+            actual y aparece en la del nuevo. Las paradas ya registradas se conservan.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label>Nuevo conductor *</Label>
+            <DriverUserSelect value={driver} onChange={setDriver} />
+            {driver.driver && !driver.driverUserId && <p className="text-xs text-red-600">Debe ser un usuario conductor (con app).</p>}
+          </div>
+          <div className="space-y-1">
+            <Label>Placa</Label>
+            <Input value={placa} onChange={(e) => setPlaca(e.target.value.toUpperCase())} />
+          </div>
+          <div className="space-y-1">
+            <Label>Motivo *</Label>
+            <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="Ej: se asignó por error al conductor equivocado" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={onClose}>Cancelar</Button>
+          <Button disabled={busy || !driver.driverUserId || !note.trim()} onClick={() => void save()}>
+            {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Cambiar conductor
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function ManifestDetail({
   manifest,
   actor,
@@ -135,6 +211,7 @@ function ManifestDetail({
   const [detail, setDetail] = useState<Map<string, StopWithTfs>>(new Map());
   const [loading, setLoading] = useState(true);
   const [photo, setPhoto] = useState<DeliveryPhoto | null>(null);
+  const [changingDriver, setChangingDriver] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -250,12 +327,39 @@ function ManifestDetail({
               <CheckCircle2 className="mr-2 h-4 w-4" /> Aprobar y cerrar
             </Button>
           )}
+          {status === 'en_ruta' && !manifest.legacy && (
+            <Button variant="outline" onClick={() => setChangingDriver(true)}>
+              <UserCog className="mr-2 h-4 w-4" /> Cambiar conductor
+            </Button>
+          )}
           {status === 'en_ruta' && (
             <Button variant="outline" onClick={closeWithoutApp}>
               <XCircle className="mr-2 h-4 w-4" /> Cerrar sin app
             </Button>
           )}
         </div>
+        {changingDriver && (
+          <ChangeDriverDialog
+            manifest={manifest}
+            actor={actor}
+            onClose={() => setChangingDriver(false)}
+            onDone={() => {
+              setChangingDriver(false);
+              onChanged();
+              onClose();
+            }}
+          />
+        )}
+        {(manifest.driverHistory || []).length > 0 && (
+          <div className="text-xs bg-blue-50 border border-blue-200 rounded-md px-2 py-1.5 space-y-0.5 text-blue-950">
+            {(manifest.driverHistory || []).map((h, i) => (
+              <p key={i}>
+                Conductor cambiado {fmt(h.at)} por {h.byName}: {h.fromName || 'sin conductor'} ({h.fromPlaca || '—'}) → {h.toName} (
+                {h.toPlaca || '—'}) · {h.note}
+              </p>
+            ))}
+          </div>
+        )}
 
         <div className="space-y-3">
           {manifest.stops.map((s) => {
