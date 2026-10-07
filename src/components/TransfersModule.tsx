@@ -111,6 +111,7 @@ const groupTransfersByTF = (transfers: TransferEntry[], placaMap?: Map<string, s
             if (!statuses.includes(t.status)) statuses.push(t.status);
             existing.lineStatuses = statuses;
             existing.hasMixedStatus = statuses.length > 1;
+            if (t.fueraDeBaseAt && !existing.fueraDeBaseAt) existing.fueraDeBaseAt = t.fueraDeBaseAt;
             
             // Update to most advanced status
             if (statusPriority[t.status] > statusPriority[existing.status]) {
@@ -164,7 +165,21 @@ const buildFilteredTransfersExportRows = (
         'Ubicación': t.ubicacion || '',
         'Recibió (empacador)': t.recibidoPackerName || '',
         'Fecha Enviado': t.enviadoAt ? format(t.enviadoAt, 'dd/MM/yyyy HH:mm') : '',
+        'Observación': fueraDeBaseObs(t),
     }));
+
+/** Solo aplica mientras siga en Recibido en Bodega; si ya se despachó la marca deja de importar. */
+const fueraDeBaseObs = (t: TransferEntry) =>
+    t.status === 'Recibido en Bodega' && t.fueraDeBaseAt
+        ? `No está en la base de transferencias desde ${format(new Date(t.fueraDeBaseAt), 'dd/MM/yyyy')}: posiblemente ya entregada`
+        : '';
+
+const FueraDeBaseBadge: React.FC<{ t: TransferEntry }> = ({ t }) =>
+    t.status === 'Recibido en Bodega' && t.fueraDeBaseAt ? (
+        <Badge variant="outline" className="ml-1 border-red-500 text-red-700 text-[10px] whitespace-nowrap" title={fueraDeBaseObs(t)}>
+            No está en base
+        </Badge>
+    ) : null;
 
 const MIXED_STATUS_FILTER = '__mixed__';
 
@@ -1150,7 +1165,7 @@ const WarehouseReceptionView: React.FC<{
                                                 className="h-8 text-xs"
                                             />
                                         </TableCell>
-                                        <TableCell>{getStatusBadge(t.status)}</TableCell>
+                                        <TableCell>{getStatusBadge(t.status)}<FueraDeBaseBadge t={t} /></TableCell>
                                     </TableRow>
                                 )) : (
                                     <TableRow><TableCell colSpan={7} className="h-24 text-center text-muted-foreground">Ingrese una placa y presione buscar para ver los resultados.</TableCell></TableRow>
@@ -2336,6 +2351,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                             <TableCell>
                                                 <div className="flex flex-col gap-1 items-start">
                                                     {getStatusBadge(t.status)}
+                                                    <FueraDeBaseBadge t={t} />
                                                     {t.hasMixedStatus && (
                                                         <Badge variant="outline" className="text-[9px] border-amber-500 text-amber-700 bg-amber-50">
                                                             Estados mixtos
@@ -2643,7 +2659,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                             <TableCell>{t.bodegaOrigen}</TableCell>
                                             <TableCell>{t.bodegaDestino}</TableCell>
                                             <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yyyy HH:mm") : 'N/A'}</TableCell>
-                                            <TableCell>{getStatusBadge(t.status)}</TableCell>
+                                            <TableCell>{getStatusBadge(t.status)}<FueraDeBaseBadge t={t} /></TableCell>
                                         </TableRow>
                                     )) : (
                                         <TableRow><TableCell colSpan={6} className="h-24 text-center text-muted-foreground">No hay transferencias disponibles con los filtros actuales.</TableCell></TableRow>
@@ -2859,7 +2875,7 @@ const OperatorView: React.FC<{
                                         <TableCell>{t.bodegaOrigen}</TableCell>
                                         <TableCell>{t.bodegaDestino}</TableCell>
                                         <TableCell className="text-center font-bold">{t.cantidad}</TableCell>
-                                        <TableCell>{getStatusBadge(t.status)}</TableCell>
+                                        <TableCell>{getStatusBadge(t.status)}<FueraDeBaseBadge t={t} /></TableCell>
                                         <TableCell className="font-mono">{placa}</TableCell>
                                         <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
                                         <TableCell>{t.enviadoAt ? format(t.enviadoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
@@ -3547,6 +3563,14 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
                       : ''
                   }`, 
               });
+              if (result.summary.fueraBase) {
+                  toast({
+                      variant: 'destructive',
+                      title: `${result.summary.fueraBase} línea(s) en Recibido en Bodega no están en el archivo`,
+                      description: 'Posiblemente ya se entregaron. No se cambió su estado; quedaron marcadas "No está en base" (búsquelas por estado Recibido en Bodega y exporte para ver la observación).',
+                      duration: 20000,
+                  });
+              }
               fetchData();
           } else if (result.error) {
                throw new Error(result.error);

@@ -493,6 +493,9 @@ export interface TransferEntry {
    */
   codigoAlterno?: string;
   status: TransferStatus;
+  /** Recibido en Bodega pero ausente en el último Excel de transferencias (posible entregada). Solo marca. */
+  fueraDeBaseAt?: Date;
+  fueraDeBaseNota?: string;
   recibidoAt?: Date;
   enviadoAt?: Date;
   validatedAt?: Date;

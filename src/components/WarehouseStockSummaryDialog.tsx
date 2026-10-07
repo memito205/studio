@@ -14,7 +14,9 @@ import { useToast } from '@/hooks/use-toast';
 
 const BIG_TF_THRESHOLD = 5;
 
-type TfGroup = { numeroTF: string; destino: string; unidades: number; codigoAlterno: string; ubicacion: string };
+type TfGroup = { numeroTF: string; destino: string; unidades: number; codigoAlterno: string; ubicacion: string; fueraDeBase: boolean };
+
+const FUERA_BASE_OBS = 'No está en la base de transferencias: posiblemente ya entregada';
 
 type DestinoSummary = {
     destino: string;
@@ -31,8 +33,9 @@ function groupByTf(lines: TransferEntry[]): TfGroup[] {
     lines.forEach((t) => {
         const destino = String(t.bodegaDestino || 'SIN DESTINO').trim();
         const key = `${t.numeroTF}|${destino.toUpperCase()}`;
-        const g = map.get(key) || { numeroTF: String(t.numeroTF || ''), destino, unidades: 0, codigoAlterno: '', ubicacion: '' };
+        const g = map.get(key) || { numeroTF: String(t.numeroTF || ''), destino, unidades: 0, codigoAlterno: '', ubicacion: '', fueraDeBase: false };
         g.unidades += Number(t.cantidad) || 0;
+        g.fueraDeBase = g.fueraDeBase || !!t.fueraDeBaseAt;
         g.codigoAlterno = g.codigoAlterno || t.codigoAlterno || '';
         g.ubicacion = g.ubicacion || t.ubicacion || '';
         map.set(key, g);
@@ -98,6 +101,7 @@ function WarehouseStockSummaryDialog({ open, onOpenChange }: { open: boolean; on
     }, [open, load]);
 
     const summary = useMemo(() => summarize(tfs), [tfs]);
+    const fueraDeBase = useMemo(() => tfs.filter((tf) => tf.fueraDeBase).length, [tfs]);
     const visible = useMemo(() => {
         const q = search.trim().toUpperCase();
         return q ? summary.filter((s) => s.destino.toUpperCase().includes(q)) : summary;
@@ -134,6 +138,7 @@ function WarehouseStockSummaryDialog({ open, onOpenChange }: { open: boolean; on
                 Ubicación: tf.ubicacion,
                 Unidades: tf.unidades,
                 Tipo: tf.unidades > BIG_TF_THRESHOLD ? `> ${BIG_TF_THRESHOLD}` : `≤ ${BIG_TF_THRESHOLD}`,
+                Observación: tf.fueraDeBase ? FUERA_BASE_OBS : '',
             }));
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumen), 'Resumen por destino');
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detalle), 'Detalle TF');
@@ -166,6 +171,12 @@ function WarehouseStockSummaryDialog({ open, onOpenChange }: { open: boolean; on
                         <Download className="mr-2 h-4 w-4" /> Excel
                     </Button>
                 </div>
+                {fueraDeBase > 0 && (
+                    <p className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+                        {fueraDeBase} TF no están en la última base de transferencias (posiblemente ya entregadas). En el Excel aparecen con
+                        observación en la hoja &quot;Detalle TF&quot;.
+                    </p>
+                )}
 
                 <div className="max-h-[60vh] overflow-auto border rounded-md">
                     <Table>

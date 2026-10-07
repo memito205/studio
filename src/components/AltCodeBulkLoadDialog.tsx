@@ -21,6 +21,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
+import { ToastAction } from '@/components/ui/toast';
+import { buildAltCodeStickersPdf, openPdfForPrint } from '@/lib/labelPdf';
 
 const ACTION_LABEL: Record<AltCodeBulkAction, string> = {
   enlazar: 'Se enlaza con TF',
@@ -54,7 +56,7 @@ function parseBulkRows(rows: Record<string, unknown>[]): AltCodeBulkInputRow[] {
   const codeKey = find('ALTERN') || find('CODIGO') || headers[0];
   const ubicKey = find('UBICACI');
   const destKey = find('DESTINO', 'BODEGA');
-  const packKey = find('EMPAC', 'RESPONSABLE');
+  const packKey = find('EMPAC', 'RESPONSABLE', 'REGISTRA', 'RECIBE');
   return rows.map((r) => ({
     codigoAlterno: String(r[codeKey] ?? '').trim(),
     ubicacion: ubicKey ? String(r[ubicKey] ?? '').trim() : '',
@@ -68,7 +70,9 @@ export const AltCodeBulkLoadDialog: React.FC<{
   onOpenChange: (open: boolean) => void;
   actor?: TransferActor;
   onApplied: () => void;
-}> = ({ open, onOpenChange, actor, onApplied }) => {
+  mode?: 'inicial' | 'listado';
+}> = ({ open, onOpenChange, actor, onApplied, mode = 'inicial' }) => {
+  const isList = mode === 'listado';
   const { toast } = useToast();
   const [fileName, setFileName] = useState('');
   const [rows, setRows] = useState<AltCodeBulkInputRow[]>([]);
@@ -124,10 +128,14 @@ export const AltCodeBulkLoadDialog: React.FC<{
   };
 
   const downloadTemplate = () => {
-    const ws = XLSX.utils.json_to_sheet([{ 'CODIGO ALTERNO': '', UBICACION: '', DESTINO: '', EMPACADOR: '' }]);
+    const ws = XLSX.utils.json_to_sheet([
+      isList
+        ? { 'CODIGO ALTERNO': '', UBICACION: '', REGISTRA: '', DESTINO: '' }
+        : { 'CODIGO ALTERNO': '', UBICACION: '', DESTINO: '', EMPACADOR: '' },
+    ]);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Carga inicial');
-    XLSX.writeFile(wb, 'plantilla_carga_inicial_codigos_alternos.xlsx');
+    XLSX.utils.book_append_sheet(wb, ws, isList ? 'Listado' : 'Carga inicial');
+    XLSX.writeFile(wb, isList ? 'plantilla_listado_codigos_alternos.xlsx' : 'plantilla_carga_inicial_codigos_alternos.xlsx');
   };
 
   const downloadPreview = () => {
@@ -155,16 +163,25 @@ export const AltCodeBulkLoadDialog: React.FC<{
 
   const handleApply = async () => {
     setBusy('apply');
-    const res = await applyAltCodeBulkLoad(rows, maxDays, actor);
+    const res = await applyAltCodeBulkLoad(rows, maxDays, actor, mode);
     setBusy(null);
     if (!res.success) {
       toast({ variant: 'destructive', title: 'No se aplicó la carga', description: res.error });
       return;
     }
     toast({
-      title: 'Carga inicial aplicada',
+      title: isList ? 'Listado registrado' : 'Carga inicial aplicada',
+      ...(isList && res.stickers?.length
+        ? {
+            action: (
+              <ToastAction altText="Imprimir etiquetas" onClick={() => openPdfForPrint(buildAltCodeStickersPdf(res.stickers!))}>
+                Imprimir {res.stickers.length} etiqueta(s)
+              </ToastAction>
+            ),
+          }
+        : {}),
       description: `${res.linked} enlazadas a su TF (Recibido en Bodega) · ${res.pending} pendientes de TF · ${res.skipped} ignoradas.`,
-      duration: 10000,
+      duration: isList ? 60000 : 10000,
     });
     reset();
     onOpenChange(false);
@@ -177,11 +194,22 @@ export const AltCodeBulkLoadDialog: React.FC<{
     <Dialog open={open} onOpenChange={(o) => { if (!busy) { if (!o) reset(); onOpenChange(o); } }}>
       <DialogContent className="max-w-5xl h-[85vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>Carga inicial de códigos alternos</DialogTitle>
+          <DialogTitle>{isList ? 'Registrar listado de códigos alternos (Excel)' : 'Carga inicial de códigos alternos'}</DialogTitle>
           <DialogDescription>
-            Suba el Excel de las cajas de código alterno que <strong>realmente están en bodega hoy</strong>. Cada código se registra
-            como si se hubiera escaneado: si su TF existe y no ha salido, pasa a Recibido en Bodega con esa ubicación; si no
-            existe, queda pendiente y se enlaza sola al subir transferencias. Lo despachado y lo ya registrado no se toca.
+            {isList ? (
+              <>
+                Para cajas que <strong>llegaron hoy a bodega</strong> y no se escanearon una a una (p. ej. operador externo sin Suite).
+                Columnas: <strong>CODIGO ALTERNO</strong>, <strong>UBICACION</strong>, <strong>REGISTRA</strong> (quien recibe) y DESTINO
+                (opcional). Cada código queda registrado igual que el registro manual, con la hora de esta carga: si su TF ya está, pasa a
+                Recibido en Bodega; si no, queda pendiente y se enlaza sola al subir transferencias. No hay que volver a escanearlas.
+              </>
+            ) : (
+              <>
+                Suba el Excel de las cajas de código alterno que <strong>realmente están en bodega hoy</strong>. Cada código se registra
+                como si se hubiera escaneado: si su TF existe y no ha salido, pasa a Recibido en Bodega con esa ubicación; si no
+                existe, queda pendiente y se enlaza sola al subir transferencias. Lo despachado y lo ya registrado no se toca.
+              </>
+            )}
           </DialogDescription>
         </DialogHeader>
 

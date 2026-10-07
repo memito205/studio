@@ -166,8 +166,22 @@ export function buildTransferLabelsPdf(transfers: TransferLabelData[], opts: Tra
   return doc;
 }
 
+export function buildAltCodeStickersPdf(list: AltCodeStickerData[]): jsPDF {
+  const doc = newLabelDoc();
+  list.forEach((r, i) => {
+    if (i > 0) doc.addPage([PAGE_W, PAGE_H], 'landscape');
+    drawAltCodeSticker(doc, r);
+  });
+  return doc;
+}
+
 export function buildAltCodeStickerPdf(r: AltCodeStickerData): jsPDF {
   const doc = newLabelDoc();
+  drawAltCodeSticker(doc, r);
+  return doc;
+}
+
+function drawAltCodeSticker(doc: jsPDF, r: AltCodeStickerData) {
   const registeredAt = toDate(r.registeredAt) || new Date();
   const linked = r.status === 'linked';
   drawDayBlock(doc, registeredAt);
@@ -204,7 +218,6 @@ export function buildAltCodeStickerPdf(r: AltCodeStickerData): jsPDF {
     CONTENT_W,
     7
   );
-  return doc;
 }
 
 export function openPdfForPrint(doc: jsPDF) {
