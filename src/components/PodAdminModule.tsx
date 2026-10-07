@@ -25,7 +25,7 @@ import {
   type PodNovedadLine,
   type StopWithTfs,
 } from '@/app/podActions';
-import { PHOTO_CATEGORIES, STOP_STATUS_LABEL } from '@/lib/pod';
+import { PHOTO_CATEGORIES, STOP_STATUS_LABEL, STORE_RECEPTION_LABEL } from '@/lib/pod';
 import type { DeliveryManifestStatus, DeliveryPhoto, DeliveryStopStatus, StoreReceipt, TransferActor } from '@/types';
 import { RECEIPT_LABEL } from '@/components/StoreReceiveCard';
 import { DriverUserSelect, type DriverValue } from '@/components/DriverUserSelect';
@@ -385,6 +385,18 @@ function ManifestDetail({
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-2 text-sm">
+                  {s.storeReception && (
+                    <p
+                      className={cn(
+                        'text-xs rounded-md border px-2 py-1',
+                        s.storeReception.status === 'con_faltantes' ? 'border-red-200 bg-red-50 text-red-800' : 'border-green-200 bg-green-50 text-green-800'
+                      )}
+                    >
+                      Recepción tienda: {STORE_RECEPTION_LABEL[s.storeReception.status]} · {fmt(s.storeReception.at)} · {s.storeReception.byName}
+                      {s.storeReception.missingTfs?.length ? ` · Faltantes: ${s.storeReception.missingTfs.join(', ')}` : ''}
+                      {s.storeReception.note ? ` · ${s.storeReception.note}` : ''}
+                    </p>
+                  )}
                   {s.lastRejection && s.status === 'pendiente' && (
                     <p className="text-xs text-red-800 bg-red-50 border border-red-200 rounded-md px-2 py-1">
                       Rechazada {fmt(s.lastRejection.at)} por {s.lastRejection.byName}: {s.lastRejection.note}
@@ -958,6 +970,9 @@ function exportRelations(list: AdminManifest[], month: string) {
       'Fotos archivadas': s.photos?.filter((p) => p.archived).length || 0,
       Notas: s.notes || '',
       'Último rechazo': s.lastRejection ? `${s.lastRejection.byName}: ${s.lastRejection.note}` : '',
+      'Recepción tienda': s.storeReception
+        ? `${STORE_RECEPTION_LABEL[s.storeReception.status]}${s.storeReception.missingTfs?.length ? ` · Faltantes: ${s.storeReception.missingTfs.join(', ')}` : ''}${s.storeReception.note ? ` · ${s.storeReception.note}` : ''}`
+        : '',
       Aprobada: m.validatedAt ? `${fmt(m.validatedAt)} · ${m.validatedByName || ''}` : '',
       'Cerrada sin app': m.closedWithoutApp ? `${fmt(m.closedAt)} · ${m.closedByName || ''} · ${m.closedNote || ''}` : '',
     }))

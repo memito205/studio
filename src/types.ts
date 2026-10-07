@@ -574,6 +574,12 @@ export interface DeliveryManifest {
     closedAt?: Date;
     closedByName?: string;
     closedNote?: string;
+    /** Códigos ERP de tiendas con recepción por relación aún abierta (consulta `array-contains`). */
+    storeOpenCodes?: string[];
+    /** `CODIGO|AAAA-MM-DD` de tiendas que ya cerraron su recepción (consulta de días recientes). */
+    storeDoneKeys?: string[];
+    /** stopId -> estado de la recepción en tienda. */
+    storeReceptionStatus?: Record<string, StoreReceptionStatus>;
     /** Cambios de conductor/placa hechos por el admin mientras estaba en ruta. */
     driverHistory?: Array<{
         fromUserId?: string | null;
@@ -629,6 +635,21 @@ export interface DeliveryManifestStop {
     submissionId?: string;
     /** Último rechazo del admin; el conductor debe registrar la parada de nuevo. */
     lastRejection?: DeliveryStopRejection;
+    /** Cierre de la recepción por la tienda (o automático al aprobar/cerrar la relación). */
+    storeReception?: StoreReceptionClose;
+}
+
+export type StoreReceptionStatus = 'completa' | 'con_faltantes' | 'completada_por_conductor' | 'no_entregada' | 'cerrada_por_logistica';
+
+export interface StoreReceptionClose {
+    status: StoreReceptionStatus;
+    at: Date;
+    byId?: string;
+    byName: string;
+    totalTfs?: number;
+    readTfs?: number;
+    missingTfs?: string[];
+    note?: string;
 }
 
 export type DeliveryPhotoCategory = 'remision' | 'mercancia' | 'fachada' | 'otra';

@@ -141,7 +141,7 @@ const DeliveryForm: React.FC<{
       .map((t) => t.numeroTF);
   }, [mode, selected, stop.tfs]);
   const notDeliveredTfs = stop.tfs.filter((t) => !deliveredTfs.includes(t.numeroTF));
-  const needsProof = stop.tfs.some((t) => deliveredTfs.includes(t.numeroTF) && !t.storeReceivedAt);
+  const needsProof = deliveredTfs.length > 0;
   const reasonOf = (tf: string) => reasons[tf] || bulkReason;
 
   const distance =
@@ -322,9 +322,7 @@ const DeliveryForm: React.FC<{
           <CardDescription>
             {needsProof
               ? 'La remisión firmada es obligatoria (puede tomar varias hojas).'
-              : deliveredTfs.length > 0
-                ? 'Opcional: la tienda ya registró el recibo escaneando.'
-                : 'Opcional cuando no se entrega.'}
+              : 'Opcional cuando no se entrega.'}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

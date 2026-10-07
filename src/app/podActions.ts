@@ -1,8 +1,10 @@
 'use server';
 
 import {
+  arrayRemove,
   arrayUnion,
   collection,
+  FieldPath,
   deleteDoc,
   deleteField,
   doc,
@@ -20,7 +22,7 @@ import {
 import { firestore } from '@/services/firebase';
 import { buildStoreMatcher, DEFAULT_STORE_RADIUS_M } from '@/lib/deliveryStores';
 import { getDeliveryStoresCached } from '@/lib/deliveryStoresCache';
-import { MAX_DELIVERY_PHOTOS, POD_START_AT } from '@/lib/pod';
+import { MAX_DELIVERY_PHOTOS, POD_START_AT, STORE_RECEPTION_START_AT, storeStopId } from '@/lib/pod';
 
 const PLATFORM_COLLECTION = 'tf_platform_status';
 const platformTf = (v: unknown) => {
@@ -39,6 +41,7 @@ import type {
   DeliveryStore,
   StoreReceipt,
   StoreReceiptResult,
+  StoreReceptionStatus,
   TransferActor,
   TransferStatus,
 } from '@/types';
@@ -328,7 +331,7 @@ export async function submitDeliveryStop(
       );
       if (missing.length > 0) throw new Error(`Falta marcar ${missing.length} TF como entregada o no entregada.`);
       storeReceivedTfs.forEach((tf) => notDelivered.delete(tf));
-      const needsProof = Array.from(delivered).some((tf) => !storeReceivedTfs.has(tf));
+      const needsProof = delivered.size > 0 || storeReceivedTfs.size > 0;
       if (needsProof && !photos.some((p) => p.category === 'remision')) throw new Error('Falta la foto de la remisión firmada.');
       if (needsProof && !String(input.receivedByName || '').trim()) throw new Error('Falta el nombre de quien recibe.');
 
@@ -412,8 +415,6 @@ export async function submitDeliveryStop(
       tSnaps.forEach((d) => {
         if (!d.exists()) return;
         const t = d.data() as any;
-        // Recibida por la tienda y el conductor no la entregó con fotos: se deja la constancia de la tienda.
-        if (storeReceivedTfs.has(tfOf(d)) && (!delivered.has(tfOf(d)) || photos.length === 0)) return;
         const id = platformDocId(t.numeroTF, t.bodegaDestino);
         const cur = lines.get(id) || {
           id,
@@ -555,6 +556,9 @@ export async function approveDeliveryManifest(input: {
         })
       );
     });
+    await autoCompleteStoreReceptions(input.manifestDocId, 'aprobada', actorNameOf(input.actor)).catch((e) =>
+      console.error('Recepción en tienda no completada al aprobar:', e)
+    );
     return { success: true };
   } catch (error: any) {
     return { success: false, error: error.message || 'No se pudo aprobar la relación.' };
@@ -585,6 +589,9 @@ export async function closeDeliveryManifestWithoutApp(input: {
         closedNote: note,
       });
     });
+    await autoCompleteStoreReceptions(input.manifestDocId, 'cerrada', actorNameOf(input.actor)).catch((e) =>
+      console.error('Recepción en tienda no completada al cerrar:', e)
+    );
     return { success: true };
   } catch (error: any) {
     return { success: false, error: error.message || 'No se pudo cerrar la relación.' };
@@ -1170,6 +1177,216 @@ export async function getStoreReceipts(opts: {
   } catch (error: any) {
     return { error: error.message || 'No se pudieron cargar las lecturas.' };
   }
+}
+
+export type StoreManifestSummary = {
+  manifestDocId: string;
+  manifestId: number;
+  createdAt: string;
+  driver?: string;
+  resource?: string;
+  deliveryStatus?: string;
+  receptionStatus?: StoreReceptionStatus;
+};
+
+const lastDays = (n: number) =>
+  Array.from({ length: n }, (_, i) => bogotaDay(new Date(Date.now() - i * 24 * 3600 * 1000)));
+
+/** Relaciones enviadas a la tienda: abiertas + cerradas en los últimos 7 días (desde STORE_RECEPTION_START_AT). */
+export async function getStoreManifests(storeCode: string): Promise<{ data?: StoreManifestSummary[]; error?: string }> {
+  const code = String(storeCode || '').trim();
+  if (!code) return { data: [] };
+  try {
+    const manifests = collection(firestore, 'deliveryManifests');
+    const [openSnap, doneSnap] = await Promise.all([
+      getDocs(query(manifests, where('storeOpenCodes', 'array-contains', code))),
+      getDocs(query(manifests, where('storeDoneKeys', 'array-contains-any', lastDays(7).map((d) => `${code}|${d}`)))),
+    ]);
+    const byId = new Map<string, StoreManifestSummary>();
+    [...openSnap.docs, ...doneSnap.docs].forEach((d) => {
+      const m = d.data() as any;
+      const createdAt = m.createdAt instanceof Timestamp ? m.createdAt.toDate() : null;
+      if (!createdAt || createdAt < STORE_RECEPTION_START_AT) return;
+      byId.set(d.id, {
+        manifestDocId: d.id,
+        manifestId: Number(m.manifestId || 0),
+        createdAt: createdAt.toISOString(),
+        driver: m.driver || undefined,
+        resource: m.resource || undefined,
+        deliveryStatus: m.deliveryStatus || undefined,
+        receptionStatus: m.storeReceptionStatus?.[storeStopId(code)],
+      });
+    });
+    const data = Array.from(byId.values()).sort(
+      (a, b) => Number(!!a.receptionStatus) - Number(!!b.receptionStatus) || b.manifestId - a.manifestId
+    );
+    return { data };
+  } catch (error: any) {
+    return { error: error.message || 'No se pudieron cargar las relaciones.' };
+  }
+}
+
+export type StoreManifestDetail = {
+  manifestDocId: string;
+  manifestId: number;
+  createdAt: string;
+  driver?: string;
+  resource?: string;
+  stopStatus?: DeliveryStopStatus;
+  tfs: Array<{
+    numeroTF: string;
+    codigoAlterno?: string;
+    unidades: number;
+    status: string;
+    readAt?: string;
+    readByName?: string;
+  }>;
+  reception?: {
+    status: StoreReceptionStatus;
+    at: string;
+    byName: string;
+    missingTfs?: string[];
+    note?: string;
+  };
+};
+
+async function loadStoreStop(manifestDocId: string, storeCode: string) {
+  const manifestRef = doc(firestore, 'deliveryManifests', manifestDocId);
+  const stopRef = doc(manifestRef, 'stops', storeStopId(storeCode));
+  const [mSnap, sSnap] = await Promise.all([getDoc(manifestRef), getDoc(stopRef)]);
+  if (!mSnap.exists() || !sSnap.exists()) throw new Error('La relación no tiene parada para esta tienda.');
+  const stop = sSnap.data() as any;
+  const ids: string[] = Array.isArray(stop.transferIds) ? stop.transferIds : [];
+  const lines: DocumentData[] = [];
+  for (let i = 0; i < ids.length; i += 30) {
+    const snap = await getDocs(query(collection(firestore, 'transfers'), where(documentId(), 'in', ids.slice(i, i + 30))));
+    snap.forEach((d) => lines.push(d.data()));
+  }
+  const byTf = new Map<string, StoreManifestDetail['tfs'][number]>();
+  lines.forEach((t) => {
+    const tf = String(t.numeroTF || '').trim();
+    const cur = byTf.get(tf) || { numeroTF: tf, unidades: 0, status: String(t.status || '') };
+    cur.unidades += Number(t.cantidad || 0) || 0;
+    const alt = String(t.codigoAlterno || '').trim();
+    if (alt && !cur.codigoAlterno) cur.codigoAlterno = alt;
+    if (t.storeReceivedAt instanceof Timestamp && !cur.readAt) {
+      cur.readAt = t.storeReceivedAt.toDate().toISOString();
+      cur.readByName = t.storeReceivedByName || undefined;
+    }
+    byTf.set(tf, cur);
+  });
+  const tfs = Array.from(byTf.values()).sort((a, b) => a.numeroTF.localeCompare(b.numeroTF, undefined, { numeric: true }));
+  return { manifestRef, stopRef, manifest: mSnap.data() as any, stop, tfs };
+}
+
+export async function getStoreManifestDetail(
+  manifestDocId: string,
+  storeCode: string
+): Promise<{ data?: StoreManifestDetail; error?: string }> {
+  try {
+    const { manifest, stop, tfs } = await loadStoreStop(manifestDocId, storeCode);
+    const createdAt = manifest.createdAt instanceof Timestamp ? manifest.createdAt.toDate() : new Date(0);
+    if (createdAt < STORE_RECEPTION_START_AT) return { error: 'Esta relación es anterior a la recepción por relación.' };
+    const r = stop.storeReception;
+    return {
+      data: {
+        manifestDocId,
+        manifestId: Number(manifest.manifestId || 0),
+        createdAt: createdAt.toISOString(),
+        driver: manifest.driver || undefined,
+        resource: manifest.resource || undefined,
+        stopStatus: stop.status,
+        tfs,
+        reception: r
+          ? {
+              status: r.status,
+              at: r.at instanceof Timestamp ? r.at.toDate().toISOString() : '',
+              byName: r.byName,
+              missingTfs: r.missingTfs,
+              note: r.note,
+            }
+          : undefined,
+      },
+    };
+  } catch (error: any) {
+    return { error: error.message || 'No se pudo cargar la relación.' };
+  }
+}
+
+/** La tienda cierra su recepción: completa o con faltantes (nota obligatoria). */
+export async function closeStoreReception(input: {
+  manifestDocId: string;
+  storeCode: string;
+  note?: string;
+  actor: TransferActor;
+}): Promise<{ success: boolean; status?: StoreReceptionStatus; missing?: string[]; error?: string }> {
+  if (!input.actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  const note = String(input.note || '').trim();
+  try {
+    const { manifestRef, stopRef, stop, tfs } = await loadStoreStop(input.manifestDocId, input.storeCode);
+    if (stop.storeReception) return { success: false, error: 'La recepción de esta relación ya fue cerrada.' };
+    const missing = tfs.filter((t) => !t.readAt).map((t) => t.numeroTF);
+    if (missing.length > 0 && !note) {
+      return { success: false, missing, error: `Faltan ${missing.length} TF por leer. Escriba la novedad para cerrar con faltantes.` };
+    }
+    const status: StoreReceptionStatus = missing.length === 0 ? 'completa' : 'con_faltantes';
+    const now = Timestamp.now();
+    await updateDoc(
+      stopRef,
+      clean({
+        storeReception: {
+          status,
+          at: now,
+          byId: input.actor.userId,
+          byName: actorNameOf(input.actor),
+          totalTfs: tfs.length,
+          readTfs: tfs.length - missing.length,
+          missingTfs: missing.length ? missing : undefined,
+          note: note || undefined,
+        },
+      })
+    );
+    await updateDoc(
+      manifestRef,
+      'storeOpenCodes',
+      arrayRemove(input.storeCode),
+      'storeDoneKeys',
+      arrayUnion(`${input.storeCode}|${bogotaDay(now.toDate())}`),
+      new FieldPath('storeReceptionStatus', storeStopId(input.storeCode)),
+      status
+    );
+    return { success: true, status, missing };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'No se pudo cerrar la recepción.' };
+  }
+}
+
+/** Al aprobar/cerrar la relación, las tiendas que no cerraron su recepción quedan completadas. */
+async function autoCompleteStoreReceptions(manifestDocId: string, kind: 'aprobada' | 'cerrada', byName: string) {
+  const manifestRef = doc(firestore, 'deliveryManifests', manifestDocId);
+  const mSnap = await getDoc(manifestRef);
+  const codes: string[] = mSnap.exists() && Array.isArray(mSnap.data().storeOpenCodes) ? mSnap.data().storeOpenCodes : [];
+  if (codes.length === 0) return;
+  const now = Timestamp.now();
+  const day = bogotaDay(now.toDate());
+  const fieldUpdates: unknown[] = [];
+  for (const code of codes) {
+    const stopRef = doc(manifestRef, 'stops', storeStopId(code));
+    const sSnap = await getDoc(stopRef);
+    if (!sSnap.exists() || sSnap.data().storeReception) continue;
+    const status: StoreReceptionStatus =
+      sSnap.data().status === 'no_entregada' ? 'no_entregada' : kind === 'aprobada' ? 'completada_por_conductor' : 'cerrada_por_logistica';
+    await updateDoc(stopRef, { storeReception: { status, at: now, byName } });
+    fieldUpdates.push(new FieldPath('storeReceptionStatus', storeStopId(code)), status);
+  }
+  await updateDoc(
+    manifestRef,
+    'storeOpenCodes',
+    [],
+    'storeDoneKeys',
+    arrayUnion(...codes.map((c) => `${c}|${day}`)),
+    ...fieldUpdates
+  );
 }
 
 /** Números TF etiquetados con el código alterno (para la búsqueda). */

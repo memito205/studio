@@ -6105,7 +6105,8 @@ async function createManifestStops(manifestDocId: string, transferIds: string[])
     stops.forEach((stop, order) => {
         batch.set(doc(manifestRef, 'stops', stop.id), withoutUndefined({ ...stop, order }));
     });
-    batch.update(manifestRef, { deliveryStatus: 'en_ruta', stopsCount: stops.length, stopsDone: 0 });
+    const storeOpenCodes = Array.from(new Set(stops.map((s) => s.storeCode).filter((c): c is string => !!c)));
+    batch.update(manifestRef, { deliveryStatus: 'en_ruta', stopsCount: stops.length, stopsDone: 0, storeOpenCodes });
     await batch.commit();
 }
 
