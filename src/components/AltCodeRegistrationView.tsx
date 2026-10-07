@@ -6,6 +6,7 @@ import { buildAltCodeStickerPdf, openPdfForPrint } from '@/lib/labelPdf';
 import { format } from 'date-fns';
 import { AlertTriangle, CheckCircle2, Link2, Loader2, MapPin, Pencil, Printer, RefreshCw, ScanLine, Upload, XCircle } from 'lucide-react';
 import { AltCodeBulkLoadDialog } from './AltCodeBulkLoadDialog';
+import { ExternalAltPlanDialog } from './ExternalAltPlanDialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -146,6 +147,7 @@ export function AltCodeRegistrationView() {
   const [actionDestino, setActionDestino] = useState('');
   const [isActing, setIsActing] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [planOpen, setPlanOpen] = useState(false);
 
   const refreshLists = useCallback(async () => {
     setIsLoadingLists(true);
@@ -308,6 +310,17 @@ export function AltCodeRegistrationView() {
             <Upload className="mr-2 h-4 w-4" /> Carga inicial (Excel)
           </Button>
           <AltCodeBulkLoadDialog open={bulkOpen} onOpenChange={setBulkOpen} actor={actor} onApplied={refreshLists} />
+        </div>
+      )}
+      {(role === 'admin' || role === 'supervisor') && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed border-blue-300 bg-blue-50/50 p-3">
+          <p className="text-xs text-muted-foreground">
+            ¿Operador externo sin Suite? Suba su plano (TF + código alterno) antes de que llegue la mercancía; al llegar, escanee el código aquí.
+          </p>
+          <Button size="sm" variant="outline" onClick={() => setPlanOpen(true)}>
+            <Upload className="mr-2 h-4 w-4" /> Plano operador externo
+          </Button>
+          <ExternalAltPlanDialog open={planOpen} onOpenChange={setPlanOpen} actor={actor} onApplied={refreshLists} />
         </div>
       )}
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(320px,420px)_1fr] gap-6">

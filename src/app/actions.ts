@@ -4118,10 +4118,12 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
             if (existing) {
                 // UPDATE metadata but keep status
                 const docRef = doc(transfersCollection, existing.id);
-                const updates = {
+                const updates: Record<string, any> = {
                     ...convertDatesToTimestamps(incoming),
                     status: existing.data.status // Preserve operational status
                 };
+                // El Excel no trae alterno para TF de operadores externos (vienen del plano): no borrarlo.
+                if (!normalizeAltCode(incoming.codigoAlterno) && existing.data.codigoAlterno) delete updates.codigoAlterno;
                 batch.update(docRef, updates);
                 updated++;
             } else {
@@ -4142,6 +4144,7 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
         }
         
         await batch.commit();
+        await applyPendingExternalAltPlans();
         const altLink = await linkPendingAltCodeReceipts();
         return { success: true, summary: { added, updated, removed, altLinked: altLink.linked, altPending: altLink.pending } };
 
@@ -5445,6 +5448,217 @@ export async function applyAltCodeBulkLoad(
     } catch (error: any) {
         console.error('Error applying alt code bulk load:', error);
         return { success: false, linked: 0, pending: 0, skipped: 0, error: error.message || 'No se pudo aplicar la carga.' };
+    }
+}
+
+// --- Plano de códigos alternos de operadores externos (pre-aviso: TF + código, antes de que llegue la mercancía) ---
+
+const ALT_CODE_PLANS = 'altCodePlans';
+
+export type ExternalAltPlanRow = { numeroTF: string; codigoAlterno: string; destino?: string };
+
+export type ExternalAltPlanAction =
+    | 'asignar'
+    | 'espera'
+    | 'ya_asignado'
+    | 'conflicto'
+    | 'varios_destinos'
+    | 'codigo_en_uso'
+    | 'despachada'
+    | 'repetido'
+    | 'vacio';
+
+export type ExternalAltPlanPreviewRow = {
+    fila: number;
+    numeroTF: string;
+    codigoAlterno: string;
+    destino: string;
+    action: ExternalAltPlanAction;
+    destinos: string;
+    estados: string;
+    nota: string;
+};
+
+const normalizePlanTf = (v: unknown) => {
+    const raw = String(v ?? '').trim().toUpperCase();
+    const m = raw.match(/^(?:TF[-\s]?)?0*(\d+)$/);
+    return m ? m[1] : raw;
+};
+
+async function findTransferLinesByTfs(tfs: string[]): Promise<Map<string, Array<{ id: string; data: any }>>> {
+    const values = new Set<string | number>();
+    tfs.forEach((tf) => {
+        values.add(tf);
+        if (/^\d+$/.test(tf)) values.add(Number(tf));
+    });
+    const list = Array.from(values);
+    const byTf = new Map<string, Array<{ id: string; data: any }>>();
+    const snaps = await Promise.all(
+        Array.from({ length: Math.ceil(list.length / 30) }, (_, i) =>
+            getDocs(query(collection(firestore, 'transfers'), where('numeroTF', 'in', list.slice(i * 30, i * 30 + 30))))
+        )
+    );
+    snaps.forEach((snap) =>
+        snap.forEach((d) => {
+            const tf = normalizePlanTf(d.data().numeroTF);
+            if (!byTf.has(tf)) byTf.set(tf, []);
+            byTf.get(tf)!.push({ id: d.id, data: d.data() });
+        })
+    );
+    return byTf;
+}
+
+async function analyzeExternalAltPlan(rows: ExternalAltPlanRow[]) {
+    const tfs = Array.from(new Set(rows.map((r) => normalizePlanTf(r.numeroTF)).filter(Boolean)));
+    const codes = Array.from(new Set(rows.map((r) => normalizeAltCode(r.codigoAlterno)).filter(Boolean)));
+    const [byTf, byCode] = await Promise.all([findTransferLinesByTfs(tfs), findTransfersByAltCodes(codes)]);
+
+    const seen = new Set<string>();
+    const linesByRow = new Map<number, Array<{ id: string; data: any }>>();
+    const preview = rows.map((r, idx): ExternalAltPlanPreviewRow => {
+        const numeroTF = normalizePlanTf(r.numeroTF);
+        const code = normalizeAltCode(r.codigoAlterno);
+        const destino = String(r.destino || '').trim().toUpperCase();
+        const base: ExternalAltPlanPreviewRow = { fila: idx + 2, numeroTF, codigoAlterno: code, destino, action: 'asignar', destinos: '', estados: '', nota: '' };
+        if (!numeroTF || !code) return { ...base, action: 'vacio', nota: 'Falta TF o código alterno' };
+        if (seen.has(code)) return { ...base, action: 'repetido', nota: 'Código repetido en el archivo' };
+        seen.add(code);
+
+        const otherTf = (byCode.get(code) || []).find((l) => normalizePlanTf(l.data.numeroTF) !== numeroTF);
+        if (otherTf) return { ...base, action: 'codigo_en_uso', nota: `El código ya está en la TF ${otherTf.data.numeroTF}` };
+
+        let lines = byTf.get(numeroTF) || [];
+        if (lines.length === 0) return { ...base, action: 'espera', nota: 'La TF aún no está en la Suite: se asigna sola al subir el Excel de transferencias' };
+        if (destino) {
+            const byDest = lines.filter((l) => normalizeDestination(String(l.data.bodegaDestino || '')) === normalizeDestination(destino));
+            if (byDest.length === 0) {
+                const ds = Array.from(new Set(lines.map((l) => String(l.data.bodegaDestino || '')))).join(', ');
+                return { ...base, action: 'conflicto', destinos: ds, nota: `La TF no tiene el destino ${destino} (tiene ${ds})` };
+            }
+            lines = byDest;
+        }
+        const destinos = Array.from(new Set(lines.map((l) => String(l.data.bodegaDestino || '').trim())));
+        const estados = Array.from(new Set(lines.map((l) => String(l.data.status || ''))));
+        const info = { ...base, destinos: destinos.join(', '), estados: estados.join(', ') };
+        if (destinos.length > 1) return { ...info, action: 'varios_destinos', nota: 'La TF va a varios destinos: agregue la columna DESTINO' };
+
+        const active = lines.filter((l) => !TRANSFER_FINAL_STATUSES.includes(l.data.status));
+        if (active.length === 0) return { ...info, action: 'despachada', nota: 'La TF ya salió de bodega: no se asigna' };
+        const existingCodes = Array.from(new Set(active.map((l) => normalizeAltCode(l.data.codigoAlterno)).filter(Boolean)));
+        if (existingCodes.length > 0 && existingCodes.every((c) => c === code)) return { ...info, action: 'ya_asignado', nota: 'La TF ya tiene este código' };
+        if (existingCodes.some((c) => c !== code)) {
+            return { ...info, action: 'conflicto', nota: `La TF ya tiene otro código alterno (${existingCodes.join(', ')})` };
+        }
+        linesByRow.set(idx, active);
+        return { ...info, action: 'asignar', nota: 'Se asigna el código a la TF' };
+    });
+    return { preview, linesByRow };
+}
+
+export async function previewExternalAltPlan(rows: ExternalAltPlanRow[]): Promise<{ success: boolean; preview?: ExternalAltPlanPreviewRow[]; error?: string }> {
+    try {
+        if (rows.length === 0) return { success: false, error: 'El archivo no tiene filas.' };
+        if (rows.length > 3000) return { success: false, error: 'Máximo 3000 filas por plano.' };
+        const { preview } = await analyzeExternalAltPlan(rows);
+        return { success: true, preview };
+    } catch (error: any) {
+        console.error('Error previewing external alt plan:', error);
+        return { success: false, error: error.message || 'No se pudo analizar el plano.' };
+    }
+}
+
+/** Asigna los códigos del plano a sus TF; las TF que aún no existen quedan en espera y se asignan al subir transferencias. */
+export async function applyExternalAltPlan(
+    rows: ExternalAltPlanRow[],
+    operador: string,
+    actor?: TransferActor
+): Promise<{ success: boolean; assigned: number; waiting: number; skipped: number; error?: string }> {
+    const op = String(operador || '').trim().toUpperCase();
+    if (!op) return { success: false, assigned: 0, waiting: 0, skipped: 0, error: 'Indique el operador externo.' };
+    try {
+        const { preview, linesByRow } = await analyzeExternalAltPlan(rows);
+        const now = Timestamp.now();
+        const writes: Array<{ ref: DocumentReference; data: DocumentData; merge?: boolean }> = [];
+        let assigned = 0;
+        let waiting = 0;
+        preview.forEach((p, idx) => {
+            if (p.action !== 'asignar' && p.action !== 'espera') return;
+            const lines = linesByRow.get(idx) || [];
+            lines.forEach((l) =>
+                writes.push({
+                    ref: doc(firestore, 'transfers', l.id),
+                    data: { codigoAlterno: p.codigoAlterno, altCodeSource: 'operador_externo', altCodeOperator: op, altCodePlanAt: now },
+                })
+            );
+            writes.push({
+                ref: doc(firestore, ALT_CODE_PLANS, p.codigoAlterno.replace(/\//g, '-')),
+                data: {
+                    codigoAlterno: p.codigoAlterno,
+                    numeroTF: p.numeroTF,
+                    destino: p.destino,
+                    operador: op,
+                    status: p.action === 'asignar' ? 'applied' : 'pending',
+                    createdAt: now,
+                    createdByName: actor?.displayName || '',
+                    ...(p.action === 'asignar' ? { appliedAt: now } : {}),
+                },
+                merge: true,
+            });
+            if (p.action === 'asignar') assigned++;
+            else waiting++;
+        });
+        for (let i = 0; i < writes.length; i += 450) {
+            const batch = writeBatch(firestore);
+            writes.slice(i, i + 450).forEach((w) => (w.merge ? batch.set(w.ref, w.data, { merge: true }) : batch.update(w.ref, w.data)));
+            await batch.commit();
+        }
+        await linkPendingAltCodeReceipts();
+        return { success: true, assigned, waiting, skipped: preview.length - assigned - waiting };
+    } catch (error: any) {
+        console.error('Error applying external alt plan:', error);
+        return { success: false, assigned: 0, waiting: 0, skipped: 0, error: error.message || 'No se pudo aplicar el plano.' };
+    }
+}
+
+/** Planos en espera cuya TF ya llegó en el Excel de transferencias. Lee solo los pendientes. */
+async function applyPendingExternalAltPlans(): Promise<number> {
+    try {
+        const pending = await getDocs(query(collection(firestore, ALT_CODE_PLANS), where('status', '==', 'pending')));
+        if (pending.empty) return 0;
+        const plans = pending.docs.map((d) => ({ ref: d.ref, data: d.data() }));
+        const byTf = await findTransferLinesByTfs(Array.from(new Set(plans.map((p) => String(p.data.numeroTF)))));
+        const now = Timestamp.now();
+        const batch = writeBatch(firestore);
+        let applied = 0;
+        let ops = 0;
+        for (const p of plans) {
+            if (ops > 440) break;
+            let lines = byTf.get(String(p.data.numeroTF)) || [];
+            if (lines.length === 0) continue;
+            if (p.data.destino) {
+                lines = lines.filter((l) => normalizeDestination(String(l.data.bodegaDestino || '')) === normalizeDestination(p.data.destino));
+            }
+            const active = lines.filter((l) => !TRANSFER_FINAL_STATUSES.includes(l.data.status) && !normalizeAltCode(l.data.codigoAlterno));
+            const destinos = new Set(active.map((l) => normalizeDestination(String(l.data.bodegaDestino || ''))));
+            if (active.length === 0 || destinos.size > 1) continue;
+            active.forEach((l) => {
+                batch.update(doc(firestore, 'transfers', l.id), {
+                    codigoAlterno: p.data.codigoAlterno,
+                    altCodeSource: 'operador_externo',
+                    altCodeOperator: p.data.operador || '',
+                    altCodePlanAt: now,
+                });
+                ops++;
+            });
+            batch.update(p.ref, { status: 'applied', appliedAt: now });
+            ops++;
+            applied++;
+        }
+        if (ops > 0) await batch.commit();
+        return applied;
+    } catch (error) {
+        console.error('Error applying pending external alt plans:', error);
+        return 0;
     }
 }
 
