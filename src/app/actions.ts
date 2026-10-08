@@ -13,6 +13,7 @@ import { buildStoreMatcher, normalizeStoreCode } from '@/lib/deliveryStores';
 import { getDeliveryStoresCached } from '@/lib/deliveryStoresCache';
 import { firestore } from "@/services/firebase";
 import { collection, addDoc, getDocs, Timestamp, doc, setDoc, getDoc, writeBatch, documentId, where, query, QueryDocumentSnapshot, DocumentData, updateDoc, collectionGroup, runTransaction, orderBy, limit, deleteDoc, getCountFromServer, startAt, startAfter, increment, DocumentReference, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
+import { POD_START_AT } from '@/lib/pod';
 import { parseISO } from 'date-fns';
 import { startOfDay, endOfDay, isWithinInterval } from 'date-fns';
 import * as XLSX from 'xlsx';
@@ -4534,7 +4535,8 @@ export async function getTfKeysEnTransito(): Promise<{ keys?: string[]; error?: 
 export type OpenRouteTf = { key: string; placa?: string; conductor?: string; manifestId?: number };
 
 /**
- * TF en relaciones de ruta abiertas (deliveryStatus en_ruta) que siguen en Enviado a Destino.
+ * TF en relaciones de ruta abiertas de la app del conductor (deliveryStatus en_ruta, con conductor asignado,
+ * creadas desde POD_START_AT) que siguen en Enviado a Destino. El historial de Enviado a Destino no cuenta.
  * Lecturas: relaciones abiertas + sus TF (no recorre la colección transfers).
  */
 export async function getOpenRouteTfs(): Promise<{ data?: OpenRouteTf[]; error?: string }> {
@@ -4543,6 +4545,8 @@ export async function getOpenRouteTfs(): Promise<{ data?: OpenRouteTf[]; error?:
         const owner = new Map<string, { placa?: string; conductor?: string; manifestId?: number }>();
         mSnap.docs.forEach((d) => {
             const m = d.data() as any;
+            const createdAt = toJsDate(m.createdAt);
+            if (!m.driverUserId || !createdAt || createdAt < POD_START_AT) return;
             const info = {
                 placa: String(m.resource || '').trim().toUpperCase() || undefined,
                 conductor: String(m.driver || '').trim() || undefined,
