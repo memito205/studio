@@ -8,7 +8,8 @@ import { Button } from '@/components/ui/button';
 import { ArrowLeft, Loader2, UploadCloud, Package, CheckCircle, Clock, AlertTriangle, PackageCheck, XCircle, ChevronsUpDown, Calendar as CalendarIcon, Send, ClipboardEdit, History, TimerOff, ShieldCheck, Download, FileDown, Timer, BarChart2, GaugeCircle, RefreshCw } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
-import { saveEcommerceOrders, loadEcommerceOrders, loadEcommerceOrdersByIds, getDelayedOrderLogs, upsertDelayedOrderLog, addJustificationToLog, resolveDelayedOrderLog, batchResolveDelayedOrderLogs, batchUpsertDelayedOrderLogs } from '@/app/actions';
+import { ecomOrderFingerprint } from '@/lib/ecommerceIndex';
+import { saveEcommerceOrders, loadEcommerceOrders, loadEcommerceOrdersByIds, getEcommerceOrderIndex, updateEcommerceOrderIndex, getDelayedOrderLogs, upsertDelayedOrderLog, addJustificationToLog, resolveDelayedOrderLog, batchResolveDelayedOrderLogs, batchUpsertDelayedOrderLogs } from '@/app/actions';
 import type { EcommerceOrder, FilterCategory, DelayedOrderLog, Justification, Filters } from '@/types';
 import { excelSerialDateToJSDate, findCaseInsensitiveKey, parseFlexibleDate, calculateSlaHours, parseRobustNumber } from '@/lib/parsingUtils';
 import {
@@ -575,7 +576,12 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
             bodega: String(findCaseInsensitiveKey(row, 'BODEGA', 'ALMACEN', 'BODEGA_ORIGEN', 'AGENCIA') ? row[findCaseInsensitiveKey(row, 'BODEGA', 'ALMACEN', 'BODEGA_ORIGEN', 'AGENCIA')!] : ''),
         })).filter(o => o.id);
 
-        const storedOrdersResult = await loadEcommerceOrdersByIds(parsedOrders.map((o) => o.id));
+        // Solo se leen los pedidos cuyo estado/tienda/bodega/valor/transportadora cambió según el índice.
+        const indexRes = await getEcommerceOrderIndex();
+        const index = indexRes.data || {};
+        const candidates = parsedOrders.filter((o) => index[o.id] !== ecomOrderFingerprint(o));
+
+        const storedOrdersResult = await loadEcommerceOrdersByIds(candidates.map((o) => o.id));
         if (!storedOrdersResult.success || !storedOrdersResult.data) {
             throw new Error("No se pudo cargar el estado actual de los pedidos desde la base de datos.");
         }
@@ -584,7 +590,7 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
         const dispatchedStates = ['en transporte externo', 'en transporte interno', 'entregado', 'en tienda'];
         const cancelledStatesForFilter = ['cancelado', 'pendiente cancelar'];
 
-        const allProcessedOrders = parsedOrders.map(newOrder => {
+        const allProcessedOrders = candidates.map(newOrder => {
             const storedOrder = storedOrdersMap.get(newOrder.id);
             const newOrderState = (newOrder.estado || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, ' ');
             
@@ -649,6 +655,11 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
                     duration: 1500,
                 });
             }
+        }
+
+        const indexEntries = candidates.map((o) => [o.id, ecomOrderFingerprint(o)] as const);
+        for (let i = 0; i < indexEntries.length; i += 5000) {
+            await updateEcommerceOrderIndex(Object.fromEntries(indexEntries.slice(i, i + 5000)));
         }
 
         toast({

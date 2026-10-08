@@ -312,10 +312,13 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
     }
     let cancelled = false;
     void getPackedItemsForOrders(orderIds).then((result) => {
-        if (!cancelled) setAllPackedItems(result.data ?? []);
+        if (cancelled) return;
+        setAllPackedItems(result.data ?? []);
+        setPackedLoadedKey(activeOrderIdsKey);
     });
     return () => { cancelled = true; };
   }, [activeOrderIdsKey]);
+  const [packedLoadedKey, setPackedLoadedKey] = useState('');
 
   const closedMissingKey = React.useMemo(
     () => orders.filter((o) => CLOSED_WHOLESALE_STATUSES.has(o.status) && !o.packingData).map((o) => o.id).sort().join('|'),
@@ -681,11 +684,22 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
     }, {} as Record<string, WholesaleOrder[]>);
   }, [ordersWithPackingData, allPackedItems]);
 
-  // Background sync: server recalcula Empacado (cantidades exactas + cajas etiquetadas). Una vez por conjunto de pedidos activos.
+  // Background sync: el servidor recalcula Empacado (cantidades + cajas etiquetadas) solo para pedidos cuyo estado
+  // calculado con los ítems ya cargados difiere del guardado.
   useEffect(() => {
-    if (!activeOrderIdsKey) return;
+    if (!packedLoadedKey || packedLoadedKey !== activeOrderIdsKey) return;
     const activeIds = orders
         .filter((o) => o.status !== 'En Cargue' && !CLOSED_WHOLESALE_STATUSES.has(o.status))
+        .filter((o) => {
+            const totals = computeWholesalePackingTotals(o, allPackedItems.filter((p) => p.orderId === o.id));
+            const resolved = resolveWholesaleOrderStatus({
+                currentStatus: o.status || 'Pte Empaque',
+                orderTotal: totals.orderTotal,
+                packedTotal: totals.packedTotal,
+                packingForceClosed: !!o.packingForceClosed,
+            });
+            return resolved !== (o.status || 'Pte Empaque');
+        })
         .map((o) => o.id);
     void (async () => {
         for (const id of activeIds) {
@@ -693,7 +707,7 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
         }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeOrderIdsKey]);
+  }, [packedLoadedKey]);
   
   return (
     <div className="space-y-8">

@@ -2572,6 +2572,39 @@ export async function loadEcommerceOrders(fullHistory = false): Promise<{ succes
     }
 }
 
+/** Índice compacto de pedidos (16 lecturas) para comparar el reporte sin leer cada pedido. */
+export async function getEcommerceOrderIndex(): Promise<{ data?: Record<string, string>; error?: string }> {
+    try {
+        const { ECOM_INDEX_SHARDS } = await import('@/lib/ecommerceIndex');
+        const snaps = await Promise.all(
+            Array.from({ length: ECOM_INDEX_SHARDS }, (_, i) => getDoc(doc(firestore, 'ecommerceOrderIndex', `s${i}`)))
+        );
+        const data: Record<string, string> = {};
+        snaps.forEach((s) => Object.assign(data, (s.exists() && s.data().o) || {}));
+        return { data };
+    } catch (error: any) {
+        return { error: error.message || 'No se pudo leer el índice de pedidos.' };
+    }
+}
+
+export async function updateEcommerceOrderIndex(entries: Record<string, string>): Promise<{ success: boolean; error?: string }> {
+    try {
+        const { ecomIndexShard } = await import('@/lib/ecommerceIndex');
+        const byShard = new Map<number, Record<string, string>>();
+        Object.entries(entries).forEach(([id, fp]) => {
+            const s = ecomIndexShard(id);
+            if (!byShard.has(s)) byShard.set(s, {});
+            byShard.get(s)![id] = fp;
+        });
+        const batch = writeBatch(firestore);
+        byShard.forEach((o, s) => batch.set(doc(firestore, 'ecommerceOrderIndex', `s${s}`), { o }, { merge: true }));
+        await batch.commit();
+        return { success: true };
+    } catch (error: any) {
+        return { success: false, error: error.message || 'No se pudo actualizar el índice de pedidos.' };
+    }
+}
+
 /** Solo los pedidos indicados (1 lectura por pedido existente), para comparar al subir el reporte. */
 export async function loadEcommerceOrdersByIds(ids: string[]): Promise<{ success: boolean; data?: EcommerceOrder[]; error?: string }> {
     try {

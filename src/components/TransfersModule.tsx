@@ -1206,11 +1206,14 @@ interface AdminViewProps {
     fileInputRef: React.RefObject<HTMLInputElement>;
     setIsManualEntryOpen: (open: boolean) => void;
     onTabChange: (tab: string) => void;
+    /** Relee solo esas líneas y las actualiza en pantalla (en vez de recargar todas las listas). */
+    onTransfersChanged: (ids: string[]) => void;
 }
 
 const OPERATIONAL_TABS = new Set(['validation', 'manifest']);
+const OPERATIONAL_LIST_STATUSES: TransferStatus[] = ['Recolectado en Ruta', 'Validado Supervisor', 'Recibido en Bodega'];
 
-const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, collectionLogs, isLoading, filters, setFilters, onRefresh, onSearch, role, users, isUploading, onFileChange, fileInputRef, setIsManualEntryOpen, onTabChange }) => {
+const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, collectionLogs, isLoading, filters, setFilters, onRefresh, onSearch, role, users, isUploading, onFileChange, fileInputRef, setIsManualEntryOpen, onTabChange, onTransfersChanged }) => {
     const { user, userName } = useAuth();
     const { toast } = useToast();
     const actor = useMemo(() => toTransferActor(user, userName), [user, userName]);
@@ -1274,7 +1277,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             const result = await updateTransferStatus(ids, 'Recibido en Bodega', undefined, actor);
             if (result.success) {
                 toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
-                onRefresh();
+                onTransfersChanged(ids);
                 
                 openPdfForPrint(buildTransferLabelsPdf([transfer], { receivingNow: true }));
             } else {
@@ -1324,7 +1327,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             const grouped = groupTransfersByTF(eligibleLines);
             setTransfersToPrint(grouped);
             setSelectedForBulkStatus(new Set());
-            onRefresh();
+            onTransfersChanged(ids);
             toast({
                 title: 'Recibido en Bodega',
                 description:
@@ -1376,7 +1379,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             const result = await updateTransferStatus(ids, newStatus, justification, actor);
             if (result.success) {
                 toast({ title: 'Éxito', description: 'El estado de la transferencia ha sido actualizado.' });
-                onRefresh();
+                onTransfersChanged(ids);
             } else {
                 toast({ variant: 'destructive', title: 'Error', description: result.error });
             }
@@ -1408,7 +1411,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                     title: 'Líneas alineadas',
                     description: `${group.allIds.length} línea(s) de ${group.numeroTF} quedaron en "${group.status}".`,
                 });
-                onRefresh();
+                onTransfersChanged(group.allIds);
             } else {
                 toast({ variant: 'destructive', title: 'Error', description: result.error });
             }
@@ -1696,7 +1699,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         const result = await updateTransferStatus(ids, newStatus, undefined, actor);
         if (result.success) {
             toast({ title: 'Estado Actualizado', description: `Se marcaron ${ids.length} línea(s) como '${newStatus}'.`});
-            onRefresh();
+            onTransfersChanged(ids);
         } else {
             toast({ variant: 'destructive', title: 'Error al Actualizar', description: result.error });
         }
@@ -1721,10 +1724,11 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             return;
         }
         setIsSavingManifest(true);
+        const manifestTransferIds = Array.from(selectedForManifest);
         const result = await createDeliveryManifest({
             ...manifestDetails,
             ...(manifestDriverUserId ? { driverUserId: manifestDriverUserId } : {}),
-            transferIds: Array.from(selectedForManifest),
+            transferIds: manifestTransferIds,
             summary: {
                 totalTransfers: manifestSummary.totalItems,
                 destinations: Object.entries(manifestSummary.destinations).reduce((acc, [key, value]) => {
@@ -1738,7 +1742,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                 await closeDeliveryManifestDraft(activeDraftId);
             }
             toast({ title: 'Manifiesto Creado', description: 'La relación de entrega ha sido guardada.' });
-            onRefresh();
+            onTransfersChanged(manifestTransferIds);
             skipDraftAutosaveRef.current = true;
             setSelectedForManifest(new Set());
             setActiveDraftId(null);
@@ -2756,7 +2760,8 @@ const OperatorView: React.FC<{
   users: AppUser[];
   isLoading: boolean;
   onRefresh: () => void;
-}> = ({ allTransfers, collectionLogs, users, isLoading, onRefresh }) => {
+  onTransfersChanged: (ids: string[]) => void;
+}> = ({ allTransfers, collectionLogs, users, isLoading, onRefresh, onTransfersChanged }) => {
     const [filters, setFilters] = useState({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '', status: 'all' });
     const { user, userName } = useAuth();
     const { toast } = useToast();
@@ -2795,7 +2800,7 @@ const OperatorView: React.FC<{
             const result = await updateTransferStatus(ids, 'Recibido en Bodega', undefined, actor);
             if (result.success) {
                 toast({ title: 'Estado Actualizado', description: `La transferencia ha sido marcada como 'Recibido en Bodega'.` });
-                onRefresh();
+                onTransfersChanged(ids);
                 
                 openPdfForPrint(buildTransferLabelsPdf([transfer], { receivingNow: true }));
             } else {
@@ -2807,7 +2812,7 @@ const OperatorView: React.FC<{
             setIsPrinting(false);
             setIsLabelDialogOpen(false);
         }
-    }, [onRefresh, toast, actor]);
+    }, [onTransfersChanged, toast, actor]);
 
     const handlePrintLabelClick = (transfer: TransferEntry) => {
         setTransferForLabel(transfer);
@@ -3395,6 +3400,21 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
         }
     }, [toast, canSeeAdminView]);
 
+    const handleTransfersChanged = useCallback(async (ids: string[]) => {
+        const unique = Array.from(new Set(ids.filter(Boolean)));
+        if (unique.length === 0) return;
+        if (unique.length > 300) return void fetchData();
+        const res = await getTransfersByIds(unique);
+        if (!res.success || !res.data) return void fetchData();
+        const fresh = new Map(res.data.map((t) => [t.id, t]));
+        setAllTransfers((prev) => {
+            const kept = prev.filter((t) => !fresh.has(t.id));
+            const operational = res.data!.filter((t) => OPERATIONAL_LIST_STATUSES.includes(t.status));
+            return [...kept, ...operational].sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
+        });
+        setSearchResults((prev) => (prev ? prev.map((t) => fresh.get(t.id) || t) : prev));
+    }, [fetchData]);
+
     const handleAdminTabChange = useCallback((tab: string) => {
         adminTabRef.current = tab;
         if (!OPERATIONAL_TABS.has(tab)) return;
@@ -3640,6 +3660,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             fileInputRef={fileInputRef}
             setIsManualEntryOpen={setIsManualEntryOpen}
             onTabChange={handleAdminTabChange}
+            onTransfersChanged={handleTransfersChanged}
           />
       ) : role === 'conductor' ? (
         <CollectionTabView
@@ -3652,6 +3673,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             users={allUsers}
             isLoading={isLoading}
             onRefresh={fetchData}
+            onTransfersChanged={handleTransfersChanged}
           />
       )}
     </div>

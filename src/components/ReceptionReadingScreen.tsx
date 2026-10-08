@@ -6,7 +6,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, PlusCircle, AlertTriangle, RefreshCw } from 'lucide-react';
-import { getReceptionOperationById, getExpectedItemsByReception, getProductsByBarcodes, getLocations, createPackingUnit, startOperationPause, endOperationPause, updateReceptionOperation, addScannedItem, deleteScannedItem, getActivePauseForUser, updatePackingUnit, registerNovelty, getScannedItemsByReception, repairReceptionStats, recordPackUnitDetailOnClose } from '@/app/reception/actions';
+import { getReceptionOperationById, getExpectedItemsByReception, getProductsByBarcodes, getLocations, createPackingUnit, startOperationPause, endOperationPause, updateReceptionOperation, addScannedItem, deleteScannedItem, getActivePauseForUser, updatePackingUnit, registerNovelty, repairReceptionStats, recordPackUnitDetailOnClose } from '@/app/reception/actions';
 import { getUserGoals, getProductivitySettings, getUserPulsesForDay } from '@/app/actions';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import type { ReceptionOperation, ScannedItem, ProductDatabaseItem, PackingUnit, Location, OperationPause, ReceptionExpectedItem, UserGoal, PackedItem, ProductivitySettings, OperationPulse } from '@/types';
@@ -102,12 +102,8 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
         const fetchedExpectedItems = expectedItemsResult.data || [];
         setExpectedItems(fetchedExpectedItems);
         
-        const scannedItemsResult = await getScannedItemsByReception(operationId);
-        const fetchedScannedItems = scannedItemsResult.data || [];
-
-        const expectedBarcodes = new Set(fetchedExpectedItems.map(item => item.barcode));
-        const scannedBarcodes = new Set(fetchedScannedItems.map(item => item.barcode));
-        const uniqueBarcodes = [...new Set([...expectedBarcodes, ...scannedBarcodes])];
+        // Solo los esperados: un código no esperado se busca al escanearlo (lookupBarcode), sin leer todos los escaneos.
+        const uniqueBarcodes = [...new Set(fetchedExpectedItems.map(item => item.barcode).filter(Boolean))];
         
         if (uniqueBarcodes.length > 0) {
             const productsResult = await getProductsByBarcodes(uniqueBarcodes);
