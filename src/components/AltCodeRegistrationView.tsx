@@ -223,6 +223,12 @@ export function AltCodeRegistrationView() {
     } else {
       const saved = res.receipt;
       setLastResult({ type: 'ok', receipt: saved });
+      if (saved.registroTardio) {
+        toast({
+          title: 'Registro tardío',
+          description: `La TF ${saved.linkedNumeroTF || ''} ya existía: la llegada a bodega quedó con la fecha del documento TF.`,
+        });
+      }
       if (autoPrint) setStickerToPrint(saved);
       setTodayList((prev) => [saved, ...prev.filter((r) => r.id !== saved.id)]);
       if (saved.status === 'pending') setPendingList((prev) => [...prev.filter((r) => r.id !== saved.id), saved]);

@@ -5377,6 +5377,7 @@ const toAltCodeReceipt = (id: string, raw: any): AltCodeReceipt => ({
     voidReason: raw.voidReason || undefined,
     voidedAt: tsToIso(raw.voidedAt),
     voidedByName: raw.voidedByName || undefined,
+    registroTardio: raw.registroTardio === true || undefined,
 });
 
 /** Transferencias cuyo codigoAlterno coincide con alguno de los códigos (consulta en bloques de 30). */
@@ -5426,13 +5427,15 @@ function buildAltCodeLinkWrites(
                 updates.ubicacionAt = registeredAt;
             }
         } else {
-            // Carga inicial (inventario físico): la llegada real es desconocida y anterior a la carga;
-            // usar la fecha del documento TF para no perder el orden "lo más viejo primero".
+            // Carga inicial o registro tardío (la TF ya existía al digitar el código): la llegada real es
+            // anterior al registro; usar la fecha del documento TF para no perder el orden "lo más viejo primero".
             const docDate: Timestamp | null = data.fecha?.toMillis ? data.fecha : null;
-            const arrival = receipt.bulkLoad && docDate && docDate.toMillis() < registeredAt.toMillis() ? docDate : registeredAt;
+            const useDocDate = (receipt.bulkLoad || receipt.registroTardio) && docDate && docDate.toMillis() < registeredAt.toMillis();
+            const arrival = useDocDate ? docDate : registeredAt;
             updates.status = 'Recibido en Bodega';
             updates.recibidoAt = arrival;
             if (receipt.bulkLoad) updates.llegadaEstimadaCargaInicial = true;
+            if (receipt.registroTardio && useDocDate) updates.llegadaRegistroTardio = true;
             if (ubicacion) {
                 updates.ubicacion = ubicacion;
                 updates.ubicacionAt = registeredAt;
@@ -5719,7 +5722,15 @@ export async function registerAltCodeReceipt(
 
         const matches = await findTransfersByAltCodes([code]);
         const lines = matches.get(code) || [];
-        if (lines.length > 0) await commitWrites(buildAltCodeLinkWrites(ref.id, data, lines));
+        if (lines.length > 0) {
+            // Si la TF ya existía al digitar el código, el operario lo registró tarde.
+            const late = lines.some((l) => !TRANSFER_FINAL_STATUSES.includes(l.data.status) && l.data.status !== 'Recibido en Bodega');
+            if (late) {
+                data.registroTardio = true;
+                await updateDoc(ref, { registroTardio: true });
+            }
+            await commitWrites(buildAltCodeLinkWrites(ref.id, data, lines));
+        }
 
         const saved = await getDoc(ref);
         return { success: true, receipt: toAltCodeReceipt(ref.id, saved.data()) };
