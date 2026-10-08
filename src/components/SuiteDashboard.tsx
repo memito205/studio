@@ -252,7 +252,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             key: 'tf_platform_lookup',
             icon: Store,
             title: "Consulta Estado TF",
-            description: "Consulte el estado plataforma de transferencias por número TF o bodega destino (solo estados publicados).",
+            description: "Consulte el estado plataforma de una TF o el último reporte de bodega de su tienda.",
             actionText: "Consultar",
             onAction: () => {
                 if (typeof onNavigateToTfPlatformLookup === 'function') {

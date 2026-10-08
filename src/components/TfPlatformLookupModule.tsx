@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { getTfPlatformStatusByTf, getTfPlatformStatusByWarehouse } from '@/app/actions';
+import { getTfPlatformStatusByTf } from '@/app/actions';
 import type { TfPlatformEstado } from '@/types';
 import { format } from 'date-fns';
 import { StoreReceiveCard } from '@/components/StoreReceiveCard';
@@ -79,7 +79,6 @@ interface TfPlatformLookupModuleProps {
 export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ onReturn }) => {
   const { role } = useAuth();
   const [tfQuery, setTfQuery] = useState('');
-  const [warehouseQuery, setWarehouseQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<any[]>([]);
@@ -93,23 +92,6 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
     else {
       setResults(res.data || []);
       if (!res.data?.length) setError('No se encontraron estados plataforma para esa TF. Deben publicarse desde Plataforma Logística (Analizador, 4 pasos). Colección: tf_platform_status.');
-    }
-    setIsLoading(false);
-  };
-
-  const runSearchByWarehouse = async () => {
-    setIsLoading(true);
-    setError(null);
-    setResults([]);
-    const res = await getTfPlatformStatusByWarehouse(warehouseQuery);
-    if (res.error) setError(res.error);
-    else {
-      setResults(res.data || []);
-      if (!res.data?.length) {
-        setError(
-          'No hay TF publicadas para esa bodega destino. Los datos solo aparecen después de que logística complete los 4 pasos del Analizador (Plataforma Logística) y vea el aviso “Estados publicados para tiendas”. Colección Firestore: tf_platform_status.'
-        );
-      }
     }
     setIsLoading(false);
   };
@@ -141,14 +123,13 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
         <CardHeader>
           <CardTitle>Buscar</CardTitle>
           <CardDescription>
-            Filtre por número de TF o por bodega destino (por bodega: de fecha más antigua a más nueva).
+            Busque una TF por número, o vea las TF de su tienda en el último reporte del analizador.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="tf">
             <TabsList className="mb-4">
               <TabsTrigger value="tf">Por número TF</TabsTrigger>
-              <TabsTrigger value="bodega">Por bodega destino</TabsTrigger>
               <TabsTrigger value="reporte">Último reporte bodega</TabsTrigger>
             </TabsList>
             <TabsContent value="reporte">
@@ -165,23 +146,6 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
                     onKeyDown={(e) => e.key === 'Enter' && runSearchByTf()}
                   />
                   <Button onClick={runSearchByTf} disabled={isLoading || !tfQuery.trim()}>
-                    {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                    <span className="ml-2">Buscar</span>
-                  </Button>
-                </div>
-              </div>
-            </TabsContent>
-            <TabsContent value="bodega" className="space-y-3">
-              <div className="space-y-1">
-                <Label>Bodega destino</Label>
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="Ej. 20101"
-                    value={warehouseQuery}
-                    onChange={(e) => setWarehouseQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && runSearchByWarehouse()}
-                  />
-                  <Button onClick={runSearchByWarehouse} disabled={isLoading || !warehouseQuery.trim()}>
                     {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
                     <span className="ml-2">Buscar</span>
                   </Button>
