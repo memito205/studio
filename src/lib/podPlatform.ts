@@ -5,11 +5,14 @@ export type AppPodEntry = {
   bodegaDestino: string;
   at: string;
   photoUrl?: string;
+  /** Evidencias de un ENTREGADO por Quick publicado antes. */
+  evidenceLinks?: string[];
   byName?: string;
   manifestId?: number;
+  source?: 'app' | 'quick';
 };
 
-/** Índice TF|bodega (con alias del analizador) de las entregas registradas en la app. */
+/** Índice TF|bodega (con alias del analizador). La entrega de la app manda sobre la de Quick previo. */
 export function buildAppPodIndex(entries: AppPodEntry[]): Map<string, AppPodEntry> {
   const map = new Map<string, AppPodEntry>();
   entries.forEach((e) => {
@@ -17,7 +20,8 @@ export function buildAppPodIndex(entries: AppPodEntry[]): Map<string, AppPodEntr
     if (!tf) return;
     getAnalyzerWarehouseMatchKeys(e.bodegaDestino).forEach((whs) => {
       const key = `${tf}|${whs}`;
-      if (!map.has(key)) map.set(key, e);
+      const cur = map.get(key);
+      if (!cur || (cur.source === 'quick' && e.source !== 'quick')) map.set(key, e);
     });
   });
   return map;
@@ -26,6 +30,7 @@ export function buildAppPodIndex(entries: AppPodEntry[]): Map<string, AppPodEntr
 /**
  * La entrega de la app manda sobre Quick y sobre lo inferido: la fila queda ENTREGADO,
  * con la foto de la app como primera evidencia y la fecha de entrega real.
+ * Un ENTREGADO de Quick publicado antes se conserva aunque el Quick de hoy no traiga esa TF.
  */
 export function overlayAppPods<T extends Record<string, any>>(
   rows: T[],
@@ -46,10 +51,22 @@ export function overlayAppPods<T extends Record<string, any>>(
     const existing = String(row[imageField] || '')
       .split('|')
       .map((l) => l.trim())
-      .filter((l) => l && l !== match.photoUrl);
+      .filter(Boolean);
+    if (match.source === 'quick') {
+      if (String(row[estadoField] || '').toUpperCase() === 'ENTREGADO') return row;
+      const links = Array.from(new Set([...existing, ...(match.evidenceLinks || [])]));
+      const next: Record<string, any> = {
+        ...row,
+        [imageField]: links.join(' | '),
+        [estadoField]: 'ENTREGADO',
+        fuenteEntrega: 'QUICK_PREVIO',
+      };
+      if (match.at && !row[fechaFinField]) next[fechaFinField] = new Date(match.at);
+      return next as T;
+    }
     const next: Record<string, any> = {
       ...row,
-      [imageField]: [match.photoUrl, ...existing].filter(Boolean).join(' | '),
+      [imageField]: [match.photoUrl, ...existing.filter((l) => l !== match.photoUrl)].filter(Boolean).join(' | '),
       [estadoField]: 'ENTREGADO',
       fuenteEntrega: 'APP',
       hoyRuta: '',

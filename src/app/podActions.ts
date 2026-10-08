@@ -259,27 +259,66 @@ export async function publishPodToPlatform({ lines, at, pod, photoUrls }: Platfo
 }
 
 /** Entregas registradas en la app, para que el analizador las use como evidencia (manda sobre Quick). */
-export async function getAppPodIndex(): Promise<{
-  data?: Array<{ numeroTF: string; bodegaDestino: string; at: string; photoUrl?: string; byName?: string; manifestId?: number }>;
-  error?: string;
-}> {
+export type DeliveredIndexEntry = {
+  numeroTF: string;
+  bodegaDestino: string;
+  at: string;
+  photoUrl?: string;
+  /** Evidencias de un ENTREGADO por Quick publicado antes. */
+  evidenceLinks?: string[];
+  byName?: string;
+  manifestId?: number;
+  source: 'app' | 'quick';
+};
+
+/**
+ * Entregas ya publicadas para las TF de la base del analizador:
+ * - todas las de la app del conductor (podSource app)
+ * - ENTREGADO con evidencia de Quick publicado antes (no inferido), leído por id solo para `baseIds`.
+ * Así basta con subir el Quick reciente.
+ */
+export async function getAppPodIndex(baseIds: string[] = []): Promise<{ data?: DeliveredIndexEntry[]; error?: string }> {
   try {
     const snap = await getDocs(query(collection(firestore, PLATFORM_COLLECTION), where('podSource', '==', 'app')));
-    const data = snap.docs.map((d) => {
+    const seen = new Set<string>();
+    const toIso = (v: unknown) => (v instanceof Timestamp ? v.toDate().toISOString() : '');
+    const data: DeliveredIndexEntry[] = snap.docs.map((d) => {
       const r = d.data() as any;
-      const at = r.pod?.at instanceof Timestamp ? r.pod.at.toDate() : r.fechaFinalizado instanceof Timestamp ? r.fechaFinalizado.toDate() : null;
+      seen.add(d.id);
       return {
         numeroTF: String(r.numeroTF || ''),
         bodegaDestino: String(r.bodegaDestino || ''),
-        at: at ? at.toISOString() : '',
+        at: toIso(r.pod?.at) || toIso(r.fechaFinalizado),
         photoUrl: Array.isArray(r.evidenceLinks) ? r.evidenceLinks[0] : undefined,
         byName: r.pod?.byName,
         manifestId: r.pod?.manifestId,
+        source: 'app',
       };
     });
+    const ids = Array.from(new Set(baseIds.filter((id) => id && !seen.has(id)))).slice(0, 8000);
+    const chunks: string[][] = [];
+    for (let i = 0; i < ids.length; i += 30) chunks.push(ids.slice(i, i + 30));
+    for (let i = 0; i < chunks.length; i += 10) {
+      const snaps = await Promise.all(
+        chunks.slice(i, i + 10).map((c) => getDocs(query(collection(firestore, PLATFORM_COLLECTION), where(documentId(), 'in', c))))
+      );
+      snaps.forEach((s) =>
+        s.docs.forEach((d) => {
+          const r = d.data() as any;
+          if (r.estadoPlataforma !== 'ENTREGADO' || r.entregaInferida || r.podSource === 'app') return;
+          data.push({
+            numeroTF: String(r.numeroTF || ''),
+            bodegaDestino: String(r.bodegaDestino || ''),
+            at: toIso(r.fechaFinalizado),
+            evidenceLinks: Array.isArray(r.evidenceLinks) ? r.evidenceLinks : [],
+            source: 'quick',
+          });
+        })
+      );
+    }
     return { data };
   } catch (error: any) {
-    return { error: error.message || 'No se pudieron leer las entregas de la app.' };
+    return { error: error.message || 'No se pudieron leer las entregas publicadas.' };
   }
 }
 

@@ -21,7 +21,7 @@ import type { AnalyzerRouteMatch } from './utils/helpers';
 import type { ExcelDataRow, BreaksReportData, ProcessedBreak, EmployeeDailyAnalysis, DailyAnalysis, WeeklyTrend, EmployeePerformance } from './types';
 import type { TransferEntry } from '@/types';
 import { loadAnalysisRecords, syncAnalysisRecords, persistTfPlatformStatuses, getAnalyzerAppStatusKeys, type OpenRouteTf } from '@/app/actions';
-import { buildTfPlatformStatusRecords } from '@/lib/tfPlatformStatus';
+import { buildTfPlatformDocId, buildTfPlatformStatusRecords } from '@/lib/tfPlatformStatus';
 import { getAppPodIndex } from '@/app/podActions';
 import { buildAppPodIndex, overlayAppPods, type AppPodEntry } from '@/lib/podPlatform';
 import { buildAnalyzerSnapshotDocs, type AnalyzerSnapshotDocWrite } from '@/lib/analyzerSnapshot';
@@ -89,9 +89,22 @@ const WarehouseAnalyzer: React.FC = () => {
   const [isSavingSnapshot, setIsSavingSnapshot] = React.useState(false);
   const saveSnapshotRef = React.useRef<((keys?: SnapshotAppKeys) => Promise<void>) | null>(null);
 
+  // Ids tf_platform_status de la base; Quick no cambia TF ni bodega, así que subirlo no vuelve a leer.
+  const baseIdsKey = React.useMemo(() => {
+    if (!columnMap.doc || !columnMap.warehouse) return '';
+    const ids = new Set<string>();
+    baseData.forEach((row) => {
+      const tf = normalizeDocId(row[columnMap.doc!]);
+      const whs = String(row[columnMap.warehouse!] || '').trim();
+      if (tf && whs) ids.add(buildTfPlatformDocId(tf, whs));
+    });
+    return Array.from(ids).sort().join(',');
+  }, [baseData, columnMap.doc, columnMap.warehouse]);
+
   React.useEffect(() => {
+    if (!baseIdsKey) return;
     let alive = true;
-    getAppPodIndex()
+    getAppPodIndex(baseIdsKey.split(','))
       .then((res) => {
         if (alive && res.data) setAppPodIndex(buildAppPodIndex(res.data));
       })
@@ -99,7 +112,7 @@ const WarehouseAnalyzer: React.FC = () => {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [baseIdsKey]);
 
   /** Rutas abiertas, Recibido en Bodega, Recolectado en Ruta y Novedad de Entrega desde el aplicativo. */
   const loadAppStatuses = React.useCallback(async () => {

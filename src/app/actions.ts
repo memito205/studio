@@ -4725,6 +4725,27 @@ export async function persistTfPlatformStatuses(
         );
         const appPodIds = new Set(appPodSnap.docs.map((d) => d.id));
 
+        // Quick acumulado: un ENTREGADO previo (no inferido) no baja de estado aunque el Quick de hoy no traiga la TF.
+        const toCheck = normalizedRecords
+            .filter((r) => r.estadoPlataforma !== 'ENTREGADO' && !appPodIds.has(r.id))
+            .map((r) => r.id);
+        const keepDelivered = new Set<string>();
+        const checkChunks: string[][] = [];
+        for (let i = 0; i < toCheck.length; i += 30) checkChunks.push(toCheck.slice(i, i + 30));
+        for (let i = 0; i < checkChunks.length; i += 10) {
+            const snaps = await Promise.all(
+                checkChunks.slice(i, i + 10).map((c) =>
+                    getDocs(query(collection(firestore, TF_PLATFORM_STATUS_COLLECTION), where(documentId(), 'in', c)))
+                )
+            );
+            snaps.forEach((s) =>
+                s.docs.forEach((d) => {
+                    const r = d.data() as any;
+                    if (r.estadoPlataforma === 'ENTREGADO' && !r.entregaInferida) keepDelivered.add(d.id);
+                })
+            );
+        }
+
         const CHUNK = 400;
         let written = 0;
         for (let i = 0; i < normalizedRecords.length; i += CHUNK) {
@@ -4755,6 +4776,19 @@ export async function persistTfPlatformStatuses(
                                   source: source ?? null,
                               },
                           };
+                      })()
+                    : keepDelivered.has(r.id)
+                    ? (() => {
+                          const {
+                              estadoPlataforma,
+                              entregaInferida,
+                              entregaInferidaMotivo,
+                              evidenceLinks,
+                              fechaFinalizado,
+                              source,
+                              ...rest
+                          } = r as typeof r & { entregaInferida?: unknown; entregaInferidaMotivo?: unknown };
+                          return rest;
                       })()
                     : r;
                 batch.set(
