@@ -1671,10 +1671,10 @@ async function buildRemainderAssignments(
 const TV_CACHE_COLLECTION = 'bodegaTvCache';
 const TV_BUILD_LOCK_MS = 2 * 60 * 1000;
 
-/** ~2k lecturas por reconstrucción: 10 min en horario operativo (6–20 h Bogotá), 60 min fuera de él. */
+/** ~2k lecturas por reconstrucción: 30 min en horario operativo (6–20 h Bogotá), 60 min fuera de él. */
 function tvCacheTtlMs(): number {
   const bogotaHour = new Date(Date.now() - 5 * 3600 * 1000).getUTCHours();
-  return bogotaHour >= 6 && bogotaHour < 20 ? 10 * 60 * 1000 : 60 * 60 * 1000;
+  return bogotaHour >= 6 && bogotaHour < 20 ? 30 * 60 * 1000 : 60 * 60 * 1000;
 }
 
 /**

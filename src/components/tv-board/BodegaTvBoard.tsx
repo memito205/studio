@@ -24,7 +24,8 @@ import {
 } from './bodega/BodegaTvSlides';
 
 const SLIDE_DURATION_MS = 7000;
-const DATA_SYNC_INTERVAL = 60 * 1000;
+/** Cada pantalla lee 1 doc de caché; el tablero se recalcula en el servidor como máximo cada 30–60 min. */
+const DATA_SYNC_INTERVAL = 5 * 60 * 1000;
 
 export default function BodegaTvBoard({ mode = 'full' }: { mode?: BodegaTvMode }) {
   const [data, setData] = useState<BodegaTvSnapshot | null>(null);
