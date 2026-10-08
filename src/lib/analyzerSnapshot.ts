@@ -76,6 +76,7 @@ export interface BuildAnalyzerSnapshotInput {
   applyUnresolvedPlatformStatus: boolean;
   receivedInWarehouseKeys: string[];
   collectedOnRouteKeys: string[];
+  novedadKeys: string[];
   stores: DeliveryStore[];
   meta: AnalyzerSnapshotMeta;
 }
@@ -94,9 +95,9 @@ function toDocs(id: string, meta: AnalyzerSnapshotMeta, extra: Record<string, un
 
 /** Calcula el reporte global y uno por tienda destino, y lo empaqueta en docs listos para guardar. */
 export function buildAnalyzerSnapshotDocs(input: BuildAnalyzerSnapshotInput): AnalyzerSnapshotDocWrite[] {
-  const { baseData, columnMap, routeStatusMap, applyUnresolvedPlatformStatus, receivedInWarehouseKeys, collectedOnRouteKeys, stores, meta } = input;
+  const { baseData, columnMap, routeStatusMap, applyUnresolvedPlatformStatus, receivedInWarehouseKeys, collectedOnRouteKeys, novedadKeys, stores, meta } = input;
   const compute = (rows: ExcelDataRow[]) =>
-    computeReportData(rows, columnMap, 'all', '', '', '', routeStatusMap, applyUnresolvedPlatformStatus, receivedInWarehouseKeys, collectedOnRouteKeys);
+    computeReportData(rows, columnMap, 'all', '', '', '', routeStatusMap, applyUnresolvedPlatformStatus, receivedInWarehouseKeys, collectedOnRouteKeys, novedadKeys);
 
   const warehouseCol = columnMap.warehouse;
   const match = buildStoreMatcher(stores);

@@ -27,7 +27,9 @@ export const useReportData = (
   /** TF|DESTINO con status Recibido en Bodega en módulo Transferencias */
   receivedInWarehouseKeys: string[] = [],
   /** TF|DESTINO con status Recolectado en Ruta en módulo Transferencias */
-  collectedOnRouteKeys: string[] = []
+  collectedOnRouteKeys: string[] = [],
+  /** TF|DESTINO con status Novedad de Entrega en módulo Transferencias */
+  novedadKeys: string[] = []
 ): ReportData =>
   useMemo(
     () =>
@@ -41,9 +43,10 @@ export const useReportData = (
         routeStatusMap,
         applyUnresolvedPlatformStatus,
         receivedInWarehouseKeys,
-        collectedOnRouteKeys
+        collectedOnRouteKeys,
+        novedadKeys
       ),
-    [baseData, columnMap, selectedWarehouse, startDate, endDate, documentNumberFilter, routeStatusMap, applyUnresolvedPlatformStatus, receivedInWarehouseKeys, collectedOnRouteKeys]
+    [baseData, columnMap, selectedWarehouse, startDate, endDate, documentNumberFilter, routeStatusMap, applyUnresolvedPlatformStatus, receivedInWarehouseKeys, collectedOnRouteKeys, novedadKeys]
   );
 
 /** Cálculo puro del reporte (también lo usa la foto guardada del analizador, por tienda). */
@@ -57,11 +60,13 @@ export function computeReportData(
   routeStatusMap: Map<string, AnalyzerRouteMatch | string>,
   applyUnresolvedPlatformStatus = false,
   receivedInWarehouseKeys: string[] = [],
-  collectedOnRouteKeys: string[] = []
+  collectedOnRouteKeys: string[] = [],
+  novedadKeys: string[] = []
 ): ReportData {
   {
     const receivedSet = new Set(receivedInWarehouseKeys);
     const collectedSet = new Set(collectedOnRouteKeys);
+    const novedadSet = new Set(novedadKeys);
     const { 
         fecha: FECHA_COL, 
         warehouse: WAREHOUSE_COL, 
@@ -130,50 +135,19 @@ export function computeReportData(
     };
 
     /** Misma prioridad que ESTADO PLATAFORMA del reporte general. */
+    /** Misma regla que `classifyRow` en lib/tfPlatformStatus.ts (ruta y estados salen del aplicativo). */
     const classifyPlatformStatus = (row: ExcelDataRow): string => {
-        const hoyVal = String(row[hoyRutaField] || row['hoyRuta'] || '').trim().toUpperCase();
         const platVal = String(row[estadoPlataformaField] || row['estadoPlataforma'] || '').trim().toUpperCase();
-        const bodegaVal = String(row[estadoBodegaField] || '').trim().toUpperCase();
         const hasImage = Boolean(String(row[imageField] || row['image'] || '').trim());
         const hasFechaFin = Boolean(row[fechaFinalizadoField] || row['fechaFinalizado']);
         const routeKey = buildTfWarehouseKey(row[DOC_COL!], row[WAREHOUSE_COL!]);
         const routeStatus = routeKey ? getRouteMatchStatus(routeStatusMap, routeKey) : undefined;
-        const receivedInWarehouse = routeKey ? receivedSet.has(routeKey) : false;
-        const collectedOnRoute = routeKey ? collectedSet.has(routeKey) : false;
 
-        if (
-            platVal === 'ENTREGADO' ||
-            platVal === 'FINALIZADO' ||
-            hasImage ||
-            hasFechaFin
-        ) {
-            return 'ENTREGADO';
-        }
-
-        const isHoyRuta =
-            hoyVal === 'EN RUTA HOY' ||
-            hoyVal === 'TRUE' ||
-            platVal === 'EN RUTA HOY' ||
-            routeStatus === 'EN RUTA HOY' ||
-            routeStatus === 'ESTA EN RUTA' ||
-            routeStatus === 'EN CARGUE';
-
-        if (isHoyRuta) return 'EN RUTA HOY';
-
-        if (platVal === 'RECOLECTADO EN RUTA' || collectedOnRoute) {
-            return 'RECOLECTADO EN RUTA';
-        }
-
-        if (
-            bodegaVal === 'EN BODEGA' ||
-            platVal === 'EN BODEGA' ||
-            routeStatus === 'ESTA EN BODEGA PPAL' ||
-            receivedInWarehouse
-        ) {
-            return 'EN BODEGA';
-        }
-
-        if (platVal) return platVal;
+        if (platVal === 'ENTREGADO' || platVal === 'FINALIZADO' || hasImage || hasFechaFin) return 'ENTREGADO';
+        if (routeStatus === 'EN RUTA HOY') return 'EN RUTA HOY';
+        if (routeKey && novedadSet.has(routeKey)) return 'NOVEDAD DE ENTREGA';
+        if (routeKey && collectedSet.has(routeKey)) return 'RECOLECTADO EN RUTA';
+        if (routeKey && receivedSet.has(routeKey)) return 'EN BODEGA';
         if (applyUnresolvedPlatformStatus) return 'VALIDAR CON AMBAS TIENDAS';
         return '';
     };
@@ -215,6 +189,7 @@ export function computeReportData(
         switch (status) {
             case 'ENTREGADO': return 40;
             case 'EN RUTA HOY': return 30;
+            case 'NOVEDAD DE ENTREGA': return 28;
             case 'RECOLECTADO EN RUTA': return 25;
             case 'EN BODEGA': return 20;
             case 'VALIDAR CON AMBAS TIENDAS': return 10;
@@ -470,25 +445,7 @@ export function computeReportData(
             const digitsOnly = docNumber.replace(/\D/g, '');
             const cleanDocNumber = digitsOnly ? String(Number(digitsOnly)) : null;
 
-            let enRuta = '';
-            const routeKey = buildTfWarehouseKey(row[DOC_COL!], row[WAREHOUSE_COL!]);
-            const routeStatus = routeKey ? getRouteMatchStatus(routeStatusMap, routeKey) : undefined;
-            const hoyRutaRaw = String(row[hoyRutaField] || row['hoyRuta'] || '').trim().toUpperCase();
-            const isInHoyRuta =
-                hoyRutaRaw === 'EN RUTA HOY' ||
-                hoyRutaRaw === 'TRUE' ||
-                routeStatus === 'EN RUTA HOY';
-
-            if (isInHoyRuta && (!routeStatus || routeStatus === 'EN RUTA HOY')) enRuta = 'EN RUTA HOY';
-            else if (routeKey && collectedSet.has(routeKey)) enRuta = 'RECOLECTADO EN RUTA';
-            else if (routeStatus) enRuta = routeStatus;
-            else {
-                const estadoGeneralValue = ESTADO_GENERAL_COL ? String(row[ESTADO_GENERAL_COL!] || '').trim().toLowerCase() : '';
-                const estadoPlataformaValue = String(row[estadoPlataformaField] || row['estadoPlataforma'] || '').trim().toLowerCase();
-                if (estadoGeneralValue === 'en tte' || estadoPlataformaValue === 'asignado') enRuta = 'ESTA EN RUTA';
-                else if (estadoGeneralValue === 'pte envio' || estadoPlataformaValue === 'en bodega') enRuta = 'ESTA EN BODEGA PPAL';
-                else enRuta = 'PREGUNTAR ALMACEN DE ORIGEN';
-            }
+            const enRuta = classifyPlatformStatus(row) || 'PREGUNTAR ALMACEN DE ORIGEN';
 
             return {
                 docNumber: docNumber,
@@ -532,18 +489,7 @@ export function computeReportData(
             const linkValue = String(row[imageField] || row['image'] || '').trim();
             const links = linkValue.split('|').map((l) => l.trim()).filter((l) => l.startsWith('http'));
 
-            let enRuta = '';
-            const routeKey = buildTfWarehouseKey(row[DOC_COL!], row[WAREHOUSE_COL!]);
-            const routeStatus = routeKey ? getRouteMatchStatus(routeStatusMap, routeKey) : undefined;
-            const hoyRutaRaw = String(row[hoyRutaField] || row['hoyRuta'] || '').trim().toUpperCase();
-            const isInHoyRuta =
-                hoyRutaRaw === 'EN RUTA HOY' ||
-                hoyRutaRaw === 'TRUE' ||
-                routeStatus === 'EN RUTA HOY';
-            if (isInHoyRuta && (!routeStatus || routeStatus === 'EN RUTA HOY')) enRuta = 'EN RUTA HOY';
-            else if (routeKey && collectedSet.has(routeKey)) enRuta = 'RECOLECTADO EN RUTA';
-            else if (routeStatus) enRuta = routeStatus;
-            else enRuta = 'PREGUNTAR ALMACEN DE ORIGEN';
+            const enRuta = classifyPlatformStatus(row) || 'PREGUNTAR ALMACEN DE ORIGEN';
 
             // Una línea = una marca y un grupo (caso normal). Si vienen listas, repartir qty.
             const pairs: { marca: string; grupo: string }[] = [];

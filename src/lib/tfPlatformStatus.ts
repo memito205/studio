@@ -23,6 +23,8 @@ const statusPriority = (status: string): number => {
       return 40;
     case 'EN RUTA HOY':
       return 30;
+    case 'NOVEDAD DE ENTREGA':
+      return 28;
     case 'RECOLECTADO EN RUTA':
       return 25;
     case 'EN BODEGA':
@@ -55,15 +57,12 @@ const classifyRow = (
   },
   routeStatusMap: Map<string, AnalyzerRouteMatch | string>,
   receivedInWarehouseKeys: Set<string> = new Set(),
-  collectedOnRouteKeys: Set<string> = new Set()
+  collectedOnRouteKeys: Set<string> = new Set(),
+  novedadKeys: Set<string> = new Set()
 ): TfPlatformEstado => {
   const platVal = String(row[fields.estadoPlataforma || 'estadoPlataforma'] || row['estadoPlataforma'] || '')
     .trim()
     .toUpperCase();
-  const hoyVal = String(row[fields.hoyRuta || 'hoyRuta'] || row['hoyRuta'] || '')
-    .trim()
-    .toUpperCase();
-  const bodegaVal = String(row['estadoBodega'] || '').trim().toUpperCase();
   const hasImage = extractEvidenceLinks(row, fields.image).length > 0;
   const hasFechaFin = Boolean(row[fields.fechaFinalizado || 'fechaFinalizado'] || row['fechaFinalizado']);
 
@@ -71,36 +70,14 @@ const classifyRow = (
   const whs = normalizeWarehouse(row[fields.warehouse]);
   const routeKey = tf && whs ? `${tf}|${whs}` : '';
   const routeStatus = routeKey ? getRouteMatchStatus(routeStatusMap, routeKey) : undefined;
-  const receivedInWarehouse = routeKey ? receivedInWarehouseKeys.has(routeKey) : false;
-  const collectedOnRoute = routeKey ? collectedOnRouteKeys.has(routeKey) : false;
 
-  if (platVal === 'ENTREGADO' || platVal === 'FINALIZADO' || hasImage || hasFechaFin) {
-    return 'ENTREGADO';
-  }
-  if (
-    hoyVal === 'EN RUTA HOY' ||
-    hoyVal === 'TRUE' ||
-    platVal === 'EN RUTA HOY' ||
-    routeStatus === 'EN RUTA HOY' ||
-    routeStatus === 'ESTA EN RUTA' ||
-    routeStatus === 'EN CARGUE'
-  ) {
-    return 'EN RUTA HOY';
-  }
-  if (
-    platVal === 'RECOLECTADO EN RUTA' ||
-    collectedOnRoute
-  ) {
-    return 'RECOLECTADO EN RUTA';
-  }
-  if (
-    bodegaVal === 'EN BODEGA' ||
-    platVal === 'EN BODEGA' ||
-    routeStatus === 'ESTA EN BODEGA PPAL' ||
-    receivedInWarehouse
-  ) {
-    return 'EN BODEGA';
-  }
+  if (platVal === 'ENTREGADO' || platVal === 'FINALIZADO' || hasImage || hasFechaFin) return 'ENTREGADO';
+  // EN RUTA HOY = TF en una relación de ruta abierta del aplicativo (routeStatusMap).
+  if (routeStatus === 'EN RUTA HOY') return 'EN RUTA HOY';
+  if (routeKey && novedadKeys.has(routeKey)) return 'NOVEDAD DE ENTREGA';
+  if (routeKey && collectedOnRouteKeys.has(routeKey)) return 'RECOLECTADO EN RUTA';
+  // EN BODEGA = status Recibido en Bodega en Transferencias.
+  if (routeKey && receivedInWarehouseKeys.has(routeKey)) return 'EN BODEGA';
   return 'VALIDAR CON AMBAS TIENDAS';
 };
 
@@ -125,7 +102,8 @@ export function buildTfPlatformStatusRecords(
   routeStatusMap: Map<string, AnalyzerRouteMatch | string> = new Map(),
   updatedBy?: string,
   receivedInWarehouseKeys: Set<string> | string[] = new Set(),
-  collectedOnRouteKeys: Set<string> | string[] = new Set()
+  collectedOnRouteKeys: Set<string> | string[] = new Set(),
+  novedadKeys: Set<string> | string[] = new Set()
 ): Omit<TfPlatformStatusRecord, 'updatedAt'>[] {
   if (!columnMap.doc || !columnMap.warehouse) return [];
 
@@ -137,6 +115,7 @@ export function buildTfPlatformStatusRecords(
     collectedOnRouteKeys instanceof Set
       ? collectedOnRouteKeys
       : new Set(collectedOnRouteKeys || []);
+  const novedadSet = novedadKeys instanceof Set ? novedadKeys : new Set(novedadKeys || []);
 
   const map = new Map<string, Omit<TfPlatformStatusRecord, 'updatedAt'> & { _priority: number }>();
 
@@ -159,7 +138,8 @@ export function buildTfPlatformStatusRecords(
       },
       routeStatusMap,
       receivedSet,
-      collectedSet
+      collectedSet,
+      novedadSet
     );
     const links = extractEvidenceLinks(row, columnMap.image);
     const marca = columnMap.marca ? String(row[columnMap.marca] || '').trim() : '';
@@ -193,7 +173,7 @@ export function buildTfPlatformStatusRecords(
         marca: marca || undefined,
         grupo: grupo || undefined,
         updatedBy,
-        source: 'analizador_4_pasos',
+        source: 'analizador_app',
         _priority: statusPriority(estado),
       });
       return;

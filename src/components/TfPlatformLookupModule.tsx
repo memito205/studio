@@ -32,6 +32,8 @@ const statusBadge = (status: string, entregaInferida?: boolean) => {
       return <Badge className="bg-violet-600 hover:bg-violet-600">RECOLECTADO EN RUTA</Badge>;
     case 'EN BODEGA':
       return <Badge className="bg-amber-500 hover:bg-amber-500 text-white">EN BODEGA</Badge>;
+    case 'NOVEDAD DE ENTREGA':
+      return <Badge className="bg-red-700 hover:bg-red-700">NOVEDAD DE ENTREGA</Badge>;
     case 'VALIDAR CON AMBAS TIENDAS':
       return <Badge variant="destructive">VALIDAR CON AMBAS TIENDAS</Badge>;
     default:
@@ -45,6 +47,8 @@ const inferidoMotivoLabel = (motivo?: string): string => {
       return 'Pasó a ENTREGADO porque EN RUTA HOY era de un día anterior (no por evidencia de entrega).';
     case 'fuera_de_transito':
       return 'Pasó a ENTREGADO porque ya no está en transferencias En Tránsito (no por evidencia de entrega).';
+    case 'fuera_de_ruta':
+      return 'Pasó a ENTREGADO porque ya no está en una relación de ruta abierta (no por evidencia de entrega).';
     case 'fuera_del_lote_publicado':
       return 'Pasó a ENTREGADO porque no vino en la última publicación del analizador (no por evidencia de entrega).';
     default:
@@ -120,7 +124,7 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
           <div>
             <h1 className="text-2xl font-bold">Consulta Estado TF (Plataforma)</h1>
             <p className="text-sm text-muted-foreground">
-              Solo estado plataforma: entregado, en ruta hoy, recolectado en ruta, en bodega o validar —
+              Solo estado plataforma: entregado, en ruta hoy, novedad de entrega, recolectado en ruta, en bodega o validar —
               con placas y evidencias si existen.
             </p>
           </div>

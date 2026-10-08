@@ -20,7 +20,7 @@ import { findHeader, normalizeDate, formatDate, parseDateString, generatePending
 import type { AnalyzerRouteMatch } from './utils/helpers';
 import type { ExcelDataRow, BreaksReportData, ProcessedBreak, EmployeeDailyAnalysis, DailyAnalysis, WeeklyTrend, EmployeePerformance } from './types';
 import type { TransferEntry } from '@/types';
-import { loadAnalysisRecords, syncAnalysisRecords, persistTfPlatformStatuses, getTfKeysReceivedInWarehouse, getTfKeysCollectedOnRoute } from '@/app/actions';
+import { loadAnalysisRecords, syncAnalysisRecords, persistTfPlatformStatuses, getAnalyzerAppStatusKeys, type OpenRouteTf } from '@/app/actions';
 import { buildTfPlatformStatusRecords } from '@/lib/tfPlatformStatus';
 import { getAppPodIndex } from '@/app/podActions';
 import { buildAppPodIndex, overlayAppPods, type AppPodEntry } from '@/lib/podPlatform';
@@ -35,6 +35,21 @@ import { useAuth } from '@/hooks/use-auth-context';
 import * as XLSX from 'xlsx';
 
 
+type SnapshotAppKeys = { received: string[]; collected: string[]; novedad: string[]; routes: Map<string, AnalyzerRouteMatch> };
+
+/** TF en relaciones de ruta abiertas → EN RUTA HOY (con alias de bodega y placa de la relación). */
+function buildAppRouteMap(enRuta: OpenRouteTf[]): Map<string, AnalyzerRouteMatch> {
+  const map = new Map<string, AnalyzerRouteMatch>();
+  enRuta.forEach((r) => {
+    const sep = r.key.indexOf('|');
+    if (sep < 0) return;
+    const tf = r.key.slice(0, sep);
+    const match: AnalyzerRouteMatch = { status: 'EN RUTA HOY', placaEntrega: r.placa };
+    getAnalyzerWarehouseMatchKeys(r.key.slice(sep + 1)).forEach((whs) => map.set(`${tf}|${whs}`, match));
+  });
+  return map;
+}
+
 // --- MODULE 1: Warehouse Analyzer ---
 const WarehouseAnalyzer: React.FC = () => {
   // --- CORE STATES ---
@@ -45,13 +60,11 @@ const WarehouseAnalyzer: React.FC = () => {
   const [availableWarehouses, setAvailableWarehouses] = React.useState<string[]>([]);
   const [mainFileName, setMainFileName] = React.useState<string | null>(null);
 
-  // --- ROUTE FILE STATES ---
+  // --- ESTADOS DEL APLICATIVO (rutas abiertas + status de Transferencias) ---
   const [routeData, setRouteData] = React.useState<Map<string, AnalyzerRouteMatch>>(new Map());
-  const [routeFileName, setRouteFileName] = React.useState<string | null>(null);
-  const [isRouteLoading, setIsRouteLoading] = React.useState(false);
-  const [routeError, setRouteError] = React.useState<string | null>(null);
-  const [routeDebugMapping, setRouteDebugMapping] = React.useState<{ expected: string; found: string; isFallback: boolean }[]>([]);
-  const [rawRouteHeaders, setRawRouteHeaders] = React.useState<string[]>([]);
+  const [novedadKeys, setNovedadKeys] = React.useState<string[]>([]);
+  const [appStatusAt, setAppStatusAt] = React.useState<Date | null>(null);
+  const [isAppStatusLoading, setIsAppStatusLoading] = React.useState(false);
 
   // --- UI CONTROL STATES ---
   const [isLoading, setIsLoading] = React.useState(false);
@@ -68,15 +81,13 @@ const WarehouseAnalyzer: React.FC = () => {
   const [filteredCount, setFilteredCount] = React.useState(0);
   const [isSyncing, setIsSyncing] = React.useState(false);
   const [platformFileName, setPlatformFileName] = React.useState<string | null>(null);
-  const [warehousePackFileName, setWarehousePackFileName] = React.useState<string | null>(null);
-  const [isWarehousePackLoading, setIsWarehousePackLoading] = React.useState(false);
   const [isPublishingPlatform, setIsPublishingPlatform] = React.useState(false);
   const [receivedInWarehouseKeys, setReceivedInWarehouseKeys] = React.useState<string[]>([]);
   const [collectedOnRouteKeys, setCollectedOnRouteKeys] = React.useState<string[]>([]);
   const { user, userName } = useAuth();
   const [appPodIndex, setAppPodIndex] = React.useState<Map<string, AppPodEntry>>(new Map());
   const [isSavingSnapshot, setIsSavingSnapshot] = React.useState(false);
-  const saveSnapshotRef = React.useRef<((keys?: { received: string[]; collected: string[] }) => Promise<void>) | null>(null);
+  const saveSnapshotRef = React.useRef<((keys?: SnapshotAppKeys) => Promise<void>) | null>(null);
 
   React.useEffect(() => {
     let alive = true;
@@ -90,32 +101,26 @@ const WarehouseAnalyzer: React.FC = () => {
     };
   }, []);
 
-  // Las claves TF se cargan junto con el snapshot en fetchTransfersFromDB (una sola vez).
+  /** Rutas abiertas, Recibido en Bodega, Recolectado en Ruta y Novedad de Entrega desde el aplicativo. */
+  const loadAppStatuses = React.useCallback(async () => {
+    setIsAppStatusLoading(true);
+    try {
+      const res = await getAnalyzerAppStatusKeys();
+      if (!res.data) throw new Error(res.error || 'No se pudieron leer los estados del aplicativo.');
+      const routes = buildAppRouteMap(res.data.enRuta);
+      setRouteData(routes);
+      setReceivedInWarehouseKeys(res.data.received);
+      setCollectedOnRouteKeys(res.data.collected);
+      setNovedadKeys(res.data.novedad);
+      setAppStatusAt(new Date());
+      return { ...res.data, routes };
+    } finally {
+      setIsAppStatusLoading(false);
+    }
+  }, []);
 
   const publishPlatformStatusesIfComplete = React.useCallback(
-    async (
-      data: ExcelDataRow[],
-      map: { [key: string]: string | undefined },
-      routes: Map<string, AnalyzerRouteMatch | string>,
-      flags: { hasMain: boolean; hasRoutes: boolean; hasQuick: boolean; hasPack: boolean },
-      options?: { silentIfIncomplete?: boolean }
-    ) => {
-      const missing: string[] = [];
-      if (!flags.hasMain) missing.push('Paso 1 (base TF)');
-      if (!flags.hasRoutes) missing.push('Paso 2 (rutas)');
-      if (!flags.hasQuick) missing.push('Paso 3 (Quick)');
-      if (!flags.hasPack) missing.push('Paso 4 (empaque)');
-
-      if (missing.length) {
-        if (!options?.silentIfIncomplete) {
-          toast({
-            title: 'Faltan pasos para publicar',
-            description: `Complete: ${missing.join(', ')}.`,
-            variant: 'destructive',
-          });
-        }
-        return;
-      }
+    async (data: ExcelDataRow[], map: { [key: string]: string | undefined }) => {
       if (!data.length) {
         toast({
           title: 'Sin datos',
@@ -135,24 +140,8 @@ const WarehouseAnalyzer: React.FC = () => {
 
       setIsPublishingPlatform(true);
       try {
-        let receivedKeys = receivedInWarehouseKeys;
-        let collectedKeys = collectedOnRouteKeys;
-        try {
-          const [freshReceived, freshCollected] = await Promise.all([
-            getTfKeysReceivedInWarehouse(),
-            getTfKeysCollectedOnRoute(),
-          ]);
-          if (freshReceived.keys) {
-            receivedKeys = freshReceived.keys;
-            setReceivedInWarehouseKeys(freshReceived.keys);
-          }
-          if (freshCollected.keys) {
-            collectedKeys = freshCollected.keys;
-            setCollectedOnRouteKeys(freshCollected.keys);
-          }
-        } catch {
-          /* usar cache local */
-        }
+        // Siempre con los estados del aplicativo al momento de publicar.
+        const app = await loadAppStatuses();
 
         const records = buildTfPlatformStatusRecords(
           data,
@@ -169,10 +158,11 @@ const WarehouseAnalyzer: React.FC = () => {
             fechaFinalizado: map.fechaFinalizado || 'fechaFinalizado',
             image: map.image || 'image',
           },
-          routes,
+          app.routes,
           userName || user?.email || undefined,
-          receivedKeys,
-          collectedKeys
+          app.received,
+          app.collected,
+          app.novedad
         );
 
         if (!records.length) {
@@ -193,10 +183,10 @@ const WarehouseAnalyzer: React.FC = () => {
           description:
             `Se publicaron ${result.count} TF (estado plataforma) en Firestore (colección tf_platform_status).` +
             (closed > 0
-              ? ` Se cerraron ${closed} EN RUTA HOY previas (día siguiente o fuera de En Tránsito) → ENTREGADO.`
+              ? ` Se cerraron ${closed} EN RUTA HOY previas que no venían en esta publicación → ENTREGADO.`
               : ''),
         });
-        void saveSnapshotRef.current?.({ received: receivedKeys, collected: collectedKeys });
+        void saveSnapshotRef.current?.({ received: app.received, collected: app.collected, novedad: app.novedad, routes: app.routes });
       } catch (err: any) {
         console.error(err);
         toast({
@@ -208,33 +198,21 @@ const WarehouseAnalyzer: React.FC = () => {
         setIsPublishingPlatform(false);
       }
     },
-    [user?.email, userName, receivedInWarehouseKeys, collectedOnRouteKeys]
+    [user?.email, userName, loadAppStatuses]
   );
-
-  const stepFlags = {
-    hasMain: baseData.length > 0,
-    hasRoutes: Boolean(routeFileName) && routeData.size > 0,
-    hasQuick: Boolean(platformFileName),
-    hasPack: Boolean(warehousePackFileName),
-  };
-  const allStepsReady =
-    stepFlags.hasMain && stepFlags.hasRoutes && stepFlags.hasQuick && stepFlags.hasPack;
 
   const fetchTransfersFromDB = React.useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-        // Snapshot del último Excel (`transfers_analysis`) + claves TF en paralelo (sin duplicar).
-        const [result, receivedRes, collectedRes] = await Promise.all([
+        // Snapshot del último Excel (`transfers_analysis`) + estados del aplicativo en paralelo.
+        const [result] = await Promise.all([
           loadAnalysisRecords(),
-          getTfKeysReceivedInWarehouse(),
-          getTfKeysCollectedOnRoute(),
+          loadAppStatuses().catch((e) => setError(`Estados del aplicativo: ${e.message}`)),
         ]);
         if (result.error) {
             throw new Error(result.error);
         }
-        if (receivedRes.keys) setReceivedInWarehouseKeys(receivedRes.keys);
-        if (collectedRes.keys) setCollectedOnRouteKeys(collectedRes.keys);
 
         if (result.data) {
             processData(result.data);
@@ -498,9 +476,6 @@ const WarehouseAnalyzer: React.FC = () => {
     setError(null);
     setInfoMessage(null);
     setBaseData([]);
-    setRouteData(new Map());
-    setRouteFileName(null);
-    setRouteError(null);
     setMainFileName(file.name);
 
     const reader = new FileReader();
@@ -524,119 +499,6 @@ const WarehouseAnalyzer: React.FC = () => {
     reader.readAsArrayBuffer(file);
   };
   
-  const handleRouteFileProcess = (file: File) => {
-    if (baseData.length === 0) {
-      setRouteError('Primero carga el archivo principal de Transferencias para poder cruzar por TF + destino.');
-      return;
-    }
-
-    setIsRouteLoading(true);
-    setRouteError(null);
-    setRouteFileName(file.name);
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const data = new Uint8Array(e.target!.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const jsonData: ExcelDataRow[] = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
-
-        if (jsonData.length === 0) {
-          setRouteError("El archivo de rutas está vacío.");
-          setIsRouteLoading(false);
-          return;
-        }
-        
-        const headers = Object.keys(jsonData[0] || {});
-        setRawRouteHeaders(headers);
-        
-        const TF_HEADER = findHeader(headers, [
-          'Número TF', 'Numero TF', 'NUMERO TF', 'TF', 'Nro documento.2', 'NRO DOCUMENTO.2'
-        ]);
-        const DEST_HEADER = findHeader(headers, [
-          'Almacen Destino', 'Almacén Destino', 'BOD DESTINO', 'Bod Destino', 'Bodega Destino',
-          'DESTINO', 'Destino', 'Bod. entrada', 'Bodega entrada'
-        ]);
-        const PLACA_ENTREGA_HEADER = findHeader(headers, [
-          'PLACA ENTREGA', 'Placa Entrega', 'PLACA', 'Placa', 'RECURSO', 'Recurso',
-          'VEHICULO', 'Vehículo', 'Vehiculo', 'PLACA VEHICULO', 'Placa Vehiculo'
-        ]);
-        const PLACA_RECOLECCION_HEADER = findHeader(headers, [
-          'PLACA RECOLECCION', 'PLACA RECOLECCIÓN', 'Placa Recoleccion', 'Placa Recolección',
-          'PLACA RECOLECTA', 'Placa Recolecta'
-        ]);
-
-        setRouteDebugMapping([
-            { expected: 'Número TF / TF (obligatorio)', found: TF_HEADER || 'No encontrado', isFallback: false },
-            { expected: 'Almacén / Bodega Destino (obligatorio)', found: DEST_HEADER || 'No encontrado', isFallback: false },
-            { expected: 'Placa entrega (opcional)', found: PLACA_ENTREGA_HEADER || 'No encontrado', isFallback: !PLACA_ENTREGA_HEADER },
-            { expected: 'Placa recolección (opcional, misma fila)', found: PLACA_RECOLECCION_HEADER || 'No encontrado', isFallback: !PLACA_RECOLECCION_HEADER },
-            { expected: 'Cruce', found: 'TF + Destino → EN RUTA HOY (+ placas)', isFallback: false },
-        ]);
-
-        if (!TF_HEADER || !DEST_HEADER) {
-            setRouteError("El archivo de rutas debe traer columna TF (Número TF) y Almacén/Bodega Destino.");
-            setIsRouteLoading(false);
-            return;
-        }
-
-        const routeStatusMap = new Map<string, AnalyzerRouteMatch>();
-        let rowCount = 0;
-        let withPlacaEntrega = 0;
-        let withPlacaRecoleccion = 0;
-        jsonData.forEach(row => {
-            const tf = row[TF_HEADER];
-            const dest = row[DEST_HEADER];
-            const baseKey = buildTfWarehouseKey(tf, dest);
-            if (!baseKey) return;
-            const placaEntrega = PLACA_ENTREGA_HEADER ? normalizePlate(row[PLACA_ENTREGA_HEADER]) : undefined;
-            const placaRecoleccion = PLACA_RECOLECCION_HEADER ? normalizePlate(row[PLACA_RECOLECCION_HEADER]) : undefined;
-            if (placaEntrega) withPlacaEntrega++;
-            if (placaRecoleccion) withPlacaRecoleccion++;
-            const match: AnalyzerRouteMatch = {
-              status: 'EN RUTA HOY',
-              placaEntrega,
-              placaRecoleccion,
-            };
-            const docId = normalizeDocId(tf);
-            getAnalyzerWarehouseMatchKeys(dest).forEach((whs) => {
-                routeStatusMap.set(`${docId}|${whs}`, match);
-            });
-            rowCount++;
-        });
-
-        if (routeStatusMap.size === 0) {
-          setRouteError('No se pudo armar ningún cruce TF+destino. Revisa que ambas columnas tengan datos.');
-          setIsRouteLoading(false);
-          return;
-        }
-
-        setRouteData(routeStatusMap);
-        setRouteError(null);
-        setInfoMessage(
-          `Paso 2 rutas: ${rowCount} fila(s) → ${routeStatusMap.size} clave(s) TF+destino (con alias). EN RUTA HOY` +
-          (withPlacaEntrega || withPlacaRecoleccion
-            ? ` · placa entrega: ${withPlacaEntrega} · placa recolección: ${withPlacaRecoleccion}.`
-            : '.')
-        );
-        void publishPlatformStatusesIfComplete(baseData, columnMap, routeStatusMap, {
-          hasMain: baseData.length > 0,
-          hasRoutes: true,
-          hasQuick: Boolean(platformFileName),
-          hasPack: Boolean(warehousePackFileName),
-        }, { silentIfIncomplete: true });
-      } catch (err) {
-        console.error("Error processing route file:", err);
-        setRouteError('Ocurrió un error al procesar el archivo de rutas.');
-      } finally {
-        setIsRouteLoading(false);
-      }
-    };
-    reader.readAsArrayBuffer(file);
-  };
-
   const handlePlatformFileProcess = (file: File) => {
     if (baseData.length === 0) {
         setError("Primero debes cargar el archivo principal de Transferencias para poder cruzar los datos.");
@@ -752,20 +614,14 @@ const WarehouseAnalyzer: React.FC = () => {
         setInfoMessage(
             `Cruce Quick (${quickSheetName}): ${matchesCount} match(es) → ENTREGADO (${entregadoCount}). ` +
             `TF+bodega/alias: ${aliasOrExactMatches}; TF única: ${tfOnlyMatches}. ` +
-            `Hoy calendario: ${todayKey}. En ruta hoy sale del Paso 2.`
+            `Hoy calendario: ${todayKey}. En ruta hoy y en bodega salen del aplicativo.`
         );
-        const nextMap = {
+        void publishPlatformStatusesIfComplete(updatedData, {
             ...columnMap,
             fechaFinalizado: columnMap.fechaFinalizado || fechaFinCol,
             image: columnMap.image || targetImageCol,
             estadoPlataforma: columnMap.estadoPlataforma || estadoPlatCol,
-        };
-        void publishPlatformStatusesIfComplete(updatedData, nextMap, routeData, {
-          hasMain: updatedData.length > 0,
-          hasRoutes: Boolean(routeFileName) && routeData.size > 0,
-          hasQuick: true,
-          hasPack: Boolean(warehousePackFileName),
-        }, { silentIfIncomplete: true });
+        });
 
       } catch (err: any) {
         console.error(err);
@@ -777,103 +633,19 @@ const WarehouseAnalyzer: React.FC = () => {
     reader.readAsArrayBuffer(file);
   };
 
-  const handleWarehousePackFileProcess = (file: File) => {
-    if (baseData.length === 0) {
-        setError('Primero debes cargar el archivo principal de Transferencias.');
-        return;
-    }
 
-    setIsWarehousePackLoading(true);
-    setWarehousePackFileName(file.name);
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        try {
-            const data = new Uint8Array(e.target!.result as ArrayBuffer);
-            const workbook = XLSX.read(data, { type: 'array', cellDates: true, codepage: 65001 });
-            const sheetName = workbook.SheetNames[0];
-            if (!sheetName) throw new Error('El archivo no tiene hojas.');
-
-            const jsonData: any[] = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' });
-            if (jsonData.length === 0) throw new Error('La hoja está vacía.');
-
-            const headers = Object.keys(jsonData[0] || {});
-            const TF_COL = findHeader(headers, ['TF', 'Numero TF', 'NUMERO TF', 'NumeroTF', 'Nro documento.2', 'NRO DOCUMENTO.2']);
-            if (!TF_COL) {
-                throw new Error('No se encontró la columna TF en el archivo de unidades de empaque.');
-            }
-
-            const tfInWarehouse = new Set<string>();
-            jsonData.forEach((row) => {
-                const id = normalizeDocId(row[TF_COL]);
-                if (id) tfInWarehouse.add(id);
-            });
-
-            const estadoPlatCol = columnMap.estadoPlataforma || 'estadoPlataforma';
-            const hoyRutaCol = columnMap.hoyRuta || 'hoyRuta';
-            let matched = 0;
-
-            const updatedData = baseData.map((row) => {
-                const docId = normalizeDocId(row[columnMap.doc!]);
-                if (!docId || !tfInWarehouse.has(docId)) return row;
-
-                const plat = String(row[estadoPlatCol] || row['estadoPlataforma'] || '').toUpperCase();
-                const hoy = String(row[hoyRutaCol] || row['hoyRuta'] || '').toUpperCase();
-                // No pisar entregado ni en ruta hoy
-                if (plat === 'ENTREGADO' || plat === 'FINALIZADO' || plat === 'EN RUTA HOY' || hoy === 'EN RUTA HOY' || hoy === 'TRUE') {
-                    return row;
-                }
-
-                matched++;
-                return {
-                    ...row,
-                    estadoBodega: 'EN BODEGA',
-                    [estadoPlatCol]: plat || 'EN BODEGA',
-                };
-            });
-
-            setColumnMap((prev) => ({
-                ...prev,
-                estadoPlataforma: prev.estadoPlataforma || estadoPlatCol,
-                hoyRuta: prev.hoyRuta || hoyRutaCol,
-            }));
-            setBaseData(updatedData);
-            setInfoMessage(
-                `Cruce empaque (columna ${TF_COL}): ${tfInWarehouse.size} TF en archivo; ${matched} línea(s) marcadas EN BODEGA.`
-            );
-            const nextMap = {
-                ...columnMap,
-                estadoPlataforma: columnMap.estadoPlataforma || estadoPlatCol,
-                hoyRuta: columnMap.hoyRuta || hoyRutaCol,
-            };
-            void publishPlatformStatusesIfComplete(updatedData, nextMap, routeData, {
-              hasMain: updatedData.length > 0,
-              hasRoutes: Boolean(routeFileName) && routeData.size > 0,
-              hasQuick: Boolean(platformFileName),
-              hasPack: true,
-            }, { silentIfIncomplete: false });
-        } catch (err: any) {
-            console.error(err);
-            setError(`Error al procesar empaque: ${err.message || 'Error desconocido'}`);
-        } finally {
-            setIsWarehousePackLoading(false);
-        }
-    };
-    reader.readAsArrayBuffer(file);
-  };
-
-  const applyUnresolvedPlatformStatus = Boolean(platformFileName || warehousePackFileName || routeFileName);
+  const applyUnresolvedPlatformStatus = Boolean(appStatusAt);
 
   const analyzedData = React.useMemo(
     () => overlayAppPods(baseData, columnMap, appPodIndex),
     [baseData, columnMap, appPodIndex]
   );
 
-  const snapshotInputRef = React.useRef({ analyzedData, columnMap, routeData, applyUnresolvedPlatformStatus, receivedInWarehouseKeys, collectedOnRouteKeys, mainFileName });
-  snapshotInputRef.current = { analyzedData, columnMap, routeData, applyUnresolvedPlatformStatus, receivedInWarehouseKeys, collectedOnRouteKeys, mainFileName };
+  const snapshotInputRef = React.useRef({ analyzedData, columnMap, routeData, applyUnresolvedPlatformStatus, receivedInWarehouseKeys, collectedOnRouteKeys, novedadKeys, mainFileName });
+  snapshotInputRef.current = { analyzedData, columnMap, routeData, applyUnresolvedPlatformStatus, receivedInWarehouseKeys, collectedOnRouteKeys, novedadKeys, mainFileName };
 
   const saveAnalyzerSnapshot = React.useCallback(
-    async (keys?: { received: string[]; collected: string[] }) => {
+    async (keys?: SnapshotAppKeys) => {
       const s = snapshotInputRef.current;
       if (!s.analyzedData.length || !s.columnMap.warehouse) {
         toast({ title: 'Sin reporte', description: 'Cargue primero la base TF en el analizador.', variant: 'destructive' });
@@ -886,10 +658,11 @@ const WarehouseAnalyzer: React.FC = () => {
         const docs = buildAnalyzerSnapshotDocs({
           baseData: s.analyzedData,
           columnMap: s.columnMap,
-          routeStatusMap: s.routeData,
-          applyUnresolvedPlatformStatus: s.applyUnresolvedPlatformStatus,
+          routeStatusMap: keys?.routes ?? s.routeData,
+          applyUnresolvedPlatformStatus: keys ? true : s.applyUnresolvedPlatformStatus,
           receivedInWarehouseKeys: keys?.received ?? s.receivedInWarehouseKeys,
           collectedOnRouteKeys: keys?.collected ?? s.collectedOnRouteKeys,
+          novedadKeys: keys?.novedad ?? s.novedadKeys,
           stores: storesRes.data || [],
           meta: {
             at: new Date().toISOString(),
@@ -938,7 +711,8 @@ const WarehouseAnalyzer: React.FC = () => {
     routeData,
     applyUnresolvedPlatformStatus,
     receivedInWarehouseKeys,
-    collectedOnRouteKeys
+    collectedOnRouteKeys,
+    novedadKeys
   );
 
   const handleGenerateSpecialPdf = React.useCallback(() => {
@@ -957,21 +731,18 @@ const WarehouseAnalyzer: React.FC = () => {
         return;
     }
     
-    // Ahora es obligatorio cargar el archivo de rutas para este reporte específico.
     if (routeData.size === 0) {
-        alert("Para generar este reporte, es necesario cargar el 'Archivo de Rutas' (Paso 2: TF + destino).");
+        alert("No hay TF en relaciones de ruta abiertas (use Refrescar estados en el Paso 2).");
         return;
     }
 
     const filteredForPdf = pendingRows.filter(row => {
         const key = buildTfWarehouseKey(row[DOC_COL!], row[WAREHOUSE_COL!]);
-        const routeStatus = key ? getRouteMatchStatus(routeData, key) : undefined;
-        // Con el nuevo Paso 2 (TF+destino) las claves en ruta quedan EN RUTA HOY.
-        return routeStatus === 'EN RUTA HOY' || routeStatus === 'ESTA EN BODEGA PPAL' || routeStatus === 'EN CARGUE';
+        return (key ? getRouteMatchStatus(routeData, key) : undefined) === 'EN RUTA HOY';
     });
 
     if (filteredForPdf.length === 0) {
-        alert("No se encontraron documentos pendientes que coincidan con TF+destino del archivo de rutas.");
+        alert("No se encontraron documentos pendientes en relaciones de ruta abiertas.");
         return;
     }
 
@@ -1069,55 +840,36 @@ const WarehouseAnalyzer: React.FC = () => {
       
       {hasData && (
         <>
-                    <section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-emerald-500">
-            <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 2: Cargar Archivo de Rutas (En ruta hoy)</h2>
+          <section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-emerald-500">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3 border-b pb-3">
+              <h2 className="text-2xl font-bold text-gray-800">Paso 2: Estados del aplicativo (automático)</h2>
+              <Button type="button" variant="outline" size="sm" onClick={() => void loadAppStatuses().catch((e) => setError(e.message))} disabled={isAppStatusLoading}>
+                <RefreshCw className={`w-4 h-4 mr-2 ${isAppStatusLoading ? 'animate-spin' : ''}`} />
+                Refrescar estados
+              </Button>
+            </div>
             <p className="text-sm text-gray-600 mb-4">
-              Sube un Excel con <b>Número TF</b>, <b>Almacén/Bodega Destino</b> y, en la misma fila,
-              opcionalmente <b>Placa</b> (entrega) y <b>Placa recolección</b>.
-              El cruce es <b>TF + destino</b>. Coincidencias → <b>EN RUTA HOY</b> (con placas publicadas a tiendas).
+              Ya no se suben Excel de rutas ni de empaque. <b>EN RUTA HOY</b> = TF en una relación de ruta abierta (Asignar a ruta / cargue),
+              hasta que se cierre. <b>EN BODEGA</b> = status <b>Recibido en Bodega</b> en Transferencias.
+              <b> NOVEDAD DE ENTREGA</b> y <b>RECOLECTADO EN RUTA</b> también salen de Transferencias. Lo demás → <b>VALIDAR CON AMBAS TIENDAS</b>.
             </p>
-            <FileUpload
-              onFileProcess={handleRouteFileProcess}
-              isLoading={isRouteLoading}
-              fileName={routeFileName}
-              mainText="Arrastra o selecciona el archivo de rutas (TF + destino + placas)"
-              subText="Requerido: TF y Destino. Opcional: Placa / Placa recolección (.xlsx / .xls)"
-              loadedSubText="Archivo de rutas cargado (cruce TF+destino + placas)."
-            />
-            {isRouteLoading && <Loader />}
-            {routeError && <div className="mt-4 text-center text-red-600 bg-red-100 p-3 rounded-md">{routeError}</div>}
-            {routeFileName && !routeError && (
-              <div className="mt-6">
-                <h3 className="font-semibold text-lg text-gray-700 mb-2">Validación de Columnas (Archivo de Rutas)</h3>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm border-collapse border border-slate-300">
-                      <thead className="bg-slate-50">
-                          <tr>
-                              <th className="border border-slate-300 p-2 text-left font-semibold text-gray-600">Columna de Búsqueda</th>
-                              <th className="border border-slate-300 p-2 text-left font-semibold text-gray-600">Columna Encontrada</th>
-                          </tr>
-                      </thead>
-                      <tbody>
-                          {routeDebugMapping.map(({ expected, found }) => (
-                              <tr key={expected}>
-                                  <td className="border border-slate-300 p-2">{expected}</td>
-                                  <td className={`border border-slate-300 p-2 font-mono ${found.includes('No encontrado') ? 'text-orange-600' : 'text-green-700'}`}>{found}</td>
-                              </tr>
-                          ))}
-                      </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-sm">
+              <div className="rounded-md border bg-blue-50 border-blue-200 px-3 py-2">EN RUTA HOY: <b>{new Set(Array.from(routeData.keys()).map((k) => k.split('|')[0])).size}</b> TF</div>
+              <div className="rounded-md border bg-amber-50 border-amber-200 px-3 py-2">EN BODEGA: <b>{receivedInWarehouseKeys.length}</b> TF</div>
+              <div className="rounded-md border bg-violet-50 border-violet-200 px-3 py-2">RECOLECTADO EN RUTA: <b>{collectedOnRouteKeys.length}</b> TF</div>
+              <div className="rounded-md border bg-red-50 border-red-200 px-3 py-2">NOVEDAD DE ENTREGA: <b>{novedadKeys.length}</b> TF</div>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              {appStatusAt ? `Leídos a las ${appStatusAt.toLocaleTimeString('es-CO')}. Al publicar se vuelven a leer.` : 'Aún no se han leído (use Actualizar Datos o Refrescar estados).'}
+            </p>
           </section>
 
-<section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-blue-500">
-            <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 3: Cargar Archivo Quick - Plataforma (Entregados)</h2>
+          <section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-blue-500">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 3 (opcional): Archivo Quick - Plataforma (Entregados)</h2>
             <p className="text-sm text-gray-600 mb-4">
-                Sube el archivo Quick de entregas/evidencias. Cruce por <b>NUMERO TF</b> + <b>BOD DESTINO</b> → <b>ENTREGADO</b>
+                Para entregas que aún no pasan por la app del conductor. Cruce por <b>NUMERO TF</b> + <b>BOD DESTINO</b> → <b>ENTREGADO</b>
                 (acepta alias de bodega, ej. <b>40201</b> ↔ <b>B2</b> / <b>BR 402</b>).
-                Si una TF aparece una sola vez en Quick, también cruza solo por TF.
-                La ruta de hoy ya no sale de Quick (usa el Paso 2).
+                Si una TF aparece una sola vez en Quick, también cruza solo por TF. Al cargarlo se publica automáticamente.
             </p>
             <FileUpload
               onFileProcess={handlePlatformFileProcess}
@@ -1129,60 +881,31 @@ const WarehouseAnalyzer: React.FC = () => {
             />
           </section>
 
-          <section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-amber-500">
-            <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-3">Paso 4: Unidades de empaque en bodega</h2>
-            <p className="text-sm text-gray-600 mb-4">
-              Sube el Excel de unidades de empaque. Se cruza por la columna <b>TF</b> con <b>NRO DOCUMENTO.2</b>.
-              Las que coincidan (y no estén entregadas / en ruta hoy) quedan en <b>EN BODEGA</b>.
-              También se marca <b>EN BODEGA</b> si en Transferencias la TF+destino está en <b>Recibido en Bodega</b>,
-              y <b>RECOLECTADO EN RUTA</b> si está en <b>Recolectado en Ruta</b>
-              (sin pisar ENTREGADO ni EN RUTA HOY).
-              Tras rutas, Quick y/o empaque, lo que quede sin estado → <b>VALIDAR CON AMBAS TIENDAS</b>.
-            </p>
-            <FileUpload
-              onFileProcess={handleWarehousePackFileProcess}
-              isLoading={isWarehousePackLoading}
-              fileName={warehousePackFileName}
-              mainText="Subir unidades de empaque (TF en bodega)"
-              subText="Columna requerida: TF"
-              loadedSubText="Archivo de empaque cruzado."
-            />
-          </section>
-
           <section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-indigo-600">
             <h2 className="text-xl font-bold text-gray-800 mb-2">Publicar estados para tiendas</h2>
             <p className="text-sm text-gray-600 mb-4">
-              Solo cuando los 4 pasos estén listos se guarda en Firestore (<code>tf_platform_status</code>).
-              Luego el rol tiendas puede consultar por TF o bodega destino.
+              Guarda en Firestore (<code>tf_platform_status</code>) el estado de cada TF con la base TF + estados del aplicativo
+              (+ Quick si se subió) y guarda la foto del reporte. Luego tiendas y office consultan en Consulta Estado TF.
             </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-4 text-sm">
-              <div className={`rounded-md border px-3 py-2 ${stepFlags.hasMain ? 'bg-green-50 border-green-300 text-green-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
-                1. Base TF: {stepFlags.hasMain ? 'Listo' : 'Pendiente (Actualizar Datos)'}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-4 text-sm">
+              <div className={`rounded-md border px-3 py-2 ${hasData ? 'bg-green-50 border-green-300 text-green-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                1. Base TF: {hasData ? 'Listo' : 'Pendiente (Actualizar Datos)'}
               </div>
-              <div className={`rounded-md border px-3 py-2 ${stepFlags.hasRoutes ? 'bg-green-50 border-green-300 text-green-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
-                2. Rutas: {stepFlags.hasRoutes ? 'Listo' : 'Pendiente'}
+              <div className={`rounded-md border px-3 py-2 ${appStatusAt ? 'bg-green-50 border-green-300 text-green-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                2. Estados del aplicativo: {appStatusAt ? 'Listo' : 'Se leen al publicar'}
               </div>
-              <div className={`rounded-md border px-3 py-2 ${stepFlags.hasQuick ? 'bg-green-50 border-green-300 text-green-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
-                3. Quick: {stepFlags.hasQuick ? 'Listo' : 'Pendiente'}
-              </div>
-              <div className={`rounded-md border px-3 py-2 ${stepFlags.hasPack ? 'bg-green-50 border-green-300 text-green-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
-                4. Empaque: {stepFlags.hasPack ? 'Listo' : 'Pendiente'}
+              <div className={`rounded-md border px-3 py-2 ${platformFileName ? 'bg-green-50 border-green-300 text-green-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                3. Quick (opcional): {platformFileName ? 'Cargado' : 'No cargado'}
               </div>
             </div>
             <Button
               type="button"
-              onClick={() =>
-                void publishPlatformStatusesIfComplete(baseData, columnMap, routeData, stepFlags)
-              }
+              onClick={() => void publishPlatformStatusesIfComplete(baseData, columnMap)}
               disabled={isPublishingPlatform || baseData.length === 0}
               className="bg-indigo-600 hover:bg-indigo-700"
             >
               <Store className={`w-4 h-4 mr-2 ${isPublishingPlatform ? 'animate-pulse' : ''}`} />
-              {isPublishingPlatform
-                ? 'Publicando estados…'
-                : allStepsReady
-                  ? 'Publicar estados para tiendas'
-                  : 'Publicar (completa los 4 pasos)'}
+              {isPublishingPlatform ? 'Publicando estados…' : 'Publicar estados para tiendas'}
             </Button>
             <Button
               type="button"
@@ -1195,11 +918,6 @@ const WarehouseAnalyzer: React.FC = () => {
               <CloudUpload className={`w-4 h-4 mr-2 ${isSavingSnapshot ? 'animate-pulse' : ''}`} />
               {isSavingSnapshot ? 'Guardando foto…' : 'Guardar foto del reporte'}
             </Button>
-            {!allStepsReady && (
-              <p className="text-xs text-amber-700 mt-2">
-                El botón está visible, pero la publicación exige los 4 pasos en verde en esta misma sesión.
-              </p>
-            )}
           </section>
           
           <FilterPanel

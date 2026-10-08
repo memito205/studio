@@ -264,7 +264,8 @@ const PendingDocsAnalysisTable: React.FC<PendingDocsAnalysisTableProps> = ({ rep
                                                                                                 <tbody className="bg-white divide-y divide-gray-200">
                                                                                                     {rec.detailedDocs.map((doc, docIndex) => {
                                                                                                         const isPlaceholder = doc.enRuta === 'PREGUNTAR ALMACEN DE ORIGEN';
-                                                                                                        const isWarehouse = doc.enRuta === 'ESTA EN BODEGA PPAL';
+                                                                                                        const isWarehouse = doc.enRuta === 'ESTA EN BODEGA PPAL' || doc.enRuta === 'EN BODEGA';
+                                                                                                        const isNovedad = doc.enRuta === 'NOVEDAD DE ENTREGA';
                                                                                                         const isInRoute = doc.enRuta === 'ESTA EN RUTA';
                                                                                                         const isDelivered = doc.enRuta === 'FUE ENTREGADA';
                                                                                                         const isTodayRoute = doc.enRuta === 'EN RUTA HOY';
@@ -277,6 +278,7 @@ const PendingDocsAnalysisTable: React.FC<PendingDocsAnalysisTableProps> = ({ rep
                                                                                                                 <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-600 text-center">{doc.quantity}</td>
                                                                                                                 <td className={`px-3 py-2 whitespace-nowrap text-sm font-semibold text-center ${doc.daysPending > 7 ? 'text-red-600' : 'text-orange-500'}`}>{doc.daysPending}</td>
                                                                                                                 <td className={`px-3 py-2 whitespace-nowrap text-sm flex items-center ${
+                                                                                                                    isNovedad ? 'text-red-600 font-semibold' :
                                                                                                                     isInCharge ? 'text-cyan-600 font-semibold' :
                                                                                                                     isTodayRoute ? 'text-purple-600 font-semibold' :
                                                                                                                     isCollectedOnRoute ? 'text-violet-600 font-semibold' :

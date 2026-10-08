@@ -4531,12 +4531,86 @@ export async function getTfKeysEnTransito(): Promise<{ keys?: string[]; error?: 
     }
 }
 
+export type OpenRouteTf = { key: string; placa?: string; conductor?: string; manifestId?: number };
+
 /**
- * EN RUTA HOY no es definitivo:
- * - al día siguiente → ENTREGADO
- * - si ya no está en transferencias En Tránsito → ENTREGADO
- * - si se publica un lote nuevo y esa TF no viene → ENTREGADO
- * Sin nota de validación (solo cambia estado).
+ * TF en relaciones de ruta abiertas (deliveryStatus en_ruta) que siguen en Enviado a Destino.
+ * Lecturas: relaciones abiertas + sus TF (no recorre la colección transfers).
+ */
+export async function getOpenRouteTfs(): Promise<{ data?: OpenRouteTf[]; error?: string }> {
+    try {
+        const mSnap = await getDocs(query(collection(firestore, 'deliveryManifests'), where('deliveryStatus', '==', 'en_ruta')));
+        const owner = new Map<string, { placa?: string; conductor?: string; manifestId?: number }>();
+        mSnap.docs.forEach((d) => {
+            const m = d.data() as any;
+            const info = {
+                placa: String(m.resource || '').trim().toUpperCase() || undefined,
+                conductor: String(m.driver || '').trim() || undefined,
+                manifestId: typeof m.manifestId === 'number' ? m.manifestId : undefined,
+            };
+            (Array.isArray(m.transferIds) ? m.transferIds : []).forEach((id: string) => id && owner.set(id, info));
+        });
+        const ids = Array.from(owner.keys());
+        const out: OpenRouteTf[] = [];
+        const chunks: string[][] = [];
+        for (let i = 0; i < ids.length; i += 30) chunks.push(ids.slice(i, i + 30));
+        for (let i = 0; i < chunks.length; i += 10) {
+            const snaps = await Promise.all(
+                chunks.slice(i, i + 10).map((c) => getDocs(query(collection(firestore, 'transfers'), where(documentId(), 'in', c))))
+            );
+            snaps.forEach((s) =>
+                s.docs.forEach((d) => {
+                    const t = d.data() as any;
+                    if (t.status !== 'Enviado a Destino') return;
+                    const key = transferRouteKeyFromParts(t.numeroTF, t.bodegaDestino);
+                    if (key) out.push({ key, ...owner.get(d.id) });
+                })
+            );
+        }
+        return { data: out };
+    } catch (error: any) {
+        console.error('Error getOpenRouteTfs:', error);
+        return { error: error.message };
+    }
+}
+
+/** Claves TF|DESTINO por status operativo (Transferencias). */
+async function getTfKeysByTransferStatus(status: TransferStatus): Promise<string[]> {
+    const snap = await getDocs(query(collection(firestore, 'transfers'), where('status', '==', status), limit(10000)));
+    const keys = new Set<string>();
+    snap.docs.forEach((d) => {
+        const raw = d.data() as any;
+        const key = transferRouteKeyFromParts(raw.numeroTF, raw.bodegaDestino);
+        if (key) keys.add(key);
+    });
+    return Array.from(keys);
+}
+
+/** Estados del aplicativo que usa el Analizador: en ruta (relaciones abiertas), en bodega, recolectado y novedad. */
+export async function getAnalyzerAppStatusKeys(): Promise<{
+    data?: { enRuta: OpenRouteTf[]; received: string[]; collected: string[]; novedad: string[] };
+    error?: string;
+}> {
+    try {
+        const [routes, received, collected, novedad] = await Promise.all([
+            getOpenRouteTfs(),
+            getTfKeysByTransferStatus('Recibido en Bodega'),
+            getTfKeysByTransferStatus('Recolectado en Ruta'),
+            getTfKeysByTransferStatus('Novedad de Entrega'),
+        ]);
+        if (routes.error) throw new Error(routes.error);
+        return { data: { enRuta: routes.data || [], received, collected, novedad } };
+    } catch (error: any) {
+        console.error('Error getAnalyzerAppStatusKeys:', error);
+        return { error: error.message };
+    }
+}
+
+/**
+ * EN RUTA HOY se mantiene mientras la TF siga en una relación de ruta abierta (aunque sea de otro día).
+ * - al publicar: las EN RUTA HOY que no vienen en el lote → ENTREGADO (inferido)
+ * - en consultas: las EN RUTA HOY que ya no están en una relación abierta → ENTREGADO (inferido)
+ * Las no entregadas por el conductor ya pasan a NOVEDAD DE ENTREGA desde la app.
  */
 export async function reconcileStaleEnRutaHoyStatuses(options?: {
     /** IDs incluidos en la publicación actual (cualquier estado). Si se pasa, las EN RUTA HOY ausentes del lote se cierran. */
@@ -4545,12 +4619,12 @@ export async function reconcileStaleEnRutaHoyStatuses(options?: {
     try {
         const publishedIds = new Set((options?.publishedIds || []).filter(Boolean));
         const fromPublish = publishedIds.size > 0;
-        const transitRes = await getTfKeysEnTransito();
-        if (transitRes.error) {
-            return { success: false, error: transitRes.error };
+        let onRoute = new Set<string>();
+        if (!fromPublish) {
+            const routesRes = await getOpenRouteTfs();
+            if (routesRes.error) return { success: false, error: routesRes.error };
+            onRoute = new Set((routesRes.data || []).map((r) => r.key));
         }
-        const inTransit = new Set(transitRes.keys || []);
-        const startToday = startOfLocalCalendarDay();
 
         const q = query(
             collection(firestore, TF_PLATFORM_STATUS_COLLECTION),
@@ -4568,21 +4642,12 @@ export async function reconcileStaleEnRutaHoyStatuses(options?: {
                 updatedAt?: unknown;
             };
             const key = transferRouteKeyFromParts(raw.numeroTF, raw.bodegaDestino);
-            const updatedAt = toJsDate(raw.updatedAt);
             let reason = '';
 
             if (fromPublish) {
-                if (!publishedIds.has(d.id)) {
-                    reason = 'fuera_del_lote_publicado';
-                } else if (key && !inTransit.has(key)) {
-                    reason = 'fuera_de_transito';
-                }
-            } else {
-                if (updatedAt && updatedAt < startToday) {
-                    reason = 'dia_siguiente';
-                } else if (key && !inTransit.has(key)) {
-                    reason = 'fuera_de_transito';
-                }
+                if (!publishedIds.has(d.id)) reason = 'fuera_del_lote_publicado';
+            } else if (key && !onRoute.has(key)) {
+                reason = 'fuera_de_ruta';
             }
 
             if (reason) toClose.push({ id: d.id, reason });
@@ -4596,12 +4661,7 @@ export async function reconcileStaleEnRutaHoyStatuses(options?: {
             const batch = writeBatch(firestore);
             chunk.forEach(({ id, reason }) => {
                 const ref = doc(firestore, TF_PLATFORM_STATUS_COLLECTION, id);
-                const motivo =
-                    reason === 'dia_siguiente' ||
-                    reason === 'fuera_de_transito' ||
-                    reason === 'fuera_del_lote_publicado'
-                        ? reason
-                        : 'fuera_de_transito';
+                const motivo = reason;
                 batch.set(
                     ref,
                     convertDatesToTimestamps({
@@ -4649,42 +4709,12 @@ export async function persistTfPlatformStatuses(
             return { success: false, error: 'No hay registros de estado plataforma para guardar.' };
         }
 
-        const transitRes = await getTfKeysEnTransito();
-        const inTransit = new Set(transitRes.keys || []);
-        const normalizedRecords = records.map((r) => {
-            if (r.estadoPlataforma === 'EN RUTA HOY') {
-                const key = transferRouteKeyFromParts(r.numeroTF, r.bodegaDestino);
-                if (key && !inTransit.has(key)) {
-                    return {
-                        ...r,
-                        estadoPlataforma: 'ENTREGADO',
-                        entregaInferida: true,
-                        entregaInferidaMotivo: 'fuera_de_transito' as const,
-                        source: r.source
-                            ? `${r.source}|auto_cierre_en_ruta_hoy:fuera_de_transito`
-                            : 'auto_cierre_en_ruta_hoy:fuera_de_transito',
-                    };
-                }
-                return {
-                    ...r,
-                    entregaInferida: false,
-                    entregaInferidaMotivo: null,
-                };
-            }
-            // ENTREGADO del analizador (evidencia/fecha/estado) no es inferido
-            if (r.estadoPlataforma === 'ENTREGADO') {
-                return {
-                    ...r,
-                    entregaInferida: false,
-                    entregaInferidaMotivo: null,
-                };
-            }
-            return {
-                ...r,
-                entregaInferida: false,
-                entregaInferidaMotivo: null,
-            };
-        });
+        // EN RUTA HOY viene de relaciones abiertas del aplicativo: no se infiere entrega al publicar.
+        const normalizedRecords = records.map((r) => ({
+            ...r,
+            entregaInferida: false,
+            entregaInferidaMotivo: null,
+        }));
 
         const appPodSnap = await getDocs(
             query(collection(firestore, TF_PLATFORM_STATUS_COLLECTION), where('podSource', '==', 'app'))

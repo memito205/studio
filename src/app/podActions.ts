@@ -193,7 +193,7 @@ export type PlatformPublish = { lines: PlatformLine[]; at: Timestamp; pod: Recor
 
 /**
  * Entregada en la app -> ENTREGADO con fuente app (manda sobre Quick e inferida).
- * No entregada -> solo deja la novedad; el estado plataforma no cambia.
+ * No entregada -> deja la novedad y el estado plataforma pasa a NOVEDAD DE ENTREGA (si no estaba entregada).
  */
 export async function publishPodToPlatform({ lines, at, pod, photoUrls }: PlatformPublish) {
   for (const l of lines) {
@@ -201,7 +201,13 @@ export async function publishPodToPlatform({ lines, at, pod, photoUrls }: Platfo
     const snap = await getDoc(ref);
     const cur = snap.exists() ? (snap.data() as any) : null;
     if (!l.delivered) {
-      if (cur) await updateDoc(ref, { podNovedad: clean({ at, motivo: l.motivo, ...pod }), updatedAt: at });
+      if (cur) {
+        await updateDoc(ref, {
+          podNovedad: clean({ at, motivo: l.motivo, ...pod }),
+          ...(cur.estadoPlataforma !== 'ENTREGADO' ? { estadoPlataforma: 'NOVEDAD DE ENTREGA' } : {}),
+          updatedAt: at,
+        });
+      }
       continue;
     }
     const previousLinks: string[] = Array.isArray(cur?.evidenceLinks) ? cur.evidenceLinks : [];
@@ -689,7 +695,15 @@ async function revertPodPlatform(ids: string[], manifestDocId: string, stopId: s
         { merge: true }
       );
     } else if (r.podNovedad?.stopId === stopId && r.podNovedad?.manifestDocId === manifestDocId) {
-      await setDoc(ref, { podNovedad: null, updatedAt: Timestamp.now() }, { merge: true });
+      await setDoc(
+        ref,
+        {
+          podNovedad: null,
+          ...(r.estadoPlataforma === 'NOVEDAD DE ENTREGA' ? { estadoPlataforma: 'EN RUTA HOY' } : {}),
+          updatedAt: Timestamp.now(),
+        },
+        { merge: true }
+      );
     }
   }
 }
@@ -915,7 +929,11 @@ export async function resolvePodNovedades(input: {
         if (snap?.exists() && snap.data()?.podNovedad) {
           await setDoc(
             ref,
-            { podNovedad: { resolucion: action, resueltaAt: res.now, resueltaByName: actorName }, updatedAt: res.now },
+            {
+              podNovedad: { resolucion: action, resueltaAt: res.now, resueltaByName: actorName },
+              ...(snap.data()?.estadoPlataforma === 'NOVEDAD DE ENTREGA' ? { estadoPlataforma: 'EN BODEGA' } : {}),
+              updatedAt: res.now,
+            },
             { merge: true }
           ).catch(() => undefined);
         }

@@ -433,6 +433,7 @@ export type TfPlatformEstado =
   | 'EN RUTA HOY'
   | 'RECOLECTADO EN RUTA'
   | 'EN BODEGA'
+  | 'NOVEDAD DE ENTREGA'
   | 'VALIDAR CON AMBAS TIENDAS';
 
 export interface TfPlatformStatusRecord {
@@ -449,7 +450,7 @@ export interface TfPlatformStatusRecord {
    */
   entregaInferida?: boolean;
   /** Motivo del cierre automático cuando entregaInferida. */
-  entregaInferidaMotivo?: 'dia_siguiente' | 'fuera_de_transito' | 'fuera_del_lote_publicado';
+  entregaInferidaMotivo?: 'dia_siguiente' | 'fuera_de_transito' | 'fuera_del_lote_publicado' | 'fuera_de_ruta';
   /** Placa/recurso de entrega (Excel Paso 2 rutas) */
   placaEntrega?: string;
   /** Placa de recolección (misma fila del Excel Paso 2) */
