@@ -12,6 +12,8 @@ import { getTfPlatformStatusByTf, getTfPlatformStatusByWarehouse } from '@/app/a
 import type { TfPlatformEstado } from '@/types';
 import { format } from 'date-fns';
 import { StoreReceiveCard } from '@/components/StoreReceiveCard';
+import { AnalyzerSnapshotView } from '@/components/AnalyzerSnapshotView';
+import { useAuth } from '@/hooks/use-auth-context';
 
 const statusBadge = (status: string, entregaInferida?: boolean) => {
   switch (status as TfPlatformEstado) {
@@ -71,6 +73,7 @@ interface TfPlatformLookupModuleProps {
 }
 
 export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ onReturn }) => {
+  const { role } = useAuth();
   const [tfQuery, setTfQuery] = useState('');
   const [warehouseQuery, setWarehouseQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -128,7 +131,7 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
         </Button>
       </div>
 
-      <StoreReceiveCard />
+      {role !== 'office' && <StoreReceiveCard />}
 
       <Card>
         <CardHeader>
@@ -142,7 +145,11 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
             <TabsList className="mb-4">
               <TabsTrigger value="tf">Por número TF</TabsTrigger>
               <TabsTrigger value="bodega">Por bodega destino</TabsTrigger>
+              <TabsTrigger value="reporte">Último reporte bodega</TabsTrigger>
             </TabsList>
+            <TabsContent value="reporte">
+              <AnalyzerSnapshotView />
+            </TabsContent>
             <TabsContent value="tf" className="space-y-3">
               <div className="space-y-1">
                 <Label>Número TF</Label>

@@ -265,7 +265,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
                     });
                 }
             },
-            roles: ['admin', 'supervisor', 'tiendas']
+            roles: ['admin', 'supervisor', 'tiendas', 'office']
         },
         {
             key: 'merchandise_labeling',

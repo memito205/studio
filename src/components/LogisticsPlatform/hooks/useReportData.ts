@@ -28,8 +28,38 @@ export const useReportData = (
   receivedInWarehouseKeys: string[] = [],
   /** TF|DESTINO con status Recolectado en Ruta en módulo Transferencias */
   collectedOnRouteKeys: string[] = []
-): ReportData => {
-  return useMemo(() => {
+): ReportData =>
+  useMemo(
+    () =>
+      computeReportData(
+        baseData,
+        columnMap,
+        selectedWarehouse,
+        startDate,
+        endDate,
+        documentNumberFilter,
+        routeStatusMap,
+        applyUnresolvedPlatformStatus,
+        receivedInWarehouseKeys,
+        collectedOnRouteKeys
+      ),
+    [baseData, columnMap, selectedWarehouse, startDate, endDate, documentNumberFilter, routeStatusMap, applyUnresolvedPlatformStatus, receivedInWarehouseKeys, collectedOnRouteKeys]
+  );
+
+/** Cálculo puro del reporte (también lo usa la foto guardada del analizador, por tienda). */
+export function computeReportData(
+  baseData: ExcelDataRow[],
+  columnMap: { [key: string]: string | undefined },
+  selectedWarehouse: string,
+  startDate: string,
+  endDate: string,
+  documentNumberFilter: string,
+  routeStatusMap: Map<string, AnalyzerRouteMatch | string>,
+  applyUnresolvedPlatformStatus = false,
+  receivedInWarehouseKeys: string[] = [],
+  collectedOnRouteKeys: string[] = []
+): ReportData {
+  {
     const receivedSet = new Set(receivedInWarehouseKeys);
     const collectedSet = new Set(collectedOnRouteKeys);
     const { 
@@ -755,5 +785,5 @@ export const useReportData = (
       deliveredDocsByWarehouse,
       pendingRows: allPendingRows,
     };
-  }, [baseData, columnMap, selectedWarehouse, startDate, endDate, documentNumberFilter, routeStatusMap, applyUnresolvedPlatformStatus, receivedInWarehouseKeys, collectedOnRouteKeys]);
-};
+  }
+}

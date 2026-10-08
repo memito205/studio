@@ -24,6 +24,9 @@ import { loadAnalysisRecords, syncAnalysisRecords, persistTfPlatformStatuses, ge
 import { buildTfPlatformStatusRecords } from '@/lib/tfPlatformStatus';
 import { getAppPodIndex } from '@/app/podActions';
 import { buildAppPodIndex, overlayAppPods, type AppPodEntry } from '@/lib/podPlatform';
+import { buildAnalyzerSnapshotDocs, type AnalyzerSnapshotDocWrite } from '@/lib/analyzerSnapshot';
+import { saveAnalyzerSnapshotDocs } from '@/app/analyzerSnapshotActions';
+import { getDeliveryStores } from '@/app/deliveryActions';
 import { FileIcon, PackageIcon, TruckIcon, ChartIcon, CheckCircleIcon, TableIcon, UserCheckIcon, PdfFileIcon } from './components/icons';
 import { Button } from '@/components/ui/button';
 import { RefreshCw, Database, CloudUpload, Store } from 'lucide-react';
@@ -72,6 +75,8 @@ const WarehouseAnalyzer: React.FC = () => {
   const [collectedOnRouteKeys, setCollectedOnRouteKeys] = React.useState<string[]>([]);
   const { user, userName } = useAuth();
   const [appPodIndex, setAppPodIndex] = React.useState<Map<string, AppPodEntry>>(new Map());
+  const [isSavingSnapshot, setIsSavingSnapshot] = React.useState(false);
+  const saveSnapshotRef = React.useRef<((keys?: { received: string[]; collected: string[] }) => Promise<void>) | null>(null);
 
   React.useEffect(() => {
     let alive = true;
@@ -191,6 +196,7 @@ const WarehouseAnalyzer: React.FC = () => {
               ? ` Se cerraron ${closed} EN RUTA HOY previas (día siguiente o fuera de En Tránsito) → ENTREGADO.`
               : ''),
         });
+        void saveSnapshotRef.current?.({ received: receivedKeys, collected: collectedKeys });
       } catch (err: any) {
         console.error(err);
         toast({
@@ -863,6 +869,65 @@ const WarehouseAnalyzer: React.FC = () => {
     [baseData, columnMap, appPodIndex]
   );
 
+  const snapshotInputRef = React.useRef({ analyzedData, columnMap, routeData, applyUnresolvedPlatformStatus, receivedInWarehouseKeys, collectedOnRouteKeys, mainFileName });
+  snapshotInputRef.current = { analyzedData, columnMap, routeData, applyUnresolvedPlatformStatus, receivedInWarehouseKeys, collectedOnRouteKeys, mainFileName };
+
+  const saveAnalyzerSnapshot = React.useCallback(
+    async (keys?: { received: string[]; collected: string[] }) => {
+      const s = snapshotInputRef.current;
+      if (!s.analyzedData.length || !s.columnMap.warehouse) {
+        toast({ title: 'Sin reporte', description: 'Cargue primero la base TF en el analizador.', variant: 'destructive' });
+        return;
+      }
+      setIsSavingSnapshot(true);
+      try {
+        const storesRes = await getDeliveryStores();
+        await new Promise((r) => setTimeout(r, 0));
+        const docs = buildAnalyzerSnapshotDocs({
+          baseData: s.analyzedData,
+          columnMap: s.columnMap,
+          routeStatusMap: s.routeData,
+          applyUnresolvedPlatformStatus: s.applyUnresolvedPlatformStatus,
+          receivedInWarehouseKeys: keys?.received ?? s.receivedInWarehouseKeys,
+          collectedOnRouteKeys: keys?.collected ?? s.collectedOnRouteKeys,
+          stores: storesRes.data || [],
+          meta: {
+            at: new Date().toISOString(),
+            byName: userName || user?.email || '',
+            fileName: s.mainFileName || '',
+          },
+        });
+        let chunk: AnalyzerSnapshotDocWrite[] = [];
+        let size = 0;
+        const flush = async () => {
+          if (!chunk.length) return;
+          const res = await saveAnalyzerSnapshotDocs(chunk);
+          if (res.error) throw new Error(res.error);
+          chunk = [];
+          size = 0;
+        };
+        for (const d of docs) {
+          const len = String(d.data.chunk ?? '').length + 500;
+          if (chunk.length && size + len > 2_000_000) await flush();
+          chunk.push(d);
+          size += len;
+        }
+        await flush();
+        toast({
+          title: 'Foto del reporte guardada',
+          description: `Office y tiendas la ven en Consulta Estado TF → Último reporte bodega (${docs.length} docs).`,
+        });
+      } catch (err: any) {
+        console.error(err);
+        toast({ title: 'No se guardó la foto del reporte', description: err?.message || 'Error al guardar.', variant: 'destructive' });
+      } finally {
+        setIsSavingSnapshot(false);
+      }
+    },
+    [userName, user?.email]
+  );
+  saveSnapshotRef.current = saveAnalyzerSnapshot;
+
   const { kpiData, analysisData, dailyChartData, slaAnalysisData, pendingDocsAnalysisData, generalReport, deliveredDocsReport, brandReport, brandSummaryByWarehouse, deliveredDocsByWarehouse, pendingRows } = useReportData(
     analyzedData,
     columnMap,
@@ -1118,6 +1183,17 @@ const WarehouseAnalyzer: React.FC = () => {
                 : allStepsReady
                   ? 'Publicar estados para tiendas'
                   : 'Publicar (completa los 4 pasos)'}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void saveAnalyzerSnapshot()}
+              disabled={isSavingSnapshot || baseData.length === 0}
+              className="ml-2"
+              title="Guarda lo que está en pantalla para que office y tiendas lo vean en Consulta Estado TF"
+            >
+              <CloudUpload className={`w-4 h-4 mr-2 ${isSavingSnapshot ? 'animate-pulse' : ''}`} />
+              {isSavingSnapshot ? 'Guardando foto…' : 'Guardar foto del reporte'}
             </Button>
             {!allStepsReady && (
               <p className="text-xs text-amber-700 mt-2">
