@@ -113,6 +113,12 @@ function adjustmentRefLocSizeKey(reference: string, size: string, location: stri
   return `${normRef(reference)}|${normSize(size)}|${normLoc(location)}`;
 }
 
+/** Un registro por día + ref + talla + ubicación: un reconteo posterior reemplaza al anterior. */
+function countRecordDocId(inventoryDate: string, reference: string, size: string, location: string): string {
+  const raw = `${inventoryDate}__${normRef(reference)}__${normSize(size)}__${normLoc(location)}`;
+  return raw.replace(/\//g, '_').slice(0, 1400);
+}
+
 type InventoryAdjustmentRecord = {
   id: string;
   inventoryDate: string;
@@ -524,7 +530,6 @@ export async function saveCyclicInventoryLineCount(input: {
       return { success: false, error: 'Línea no identificada.' };
     }
     const n = Math.max(0, Math.floor(Number(input.countedQty)));
-    const recRef = doc(collection(firestore, COUNT_RECORDS_COL));
     const now = Timestamp.now();
     const firstLineRef = doc(firestore, LINES_COL, ids[0]);
     const firstLineSnap = await getDoc(firstLineRef);
@@ -595,12 +600,105 @@ export async function saveCyclicInventoryLineCount(input: {
       if (ids.length > 1) {
         recordPayload.consolidatedLineIds = ids;
       }
-      tx.set(recRef, recordPayload);
+      tx.set(doc(firestore, COUNT_RECORDS_COL, countRecordDocId(inv, wantRef, wantSize, wantLoc)), recordPayload);
     });
 
     return { success: true };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Error al guardar conteo.';
+    return { success: false, error: msg };
+  }
+}
+
+/**
+ * Guarda el reconteo completo de una ubicación (incluye ceros de lo no escaneado).
+ * Reemplaza cualquier conteo previo del mismo día: el último guardado queda como final.
+ */
+export async function saveCyclicInventoryLocationRecount(input: {
+  inventoryDate: string;
+  location: string;
+  items: { lineIds: string[]; countedQty: number }[];
+  countedBy: string;
+  countedByName?: string;
+}): Promise<{ success: boolean; saved?: number; error?: string }> {
+  try {
+    const inv = String(input.inventoryDate || '').trim();
+    if (!isValidInventoryDateKey(inv)) return { success: false, error: 'Fecha inválida.' };
+    const wantLoc = normLoc(input.location || '');
+    if (!wantLoc) return { success: false, error: 'Ubicación requerida.' };
+    const items = (input.items || [])
+      .map((it) => ({
+        ids: [...new Set((it.lineIds || []).map((x) => String(x).trim()).filter(Boolean))],
+        n: Math.max(0, Math.floor(Number(it.countedQty) || 0)),
+      }))
+      .filter((it) => it.ids.length > 0);
+    if (items.length === 0) return { success: false, error: 'No hay líneas para guardar.' };
+
+    const allIds = [...new Set(items.flatMap((it) => it.ids))];
+    const snaps = await Promise.all(allIds.map((id) => getDoc(doc(firestore, LINES_COL, id))));
+    const byId = new Map(snaps.filter((s) => s.exists()).map((s) => [s.id, s.data() as Record<string, unknown>]));
+    const adjustmentMap = await fetchAdjustmentDeltaPerKey(inv);
+
+    const now = Timestamp.now();
+    type Write = { lineIds: string[]; n: number; ref: string; size: string; expected: number };
+    const writes: Write[] = [];
+    for (const it of items) {
+      const first = byId.get(it.ids[0]);
+      if (!first) throw new Error('Línea no encontrada. Recargue líneas e intente de nuevo.');
+      const wantRef = normRef(String(first.reference ?? ''));
+      const wantSize = normSize(String(first.size ?? ''));
+      let sumExpected = 0;
+      for (const id of it.ids) {
+        const d = byId.get(id);
+        if (!d) throw new Error('Línea no encontrada. Recargue líneas e intente de nuevo.');
+        if (
+          String(d.inventoryDate ?? '') !== inv ||
+          normLoc(String(d.location ?? '')) !== wantLoc ||
+          normRef(String(d.reference ?? '')) !== wantRef ||
+          normSize(String(d.size ?? '')) !== wantSize
+        ) {
+          throw new Error('Las líneas no corresponden a la fecha y ubicación del reconteo.');
+        }
+        sumExpected += Math.max(0, Math.floor(Number(d.expectedQty) || 0));
+      }
+      const delta = adjustmentMap.get(adjustmentRefLocSizeKey(wantRef, wantSize, wantLoc)) ?? 0;
+      writes.push({ lineIds: it.ids, n: it.n, ref: wantRef, size: wantSize, expected: Math.max(0, sumExpected + delta) });
+    }
+
+    const countedByName = (input.countedByName || '').trim();
+    let batch = writeBatch(firestore);
+    let ops = 0;
+    for (const w of writes) {
+      for (const id of w.lineIds) {
+        batch.update(doc(firestore, LINES_COL, id), { countedQty: w.n, countedAt: now, countedBy: input.countedBy });
+        ops++;
+      }
+      const recordPayload: Record<string, unknown> = {
+        inventoryDate: inv,
+        reference: w.ref,
+        size: w.size,
+        location: wantLoc,
+        expectedQtyAtSave: w.expected,
+        countedQty: w.n,
+        countedAt: now,
+        countedBy: input.countedBy,
+        countedByName,
+        lineId: w.lineIds[0],
+        source: 'scan_recount',
+      };
+      if (w.lineIds.length > 1) recordPayload.consolidatedLineIds = w.lineIds;
+      batch.set(doc(firestore, COUNT_RECORDS_COL, countRecordDocId(inv, w.ref, w.size, wantLoc)), recordPayload);
+      ops++;
+      if (ops >= LINES_BATCH) {
+        await batch.commit();
+        batch = writeBatch(firestore);
+        ops = 0;
+      }
+    }
+    if (ops > 0) await batch.commit();
+    return { success: true, saved: writes.length };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'Error al guardar el reconteo.';
     return { success: false, error: msg };
   }
 }
@@ -623,7 +721,12 @@ export async function ensureCyclicInventoryLineForRefLoc(input: {
     if (!reference) return { success: false, error: 'Referencia requerida.' };
     if (!location) return { success: false, error: 'Ubicación requerida.' };
 
-    const qy = query(collection(firestore, LINES_COL), where('inventoryDate', '==', dateKey), limit(8000));
+    const qy = query(
+      collection(firestore, LINES_COL),
+      where('inventoryDate', '==', dateKey),
+      where('reference', '==', reference),
+      limit(200)
+    );
     const snap = await getDocs(qy);
     const existingDoc = snap.docs.find((d) => {
       const data = d.data() as Record<string, unknown>;
@@ -1081,7 +1184,15 @@ export async function listCyclicInventoryCountRecordsForReport(input: {
       return tb - ta;
     });
 
-    return { success: true, data: collected };
+    const seen = new Set<string>();
+    const latestOnly = collected.filter((r) => {
+      const key = `${r.inventoryDate}|${lineRefLocSizeKey(r.reference, r.size ?? '', r.location)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    return { success: true, data: latestOnly };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Error al cargar reporte.';
     if (String(msg).includes('failed-precondition')) {

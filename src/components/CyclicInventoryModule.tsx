@@ -30,6 +30,7 @@ import {
   listCyclicInventoryDayMeta,
   resolveCyclicInventoryBarcode,
   saveCyclicInventoryLineCount,
+  saveCyclicInventoryLocationRecount,
 } from '@/app/cyclicInventoryActions';
 
 type InventoryLineView = CyclicInventoryLine & {
@@ -328,6 +329,43 @@ function parseImportRows(raw: unknown[]): {
   return out;
 }
 
+type ScanDraft = { counts: Record<string, number>; events: ScanEvent[] };
+
+const SCAN_DRAFT_PREFIX = 'cyclicScanDraft:v1';
+const SCAN_LAST_LOC_PREFIX = 'cyclicScanLastLoc:v1';
+const ACTIVE_TAB_KEY = 'cyclicInventoryTab:v1';
+
+function scanDraftKey(uid: string, inventoryDate: string, location: string): string {
+  return `${SCAN_DRAFT_PREFIX}:${uid}:${inventoryDate}:${location.trim().toUpperCase()}`;
+}
+
+function readScanDraft(key: string): ScanDraft | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ScanDraft>;
+    return {
+      counts: parsed.counts && typeof parsed.counts === 'object' ? parsed.counts : {},
+      events: Array.isArray(parsed.events) ? parsed.events : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeScanDraft(key: string, draft: ScanDraft): void {
+  try {
+    const hasCounts = Object.values(draft.counts).some((n) => n > 0);
+    if (!hasCounts && draft.events.length === 0) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, JSON.stringify(draft));
+  } catch {
+    /* almacenamiento lleno o bloqueado: el conteo sigue en memoria */
+  }
+}
+
 export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = ({ onReturnToSuite }) => {
   const { user, role } = useAuth();
   const { toast } = useToast();
@@ -370,6 +408,8 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
   const [scanBarcode, setScanBarcode] = useState('');
   const [scanEvents, setScanEvents] = useState<ScanEvent[]>([]);
   const [scanSessionCounts, setScanSessionCounts] = useState<Record<string, number>>({});
+  const [scanDraftOwnerKey, setScanDraftOwnerKey] = useState('');
+  const [activeTab, setActiveTab] = useState('conteo');
   const [savingScanCounts, setSavingScanCounts] = useState(false);
   const [resolvingScan, setResolvingScan] = useState(false);
   const [reliabilityFrom, setReliabilityFrom] = useState(() => ymdDaysAgo(30));
@@ -503,10 +543,46 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     void loadAdjustments();
   }, [canAdmin, loadAdjustments]);
 
+  const currentScanDraftKey = user?.uid && scanLocation.trim() ? scanDraftKey(user.uid, inventoryDate, scanLocation) : '';
+
   useEffect(() => {
-    setScanSessionCounts({});
-    setScanEvents([]);
-  }, [inventoryDate, scanLocation]);
+    const draft = currentScanDraftKey ? readScanDraft(currentScanDraftKey) : null;
+    setScanSessionCounts(draft?.counts ?? {});
+    setScanEvents(draft?.events ?? []);
+    setScanDraftOwnerKey(currentScanDraftKey);
+  }, [currentScanDraftKey]);
+
+  useEffect(() => {
+    if (!currentScanDraftKey || scanDraftOwnerKey !== currentScanDraftKey) return;
+    writeScanDraft(currentScanDraftKey, { counts: scanSessionCounts, events: scanEvents });
+  }, [currentScanDraftKey, scanDraftOwnerKey, scanSessionCounts, scanEvents]);
+
+  useEffect(() => {
+    if (!user?.uid || !scanLocation.trim()) return;
+    try {
+      window.localStorage.setItem(`${SCAN_LAST_LOC_PREFIX}:${user.uid}:${inventoryDate}`, scanLocation.trim());
+    } catch {
+      /* ignore */
+    }
+  }, [user?.uid, inventoryDate, scanLocation]);
+
+  useEffect(() => {
+    try {
+      const saved = window.sessionStorage.getItem(ACTIVE_TAB_KEY);
+      if (saved) setActiveTab(saved);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const handleTabChange = (value: string) => {
+    setActiveTab(value);
+    try {
+      window.sessionStorage.setItem(ACTIVE_TAB_KEY, value);
+    } catch {
+      /* ignore */
+    }
+  };
 
   const loadReport = useCallback(async () => {
     setLoadingReport(true);
@@ -622,9 +698,17 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
 
   useEffect(() => {
     if (!scanLocation && availableLocations.length > 0) {
-      setScanLocation(availableLocations[0]);
+      let lastLoc = '';
+      try {
+        lastLoc = user?.uid
+          ? window.localStorage.getItem(`${SCAN_LAST_LOC_PREFIX}:${user.uid}:${inventoryDate}`) || ''
+          : '';
+      } catch {
+        lastLoc = '';
+      }
+      setScanLocation(lastLoc || availableLocations[0]);
     }
-  }, [availableLocations, scanLocation]);
+  }, [availableLocations, scanLocation, user?.uid, inventoryDate]);
 
   const linesByRefLocSize = useMemo(() => {
     const map = new Map<string, InventoryLineView>();
@@ -703,6 +787,21 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     });
     return out;
   }, [lines, scanLocation, scanSessionCounts, inventoryDate]);
+
+  const scanLocationPriorCount = useMemo(() => {
+    const loc = scanLocation.trim();
+    if (!loc) return null;
+    let counted = 0;
+    let lastAt = 0;
+    for (const line of lines) {
+      if (String(line.location || '').trim() !== loc) continue;
+      if (line.countedQty === null || line.countedQty === undefined) continue;
+      counted++;
+      const t = line.countedAt ? new Date(line.countedAt).getTime() : 0;
+      if (Number.isFinite(t) && t > lastAt) lastAt = t;
+    }
+    return counted > 0 ? { counted, lastAt: lastAt > 0 ? new Date(lastAt) : null } : null;
+  }, [lines, scanLocation]);
 
   const allDiffRows = useMemo<InventoryDiffRow[]>(() => {
     const previousExpectedByKey = new Map<string, number>();
@@ -1149,13 +1248,26 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       toast({ variant: 'destructive', title: 'Escaneo', description: 'Seleccione ubicación.' });
       return;
     }
-    const targets = scanRows.filter((r) => r.scannedQty > 0);
-    if (targets.length === 0) {
+    const targets = scanRows.filter((r) => !r.isExtraneous || r.scannedQty > 0);
+    if (!scanRows.some((r) => r.scannedQty > 0)) {
       toast({ title: 'Escaneo', description: 'No hay conteos escaneados para guardar.' });
       return;
     }
+    const zeroLines = targets.filter((r) => r.scannedQty === 0).length;
+    const warnings: string[] = [];
+    if (scanLocationPriorCount) {
+      warnings.push(
+        `La ubicación ${scanLocation} ya tiene conteo guardado para ${inventoryDate}. Este reconteo REEMPLAZA el anterior y queda como conteo final.`
+      );
+    }
+    if (zeroLines > 0) {
+      warnings.push(`${zeroLines} línea(s) de la ubicación no se escanearon y quedarán contadas en 0.`);
+    }
+    if (warnings.length > 0 && !window.confirm(`${warnings.join('\n\n')}\n\n¿Desea guardar?`)) return;
+
     setSavingScanCounts(true);
     try {
+      const items: { lineIds: string[]; countedQty: number }[] = [];
       for (const row of targets) {
         let lineIds = row.line.consolidatedLineIds?.length
           ? row.line.consolidatedLineIds
@@ -1178,20 +1290,22 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
           }
           lineIds = [ensured.data.id];
         }
-
-        const save = await saveCyclicInventoryLineCount({
-          lineIds,
-          countedQty: row.scannedQty,
-          countedBy: user.uid,
-          countedByName: user.displayName || user.email || '',
-        });
-        if (!save.success) {
-          const sizeHint = row.line.size ? ` / ${row.line.size}` : '';
-          throw new Error(`Error guardando ${row.line.reference}${sizeHint}: ${save.error || 'falló el guardado'}`);
-        }
+        items.push({ lineIds, countedQty: row.scannedQty });
       }
-      toast({ title: 'Escaneo', description: `Se guardaron ${targets.length} línea(s) de reconteo.` });
+
+      const save = await saveCyclicInventoryLocationRecount({
+        inventoryDate,
+        location: scanLocation,
+        items,
+        countedBy: user.uid,
+        countedByName: user.displayName || user.email || '',
+      });
+      if (!save.success) {
+        throw new Error(save.error || 'Falló el guardado del reconteo.');
+      }
+      toast({ title: 'Escaneo', description: `Se guardaron ${save.saved ?? items.length} línea(s) de reconteo de ${scanLocation}.` });
       setScanSessionCounts({});
+      setScanEvents([]);
       await loadLines();
     } catch (e: unknown) {
       toast({
@@ -1340,7 +1454,11 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
         </Button>
       </div>
 
-      <Tabs defaultValue="conteo" className="w-full">
+      <Tabs
+        value={!canAdmin && (activeTab === 'ajustes' || activeTab === 'subir') ? 'conteo' : activeTab}
+        onValueChange={handleTabChange}
+        className="w-full"
+      >
         <TabsList>
           <TabsTrigger value="conteo">Conteo</TabsTrigger>
           <TabsTrigger value="reporte">
@@ -1880,10 +1998,24 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
               <CardTitle>Escaneo de reconteo por ubicación</CardTitle>
               <CardDescription>
                 Escanee códigos de barras: cada lectura suma +1 a la combinación referencia + talla (del catálogo) + ubicación
-                seleccionada. Solo se guarda en inventario cuando pulse <strong> Guardar reconteo escaneado</strong>.
+                seleccionada. Solo se guarda en inventario cuando pulse <strong> Guardar reconteo escaneado</strong>. El
+                avance queda guardado en este equipo aunque cambie de pestaña o salga del módulo. Cada ubicación tiene un solo
+                conteo por día: si se recuenta, el último guardado reemplaza al anterior.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {scanLocationPriorCount ? (
+                <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>
+                    {scanLocation} ya fue contada para {inventoryDate} ({scanLocationPriorCount.counted} línea(s)
+                    {scanLocationPriorCount.lastAt
+                      ? `, último guardado ${scanLocationPriorCount.lastAt.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`
+                      : ''}
+                    ). Si guarda este reconteo, reemplaza al anterior y queda como conteo final.
+                  </span>
+                </div>
+              ) : null}
               <div className="flex flex-wrap gap-3 items-end">
                 <div className="space-y-2">
                   <Label>Fecha inventario</Label>
