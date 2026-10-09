@@ -140,7 +140,7 @@ function cyclicUnitAccuracyAggregate(
   return match / compare;
 }
 
-type ScanEventStatus = 'ok' | 'uncataloged' | 'not_in_location' | 'not_in_inventory';
+type ScanEventStatus = 'ok' | 'uncataloged' | 'not_in_location' | 'not_in_inventory' | 'filtered_out';
 
 type ScanEvent = {
   id: string;
@@ -406,6 +406,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
   const [diffOnlySuggested, setDiffOnlySuggested] = useState(true);
   const [diffHideSquare, setDiffHideSquare] = useState(true);
   const [scanLocation, setScanLocation] = useState('');
+  const [scanRefFilter, setScanRefFilter] = useState('');
   const [scanBarcode, setScanBarcode] = useState('');
   const [scanEvents, setScanEvents] = useState<ScanEvent[]>([]);
   const [scanSessionCounts, setScanSessionCounts] = useState<Record<string, number>>({});
@@ -788,6 +789,23 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     });
     return out;
   }, [lines, scanLocation, scanSessionCounts, inventoryDate]);
+
+  const scanRefFilterNorm = scanRefFilter.trim().toUpperCase();
+  const matchesScanRefFilter = useCallback(
+    (reference: string) => !scanRefFilterNorm || String(reference || '').toUpperCase().includes(scanRefFilterNorm),
+    [scanRefFilterNorm]
+  );
+
+  const visibleScanRows = useMemo(
+    () => (scanRefFilterNorm ? scanRows.filter((r) => matchesScanRefFilter(r.line.reference)) : scanRows),
+    [scanRows, scanRefFilterNorm, matchesScanRefFilter]
+  );
+
+  const scanLocationReferences = useMemo(() => {
+    const loc = scanLocation.trim();
+    if (!loc) return [];
+    return [...new Set(lines.filter((l) => String(l.location || '').trim() === loc).map((l) => l.reference))].sort();
+  }, [lines, scanLocation]);
 
   const scanLocationPriorCount = useMemo(() => {
     const loc = scanLocation.trim();
@@ -1176,6 +1194,17 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       }
       const scanSize = found.data.size ?? '';
       const sizeLabel = scanSize ? ` talla ${scanSize}` : '';
+      if (!matchesScanRefFilter(found.data.reference)) {
+        pushScanEvent({
+          barcode,
+          reference: found.data.reference,
+          size: scanSize || undefined,
+          location: scanLocation,
+          status: 'filtered_out',
+          message: `${found.data.reference}${sizeLabel} no corresponde al filtro "${scanRefFilter.trim()}". No se contó; quite el filtro para contarla.`,
+        });
+        return;
+      }
       const lineKey = refLocSizeKey(found.data.reference, scanSize, scanLocation);
       const line = linesByRefLocSize.get(lineKey);
       const correctLocations = [
@@ -1252,21 +1281,25 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     }
     const isCounted = (r: ScanRowView) => r.line.countedQty !== null && r.line.countedQty !== undefined;
     const scanned = scanRows.filter((r) => r.scannedQty > 0);
+    // Con filtro de referencia, "cerrar" solo deja en 0 lo pendiente de las referencias filtradas.
+    const closeScope = visibleScanRows;
     const neverCountedZeros =
-      mode === 'cerrar' ? scanRows.filter((r) => !r.isExtraneous && r.scannedQty === 0 && !isCounted(r)) : [];
+      mode === 'cerrar' ? closeScope.filter((r) => !r.isExtraneous && r.scannedQty === 0 && !isCounted(r)) : [];
     const targets = [...scanned, ...neverCountedZeros];
     if (targets.length === 0) {
       toast({
         title: 'Escaneo',
         description:
           mode === 'cerrar'
-            ? 'No hay escaneos ni líneas pendientes por cerrar en esta ubicación.'
+            ? scanRefFilterNorm
+              ? `No hay escaneos ni líneas pendientes por cerrar para "${scanRefFilter.trim()}" en esta ubicación.`
+              : 'No hay escaneos ni líneas pendientes por cerrar en esta ubicación.'
             : 'No hay conteos escaneados para guardar.',
       });
       return;
     }
     const replaced = scanned.filter(isCounted).length;
-    const keptCounted = scanRows.filter((r) => !r.isExtraneous && r.scannedQty === 0 && isCounted(r)).length;
+    const keptCounted = closeScope.filter((r) => !r.isExtraneous && r.scannedQty === 0 && isCounted(r)).length;
     const warnings: string[] = [];
     if (replaced > 0) {
       warnings.push(`${replaced} referencia(s) ya tenían conteo hoy: este conteo las reemplaza y queda como final.`);
@@ -2052,6 +2085,28 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   </datalist>
                 </div>
                 <div className="space-y-2">
+                  <Label>Referencia (opcional)</Label>
+                  <div className="flex items-center gap-1">
+                    <Input
+                      list="cyclic-scan-refs"
+                      value={scanRefFilter}
+                      onChange={(e) => setScanRefFilter(e.target.value)}
+                      placeholder="Todas"
+                      className="w-44 font-mono"
+                    />
+                    {scanRefFilter ? (
+                      <Button type="button" variant="ghost" size="sm" onClick={() => setScanRefFilter('')}>
+                        Quitar
+                      </Button>
+                    ) : null}
+                  </div>
+                  <datalist id="cyclic-scan-refs">
+                    {scanLocationReferences.map((ref) => (
+                      <option key={ref} value={ref} />
+                    ))}
+                  </datalist>
+                </div>
+                <div className="space-y-2">
                   <Label>Código de barras</Label>
                   <div className="flex items-center gap-2">
                     <Input
@@ -2091,23 +2146,31 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   onClick={() => void handleSaveScannedRecount('cerrar')}
                   disabled={savingScanCounts}
                 >
-                  Cerrar ubicación (pendientes en 0)
+                  {scanRefFilterNorm ? 'Cerrar referencia (pendientes en 0)' : 'Cerrar ubicación (pendientes en 0)'}
                 </Button>
               </div>
+
+              {scanRefFilterNorm ? (
+                <p className="text-xs text-amber-700">
+                  Filtro activo: solo se cuentan lecturas de referencias que contienen &quot;{scanRefFilter.trim()}&quot;
+                  (otras suenan con alerta y no se suman). &quot;Cerrar referencia&quot; solo deja en 0 lo pendiente de lo
+                  filtrado; el resto de la ubicación no se toca.
+                </p>
+              ) : null}
 
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                 <div className="rounded-md border p-3">
                   <p className="text-xs text-muted-foreground">Líneas escaneadas (ref + talla en ubicación)</p>
-                  <p className="text-2xl font-semibold">{scanRows.filter((r) => r.scannedQty > 0).length}</p>
+                  <p className="text-2xl font-semibold">{visibleScanRows.filter((r) => r.scannedQty > 0).length}</p>
                 </div>
                 <div className="rounded-md border p-3">
                   <p className="text-xs text-muted-foreground">Escaneos totales de sesión</p>
-                  <p className="text-2xl font-semibold">{scanRows.reduce((sum, r) => sum + r.scannedQty, 0)}</p>
+                  <p className="text-2xl font-semibold">{visibleScanRows.reduce((sum, r) => sum + r.scannedQty, 0)}</p>
                 </div>
                 <div className="rounded-md border p-3 md:col-span-2">
                   <p className="text-xs text-muted-foreground">Unidades sobrantes en sesión (delta positivo)</p>
                   <p className="text-2xl font-semibold text-amber-600">
-                    {scanRows.reduce((sum, r) => sum + Math.max(0, r.diff), 0)}
+                    {visibleScanRows.reduce((sum, r) => sum + Math.max(0, r.diff), 0)}
                   </p>
                 </div>
               </div>
@@ -2126,14 +2189,16 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {scanRows.length === 0 ? (
+                    {visibleScanRows.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
-                          Seleccione ubicación para empezar el escaneo.
+                          {scanRows.length > 0 && scanRefFilterNorm
+                            ? `No hay líneas de "${scanRefFilter.trim()}" en esta ubicación.`
+                            : 'Seleccione ubicación para empezar el escaneo.'}
                         </TableCell>
                       </TableRow>
                     ) : (
-                      scanRows.map((row) => (
+                      visibleScanRows.map((row) => (
                         <TableRow key={row.key} className={row.isExtraneous ? 'bg-amber-50/60' : undefined}>
                           <TableCell className="font-mono text-sm">
                             <div className="flex flex-col gap-1">
@@ -2194,6 +2259,8 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                             </Badge>
                           ) : ev.status === 'not_in_location' ? (
                             <Badge variant="warning">Fuera ubicación</Badge>
+                          ) : ev.status === 'filtered_out' ? (
+                            <Badge variant="destructive">Otra referencia</Badge>
                           ) : (
                             <Badge variant="secondary">No esperado</Badge>
                           )}
