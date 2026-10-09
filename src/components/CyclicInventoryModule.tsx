@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { AlertTriangle, ArrowLeft, Barcode, ClipboardList, FileDown, FileSearch, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Barcode, ClipboardList, FileDown, FileSearch, Loader2, RefreshCw, Trash2, Undo2, Upload } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -32,6 +32,7 @@ import {
   resolveCyclicInventoryBarcode,
   saveCyclicInventoryLineCount,
   saveCyclicInventoryLocationRecount,
+  clearCyclicInventoryLineCount,
 } from '@/app/cyclicInventoryActions';
 
 type InventoryLineView = CyclicInventoryLine & {
@@ -83,7 +84,7 @@ type LocationRecountRecommendation = {
 };
 
 function refLocSizeKey(reference: string, size: string, location: string): string {
-  return `${String(reference || '').trim().toUpperCase()}|${String(size || '').trim()}|${String(location || '').trim()}`;
+  return `${String(reference || '').trim().toUpperCase()}|${String(size || '').trim()}|${String(location || '').trim().toUpperCase()}`;
 }
 
 function parseRefLocSizeKey(key: string): { reference: string; size: string; location: string } | null {
@@ -152,6 +153,9 @@ type ScanEvent = {
   correctLocations?: string[];
   status: ScanEventStatus;
   message: string;
+  /** Línea a la que sumó +1 (para deshacer). */
+  countedKey?: string;
+  undone?: boolean;
 };
 
 type ScanRowView = {
@@ -708,7 +712,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       } catch {
         lastLoc = '';
       }
-      setScanLocation(lastLoc || availableLocations[0]);
+      setScanLocation((lastLoc || availableLocations[0]).trim().toUpperCase());
     }
   }, [availableLocations, scanLocation, user?.uid, inventoryDate]);
 
@@ -1229,6 +1233,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
         const hasReferenceAnywhere = lines.some((x) => x.reference === found.data.reference);
         setScanSessionCounts((prev) => ({ ...prev, [lineKey]: (prev[lineKey] ?? 0) + 1 }));
         pushScanEvent({
+          countedKey: lineKey,
           barcode,
           reference: found.data.reference,
           size: scanSize || undefined,
@@ -1253,6 +1258,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       }
       setScanSessionCounts((prev) => ({ ...prev, [lineKey]: (prev[lineKey] ?? 0) + 1 }));
       pushScanEvent({
+        countedKey: lineKey,
         barcode,
         reference: found.data.reference,
         size: scanSize || undefined,
@@ -1270,6 +1276,92 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     } finally {
       setResolvingScan(false);
       setScanBarcode('');
+    }
+  };
+
+  /** Resta escaneos de la sesión (no toca lo ya guardado). Marca como deshechos los últimos eventos de esa línea. */
+  const removeSessionScans = (key: string, qty: number) => {
+    if (qty <= 0) return;
+    setScanSessionCounts((prev) => {
+      const next = { ...prev };
+      const left = (next[key] ?? 0) - qty;
+      if (left > 0) next[key] = left;
+      else delete next[key];
+      return next;
+    });
+    setScanEvents((prev) => {
+      let pending = qty;
+      return prev.map((ev) => {
+        if (pending > 0 && ev.countedKey === key && !ev.undone) {
+          pending--;
+          return { ...ev, undone: true };
+        }
+        return ev;
+      });
+    });
+  };
+
+  const handleUndoLastScan = () => {
+    const last = scanEvents.find((ev) => ev.countedKey && !ev.undone);
+    if (!last?.countedKey) {
+      toast({ title: 'Escaneo', description: 'No hay escaneos para deshacer.' });
+      return;
+    }
+    removeSessionScans(last.countedKey, 1);
+    toast({
+      title: 'Escaneo deshecho',
+      description: `${last.reference || ''}${last.size ? ` talla ${last.size}` : ''} −1`,
+    });
+  };
+
+  const handleClearScanRow = (row: ScanRowView) => {
+    if (row.scannedQty <= 0) return;
+    const label = `${row.line.reference}${row.line.size ? ` talla ${row.line.size}` : ''}`;
+    if (!window.confirm(`¿Borrar los ${row.scannedQty} escaneo(s) de ${label} en esta sesión?`)) return;
+    removeSessionScans(row.key, row.scannedQty);
+  };
+
+  const handleClearScanSession = () => {
+    const total = scanRows.reduce((s, r) => s + r.scannedQty, 0);
+    if (total === 0) return;
+    if (!window.confirm(`¿Borrar los ${total} escaneo(s) sin guardar de ${scanLocation}? Lo ya guardado no se toca.`)) return;
+    setScanSessionCounts({});
+    setScanEvents([]);
+  };
+
+  const handleClearSavedCount = async (row: ScanRowView) => {
+    if (!user?.uid || !canAdmin) return;
+    const lineIds = row.line.consolidatedLineIds?.length
+      ? row.line.consolidatedLineIds
+      : row.line.id && !row.line.id.startsWith('pending-')
+        ? [row.line.id]
+        : [];
+    if (lineIds.length === 0) return;
+    const label = `${row.line.reference}${row.line.size ? ` talla ${row.line.size}` : ''} en ${row.line.location}`;
+    const reason = window.prompt(
+      `Borrar el conteo guardado hoy (${row.line.countedQty}) de ${label}. Queda como "sin contar".\n\nMotivo:`
+    );
+    if (reason === null) return;
+    setSavingScanCounts(true);
+    try {
+      const res = await clearCyclicInventoryLineCount({
+        inventoryDate,
+        lineIds,
+        clearedBy: user.uid,
+        clearedByName: user.displayName || user.email || '',
+        reason,
+      });
+      if (!res.success) throw new Error(res.error);
+      toast({ title: 'Conteo borrado', description: `${label} quedó sin contar.` });
+      await loadLines();
+    } catch (e: unknown) {
+      toast({
+        variant: 'destructive',
+        title: 'Conteo',
+        description: e instanceof Error ? e.message : 'No se pudo borrar el conteo.',
+      });
+    } finally {
+      setSavingScanCounts(false);
     }
   };
 
@@ -2074,7 +2166,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   <Input
                     list="cyclic-locations"
                     value={scanLocation}
-                    onChange={(e) => setScanLocation(e.target.value)}
+                    onChange={(e) => setScanLocation(e.target.value.toUpperCase())}
                     placeholder="Seleccione o escriba ubicación"
                     className="w-56"
                   />
@@ -2148,6 +2240,25 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                 >
                   {scanRefFilterNorm ? 'Cerrar referencia (pendientes en 0)' : 'Cerrar ubicación (pendientes en 0)'}
                 </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleUndoLastScan}
+                  disabled={savingScanCounts || !scanEvents.some((ev) => ev.countedKey && !ev.undone)}
+                >
+                  <Undo2 className="mr-2 h-4 w-4" />
+                  Deshacer último scan
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="text-red-600 hover:text-red-700"
+                  onClick={handleClearScanSession}
+                  disabled={savingScanCounts || scanRows.every((r) => r.scannedQty === 0)}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Borrar escaneos sin guardar
+                </Button>
               </div>
 
               {scanRefFilterNorm ? (
@@ -2186,12 +2297,13 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                       <TableHead className="text-right">Conteo guardado hoy</TableHead>
                       <TableHead className="text-right">Escaneada sesión</TableHead>
                       <TableHead className="text-right">Delta sesión</TableHead>
+                      <TableHead className="text-right">Corregir</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {visibleScanRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
+                        <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
                           {scanRows.length > 0 && scanRefFilterNorm
                             ? `No hay líneas de "${scanRefFilter.trim()}" en esta ubicación.`
                             : 'Seleccione ubicación para empezar el escaneo.'}
@@ -2225,6 +2337,50 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                           <TableCell className={`text-right font-medium ${row.diff < 0 ? 'text-red-600' : row.diff > 0 ? 'text-amber-600' : ''}`}>
                             {row.diff > 0 ? `+${row.diff}` : row.diff}
                           </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-1">
+                              {row.scannedQty > 0 ? (
+                                <>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-2"
+                                    title="Restar 1 escaneo de la sesión"
+                                    onClick={() => removeSessionScans(row.key, 1)}
+                                  >
+                                    −1
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-7 px-2 text-red-600"
+                                    title="Borrar los escaneos de esta línea en la sesión"
+                                    onClick={() => handleClearScanRow(row)}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                </>
+                              ) : null}
+                              {canAdmin &&
+                              !row.isExtraneous &&
+                              row.line.countedQty !== null &&
+                              row.line.countedQty !== undefined ? (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 px-2 text-xs text-red-700"
+                                  title="Borrar el conteo ya guardado hoy (queda sin contar)"
+                                  disabled={savingScanCounts}
+                                  onClick={() => void handleClearSavedCount(row)}
+                                >
+                                  Borrar guardado
+                                </Button>
+                              ) : null}
+                            </div>
+                          </TableCell>
                         </TableRow>
                       ))
                     )}
@@ -2239,7 +2395,10 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                 ) : (
                   <div className="space-y-2 max-h-[28vh] overflow-y-auto">
                     {scanEvents.map((ev) => (
-                      <div key={ev.id} className="flex items-center justify-between gap-3 rounded border px-3 py-2">
+                      <div
+                        key={ev.id}
+                        className={`flex items-center justify-between gap-3 rounded border px-3 py-2 ${ev.undone ? 'opacity-50 line-through' : ''}`}
+                      >
                         <div className="min-w-0">
                           <p className="text-xs font-mono truncate">
                             {ev.barcode}{' '}
@@ -2250,7 +2409,9 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                           <p className="text-xs text-muted-foreground truncate">{ev.message}</p>
                         </div>
                         <div className="flex items-center gap-2">
-                          {ev.status === 'ok' ? (
+                          {ev.undone ? (
+                            <Badge variant="outline" className="text-muted-foreground">Deshecho</Badge>
+                          ) : ev.status === 'ok' ? (
                             <Badge variant="success">OK</Badge>
                           ) : ev.status === 'uncataloged' ? (
                             <Badge variant="destructive">

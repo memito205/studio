@@ -2931,7 +2931,9 @@ function talladoCyclicNormRef(s: string): string {
 }
 
 function talladoCyclicNormLoc(s: string): string {
-  return String(s || '').trim();
+  return String(s || '')
+    .trim()
+    .toUpperCase();
 }
 
 function talladoCyclicRefLocKey(reference: string, location: string): string {
@@ -2961,7 +2963,7 @@ function aggregateCyclicLinesByRefLoc(
   >();
   for (const line of lines) {
     const reference = String(line.reference || '').trim();
-    const location = String(line.location || '').trim();
+    const location = talladoCyclicNormLoc(line.location);
     if (!reference) continue;
     const key = talladoCyclicRefLocKey(reference, location);
     const ids = [

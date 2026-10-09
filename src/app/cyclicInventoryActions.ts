@@ -44,6 +44,7 @@ const DELETE_CHUNK = 450;
 const LINES_COL = 'cyclicInventoryLines';
 const DAYS_COL = 'cyclicInventoryDays';
 const COUNT_RECORDS_COL = 'cyclicInventoryCountRecords';
+const COUNT_CLEARS_COL = 'cyclicInventoryCountClears';
 const ADJUSTMENTS_COL = 'inventoryAdjustments';
 const RELIABILITY_SNAPSHOTS_COL = 'cyclicInventoryReliabilitySnapshots';
 
@@ -63,8 +64,11 @@ function normRef(s: string) {
     .trim()
     .toUpperCase();
 }
+/** Ubicaciones siempre en mayúsculas: "2c4M1n2" y "2C4M1N2" son la misma. */
 function normLoc(s: string) {
-  return String(s || '').trim();
+  return String(s || '')
+    .trim()
+    .toUpperCase();
 }
 function normSize(s: string) {
   return String(s || '').trim();
@@ -443,6 +447,7 @@ function consolidateLinesByRefLocSize(raw: CyclicInventoryLine[]): CyclicInvento
       sortedLines.map((l) => String(l.marca || '').trim()).find((m) => !!m) || primary.marca || '';
     out.push({
       ...primary,
+      location: normLoc(primary.location),
       marca,
       expectedQty: sumExpected,
       countedQty: bestQty,
@@ -700,6 +705,63 @@ export async function saveCyclicInventoryLocationRecount(input: {
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Error al guardar el reconteo.';
     return { success: false, error: msg };
+  }
+}
+
+/**
+ * Borra el conteo guardado del día de una ref + talla + ubicación: la línea vuelve a "sin contar" y se eliminan
+ * sus registros de conteo (incluye los guardados con la ubicación en otra capitalización). Deja log en COUNT_CLEARS_COL.
+ */
+export async function clearCyclicInventoryLineCount(input: {
+  inventoryDate: string;
+  lineIds: string[];
+  clearedBy: string;
+  clearedByName?: string;
+  reason?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const inv = String(input.inventoryDate || '').trim();
+    if (!isValidInventoryDateKey(inv)) return { success: false, error: 'Fecha inválida.' };
+    const ids = [...new Set((input.lineIds || []).map((x) => String(x).trim()).filter(Boolean))];
+    if (ids.length === 0) return { success: false, error: 'Línea no identificada.' };
+    const snaps = await Promise.all(ids.map((id) => getDoc(doc(firestore, LINES_COL, id))));
+    const first = snaps.find((s) => s.exists())?.data();
+    if (!first) return { success: false, error: 'Línea no encontrada. Recargue líneas.' };
+    const ref = normRef(String(first.reference ?? ''));
+    const size = normSize(String(first.size ?? ''));
+    const loc = normLoc(String(first.location ?? ''));
+    const key = lineRefLocSizeKey(ref, size, loc);
+
+    const records = await getDocs(
+      query(collection(firestore, COUNT_RECORDS_COL), where('inventoryDate', '==', inv), where('reference', '==', ref))
+    );
+    const toDelete = records.docs.filter(
+      (d) => lineRefLocSizeKey(String(d.data().reference ?? ''), String(d.data().size ?? ''), String(d.data().location ?? '')) === key
+    );
+    const previousQty = snaps.map((s) => s.data()?.countedQty).find((q) => q !== null && q !== undefined) ?? null;
+
+    const batch = writeBatch(firestore);
+    snaps.forEach((s) => {
+      if (s.exists()) batch.update(s.ref, { countedQty: null, countedAt: null, countedBy: null });
+    });
+    toDelete.forEach((d) => batch.delete(d.ref));
+    batch.set(doc(collection(firestore, COUNT_CLEARS_COL)), {
+      inventoryDate: inv,
+      reference: ref,
+      size,
+      location: loc,
+      previousQty,
+      lineIds: ids,
+      deletedRecords: toDelete.length,
+      clearedBy: input.clearedBy,
+      clearedByName: (input.clearedByName || '').trim(),
+      reason: (input.reason || '').trim(),
+      clearedAt: Timestamp.now(),
+    });
+    await batch.commit();
+    return { success: true };
+  } catch (e: unknown) {
+    return { success: false, error: e instanceof Error ? e.message : 'No se pudo borrar el conteo.' };
   }
 }
 
