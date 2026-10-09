@@ -115,17 +115,17 @@ const WarehouseAnalyzer: React.FC = () => {
   }, [baseIdsKey]);
 
   /** Rutas abiertas, Recibido en Bodega, Recolectado en Ruta y Novedad de Entrega desde el aplicativo. */
-  const loadAppStatuses = React.useCallback(async () => {
+  const loadAppStatuses = React.useCallback(async (force = false) => {
     setIsAppStatusLoading(true);
     try {
-      const res = await getAnalyzerAppStatusKeys();
+      const res = await getAnalyzerAppStatusKeys({ force });
       if (!res.data) throw new Error(res.error || 'No se pudieron leer los estados del aplicativo.');
       const routes = buildAppRouteMap(res.data.enRuta);
       setRouteData(routes);
       setReceivedInWarehouseKeys(res.data.received);
       setCollectedOnRouteKeys(res.data.collected);
       setNovedadKeys(res.data.novedad);
-      setAppStatusAt(new Date());
+      setAppStatusAt(new Date(res.data.at));
       return { ...res.data, routes };
     } finally {
       setIsAppStatusLoading(false);
@@ -153,7 +153,7 @@ const WarehouseAnalyzer: React.FC = () => {
 
       setIsPublishingPlatform(true);
       try {
-        // Siempre con los estados del aplicativo al momento de publicar.
+        // Estados del aplicativo con antigüedad máxima de 10 min (caché compartida).
         const app = await loadAppStatuses();
 
         const records = buildTfPlatformStatusRecords(
@@ -856,7 +856,7 @@ const WarehouseAnalyzer: React.FC = () => {
           <section className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-emerald-500">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-3 border-b pb-3">
               <h2 className="text-2xl font-bold text-gray-800">Paso 2: Estados del aplicativo (automático)</h2>
-              <Button type="button" variant="outline" size="sm" onClick={() => void loadAppStatuses().catch((e) => setError(e.message))} disabled={isAppStatusLoading}>
+              <Button type="button" variant="outline" size="sm" onClick={() => void loadAppStatuses(true).catch((e) => setError(e.message))} disabled={isAppStatusLoading}>
                 <RefreshCw className={`w-4 h-4 mr-2 ${isAppStatusLoading ? 'animate-spin' : ''}`} />
                 Refrescar estados
               </Button>

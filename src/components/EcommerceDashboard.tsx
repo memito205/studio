@@ -658,13 +658,22 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
         }
 
         const indexEntries = candidates.map((o) => [o.id, ecomOrderFingerprint(o)] as const);
+        let indexFailed = false;
         for (let i = 0; i < indexEntries.length; i += 5000) {
-            await updateEcommerceOrderIndex(Object.fromEntries(indexEntries.slice(i, i + 5000)));
+            const res = await updateEcommerceOrderIndex(Object.fromEntries(indexEntries.slice(i, i + 5000)));
+            if (!res.success) indexFailed = true;
+        }
+        if (indexFailed) {
+            toast({
+                variant: 'destructive',
+                title: 'Índice de pedidos',
+                description: 'No se pudo actualizar el índice: la próxima carga volverá a leer todos los pedidos.',
+            });
         }
 
         toast({
             title: 'Sincronización Exitosa',
-            description: `${totalProcessed} pedidos fueron procesados correctamente. Generando análisis...`
+            description: `${candidates.length} de ${parsedOrders.length} pedidos con cambios; ${totalProcessed} guardados. Generando análisis...`
         });
         setNewFileLoaded(true);
 

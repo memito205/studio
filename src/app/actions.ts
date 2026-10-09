@@ -4590,12 +4590,35 @@ async function getTfKeysByTransferStatus(status: TransferStatus): Promise<string
     return Array.from(keys);
 }
 
-/** Estados del aplicativo que usa el Analizador: en ruta (relaciones abiertas), en bodega, recolectado y novedad. */
-export async function getAnalyzerAppStatusKeys(): Promise<{
-    data?: { enRuta: OpenRouteTf[]; received: string[]; collected: string[]; novedad: string[] };
+const ANALYZER_APP_STATUS_CACHE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Estados del aplicativo que usa el Analizador: en ruta (relaciones abiertas), en bodega, recolectado y novedad.
+ * Caché compartida en `systemCache/analyzerAppStatus` (10 min) para que varias cargas/publicaciones lean 1 doc;
+ * `force` recalcula (botón "Refrescar estados").
+ */
+export async function getAnalyzerAppStatusKeys(options?: { force?: boolean }): Promise<{
+    data?: { enRuta: OpenRouteTf[]; received: string[]; collected: string[]; novedad: string[]; at: string };
     error?: string;
 }> {
     try {
+        const cacheRef = doc(firestore, 'systemCache', 'analyzerAppStatus');
+        if (!options?.force) {
+            const cached = await getDoc(cacheRef);
+            const c = cached.exists() ? (cached.data() as any) : null;
+            const atMs = c?.at?.toMillis?.() ?? 0;
+            if (c && Date.now() - atMs < ANALYZER_APP_STATUS_CACHE_TTL_MS) {
+                return {
+                    data: {
+                        enRuta: Array.isArray(c.enRuta) ? c.enRuta : [],
+                        received: Array.isArray(c.received) ? c.received : [],
+                        collected: Array.isArray(c.collected) ? c.collected : [],
+                        novedad: Array.isArray(c.novedad) ? c.novedad : [],
+                        at: new Date(atMs).toISOString(),
+                    },
+                };
+            }
+        }
         const [routes, received, collected, novedad] = await Promise.all([
             getOpenRouteTfs(),
             getTfKeysByTransferStatus('Recibido en Bodega'),
@@ -4603,7 +4626,10 @@ export async function getAnalyzerAppStatusKeys(): Promise<{
             getTfKeysByTransferStatus('Novedad de Entrega'),
         ]);
         if (routes.error) throw new Error(routes.error);
-        return { data: { enRuta: routes.data || [], received, collected, novedad } };
+        const enRuta = JSON.parse(JSON.stringify(routes.data || [])) as OpenRouteTf[];
+        const at = Timestamp.now();
+        await setDoc(cacheRef, { enRuta, received, collected, novedad, at }).catch(() => undefined);
+        return { data: { enRuta, received, collected, novedad, at: at.toDate().toISOString() } };
     } catch (error: any) {
         console.error('Error getAnalyzerAppStatusKeys:', error);
         return { error: error.message };
@@ -6883,9 +6909,13 @@ export async function saveVerificationSession(sessionData: Omit<SavedVerificatio
   }
 }
 
-export async function loadVerificationSessions(): Promise<{ success: boolean; data?: SavedVerification[]; error?: string }> {
+/** `sinceDays` acota por createdAt (sin él trae todo el historial). */
+export async function loadVerificationSessions(options?: { sinceDays?: number }): Promise<{ success: boolean; data?: SavedVerification[]; error?: string }> {
     try {
-        const q = query(collection(firestore, "verificationSessions"), orderBy("createdAt", "desc"));
+        const col = collection(firestore, "verificationSessions");
+        const q = options?.sinceDays
+            ? query(col, where("createdAt", ">=", Timestamp.fromMillis(Date.now() - options.sinceDays * 86400000)), orderBy("createdAt", "desc"))
+            : query(col, orderBy("createdAt", "desc"));
         const querySnapshot = await getDocs(q);
         const sessions = querySnapshot.docs.map(doc => {
             return convertTimestampsToDates({ id: doc.id, ...doc.data() }) as SavedVerification;

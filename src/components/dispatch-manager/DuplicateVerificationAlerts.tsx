@@ -43,14 +43,16 @@ export default function DuplicateVerificationAlerts() {
   const [expandedTfs, setExpandedTfs] = useState<Set<string>>(new Set());
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
 
+  const loadDays = datePreset !== 'all' && !startDate && !endDate ? Number(datePreset) : undefined;
+
   const fetchSessions = useCallback(async () => {
     setIsLoading(true);
     setError(null);
-    const { data, error: err } = await loadVerificationSessions();
+    const { data, error: err } = await loadVerificationSessions(loadDays ? { sinceDays: loadDays } : undefined);
     if (err) setError(err);
     else setSessions(data || []);
     setIsLoading(false);
-  }, []);
+  }, [loadDays]);
 
   useEffect(() => {
     void fetchSessions();

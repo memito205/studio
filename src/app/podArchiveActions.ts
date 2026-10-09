@@ -220,7 +220,16 @@ export async function getPodArchiveMonth(
   try {
     const stops = await loadPodStops();
     const photos = stops.flatMap(photosOfStop).filter((p) => monthOfPath(p.path) === month);
-    const legacySnap = await getDocs(collection(firestore, QUICK_LEGACY_COLLECTION));
+    const [y, mo] = month.split('-').map(Number);
+    const from = new Date(Date.UTC(y, mo - 1, 1) - 86400000);
+    const to = new Date(Date.UTC(y, mo, 1) + 86400000);
+    const legacySnap = await getDocs(
+      query(
+        collection(firestore, QUICK_LEGACY_COLLECTION),
+        where('fechaFinalizado', '>=', Timestamp.fromDate(from)),
+        where('fechaFinalizado', '<', Timestamp.fromDate(to))
+      )
+    );
     const quick: ArchiveQuick[] = [];
     legacySnap.forEach((d) => {
       const r = d.data() as any;

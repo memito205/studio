@@ -1023,7 +1023,7 @@ export default function VerificationModule() {
 
   const fetchSessions = useCallback(async () => {
     setIsLoading(true);
-    const { data, error } = await loadVerificationSessions();
+    const { data, error } = await loadVerificationSessions({ sinceDays: 60 });
     if (error) alert(`Error al cargar sesiones: ${error}`);
     else setSessions(data || []);
     setIsLoading(false);

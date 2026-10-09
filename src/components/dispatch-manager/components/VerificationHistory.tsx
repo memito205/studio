@@ -167,9 +167,11 @@ const VerificationHistory: React.FC = () => {
     const [selectedSession, setSelectedSession] = useState<SavedVerification | null>(null);
     const [exportingPdfId, setExportingPdfId] = useState<string | null>(null);
 
-    const fetchSessions = async () => {
+    const [fullHistory, setFullHistory] = useState(false);
+
+    const fetchSessions = async (all = fullHistory) => {
         setIsLoading(true);
-        const { data, error } = await loadVerificationSessions();
+        const { data, error } = await loadVerificationSessions(all ? undefined : { sinceDays: 60 });
         if (error) {
             toast({ variant: 'destructive', title: 'Error', description: `Error al cargar el historial: ${error}`});
         } else {
@@ -260,7 +262,26 @@ const VerificationHistory: React.FC = () => {
             />
             <CardHeader>
                 <CardTitle>Historial de Verificaciones</CardTitle>
-                <CardDescription>Busca, revisa o elimina sesiones de verificación guardadas.</CardDescription>
+                <CardDescription>
+                    Busca, revisa o elimina sesiones de verificación guardadas.{' '}
+                    {fullHistory ? 'Mostrando todo el historial.' : 'Mostrando los últimos 60 días.'}
+                </CardDescription>
+                {!fullHistory ? (
+                    <div>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={isLoading}
+                            onClick={() => {
+                                setFullHistory(true);
+                                void fetchSessions(true);
+                            }}
+                        >
+                            Ver todo el historial
+                        </Button>
+                    </div>
+                ) : null}
             </CardHeader>
             <CardContent>
                 <div className="relative mb-4">
