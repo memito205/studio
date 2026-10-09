@@ -1242,26 +1242,38 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     }
   };
 
-  const handleSaveScannedRecount = async () => {
+  const handleSaveScannedRecount = async (mode: 'avance' | 'cerrar') => {
     if (!user?.uid) return;
     if (!scanLocation) {
       toast({ variant: 'destructive', title: 'Escaneo', description: 'Seleccione ubicación.' });
       return;
     }
-    const targets = scanRows.filter((r) => !r.isExtraneous || r.scannedQty > 0);
-    if (!scanRows.some((r) => r.scannedQty > 0)) {
-      toast({ title: 'Escaneo', description: 'No hay conteos escaneados para guardar.' });
+    const isCounted = (r: ScanRowView) => r.line.countedQty !== null && r.line.countedQty !== undefined;
+    const scanned = scanRows.filter((r) => r.scannedQty > 0);
+    const neverCountedZeros =
+      mode === 'cerrar' ? scanRows.filter((r) => !r.isExtraneous && r.scannedQty === 0 && !isCounted(r)) : [];
+    const targets = [...scanned, ...neverCountedZeros];
+    if (targets.length === 0) {
+      toast({
+        title: 'Escaneo',
+        description:
+          mode === 'cerrar'
+            ? 'No hay escaneos ni líneas pendientes por cerrar en esta ubicación.'
+            : 'No hay conteos escaneados para guardar.',
+      });
       return;
     }
-    const zeroLines = targets.filter((r) => r.scannedQty === 0).length;
+    const replaced = scanned.filter(isCounted).length;
+    const keptCounted = scanRows.filter((r) => !r.isExtraneous && r.scannedQty === 0 && isCounted(r)).length;
     const warnings: string[] = [];
-    if (scanLocationPriorCount) {
-      warnings.push(
-        `La ubicación ${scanLocation} ya tiene conteo guardado para ${inventoryDate}. Este reconteo REEMPLAZA el anterior y queda como conteo final.`
-      );
+    if (replaced > 0) {
+      warnings.push(`${replaced} referencia(s) ya tenían conteo hoy: este conteo las reemplaza y queda como final.`);
     }
-    if (zeroLines > 0) {
-      warnings.push(`${zeroLines} línea(s) de la ubicación no se escanearon y quedarán contadas en 0.`);
+    if (neverCountedZeros.length > 0) {
+      warnings.push(`${neverCountedZeros.length} referencia(s) nunca contadas hoy quedarán en 0 (faltante).`);
+    }
+    if (mode === 'cerrar' && keptCounted > 0) {
+      warnings.push(`${keptCounted} referencia(s) contadas antes y no escaneadas ahora conservan su conteo.`);
     }
     if (warnings.length > 0 && !window.confirm(`${warnings.join('\n\n')}\n\n¿Desea guardar?`)) return;
 
@@ -1998,8 +2010,9 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
               <CardTitle>Escaneo de reconteo por ubicación</CardTitle>
               <CardDescription>
                 Escanee códigos de barras: cada lectura suma +1 a la combinación referencia + talla (del catálogo) + ubicación
-                seleccionada. Solo se guarda en inventario cuando pulse <strong> Guardar reconteo escaneado</strong>. El
-                avance queda guardado en este equipo aunque cambie de pestaña o salga del módulo. Cada ubicación tiene un solo
+                seleccionada. El avance queda en este equipo aunque cambie de pestaña o salga del módulo.{' '}
+                <strong>Guardar avance</strong> guarda solo lo escaneado (lo demás no se toca);{' '}
+                <strong>Cerrar ubicación</strong> además deja en 0 lo que nunca se contó hoy. Cada referencia tiene un solo
                 conteo por día: si se recuenta, el último guardado reemplaza al anterior.
               </CardDescription>
             </CardHeader>
@@ -2012,7 +2025,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                     {scanLocationPriorCount.lastAt
                       ? `, último guardado ${scanLocationPriorCount.lastAt.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`
                       : ''}
-                    ). Si guarda este reconteo, reemplaza al anterior y queda como conteo final.
+                    ). Lo que escanee reemplaza el conteo previo de esas referencias; lo no escaneado conserva su conteo.
                   </span>
                 </div>
               ) : null}
@@ -2066,9 +2079,17 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   <RefreshCw className={`mr-2 h-4 w-4 ${loadingLines || loadingPreviousLines ? 'animate-spin' : ''}`} />
                   Recargar líneas
                 </Button>
-                <Button type="button" onClick={() => void handleSaveScannedRecount()} disabled={savingScanCounts}>
+                <Button type="button" onClick={() => void handleSaveScannedRecount('avance')} disabled={savingScanCounts}>
                   {savingScanCounts ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  Guardar reconteo escaneado
+                  Guardar avance
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => void handleSaveScannedRecount('cerrar')}
+                  disabled={savingScanCounts}
+                >
+                  Cerrar ubicación (pendientes en 0)
                 </Button>
               </div>
 
@@ -2097,6 +2118,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                       <TableHead>Talla</TableHead>
                       <TableHead>Ubicación</TableHead>
                       <TableHead className="text-right">Esperada ajustada</TableHead>
+                      <TableHead className="text-right">Conteo guardado hoy</TableHead>
                       <TableHead className="text-right">Escaneada sesión</TableHead>
                       <TableHead className="text-right">Delta sesión</TableHead>
                     </TableRow>
@@ -2104,7 +2126,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                   <TableBody>
                     {scanRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                        <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
                           Seleccione ubicación para empezar el escaneo.
                         </TableCell>
                       </TableRow>
@@ -2129,6 +2151,9 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
                           <TableCell className="text-sm text-muted-foreground">{formatSize(row.line.size)}</TableCell>
                           <TableCell className="text-sm text-muted-foreground">{row.line.location || '—'}</TableCell>
                           <TableCell className="text-right">{row.line.expectedQty}</TableCell>
+                          <TableCell className="text-right text-muted-foreground">
+                            {row.line.countedQty === null || row.line.countedQty === undefined ? '—' : row.line.countedQty}
+                          </TableCell>
                           <TableCell className="text-right font-medium">{row.scannedQty}</TableCell>
                           <TableCell className={`text-right font-medium ${row.diff < 0 ? 'text-red-600' : row.diff > 0 ? 'text-amber-600' : ''}`}>
                             {row.diff > 0 ? `+${row.diff}` : row.diff}

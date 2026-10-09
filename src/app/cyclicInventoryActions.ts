@@ -611,8 +611,8 @@ export async function saveCyclicInventoryLineCount(input: {
 }
 
 /**
- * Guarda el reconteo completo de una ubicación (incluye ceros de lo no escaneado).
- * Reemplaza cualquier conteo previo del mismo día: el último guardado queda como final.
+ * Guarda en un lote los conteos de una ubicación. Solo toca las líneas recibidas;
+ * en cada una reemplaza el conteo previo del mismo día (el último guardado queda como final).
  */
 export async function saveCyclicInventoryLocationRecount(input: {
   inventoryDate: string;
