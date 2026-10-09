@@ -21,6 +21,7 @@ import { getManifestStopsDetail, getOpenDeliveryManifests, type StopWithTfs } fr
 import { getMyRouteTasks, type RouteTaskAction } from '@/app/routeTaskActions';
 import {
   compressImage,
+  describeQueueError,
   enqueueDelivery,
   listQueued,
   listQueuedRoute,
@@ -495,7 +496,7 @@ export const DriverDeliveriesModule: React.FC<{ onReturn: () => void }> = ({ onR
     listQueuedRoute().then(setQueuedRoute).catch(() => setQueuedRoute([]));
   }, []);
 
-  const sync = useCallback(async () => {
+  const sync = useCallback(async (manual = false) => {
     if (!user?.uid) return;
     setSyncing(true);
     const results = await processQueue(user.uid);
@@ -505,6 +506,14 @@ export const DriverDeliveriesModule: React.FC<{ onReturn: () => void }> = ({ onR
       if (r.ok) toast({ title: 'Entrega registrada', description: r.label });
       else if (r.conflict) toast({ variant: 'destructive', title: 'No se registró', description: `${r.label}: ${r.error}` });
     });
+    const failed = results.filter((r) => !r.ok && !r.conflict);
+    if (manual && failed.length > 0) {
+      toast({
+        variant: 'destructive',
+        title: `${failed.length} envío(s) no pasaron`,
+        description: describeQueueError(failed[0].error).text || 'Revise el detalle en el aviso amarillo.',
+      });
+    }
     if (results.some((r) => r.ok || r.conflict)) {
       void loadManifests();
       void loadRouteTasks();
@@ -585,15 +594,45 @@ export const DriverDeliveriesModule: React.FC<{ onReturn: () => void }> = ({ onR
     );
   }
 
+  const pendingItems = [...queued, ...queuedRoute].sort((a, b) => a.createdAt - b.createdAt);
+  const needsReload = pendingItems.some((q) => describeQueueError(q.lastError).needsReload);
   const queueBanner = pendingCount > 0 && (
-    <div className="flex items-center justify-between gap-2 rounded-md border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">
-      <span className="flex items-center gap-2">
-        <CloudOff className="h-4 w-4" />
-        {pendingCount} registro(s) guardado(s) en el celular sin enviar{!online ? ' (sin señal)' : ''}.
-      </span>
-      <Button size="sm" variant="outline" disabled={syncing} onClick={() => void sync()}>
-        {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Enviar ahora'}
-      </Button>
+    <div className="space-y-2 rounded-md border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-2">
+          <CloudOff className="h-4 w-4" />
+          {pendingCount} registro(s) guardado(s) en el celular sin enviar{!online ? ' (sin señal)' : ''}.
+        </span>
+        <div className="flex gap-2">
+          {needsReload ? (
+            <Button size="sm" onClick={() => window.location.reload()}>
+              Recargar app
+            </Button>
+          ) : null}
+          <Button size="sm" variant="outline" disabled={syncing} onClick={() => void sync(true)}>
+            {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Enviar ahora'}
+          </Button>
+        </div>
+      </div>
+      <ul className="space-y-1 text-xs">
+        {pendingItems.map((q) => {
+          const uploaded = q.photos.filter((p) => p.url).length;
+          const reason = describeQueueError(q.lastError).text;
+          return (
+            <li key={q.submissionId} className="rounded border border-amber-200 bg-white/60 px-2 py-1">
+              <span className="font-medium">{q.label}</span>
+              {' · '}guardado {format(new Date(q.createdAt), 'dd/MM HH:mm')}
+              {' · '}fotos {uploaded}/{q.photos.length}
+              {q.attempts ? ` · ${q.attempts} intento(s)` : ''}
+              {q.lastAttemptAt ? `, último ${format(new Date(q.lastAttemptAt), 'HH:mm')}` : ''}
+              {reason ? <span className="block text-red-700">Motivo: {reason}</span> : null}
+              {q.lastError && reason !== q.lastError ? (
+                <span className="block break-all text-[10px] text-muted-foreground">{q.lastError}</span>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 

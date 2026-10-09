@@ -22,6 +22,8 @@ export type QueuedDelivery = {
   photos: QueuedPhoto[];
   createdAt: number;
   lastError?: string;
+  lastAttemptAt?: number;
+  attempts?: number;
 };
 
 /** Registro de tareas de ruta (recoger / entregar / no recogida) pendiente de enviar. */
@@ -35,6 +37,8 @@ export type QueuedRouteSubmission = {
   photos: QueuedPhoto[];
   createdAt: number;
   lastError?: string;
+  lastAttemptAt?: number;
+  attempts?: number;
 };
 
 export type QueuedItem = QueuedDelivery | QueuedRouteSubmission;
@@ -94,6 +98,40 @@ export async function enqueueDelivery(r: QueuedItem) {
 
 let running: Promise<QueueResult[]> | null = null;
 
+const SUBMIT_TIMEOUT_MS = 90_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(message)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      }
+    );
+  });
+}
+
+/** Traduce errores técnicos a un motivo que el conductor / soporte entiendan. */
+export function describeQueueError(raw?: string): { text: string; needsReload?: boolean } {
+  const msg = String(raw || '');
+  if (!msg) return { text: '' };
+  if (/Server Action|Failed to find|unexpected response|ChunkLoadError|Loading chunk/i.test(msg)) {
+    return { text: 'La app se actualizó: recargue la página para enviar.', needsReload: true };
+  }
+  if (/storage\/unauthorized/i.test(msg)) return { text: 'Sin permiso para subir fotos (revise el rol del usuario o vuelva a iniciar sesión).' };
+  if (/storage\/unauthenticated|auth/i.test(msg)) return { text: 'Sesión vencida: cierre sesión y vuelva a entrar.' };
+  if (/storage\/retry-limit-exceeded|network|Failed to fetch|Sin conexión|timeout|Tiempo/i.test(msg)) {
+    return { text: 'Conexión inestable: se reintenta solo.' };
+  }
+  if (/storage\/quota/i.test(msg)) return { text: 'Almacenamiento lleno en el servidor: avise a soporte.' };
+  return { text: msg };
+}
+
 /** Sube fotos pendientes y registra cada entrega en cola. Seguro de llamar varias veces. */
 export function processQueue(uid: string): Promise<QueueResult[]> {
   if (running) return running;
@@ -101,7 +139,12 @@ export function processQueue(uid: string): Promise<QueueResult[]> {
     const results: QueueResult[] = [];
     const items = await listQueuedAll().catch(() => [] as QueuedItem[]);
     const storage = getStorage(app);
+    // Con wifi/datos inestables el SDK reintenta hasta 10 min por foto y bloquea la cola; mejor fallar y reintentar.
+    storage.maxUploadRetryTime = 60_000;
+    storage.maxOperationRetryTime = 60_000;
     for (const item of items.sort((a, b) => a.createdAt - b.createdAt)) {
+      item.lastAttemptAt = Date.now();
+      item.attempts = (item.attempts || 0) + 1;
       try {
         const folder = item.kind === 'route' ? `rt-${item.input.taskIds[0]}` : item.input.stopId;
         const manifest = item.kind === 'route' ? 'ruta' : item.input.manifestDocId;
@@ -110,18 +153,29 @@ export function processQueue(uid: string): Promise<QueueResult[]> {
           if (p.url) continue;
           const path = `entregas/${item.monthKey}/${item.storeKey}/${folder}/${item.submissionId}-${i + 1}.jpg`;
           const r = ref(storage, path);
-          await uploadBytes(r, p.blob, {
-            contentType: 'image/jpeg',
-            customMetadata: { uploadedBy: uid, category: p.category, manifest },
-          });
+          try {
+            await uploadBytes(r, p.blob, {
+              contentType: 'image/jpeg',
+              customMetadata: { uploadedBy: uid, category: p.category, manifest },
+            });
+          } catch (upErr: any) {
+            // Si un intento anterior sí subió la foto pero se perdió la respuesta, el reintento no puede
+            // sobrescribirla (regla update=false) y responde unauthorized: usar la que ya existe.
+            const existing = await getDownloadURL(r).catch(() => null);
+            if (!existing) throw upErr;
+          }
           p.path = path;
           p.url = await getDownloadURL(r);
           await putQueued(item);
         }
         const photos = item.photos.map((p) => ({ path: p.path!, url: p.url!, category: p.category }));
-        const res = item.kind === 'route'
-          ? await submitRouteTasks({ ...item.input, photos })
-          : await submitDeliveryStop({ ...item.input, photos });
+        const res = await withTimeout(
+          item.kind === 'route'
+            ? submitRouteTasks({ ...item.input, photos })
+            : submitDeliveryStop({ ...item.input, photos }),
+          SUBMIT_TIMEOUT_MS,
+          'Tiempo de espera agotado al registrar (timeout).'
+        );
         if (res.success || res.conflict) {
           await deleteQueued(item.submissionId);
           results.push({ submissionId: item.submissionId, label: item.label, ok: !!res.success, conflict: res.conflict, error: res.error });
@@ -131,7 +185,7 @@ export function processQueue(uid: string): Promise<QueueResult[]> {
           results.push({ submissionId: item.submissionId, label: item.label, ok: false, error: res.error });
         }
       } catch (e: any) {
-        item.lastError = e?.message || 'Sin conexión';
+        item.lastError = [e?.code, e?.message].filter(Boolean).join(' · ') || 'Sin conexión';
         await putQueued(item).catch(() => undefined);
         results.push({ submissionId: item.submissionId, label: item.label, ok: false, error: item.lastError });
       }
