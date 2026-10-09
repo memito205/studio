@@ -39,6 +39,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { exportToXlsx } from '@/services/export';
 import { buildOrderVsPackedLines, orderVsPackedLinesToExcelRows } from '@/lib/wholesalePacking';
 import { useToast } from '@/hooks/use-toast';
+import { playScanSound } from '@/lib/scanSound';
 import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious } from '@/components/ui/carousel';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
@@ -431,6 +432,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         try {
             const result = await lookupBarcode(barcode, packingOrder.order.id);
             setLastScan(result);
+            if (result.status !== 'success') playScanSound(result.status === 'warning' ? 'warn' : 'alarm');
 
             if (result.status === 'success' && result.item && (result.item.referencia || result.item.reference)) {
                 const itemKey = createItemKey(result.item.referencia, result.item.talla);
@@ -452,6 +454,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
                 // Block if total for reference is exceeded
                 if (totalPackedForRef + 1 > totalOrderedForRef) {
+                    playScanSound('alarm');
                     toast({ 
                         variant: 'destructive', 
                         title: 'Límite de Referencia Superado', 
@@ -502,6 +505,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                     const newReference = (result.item.referencia || '').toString().trim();
                     
                     if (newReference && expectedReference && newReference !== expectedReference) {
+                        playScanSound('alarm');
                         setMixedReferenceError({ show: true, expected: expectedReference, scanned: newReference });
                         return;
                     }
@@ -518,12 +522,14 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
                 const addResult = await addPackedItem(itemData);
                 if (addResult.success) {
+                    playScanSound(packedQty + 1 > orderedQty ? 'warn' : 'ok');
                     fetchPackedItems();
                 } else {
                     throw new Error(addResult.error);
                 }
             }
         } catch (error: any) {
+            playScanSound('alarm');
             toast({ variant: 'destructive', title: 'Error en Escaneo', description: error.message });
         } finally {
             setIsLoading(false);
@@ -598,6 +604,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 packerName
             );
 
+            playScanSound(result.success ? 'ok' : 'alarm');
             if (result.success) {
                 toast({
                     title: "Unidad Cerrada",
@@ -620,6 +627,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             }
         } catch (error: any) {
             console.error("Error closing unit:", error);
+            playScanSound('alarm');
             toast({
                 variant: 'destructive',
                 title: 'Error Crítico',

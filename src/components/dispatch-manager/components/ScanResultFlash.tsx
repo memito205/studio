@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Copy, Info, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { playScanSound } from '@/lib/scanSound';
 
 export type ScanFlashType = 'success' | 'warning' | 'duplicate' | 'error' | 'multi-session' | 'out-of-plan';
 
@@ -31,34 +32,8 @@ export const SCAN_PANEL_CLASS: Record<ScanFlashType, string> = {
   error: 'bg-red-50 border-red-600 text-red-800',
 };
 
-let audioCtx: AudioContext | null = null;
 function playTone(tone: 'ok' | 'warn' | 'bad') {
-  try {
-    const Ctx = window.AudioContext || (window as any).webkitAudioContext;
-    if (!Ctx) return;
-    audioCtx = audioCtx || new Ctx();
-    const ctx = audioCtx;
-    const beeps =
-      tone === 'ok'
-        ? [{ f: 1200, d: 0.12 }]
-        : tone === 'warn'
-          ? [{ f: 700, d: 0.15 }, { f: 700, d: 0.15 }]
-          : [{ f: 220, d: 0.35 }, { f: 220, d: 0.35 }, { f: 220, d: 0.35 }];
-    let t = ctx.currentTime;
-    beeps.forEach(({ f, d }) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = tone === 'bad' ? 'square' : 'sine';
-      osc.frequency.value = f;
-      gain.gain.value = 0.25;
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(t);
-      osc.stop(t + d);
-      t += d + 0.08;
-    });
-  } catch {
-    /* sin audio */
-  }
+  playScanSound(tone === 'bad' ? 'alarm' : tone);
 }
 
 /** Aviso grande a pantalla completa tras cada lectura; no toma el foco, se puede seguir leyendo. */

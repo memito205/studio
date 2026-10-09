@@ -15,6 +15,7 @@ import type { WholesaleOrder, PreprintedLabel, PackedItem, PackingSession } from
 import { getLabelsForOrder, getPackedItemsForOrder, updatePackedItem, getPackingSession, assignLabelToWholesalePackingUnit, addSingleLabel } from '@/app/actions';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
+import { playScanSound } from '@/lib/scanSound';
 import { findUnlabeledWholesaleUnits } from '@/lib/wholesalePacking';
 import {
   buildBoxAuditLines,
@@ -230,16 +231,19 @@ export function OrderAuditDialog({ order, isOpen, onOpenChange, initialPackedIte
         if (foundGlobally) {
             const isTarget = targetLabelsForAudit.some(l => l.id === foundGlobally.id);
             if (isTarget) {
+                playScanSound(scannedBoxIds.has(foundGlobally.id) ? 'warn' : 'ok');
                 setScannedBoxIds(prev => {
                     const next = new Set(prev);
                     next.add(foundGlobally.id);
                     return next;
                 });
             } else {
+                playScanSound('warn');
                 const msg = `${term} (No tiene ref. seleccionada)`;
                 if (!extraScannedBoxes.includes(msg)) setExtraScannedBoxes(prev => [...prev, msg]);
             }
         } else {
+            playScanSound('alarm');
             const msg = `${term} (No pertenece al pedido)`;
             if (!extraScannedBoxes.includes(msg)) {
                 setExtraScannedBoxes(prev => [...prev, msg]);

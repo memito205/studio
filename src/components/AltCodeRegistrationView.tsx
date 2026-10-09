@@ -15,6 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useToast } from '@/hooks/use-toast';
+import { playScanSound } from '@/lib/scanSound';
 import { useAuth } from '@/hooks/use-auth-context';
 import {
   correctAltCodeReceipt,
@@ -201,10 +202,12 @@ export function AltCodeRegistrationView() {
     if (!trimmed || isSubmitting) return;
     const packer = packerOptions.find((p) => p.value === packerId);
     if (packerOptions.length > 0 && !packer) {
+      playScanSound('alarm');
       toast({ variant: 'destructive', title: 'Falta el empacador', description: 'Seleccione quién registra.' });
       return;
     }
     if (locationOptions.length > 0 && !ubicacion) {
+      playScanSound('alarm');
       toast({ variant: 'destructive', title: 'Falta la ubicación', description: 'Seleccione dónde queda la caja.' });
       return;
     }
@@ -214,6 +217,7 @@ export function AltCodeRegistrationView() {
       actor
     );
     setIsSubmitting(false);
+    playScanSound(res.duplicate || !res.success || !res.receipt ? 'alarm' : res.receipt.registroTardio ? 'warn' : 'ok');
     if (res.duplicate) {
       setLastResult({ type: 'duplicate', receipt: res.duplicate });
       toast({ variant: 'destructive', title: 'Código ya registrado', description: `${res.duplicate.codigoAlterno} está en ${res.duplicate.ubicacion || 'sin ubicación'}.` });

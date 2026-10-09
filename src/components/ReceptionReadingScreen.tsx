@@ -5,6 +5,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
+import { playScanSound } from '@/lib/scanSound';
 import { Loader2, PlusCircle, AlertTriangle, RefreshCw } from 'lucide-react';
 import { getReceptionOperationById, getExpectedItemsByReception, getProductsByBarcodes, getLocations, createPackingUnit, startOperationPause, endOperationPause, updateReceptionOperation, addScannedItem, deleteScannedItem, getActivePauseForUser, updatePackingUnit, registerNovelty, repairReceptionStats, recordPackUnitDetailOnClose } from '@/app/reception/actions';
 import { getUserGoals, getProductivitySettings, getUserPulsesForDay } from '@/app/actions';
@@ -382,6 +383,7 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
             const expectedReference = normalizeReceptionReference(itemsInActiveUnit[0].reference);
 
             if (productRef !== expectedReference) {
+                playScanSound('alarm');
                 setMixedReferenceError({ show: true, expected: expectedReference, scanned: productRef });
                 return { accepted: false }; // Stop processing — no actualizar panel con la infiltrada
             }
@@ -440,13 +442,16 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
         const result = await addScannedItem(itemToAdd);
         
         if (result.success) {
+            playScanSound('ok');
             toast({ title: 'Éxito', description: `Item ${productRef} añadido a la unidad ${unitToUse.id}.` });
             return { accepted: true };
         } else {
+            playScanSound('alarm');
             toast({ variant: 'destructive', title: 'Error al Guardar', description: result.error });
             return { accepted: false };
         }
     } catch(e: any) {
+        playScanSound('alarm');
         toast({ variant: 'destructive', title: 'Error inesperado', description: e.message });
         return { accepted: false };
     } finally {

@@ -5,6 +5,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import type { WholesaleOrder, PreprintedLabel, DispatchSessionInfo, BoxToDispatch, PackedItem } from '@/types';
 import { getLabelsForOrder, getShipments, addScannedLabelToShipment, removeScannedLabelFromShipment, loadWholesaleOrders, closeShipment, getPackedItemsForOrder, loadWholesaleOrderById, getPackingSession } from '@/app/actions';
 import { useToast } from '@/hooks/use-toast';
+import { playScanSound } from '@/lib/scanSound';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -165,6 +166,7 @@ export const DispatchScreen: React.FC<DispatchScreenProps> = ({ shipmentId, onRe
   const showOverlay = useCallback((data: ScanOverlayData) => {
     if (overlayTimerRef.current) clearTimeout(overlayTimerRef.current);
     setScanOverlay(data);
+    playScanSound(data.status === 'success' ? 'ok' : data.status === 'warning' ? 'warn' : 'alarm');
     overlayTimerRef.current = setTimeout(() => {
       setScanOverlay(null);
       scanInputRef.current?.focus();

@@ -25,6 +25,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import { playScanSound } from '@/lib/scanSound';
 
 export const RECEIPT_LABEL: Record<StoreReceiptResult, { label: string; className: string }> = {
   recibida: { label: 'Recibida', className: 'bg-green-600 text-white' },
@@ -45,21 +46,10 @@ const BANNER: Record<StoreReceiveResponse['result'], string> = {
 
 const bogotaDay = () => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
 
-function beep(ok: boolean) {
-  try {
-    const Ctx = window.AudioContext || (window as any).webkitAudioContext;
-    const ctx = new Ctx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.frequency.value = ok ? 880 : 220;
-    gain.gain.value = 0.15;
-    osc.connect(gain).connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + (ok ? 0.12 : 0.4));
-    if (!ok) navigator.vibrate?.(300);
-  } catch {
-    /* sin audio */
-  }
+function beep(result: StoreReceiveResponse['result']) {
+  const kind = result === 'recibida' ? 'ok' : result === 'ya_recibida' ? 'warn' : 'alarm';
+  playScanSound(kind);
+  if (kind === 'alarm') navigator.vibrate?.([300, 100, 300]);
 }
 
 /** Recibido en tienda por escaneo. Rol tiendas: tienda fija; admin/supervisor eligen la tienda. */
@@ -132,15 +122,16 @@ export function StoreReceiveCard() {
     return d ? String(Number(d)) : '';
   };
 
-  const markReadInDetail = (res: StoreReceiveResponse) => {
-    if (!detail || detail.reception) return;
-    if (res.result !== 'recibida' && res.result !== 'ya_recibida') return;
+  /** Devuelve true si la TF leída no pertenece a la relación abierta. */
+  const markReadInDetail = (res: StoreReceiveResponse): boolean => {
+    if (!detail || detail.reception) return false;
+    if (res.result !== 'recibida' && res.result !== 'ya_recibida') return false;
     const tf = digits(res.numeroTF || '');
     const alt = String(res.codigoAlterno || '').toUpperCase();
     const hit = detail.tfs.find((t) => (tf && digits(t.numeroTF) === tf) || (alt && String(t.codigoAlterno || '').toUpperCase() === alt));
     if (!hit) {
       setNotInRelation(`La TF ${res.numeroTF || alt} no pertenece a la relación #${detail.manifestId} (quedó recibida en la tienda igual).`);
-      return;
+      return true;
     }
     setNotInRelation(null);
     const at = new Date().toISOString();
@@ -148,6 +139,7 @@ export function StoreReceiveCard() {
       ...detail,
       tfs: detail.tfs.map((t) => (t === hit && !t.readAt ? { ...t, readAt: at, readByName: actor?.displayName } : t)),
     });
+    return false;
   };
 
   const handleClose = async () => {
@@ -172,8 +164,8 @@ export function StoreReceiveCard() {
     setBusy(false);
     setCode('');
     setLast(res);
-    beep(res.result === 'recibida');
-    markReadInDetail(res);
+    const outOfRelation = markReadInDetail(res);
+    beep(outOfRelation ? 'error' : res.result);
     void loadToday();
     setTimeout(() => inputRef.current?.focus(), 0);
   };

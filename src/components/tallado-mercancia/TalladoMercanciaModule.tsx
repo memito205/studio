@@ -41,6 +41,7 @@ import {
 } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
+import { playScanSound } from '@/lib/scanSound';
 import { useAuth } from '@/hooks/use-auth-context';
 import type {
   TalladoEtiquetadoModo,
@@ -670,6 +671,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
     async (raw: string) => {
       if (!shift?.id || !user?.uid) return;
       if (openPause) {
+        playScanSound('alarm');
         toast({ variant: 'destructive', title: 'En pausa', description: 'Reanude la pausa antes de escanear.' });
         return;
       }
@@ -691,6 +693,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         });
         setScanCode('');
         if (!res.success) {
+          playScanSound('alarm');
           showScanFlash(code, res.error || 'No se pudo leer', 'error');
           toast({ variant: 'destructive', title: 'Escaneo', description: res.error });
           setReceptionCandidates([]);
@@ -698,6 +701,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         }
         if (res.action === 'finished') {
           const finCode = res.unit?.scanCode || code;
+          playScanSound('warn');
           showScanFlash(finCode, 'Cerrada (legado)', 'fin');
           setReceptionCandidates([]);
           toast({
@@ -719,6 +723,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         }
         if (res.action === 'pick_reception' && res.candidates?.length) {
           setReceptionCandidates(res.candidates);
+          playScanSound('warn');
           showScanFlash(code, 'Varias RK — elija caja', 'ok');
           toast({
             title: 'Varias recepciones',
@@ -735,6 +740,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                 ? `Catálogo confirmado · ${u.cantidad} und.`
                 : `Confirmada · ${u.cantidad} und.`;
           // Banner de éxito más visible/largo (lookups de recepción pueden tardar >2s).
+          playScanSound('ok');
           showScanFlash(u.scanCode || code, label, 'ok', 3200);
           setReceptionCandidates([]);
           toast({

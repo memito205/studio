@@ -9,6 +9,7 @@ import { ArrowLeft, UploadCloud, Truck, FileSignature, Search, Download, Trash2,
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/card';
 import { Input } from './ui/input';
 import { useToast } from '@/hooks/use-toast';
+import { playScanSound } from '@/lib/scanSound';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { TransferEntry, TransferStatus, DeliveryManifest, DeliveryManifestDraft, UserRole, CollectionLog, AppUser, RouteEntry, TransferActor } from '@/types';
@@ -615,8 +616,13 @@ const ManifestDetailsDialog: React.FC<{
       try {
           const doc = new jsPDF({ orientation: 'p', unit: 'pt', format: 'a4' });
           const PADDING = 40;
+          /** Espacio reservado arriba (encabezado repetido) y abajo (paginación) en cada hoja. */
+          const TOP = PADDING + 30;
+          const BOTTOM = PADDING + 20;
           let y = PADDING;
           const pageHeight = doc.internal.pageSize.getHeight();
+          const pageWidth = doc.internal.pageSize.getWidth();
+          const usableBottom = pageHeight - BOTTOM;
   
           // Overall Header
           doc.setFontSize(16);
@@ -651,21 +657,23 @@ const ManifestDetailsDialog: React.FC<{
               const blockHeaderHeight = 30;
               const tableHeaderHeight = 25;
               const oneRowHeight = 20;
-              const signatureHeight = 60; // Increased space for signatures
-              const requiredHeight = blockHeaderHeight + tableHeaderHeight + (oneRowHeight * tableBody.length) + signatureHeight;
-
-              if (y + requiredHeight > pageHeight - PADDING) {
+              // Basta con que quepan título + encabezado + 3 filas: la tabla continúa en la hoja siguiente
+              // (antes se exigía el bloque completo y la primera hoja quedaba solo con el encabezado).
+              const minStartHeight = blockHeaderHeight + tableHeaderHeight + oneRowHeight * Math.min(3, tableBody.length);
+              if (y + minStartHeight > usableBottom) {
                   doc.addPage();
-                  y = PADDING;
+                  y = TOP;
               }
   
               doc.setFontSize(12);
               doc.setFont('helvetica', 'bold');
               doc.text(`Destino: ${destination} (${transferList.length} TFs)`, PADDING, y);
               y += 20;
+              const tableStartPage = doc.getNumberOfPages();
   
               autoTable(doc, {
                   startY: y,
+                  margin: { top: TOP + 14, bottom: BOTTOM, left: PADDING, right: PADDING },
                   head: [['Recibido', '# TF', 'Código alterno', 'Origen']],
                   body: tableBody,
                   theme: 'grid',
@@ -673,6 +681,13 @@ const ManifestDetailsDialog: React.FC<{
                   styles: { fontSize: 9, cellPadding: 4 },
                   columnStyles: {
                       0: { cellWidth: 60, halign: 'center' }
+                  },
+                  didDrawPage: () => {
+                      if (doc.getNumberOfPages() > tableStartPage) {
+                          doc.setFontSize(10);
+                          doc.setFont('helvetica', 'bold');
+                          doc.text(`Destino: ${destination} (continuación)`, PADDING, TOP + 6);
+                      }
                   },
                   didDrawCell: (data: any) => {
                       if (data.column.index === 0 && data.section === 'body') {
@@ -686,13 +701,13 @@ const ManifestDetailsDialog: React.FC<{
   
               y = (doc as any).lastAutoTable.finalY + 30; // Increased space after table
 
-              const signatureY = y; 
-  
-              if (signatureY + 40 > pageHeight - PADDING) {
+              if (y + 45 > usableBottom) {
                   doc.addPage();
-                  y = PADDING;
+                  y = TOP;
               }
 
+              doc.setFontSize(10);
+              doc.setFont('helvetica', 'normal');
               doc.line(PADDING, y + 20, PADDING + 150, y + 20);
               doc.text("Firma y C.C. Quien Entrega", PADDING, y + 30);
               doc.text(`(${manifest.driver || '____________________'})`, PADDING, y + 40);
@@ -701,7 +716,28 @@ const ManifestDetailsDialog: React.FC<{
               doc.line(rightSignatureX, y + 20, rightSignatureX + 150, y + 20);
               doc.text("Firma y C.C. Quien Recibe en Destino", rightSignatureX, y + 30);
               
-              y += 60; // Increased space for next section
+              y += 60;
+          }
+
+          const totalPages = doc.getNumberOfPages();
+          const fecha = manifest.createdAt ? format(new Date(manifest.createdAt), 'dd/MM/yyyy') : '';
+          for (let p = 1; p <= totalPages; p++) {
+              doc.setPage(p);
+              doc.setDrawColor(0);
+              if (p > 1) {
+                  doc.setFontSize(11);
+                  doc.setFont('helvetica', 'bold');
+                  doc.text(`RELACIÓN DE ENTREGA · MANIFIESTO #${manifest.manifestId}`, PADDING, PADDING);
+                  doc.setFont('helvetica', 'normal');
+                  doc.setFontSize(9);
+                  doc.text(`${fecha}  ·  Placa: ${manifest.resource || 'N/A'}`, pageWidth - PADDING, PADDING, { align: 'right' });
+                  doc.line(PADDING, PADDING + 6, pageWidth - PADDING, PADDING + 6);
+              }
+              doc.setFont('helvetica', 'normal');
+              doc.setFontSize(9);
+              doc.line(PADDING, pageHeight - PADDING + 4, pageWidth - PADDING, pageHeight - PADDING + 4);
+              doc.text(`Manifiesto #${manifest.manifestId}`, PADDING, pageHeight - PADDING + 16);
+              doc.text(`Página ${p} de ${totalPages}`, pageWidth - PADDING, pageHeight - PADDING + 16, { align: 'right' });
           }
   
           doc.autoPrint();
@@ -1794,14 +1830,17 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
           const allMatchingIds = matchingTransfers.map(t => t.id);
           const tfLabel = Array.from(new Set(matchingTransfers.map(t => t.numeroTF))).join(', ');
           if (allMatchingIds.every(id => selectedForManifest.has(id))) {
+              playScanSound('warn');
               toast({ variant: 'default', title: 'Ya Seleccionado', description: `El código alterno '${altCode}' (TF ${tfLabel}) ya está en la lista.` });
           } else {
               allMatchingIds.forEach(id => handleSelectForManifest(id, true));
+              playScanSound('ok');
               toast({ title: 'TF Agregada', description: `Código alterno '${altCode}' → TF ${tfLabel} (${matchingTransfers.length} líneas) agregada al manifiesto.` });
           }
       } else if (matchingTransfers.length > 0) {
           const firstTransfer = matchingTransfers[0];
           if (destinoScanned && firstTransfer.bodegaDestino.toUpperCase() !== destinoScanned) {
+              playScanSound('alarm');
               toast({
                   variant: 'destructive',
                   title: 'Destino Incorrecto',
@@ -1812,13 +1851,16 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
               const alreadySelected = allMatchingIds.every(id => selectedForManifest.has(id));
               
               if (alreadySelected) {
+                  playScanSound('warn');
                   toast({ variant: 'default', title: 'Ya Seleccionado', description: `La TF '${tfToFind}' ya está en la lista.` });
               } else {
                   allMatchingIds.forEach(id => handleSelectForManifest(id, true));
+                  playScanSound('ok');
                   toast({ title: 'TF Agregada', description: `Se añadió '${tfToFind}' (${matchingTransfers.length} líneas) al manifiesto.` });
               }
           }
       } else {
+          playScanSound('alarm');
           toast({ variant: 'destructive', title: 'No Encontrada', description: `'${normalizedCode}' no coincide con ninguna TF ni código alterno recibido en bodega (Recibido en Bodega / Validado Supervisor).` });
       }
       setScanInput('');

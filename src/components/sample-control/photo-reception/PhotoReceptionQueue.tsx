@@ -10,6 +10,7 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Loader2, RefreshCcw, Search } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { playScanSound } from '@/lib/scanSound';
 import { useAuth } from '@/hooks/use-auth-context';
 import {
   cancelSamplePhotoReception,
@@ -158,6 +159,7 @@ export const PhotoReceptionQueue: React.FC = () => {
       updatedByName: userName ?? user?.displayName ?? user?.email ?? undefined,
       activeTransferNumber: isTransferLockedMode ? normalizedActiveTf : undefined,
     });
+    playScanSound(!result.success ? 'alarm' : result.unchanged ? 'warn' : 'ok');
     if (!result.success) {
       toast({
         variant: 'destructive',

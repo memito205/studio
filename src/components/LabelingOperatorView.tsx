@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Play, Pause, Check, RotateCcw, Loader2, Lock, Package } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { playScanSound } from '@/lib/scanSound';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   logLabelingActivity,
@@ -832,6 +833,7 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
             }
           }
 
+          playScanSound('ok');
           if (result.autoFinished) {
             const residualNote =
               result.residualCreated && result.residualBoxes
@@ -870,6 +872,7 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
         } else {
           if (rollbackExternal) setExternalOperations(rollbackExternal);
           if (rollbackInternal && onOperationUpdated) onOperationUpdated(rollbackInternal);
+          playScanSound('alarm');
           toast({
             variant: 'destructive',
             title: result.needsLocation ? 'Indique ubicación' : 'No se confirmó la caja',
@@ -879,6 +882,7 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
       } catch (err: any) {
         if (rollbackExternal) setExternalOperations(rollbackExternal);
         if (rollbackInternal && onOperationUpdated) onOperationUpdated(rollbackInternal);
+        playScanSound('alarm');
         toast({
           variant: 'destructive',
           title: 'Error al confirmar',

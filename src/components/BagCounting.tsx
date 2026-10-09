@@ -40,6 +40,7 @@ import {
 import { useAuth } from '@/hooks/use-auth-context';
 import type { BagOperation, BagItem, BagOperationSettings } from '@/types';
 import { useToast } from '@/hooks/use-toast';
+import { playScanSound } from '@/lib/scanSound';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from './ui/scroll-area';
 import { Switch } from './ui/switch';
@@ -209,7 +210,9 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
             message: "CÓDIGO YA PROCESADO", 
             errorType: 'DUPLICATE' 
           });
+          playScanSound('alarm');
       } else {
+          playScanSound('ok');
           setLastScanned({ 
             code: barcode, 
             success: true, 
@@ -240,6 +243,7 @@ export const BagCounting: React.FC<BagCountingProps> = ({ onReturn }) => {
         message: result.error || "CÓDIGO INVÁLIDO",
         errorType: result.errorType
       });
+      playScanSound('alarm');
     }
 
     // Asegurar que el cursor siempre regrese al input

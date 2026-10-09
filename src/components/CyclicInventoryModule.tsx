@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
+import { playScanSound } from '@/lib/scanSound';
 import { useAuth } from '@/hooks/use-auth-context';
 import type { CyclicInventoryCountRecord, CyclicInventoryDayMeta, CyclicInventoryLine } from '@/types';
 import { findCaseInsensitiveKey, normalizeHeader, parseRobustNumber } from '@/lib/parsingUtils';
@@ -1146,6 +1147,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       at: now.toISOString(),
     };
     setScanEvents((prev) => [row, ...prev].slice(0, 120));
+    playScanSound(event.status === 'ok' ? 'ok' : 'alarm');
   }, []);
 
   const handleScanSubmit = async () => {

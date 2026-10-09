@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { lookupBarcode } from '@/app/reception/actions';
 import { useToast } from '@/hooks/use-toast';
+import { playScanSound } from '@/lib/scanSound';
 import { Search, Loader2 } from 'lucide-react';
 import type { PackingUnit, ProductDatabaseItem, PackingScanResult, ReceptionExpectedItem } from '@/types';
 import { UnexpectedItemDialog } from './UnexpectedItemDialog';
@@ -80,6 +81,7 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
   const handleScanSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isOperationPaused) {
+      playScanSound('alarm');
       toast({ variant: 'destructive', title: 'Operación Pausada', description: 'Reanuda la operación para escanear.' });
       return;
     }
@@ -124,9 +126,11 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
             // Si la referencia ya existe en esta operación (otra talla), hereda esa ubicación.
             // Solo usa SIGUIENTE cuando no hay ubicación conocida en operación ni catálogo.
             productWithCorrectedLocation.location = knownLocation || 'SIGUIENTE';
+            playScanSound('alarm');
             setUnexpectedItem(productWithCorrectedLocation);
         }
     } else {
+      playScanSound('alarm');
       onProductLookedUp(null);
       onProductNotFound(scannedBarcode);
     }
