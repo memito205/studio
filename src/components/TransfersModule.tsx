@@ -113,6 +113,10 @@ const groupTransfersByTF = (transfers: TransferEntry[], placaMap?: Map<string, s
             existing.lineStatuses = statuses;
             existing.hasMixedStatus = statuses.length > 1;
             if (t.fueraDeBaseAt && !existing.fueraDeBaseAt) existing.fueraDeBaseAt = t.fueraDeBaseAt;
+            if (t.recibidoAt && !existing.recibidoAt) existing.recibidoAt = t.recibidoAt;
+            if (t.enviadoAt && !existing.enviadoAt) existing.enviadoAt = t.enviadoAt;
+            if (t.entregadoTiendaAt && !existing.entregadoTiendaAt) existing.entregadoTiendaAt = t.entregadoTiendaAt;
+            if (t.deliveredAt && !existing.deliveredAt) existing.deliveredAt = t.deliveredAt;
             
             // Update to most advanced status
             if (statusPriority[t.status] > statusPriority[existing.status]) {
@@ -166,8 +170,15 @@ const buildFilteredTransfersExportRows = (
         'Ubicación': t.ubicacion || '',
         'Recibió (empacador)': t.recibidoPackerName || '',
         'Fecha Enviado': t.enviadoAt ? format(t.enviadoAt, 'dd/MM/yyyy HH:mm') : '',
+        'Fecha Entregado': fechaEntrega(t) ? format(fechaEntrega(t)!, 'dd/MM/yyyy HH:mm') : '',
         'Observación': fueraDeBaseObs(t),
     }));
+
+/** Entrega en tienda (POD / recibo tienda) o, en el flujo antiguo, entrega en ruta. */
+const fechaEntrega = (t: TransferEntry): Date | undefined => {
+    const d = t.entregadoTiendaAt || t.deliveredAt;
+    return d ? new Date(d) : undefined;
+};
 
 /** Solo aplica mientras siga en Recibido en Bodega; si ya se despachó la marca deja de importar. */
 const fueraDeBaseObs = (t: TransferEntry) =>
@@ -2359,12 +2370,13 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                     <TableHead>Placa Recolección</TableHead>
                                     <TableHead>Fecha Recibido</TableHead>
                                     <TableHead>Fecha Enviado</TableHead>
+                                    <TableHead>Fecha Entregado</TableHead>
                                     <TableHead className="text-right">Acciones</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
                                 {isLoading ? (
-                                    <TableRow><TableCell colSpan={16} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
+                                    <TableRow><TableCell colSpan={17} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
                                 ) : filteredTransfers.length > 0 ? (
                                     groupedFilteredTransfers.map((t) => {
                                         const placa = transferIdToPlacaMap.get(t.id) || 'N/A';
@@ -2409,6 +2421,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                             <TableCell className="font-mono text-xs">{placa}</TableCell>
                                             <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
                                             <TableCell>{t.enviadoAt ? format(t.enviadoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
+                                            <TableCell>{fechaEntrega(t) ? format(fechaEntrega(t)!, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
                                             <TableCell className="text-right">
                                                 <DropdownMenu>
                                                     <DropdownMenuTrigger asChild>
@@ -2506,7 +2519,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                         </TableRow>
                                     )})
                                 ) : (
-                                    <TableRow><TableCell colSpan={16} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
+                                    <TableRow><TableCell colSpan={17} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
                                 )}
                             </TableBody>
                         </Table>
@@ -2906,12 +2919,13 @@ const OperatorView: React.FC<{
                         <TableHead>Placa Recolección</TableHead>
                         <TableHead>Fecha Recibido</TableHead>
                         <TableHead>Fecha Enviado</TableHead>
+                        <TableHead>Fecha Entregado</TableHead>
                         <TableHead className="text-right">Acciones</TableHead>
                     </TableRow>
                 </TableHeader>
                         <TableBody>
                             {isLoading ? (
-                                <TableRow><TableCell colSpan={10} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
+                                <TableRow><TableCell colSpan={11} className="h-24 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin"/></TableCell></TableRow>
                             ) : filteredTransfers.length > 0 ? (
                                 groupTransfersByTF(filteredTransfers, transferIdToPlacaMap).map(t => {
                                     const placa = transferIdToPlacaMap.get(t.id) || 'N/A';
@@ -2926,6 +2940,7 @@ const OperatorView: React.FC<{
                                         <TableCell className="font-mono">{placa}</TableCell>
                                         <TableCell>{t.recibidoAt ? format(t.recibidoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
                                         <TableCell>{t.enviadoAt ? format(t.enviadoAt, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
+                                        <TableCell>{fechaEntrega(t) ? format(fechaEntrega(t)!, "dd/MM/yy HH:mm") : 'N/A'}</TableCell>
                                         <TableCell className="text-right">
                                             <DropdownMenu>
                                                 <DropdownMenuTrigger asChild>
@@ -2957,7 +2972,7 @@ const OperatorView: React.FC<{
                                     </TableRow>
                                 )})
                             ) : (
-                                <TableRow><TableCell colSpan={10} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
+                                <TableRow><TableCell colSpan={11} className="h-24 text-center text-muted-foreground">No hay transferencias que coincidan con los filtros.</TableCell></TableRow>
                             )}
                         </TableBody>
               </Table>

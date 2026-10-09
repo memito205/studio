@@ -817,6 +817,8 @@ export interface AltCodeReceipt {
   voidedByName?: string;
   /** La TF ya existía al digitar el código: la llegada quedó con la fecha del documento TF. */
   registroTardio?: boolean;
+  /** Llegada real usada en las líneas (fecha TF) cuando es registro tardío o carga inicial. */
+  llegadaAt?: string;
 }
 
 /** Maestro de ubicaciones de bodega (doc `settings/warehouseLocations`). */

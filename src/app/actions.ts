@@ -5404,6 +5404,7 @@ const toAltCodeReceipt = (id: string, raw: any): AltCodeReceipt => ({
     voidedAt: tsToIso(raw.voidedAt),
     voidedByName: raw.voidedByName || undefined,
     registroTardio: raw.registroTardio === true || undefined,
+    llegadaAt: tsToIso(raw.llegadaAt),
 });
 
 /** Transferencias cuyo codigoAlterno coincide con alguno de los códigos (consulta en bloques de 30). */
@@ -5441,6 +5442,7 @@ function buildAltCodeLinkWrites(
         : undefined;
     const ubicacion = String(receipt.ubicacion || '').trim().toUpperCase();
     let activeLines = 0;
+    let earliestDocArrival: Timestamp | null = null;
 
     lines.forEach(({ id, data }) => {
         const status = data.status as TransferStatus;
@@ -5458,6 +5460,9 @@ function buildAltCodeLinkWrites(
             const docDate: Timestamp | null = data.fecha?.toMillis ? data.fecha : null;
             const useDocDate = (receipt.bulkLoad || receipt.registroTardio) && docDate && docDate.toMillis() < registeredAt.toMillis();
             const arrival = useDocDate ? docDate : registeredAt;
+            if (useDocDate && docDate && (!earliestDocArrival || docDate.toMillis() < earliestDocArrival.toMillis())) {
+                earliestDocArrival = docDate;
+            }
             updates.status = 'Recibido en Bodega';
             updates.recibidoAt = arrival;
             if (receipt.bulkLoad) updates.llegadaEstimadaCargaInicial = true;
@@ -5488,6 +5493,8 @@ function buildAltCodeLinkWrites(
             linkedDestino: destinos.join(', '),
             linkedAt: Timestamp.now(),
             linkNote: activeLines === 0 ? 'TF ya despachada' : '',
+            // El sticker imprime este día (fecha TF) en vez del día del registro tardío / carga inicial.
+            ...(earliestDocArrival ? { llegadaAt: earliestDocArrival } : {}),
         },
     });
     return writes;
@@ -5707,6 +5714,7 @@ export async function applyAltCodeBulkLoad(
                 packerName: c.data.packerName,
                 registeredByName: c.data.registeredByName,
                 registeredAt: now.toDate().toISOString(),
+                llegadaAt: c.action === 'enlazar' ? p?.fechaTf : undefined,
             };
         });
         return { success: true, linked, pending: created.length - linked, skipped: preview.length - created.length, stickers };

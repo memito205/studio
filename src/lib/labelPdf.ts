@@ -45,6 +45,8 @@ export type AltCodeStickerData = {
   packerName?: string;
   registeredByName?: string;
   registeredAt: string | Date;
+  /** Si existe (registro tardío / carga inicial), el bloque del día usa esta fecha y no la del registro. */
+  llegadaAt?: string | Date;
 };
 
 const toDate = (v: unknown): Date | null => {
@@ -184,7 +186,8 @@ export function buildAltCodeStickerPdf(r: AltCodeStickerData): jsPDF {
 function drawAltCodeSticker(doc: jsPDF, r: AltCodeStickerData) {
   const registeredAt = toDate(r.registeredAt) || new Date();
   const linked = r.status === 'linked';
-  drawDayBlock(doc, registeredAt);
+  const llegada = toDate(r.llegadaAt);
+  drawDayBlock(doc, llegada || registeredAt);
 
   doc.setFont('helvetica', 'bold');
   drawFitted(
@@ -212,7 +215,7 @@ function drawAltCodeSticker(doc: jsPDF, r: AltCodeStickerData) {
   doc.setFont('helvetica', 'normal');
   drawFitted(
     doc,
-    `Registro: ${r.packerName || r.registeredByName || '—'} - ${format(registeredAt, 'h:mm a')}`,
+    `Registro: ${r.packerName || r.registeredByName || '—'} - ${format(registeredAt, llegada ? 'dd/MM h:mm a' : 'h:mm a')}`,
     CONTENT_X,
     PAGE_H - 2.3,
     CONTENT_W,
