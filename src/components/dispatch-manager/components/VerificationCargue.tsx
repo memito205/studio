@@ -206,6 +206,7 @@ const VerificationCargue: React.FC<{
         (r) =>
           !q ||
           r.codigo.toLowerCase().includes(q) ||
+          (r.codigoAlterno || '').toLowerCase().includes(q) ||
           (r.ubicacion || '').toLowerCase().includes(q) ||
           r.destino.toLowerCase().includes(q)
       )
@@ -449,7 +450,7 @@ const VerificationCargue: React.FC<{
             <span>{loadedTotal} en camión</span>
             <div className="flex gap-2">
               <Input
-                placeholder="Código, ubicación o destino..."
+                placeholder="Código, alterno, ubicación o destino..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="max-w-[200px] h-8 text-xs"
@@ -521,7 +522,12 @@ const VerificationCargue: React.FC<{
                         <span className="opacity-40">—</span>
                       )}
                     </TableCell>
-                    <TableCell className="text-xs font-bold">{r.codigo}</TableCell>
+                    <TableCell className="text-xs">
+                      <div className="font-bold">{r.codigo}</div>
+                      {r.codigoAlterno ? (
+                        <div className="text-[11px] text-muted-foreground">Alterno: {r.codigoAlterno}</div>
+                      ) : null}
+                    </TableCell>
                     <TableCell className="text-xs">{r.destino}</TableCell>
                     <TableCell className="text-center font-medium">{r.cantTft}</TableCell>
                     <TableCell>

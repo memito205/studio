@@ -76,6 +76,7 @@ import {
   submitRemainderReturn,
   supervisorConfirmRemaindersDirect,
   unassignDistributionRemainderTask,
+  cancelRemainderValidation,
   uploadPlanDetailRetrofit,
   validateRemainderTask,
   type DistributionPlanRowInput,
@@ -1071,6 +1072,39 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
     if (selected) await loadDetailTasks(selected.id);
   };
 
+  const handleCancelValidation = async (task: DistributionRemainderTask) => {
+    if (!user?.uid || !isManager) return;
+    const reason = window.prompt(
+      `Anular la validación de ${task.reference}.\n\nSi la validó un operario vuelve a "Pendiente validar"; si fue validación directa, la referencia vuelve a Disponibles.\n\nMotivo de la anulación:`
+    );
+    if (reason === null) return;
+    if (!reason.trim()) {
+      toast({ variant: 'destructive', title: 'Anular validación', description: 'Debe indicar el motivo.' });
+      return;
+    }
+    setBusyTaskId(task.id);
+    const res = await cancelRemainderValidation({
+      taskId: task.id,
+      actorId: user.uid,
+      actorName: user.displayName || user.email || user.uid,
+      reason,
+    });
+    setBusyTaskId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'Anular validación', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Validación anulada',
+      description:
+        res.result === 'released'
+          ? `${task.reference} volvió a Disponibles.`
+          : `${task.reference} quedó pendiente de validar.`,
+    });
+    await reloadList();
+    if (selected) await loadDetailTasks(selected.id);
+  };
+
   const handleUnassign = async (task: DistributionRemainderTask) => {
     if (!user?.uid || !isManager) return;
     setBusyTaskId(task.id);
@@ -1642,6 +1676,18 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex flex-wrap justify-end gap-2">
+                          {isManager && task.status === 'validated' ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="text-red-700"
+                              disabled={busyTaskId === task.id}
+                              onClick={() => void handleCancelValidation(task)}
+                            >
+                              Anular validación
+                            </Button>
+                          ) : null}
                           {task.assignedOperatorId === user?.uid &&
                           (task.status === 'assigned' || task.status === 'rejected') ? (
                             <>
@@ -2272,6 +2318,20 @@ export default function DistributionCompareModule({ onReturnToSuite }: Props) {
                                     onClick={() => void handleReject(task)}
                                   >
                                     Rechazar
+                                  </Button>
+                                </div>
+                              ) : null}
+                              {isManager && task.status === 'validated' ? (
+                                <div className="pt-1">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="text-red-700"
+                                    disabled={busyTaskId === task.id}
+                                    onClick={() => void handleCancelValidation(task)}
+                                  >
+                                    Anular validación
                                   </Button>
                                 </div>
                               ) : null}

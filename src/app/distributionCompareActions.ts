@@ -43,6 +43,8 @@ const RECEPTION_COL = 'receptionOperations';
 const USERS_COL = 'users';
 /** Detalle aditivo bodega+talla (no afecta remanente / byBodega). */
 const PLAN_DETAIL_SUB = 'planDetail';
+const PLAN_DETAIL_VALIDATED_SUB = 'planDetailValidated';
+const VALIDATION_CANCELLATIONS_SUB = 'validationCancellations';
 
 async function upsertCompareSummary(data: DistributionCompareOperation): Promise<void> {
   const payload = stripUndefinedDeep({
@@ -350,8 +352,8 @@ async function writePlanDetailSubcollection(
   return written;
 }
 
-async function deletePlanDetailSubcollection(compareId: string): Promise<number> {
-  const sub = await getDocs(collection(firestore, COL, compareId, PLAN_DETAIL_SUB));
+async function deletePlanDetailSubcollection(compareId: string, subName: string = PLAN_DETAIL_SUB): Promise<number> {
+  const sub = await getDocs(collection(firestore, COL, compareId, subName));
   if (sub.empty) return 0;
   let batch = writeBatch(firestore);
   let ops = 0;
@@ -376,9 +378,28 @@ async function deletePlanDetailForReference(
 ): Promise<void> {
   if (!compareId || !reference) return;
   try {
-    await deleteDoc(doc(firestore, COL, compareId, PLAN_DETAIL_SUB, lineDocId(reference)));
+    const ref = doc(firestore, COL, compareId, PLAN_DETAIL_SUB, lineDocId(reference));
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return;
+    // Respaldo para poder restaurarlo si se anula la validación.
+    await setDoc(doc(firestore, COL, compareId, PLAN_DETAIL_VALIDATED_SUB, lineDocId(reference)), snap.data());
+    await deleteDoc(ref);
   } catch (e) {
     console.warn('deletePlanDetailForReference:', e);
+  }
+}
+
+async function restorePlanDetailForReference(compareId: string, reference: string): Promise<boolean> {
+  try {
+    const backupRef = doc(firestore, COL, compareId, PLAN_DETAIL_VALIDATED_SUB, lineDocId(reference));
+    const snap = await getDoc(backupRef);
+    if (!snap.exists()) return false;
+    await setDoc(doc(firestore, COL, compareId, PLAN_DETAIL_SUB, lineDocId(reference)), snap.data());
+    await deleteDoc(backupRef);
+    return true;
+  } catch (e) {
+    console.warn('restorePlanDetailForReference:', e);
+    return false;
   }
 }
 
@@ -815,6 +836,8 @@ export async function deleteDistributionCompare(
       getDocs(query(collection(firestore, TASKS_COL), where('compareId', '==', id), limit(500))),
       deleteCompareLinesSubcollection(id),
       deletePlanDetailSubcollection(id),
+      deletePlanDetailSubcollection(id, PLAN_DETAIL_VALIDATED_SUB),
+      deletePlanDetailSubcollection(id, VALIDATION_CANCELLATIONS_SUB),
     ]);
 
     let deletedTasks = 0;
@@ -1830,6 +1853,93 @@ export async function rejectRemainderTask(input: {
   } catch (e: any) {
     console.error('rejectRemainderTask:', e);
     return { success: false, error: e?.message || 'No se pudo rechazar.' };
+  }
+}
+
+/**
+ * Admin/supervisor anula una validación hecha por error.
+ * - Validación de una devolución del operario → vuelve a "Pendiente validar" (submitted).
+ * - Validación directa del supervisor → se borra la tarea y la referencia vuelve a Disponibles.
+ * Restaura el detalle bodega+talla si quedó respaldado y reabre la comparación si estaba completada.
+ */
+export async function cancelRemainderValidation(input: {
+  taskId: string;
+  actorId: string;
+  actorName?: string;
+  reason: string;
+}): Promise<{ success: boolean; result?: 'submitted' | 'released'; restoredDetail?: boolean; error?: string }> {
+  try {
+    if (!input.taskId || !input.actorId) return { success: false, error: 'Faltan datos.' };
+    const reason = String(input.reason || '').trim();
+    if (!reason) return { success: false, error: 'Indique el motivo de la anulación.' };
+
+    const userSnap = await getDoc(doc(firestore, USERS_COL, input.actorId));
+    const role = userSnap.exists() ? String((userSnap.data() as { role?: string }).role || '') : '';
+    if (role !== 'admin' && role !== 'supervisor') {
+      return { success: false, error: 'Solo admin o supervisor pueden anular validaciones.' };
+    }
+
+    const taskRef = doc(firestore, TASKS_COL, input.taskId);
+    const snap = await getDoc(taskRef);
+    if (!snap.exists()) return { success: false, error: 'Tarea no encontrada.' };
+    const task = { id: snap.id, ...snap.data() } as DistributionRemainderTask;
+    if (task.status !== 'validated') return { success: false, error: 'La referencia no está validada.' };
+
+    const compareRef = doc(firestore, COL, task.compareId);
+    const compareSnap = await getDoc(compareRef);
+    if (!compareSnap.exists()) return { success: false, error: 'Comparación no encontrada.' };
+    const compareStatus = (compareSnap.data() as DistributionCompareOperation).status;
+    if (compareStatus === 'archived') {
+      return { success: false, error: 'La comparación está archivada; no se puede anular.' };
+    }
+
+    const isDirect =
+      !!task.submittedBy &&
+      task.submittedBy === task.validatedBy &&
+      !!task.submittedAt &&
+      task.submittedAt === task.validatedAt;
+    const now = new Date().toISOString();
+
+    await setDoc(doc(collection(firestore, COL, task.compareId, VALIDATION_CANCELLATIONS_SUB)), stripUndefinedDeep({
+      taskId: task.id,
+      reference: task.reference,
+      returnedQty: task.returnedQty,
+      validatedAt: task.validatedAt,
+      validatedBy: task.validatedBy,
+      validatedByName: task.validatedByName,
+      direct: isDirect,
+      reason,
+      cancelledAt: now,
+      cancelledBy: input.actorId,
+      cancelledByName: input.actorName,
+    }));
+
+    if (isDirect) {
+      await deleteDoc(taskRef);
+    } else {
+      await updateDoc(taskRef, {
+        status: 'submitted',
+        validatedAt: null,
+        validatedBy: null,
+        validatedByName: null,
+        validationCancelledAt: now,
+        validationCancelledBy: input.actorId,
+        validationCancelledByName: input.actorName || null,
+        validationCancelReason: reason,
+        updatedAt: now,
+      });
+    }
+
+    const restoredDetail = await restorePlanDetailForReference(task.compareId, task.reference);
+
+    if (compareStatus === 'completed') {
+      await updateDoc(compareRef, { status: 'in_progress', updatedAt: now });
+    }
+    await refreshCompareWorkflowStatus(task.compareId);
+    return { success: true, result: isDirect ? 'released' : 'submitted', restoredDetail };
+  } catch (e: any) {
+    console.error('cancelRemainderValidation:', e);
+    return { success: false, error: e?.message || 'No se pudo anular la validación.' };
   }
 }
 

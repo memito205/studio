@@ -893,16 +893,63 @@ const SupervisorView: React.FC<{
     sessions: SavedVerification[];
     onSelectSession: (session: SavedVerification) => void;
 }> = ({ sessions, onSelectSession }) => {
-    const pendingSessions = sessions.filter(s => s.status !== 'completed');
+    const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc');
+    const [dateFrom, setDateFrom] = useState('');
+    const [dateTo, setDateTo] = useState('');
+    const [nameFilter, setNameFilter] = useState('');
+    const allPending = useMemo(() => sessions.filter(s => s.status !== 'completed'), [sessions]);
+    const pendingSessions = useMemo(() => {
+        const from = dateFrom ? new Date(`${dateFrom}T00:00:00`).getTime() : null;
+        const to = dateTo ? new Date(`${dateTo}T23:59:59.999`).getTime() : null;
+        const q = nameFilter.trim().toLowerCase();
+        return allPending
+            .filter((s) => {
+                const t = new Date(s.createdAt).getTime();
+                if (from !== null && t < from) return false;
+                if (to !== null && t > to) return false;
+                if (q && !s.name.toLowerCase().includes(q)) return false;
+                return true;
+            })
+            .sort((a, b) => {
+                const diff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+                return sortDir === 'asc' ? diff : -diff;
+            });
+    }, [allPending, dateFrom, dateTo, nameFilter, sortDir]);
+    const hasFilters = !!(dateFrom || dateTo || nameFilter);
     return (
         <Card>
             <CardHeader>
                 <CardTitle>Sesiones de Verificación Pendientes</CardTitle>
                 <CardDescription>Seleccione una sesión para iniciar o continuar con el pistoleo.</CardDescription>
+                <div className="flex flex-wrap items-end gap-3 pt-2">
+                    <div className="space-y-1">
+                        <Label className="text-xs">Buscar</Label>
+                        <Input value={nameFilter} onChange={(e) => setNameFilter(e.target.value)} placeholder="Nombre de la sesión" className="h-8 w-56 text-xs" />
+                    </div>
+                    <div className="space-y-1">
+                        <Label className="text-xs">Desde</Label>
+                        <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="h-8 w-40 text-xs" />
+                    </div>
+                    <div className="space-y-1">
+                        <Label className="text-xs">Hasta</Label>
+                        <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="h-8 w-40 text-xs" />
+                    </div>
+                    <Button type="button" size="sm" variant="outline" onClick={() => setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))}>
+                        {sortDir === 'desc' ? 'Más recientes primero' : 'Más antiguas primero'}
+                    </Button>
+                    {hasFilters ? (
+                        <Button type="button" size="sm" variant="ghost" onClick={() => { setDateFrom(''); setDateTo(''); setNameFilter(''); }}>
+                            Limpiar filtros
+                        </Button>
+                    ) : null}
+                    <span className="text-xs text-muted-foreground">{pendingSessions.length} de {allPending.length}</span>
+                </div>
             </CardHeader>
             <CardContent>
                 {pendingSessions.length === 0 ? (
-                    <p className="text-center text-muted-foreground py-8">No hay verificaciones pendientes.</p>
+                    <p className="text-center text-muted-foreground py-8">
+                        {hasFilters ? 'No hay verificaciones pendientes con esos filtros.' : 'No hay verificaciones pendientes.'}
+                    </p>
                 ) : (
                     <Table>
                         <TableHeader><TableRow><TableHead>Nombre</TableHead><TableHead>Fecha Creación</TableHead><TableHead>Estado</TableHead><TableHead>Progreso</TableHead><TableHead></TableHead></TableRow></TableHeader>
@@ -910,7 +957,7 @@ const SupervisorView: React.FC<{
                             {pendingSessions.map(session => (
                                 <TableRow key={session.id}>
                                     <TableCell>{session.name}</TableCell>
-                                    <TableCell>{format(new Date(session.createdAt), 'dd/MM/yyyy')}</TableCell>
+                                    <TableCell className="whitespace-nowrap">{format(new Date(session.createdAt), 'dd/MM/yyyy HH:mm')}</TableCell>
                                     <TableCell>
                                       <div className="flex flex-wrap gap-1">
                                         <Badge variant={session.status === 'in-progress' ? 'default' : 'secondary'}>{session.status}</Badge>
