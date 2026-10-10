@@ -15,7 +15,7 @@ const cleanPoint = (v: string) => String(v || '').trim().toUpperCase().replace(/
  * Filas cuyo "TF" es texto (SOBRE, DOCUMENTOS…) = envío sin TF, una tarea por fila.
  */
 export function planToRouteTasks(plan: VehiclePlan): NewRouteTask[] {
-  const byTf = new Map<string, NewRouteTask & { idx: number }>();
+  const byTf = new Map<string, NewRouteTask & { idx: number; deliverIdx?: number }>();
   plan.tasks.forEach((t, idx) => {
     const tf = String(t.tf || '').trim();
     if (!tf) return;
@@ -30,6 +30,7 @@ export function planToRouteTasks(plan: VehiclePlan): NewRouteTask[] {
       if (para && !cur.deliverPoint) cur.deliverPoint = cleanPoint(para[1]);
     } else {
       cur.deliverPoint = cleanPoint(t.valor || '');
+      cur.deliverIdx = idx;
     }
     const extra = [t.seEnviaCon, t.observaciones].filter(Boolean).join(' · ');
     if (extra) cur.notes = cur.notes ? `${cur.notes} · ${extra}` : extra;
@@ -37,7 +38,13 @@ export function planToRouteTasks(plan: VehiclePlan): NewRouteTask[] {
   });
   return Array.from(byTf.values())
     .sort((a, b) => a.idx - b.idx)
-    .map(({ idx, ...t }) => ({ ...t, deliverPoint: t.deliverPoint || 'BODEGA', order: idx + 1, notes: t.notes?.slice(0, 300) }));
+    .map(({ idx, deliverIdx, ...t }) => ({
+      ...t,
+      deliverPoint: t.deliverPoint || 'BODEGA',
+      order: idx + 1,
+      deliverOrder: deliverIdx !== undefined ? deliverIdx + 1 : undefined,
+      notes: t.notes?.slice(0, 300),
+    }));
 }
 
 export const SendRouteToAppModal: React.FC<{ plan: VehiclePlan; onClose: () => void }> = ({ plan, onClose }) => {

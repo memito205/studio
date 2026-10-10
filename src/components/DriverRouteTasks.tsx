@@ -27,7 +27,17 @@ const NOT_PICKED_REASONS = [
   'Otro',
 ];
 
-type Group = { key: string; point: string; kind: 'recoger' | 'entregar'; deliverType: DriverRouteTask['deliverType']; tasks: DriverRouteTask[] };
+type Group = {
+  key: string;
+  point: string;
+  kind: 'recoger' | 'entregar';
+  deliverType: DriverRouteTask['deliverType'];
+  tasks: DriverRouteTask[];
+  /** Entrega visible en su parada pero aún sin recoger: no se puede registrar. */
+  locked?: boolean;
+  sortOrder: number;
+  stop: number;
+};
 type Gps = { lat: number; lng: number; accuracyM?: number; at: string };
 
 const newId = () =>
@@ -52,19 +62,62 @@ function captureGps(): Promise<Gps | null> {
   });
 }
 
-export function groupRouteTasks(tasks: DriverRouteTask[]): Group[] {
+const NO_ORDER = 9999;
+
+const deliverOrderOf = (t: DriverRouteTask) => t.deliverOrder ?? (t.pickupPoint ? NO_ORDER : t.order ?? NO_ORDER);
+
+/**
+ * Paradas en el orden del planificador: en cada punto, lo que se recoge y lo que se entrega.
+ * La entrega de una TF aún sin recoger se muestra bloqueada en su punto de entrega.
+ * `queuedTaskIds`: registros guardados en el celular que aún se están enviando.
+ */
+export function groupRouteTasks(tasks: DriverRouteTask[], queuedTaskIds: Set<string> = new Set()): Group[] {
   const map = new Map<string, Group>();
-  tasks.forEach((t) => {
-    const kind = t.status === 'por_recoger' ? 'recoger' : 'entregar';
-    const point = kind === 'recoger' ? t.pickupPoint || t.bodegaOrigen || 'Sin punto' : t.deliverPoint;
-    const key = `${kind}|${point}|${kind === 'entregar' ? t.deliverType : ''}`;
-    const g = map.get(key) || { key, point, kind, deliverType: t.deliverType, tasks: [] };
+  const add = (key: string, base: Omit<Group, 'key' | 'tasks' | 'sortOrder' | 'stop'>, t: DriverRouteTask, ord: number) => {
+    const g = map.get(key) || { key, ...base, tasks: [], sortOrder: ord, stop: 0 };
     g.tasks.push(t);
+    g.sortOrder = Math.min(g.sortOrder, ord);
     map.set(key, g);
+  };
+  tasks.forEach((t) => {
+    const queued = queuedTaskIds.has(t.id);
+    if (t.status === 'por_recoger') {
+      if (!queued) {
+        const point = t.pickupPoint || t.bodegaOrigen || 'Sin punto';
+        add(`recoger|${point}`, { point, kind: 'recoger', deliverType: t.deliverType }, t, t.order ?? NO_ORDER);
+      }
+      add(
+        `pendiente|${t.deliverPoint}|${t.deliverType}`,
+        { point: t.deliverPoint, kind: 'entregar', deliverType: t.deliverType, locked: true },
+        t,
+        deliverOrderOf(t)
+      );
+    } else if (!queued) {
+      add(`entregar|${t.deliverPoint}|${t.deliverType}`, { point: t.deliverPoint, kind: 'entregar', deliverType: t.deliverType }, t, deliverOrderOf(t));
+    }
   });
-  return Array.from(map.values()).sort(
-    (a, b) => (a.kind === b.kind ? 0 : a.kind === 'recoger' ? -1 : 1) || Math.min(...a.tasks.map((t) => t.order ?? 9999)) - Math.min(...b.tasks.map((t) => t.order ?? 9999))
+  const groups = Array.from(map.values());
+  const pointOrder = new Map<string, number>();
+  groups.forEach((g) => pointOrder.set(g.point, Math.min(pointOrder.get(g.point) ?? NO_ORDER, g.sortOrder)));
+  const rank = (g: Group) => (g.kind === 'recoger' ? 0 : g.locked ? 2 : 1);
+  groups.sort(
+    (a, b) =>
+      pointOrder.get(a.point)! - pointOrder.get(b.point)! ||
+      (pointOrder.get(a.point)! === NO_ORDER ? rank(a) - rank(b) : 0) ||
+      a.point.localeCompare(b.point) ||
+      a.sortOrder - b.sortOrder ||
+      rank(a) - rank(b)
   );
+  let stop = 0;
+  let lastPoint = '';
+  groups.forEach((g) => {
+    if (g.point !== lastPoint) {
+      stop++;
+      lastPoint = g.point;
+    }
+    g.stop = stop;
+  });
+  return groups;
 }
 
 const RouteTaskForm: React.FC<{
@@ -345,13 +398,13 @@ export const DriverRouteTasksSection: React.FC<{
   onReload: () => void;
   onOpenForm: (form: { group: Group; action: RouteTaskAction } | null) => void;
 }> = ({ tasks, loading, queuedTaskIds, onReload, onOpenForm }) => {
-  const groups = useMemo(() => groupRouteTasks(tasks.filter((t) => !queuedTaskIds.has(t.id))), [tasks, queuedTaskIds]);
+  const groups = useMemo(() => groupRouteTasks(tasks, queuedTaskIds), [tasks, queuedTaskIds]);
   const pendingSend = tasks.filter((t) => queuedTaskIds.has(t.id)).length;
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold">Recolecciones asignadas</h2>
+        <h2 className="text-lg font-bold">Mi ruta: recolecciones y entregas</h2>
         <Button size="sm" variant="ghost" onClick={onReload} disabled={loading}>
           <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
         </Button>
@@ -360,10 +413,13 @@ export const DriverRouteTasksSection: React.FC<{
       {loading && tasks.length === 0 ? (
         <div className="py-4 text-center"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></div>
       ) : groups.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No tiene recolecciones pendientes.</p>
+        <p className="text-sm text-muted-foreground">No tiene recolecciones ni entregas pendientes.</p>
       ) : (
-        groups.map((g) => (
-          <Card key={g.key}>
+        groups.map((g, i) => (
+          <Card key={g.key} className={cn(g.locked && 'border-dashed bg-muted/30')}>
+            {(i === 0 || groups[i - 1].stop !== g.stop) && (
+              <p className="px-6 pt-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Parada {g.stop}</p>
+            )}
             <CardHeader className="pb-2">
               <div className="flex items-start justify-between gap-2">
                 <div>
@@ -372,15 +428,26 @@ export const DriverRouteTasksSection: React.FC<{
                     {g.tasks.length} envío(s) · {g.tasks.reduce((n, t) => n + (t.unidades || 0), 0)} und · placa {g.tasks[0].placa}
                   </CardDescription>
                 </div>
-                <Badge className={g.kind === 'recoger' ? 'bg-blue-600 text-white' : 'bg-emerald-600 text-white'}>
+                <Badge className={g.locked ? 'bg-gray-400 text-white' : g.kind === 'recoger' ? 'bg-blue-600 text-white' : 'bg-emerald-600 text-white'}>
                   {g.kind === 'recoger' ? 'Recoger' : g.deliverType === 'bodega' ? 'Dejar en bodega' : 'Entregar'}
                 </Badge>
               </div>
             </CardHeader>
             <CardContent className="space-y-2">
               <p className="text-xs text-muted-foreground">
-                {g.tasks.map((t) => `${routeTaskLabel(t)}${g.kind === 'recoger' ? ` → ${t.deliverPoint}` : ''}`).join(' · ')}
+                {g.tasks
+                  .map((t) =>
+                    `${routeTaskLabel(t)}${g.kind === 'recoger' ? ` → ${t.deliverPoint}` : ''}${
+                      g.locked ? (queuedTaskIds.has(t.id) ? ' (recogida enviándose)' : ` (recoger primero en ${t.pickupPoint || 'origen'})`) : ''
+                    }`
+                  )
+                  .join(' · ')}
               </p>
+              {g.locked ? (
+                <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
+                  Se habilita cuando se registre la recogida y se actualice la lista.
+                </p>
+              ) : (
               <div className="grid grid-cols-2 gap-2">
                 <Button onClick={() => onOpenForm({ group: g, action: g.kind === 'recoger' ? 'recoger' : 'entregar' })}>
                   <PackageCheck className="mr-2 h-4 w-4" /> {g.kind === 'recoger' ? 'Recoger' : 'Entregar'}
@@ -389,6 +456,7 @@ export const DriverRouteTasksSection: React.FC<{
                   <PackageX className="mr-2 h-4 w-4" /> {g.kind === 'recoger' ? 'No recogida' : 'No entregada'}
                 </Button>
               </div>
+              )}
             </CardContent>
           </Card>
         ))

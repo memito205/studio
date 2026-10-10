@@ -718,7 +718,10 @@ export interface DriverRouteTask {
     driverName: string;
     placa: string;
     day: string;
+    /** Posición en la ruta del planificador (fila de recogida, o de entrega si no hay recogida). */
     order?: number;
+    /** Posición de la fila de entrega en el planificador cuando hay recogida antes. */
+    deliverOrder?: number;
     source: 'transferencias' | 'planificador';
     notes?: string;
     createdAt: Date;

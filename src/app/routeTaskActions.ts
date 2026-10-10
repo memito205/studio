@@ -110,6 +110,7 @@ export type NewRouteTask = {
   pickupPoint?: string;
   deliverPoint: string;
   order?: number;
+  deliverOrder?: number;
   notes?: string;
 };
 
@@ -251,6 +252,7 @@ export async function createRouteTasks(input: {
           placa,
           day: input.day,
           order: t.order,
+          deliverOrder: t.deliverOrder,
           source: input.source,
           notes: t.notes?.trim() || undefined,
           reassignedFrom: input.reassignedFrom?.[tf],
