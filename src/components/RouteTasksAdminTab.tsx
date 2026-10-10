@@ -7,6 +7,7 @@ import { Download, Loader2, Search } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { getRouteTasksByRange } from '@/app/routeTaskActions';
 import { ROUTE_TASK_STATUS } from '@/components/RouteTasksAssignView';
+import { deliverOrderOf } from '@/components/DriverRouteTasks';
 import type { DriverRouteTask, DriverRouteTaskPhoto, DriverRouteTaskStatus } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -29,6 +30,106 @@ const Photos: React.FC<{ list?: DriverRouteTaskPhoto[] }> = ({ list }) =>
     </div>
   ) : null;
 
+type StopLine = { task: DriverRouteTask; kind: 'recoger' | 'entregar'; state: 'hecho' | 'novedad' | 'pendiente' | 'bloqueada'; order: number };
+type DriverRoute = {
+  key: string;
+  driverName: string;
+  placa: string;
+  day: string;
+  total: number;
+  picked: number;
+  withPickup: number;
+  delivered: number;
+  pending: number;
+  failed: number;
+  lastAt?: Date;
+  stops: Array<{ n: number; point: string; lines: StopLine[] }>;
+};
+
+const routeKey = (t: DriverRouteTask) => `${t.day}|${t.driverId}`;
+
+/** Avance por mensajero y día, con sus paradas en el orden del planificador (sin lecturas extra). */
+function buildDriverRoutes(tasks: DriverRouteTask[]): DriverRoute[] {
+  const byKey = new Map<string, DriverRouteTask[]>();
+  tasks
+    .filter((t) => t.status !== 'cancelada')
+    .forEach((t) => byKey.set(routeKey(t), [...(byKey.get(routeKey(t)) || []), t]));
+  return Array.from(byKey.entries())
+    .map(([key, list]) => {
+      const lines: Array<StopLine & { point: string }> = [];
+      list.forEach((t) => {
+        if (t.pickupPoint) {
+          lines.push({
+            task: t,
+            kind: 'recoger',
+            point: t.pickupPoint,
+            order: t.order ?? 9999,
+            state: t.pickedAt ? 'hecho' : t.status === 'no_recogida' ? 'novedad' : 'pendiente',
+          });
+        }
+        if (t.status === 'no_recogida') return;
+        lines.push({
+          task: t,
+          kind: 'entregar',
+          point: t.deliverPoint,
+          order: deliverOrderOf(t),
+          state:
+            t.status === 'entregada' ? 'hecho' : t.status === 'no_entregada' ? 'novedad' : t.status === 'por_recoger' ? 'bloqueada' : 'pendiente',
+        });
+      });
+      const pointOrder = new Map<string, number>();
+      lines.forEach((l) => pointOrder.set(l.point, Math.min(pointOrder.get(l.point) ?? 9999, l.order)));
+      const points = Array.from(pointOrder.keys()).sort((a, b) => pointOrder.get(a)! - pointOrder.get(b)! || a.localeCompare(b));
+      const stops = points.map((point, i) => ({
+        n: i + 1,
+        point,
+        lines: lines
+          .filter((l) => l.point === point)
+          .sort((a, b) => a.order - b.order || (a.kind === 'recoger' ? -1 : 1)),
+      }));
+      const times = list
+        .flatMap((t) => [t.pickedAt, t.deliveredAt, t.failedAt])
+        .filter(Boolean)
+        .map((d) => new Date(d as Date).getTime());
+      return {
+        key,
+        driverName: list[0].driverName,
+        placa: list[0].placa,
+        day: list[0].day,
+        total: list.length,
+        picked: list.filter((t) => !!t.pickedAt).length,
+        withPickup: list.filter((t) => !!t.pickupPoint).length,
+        delivered: list.filter((t) => t.status === 'entregada').length,
+        pending: list.filter((t) => t.status === 'por_recoger' || t.status === 'por_entregar').length,
+        failed: list.filter((t) => t.status === 'no_recogida' || t.status === 'no_entregada').length,
+        lastAt: times.length ? new Date(Math.max(...times)) : undefined,
+        stops,
+      };
+    })
+    .sort((a, b) => b.day.localeCompare(a.day) || a.driverName.localeCompare(b.driverName));
+}
+
+const LINE_STATE: Record<StopLine['state'], string> = {
+  hecho: 'text-green-700',
+  novedad: 'text-red-700',
+  pendiente: 'text-amber-700',
+  bloqueada: 'text-muted-foreground',
+};
+
+function lineText(l: StopLine): string {
+  const t = l.task;
+  const what = t.kind === 'libre' ? `${t.description || t.numeroTF}` : `TF ${t.numeroTF}`;
+  if (l.kind === 'recoger') {
+    if (l.state === 'hecho') return `Recogió ${what} · ${fmt(t.pickedAt)}`;
+    if (l.state === 'novedad') return `No recogió ${what} · ${t.failReason || ''}`;
+    return `Por recoger ${what} (→ ${t.deliverPoint})`;
+  }
+  if (l.state === 'hecho') return `Entregó ${what} · ${fmt(t.deliveredAt)}${t.receivedByName ? ` · recibió ${t.receivedByName}` : ''}`;
+  if (l.state === 'novedad') return `No entregó ${what} · ${t.failReason || ''}`;
+  if (l.state === 'bloqueada') return `Entregar ${what} (falta recogerla en ${t.pickupPoint})`;
+  return `Por entregar ${what}`;
+}
+
 /** Recolecciones de ruta por día: 1 consulta por día (sin carga automática). */
 export function RouteTasksAdminTab() {
   const { toast } = useToast();
@@ -38,6 +139,7 @@ export function RouteTasksAdminTab() {
   const [tasks, setTasks] = useState<DriverRouteTask[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<DriverRouteTaskStatus | 'todas'>('todas');
+  const [routeSel, setRouteSel] = useState<string | null>(null);
   const day = from === to ? from : `${from}_a_${to}`;
 
   const load = async () => {
@@ -46,6 +148,7 @@ export function RouteTasksAdminTab() {
     setLoading(false);
     if (res.error) toast({ variant: 'destructive', title: 'Error', description: res.error });
     setTasks(res.data || []);
+    setRouteSel(null);
   };
 
   const kpi = useMemo(() => {
@@ -57,9 +160,13 @@ export function RouteTasksAdminTab() {
     return { c, assigned, picked, withPickup };
   }, [tasks]);
 
+  const routes = useMemo(() => buildDriverRoutes(tasks || []), [tasks]);
+  const selectedRoute = routes.find((r) => r.key === routeSel);
+
   const needle = text.trim().toUpperCase();
   const visible = (tasks || []).filter(
     (t) =>
+      (!routeSel || routeKey(t) === routeSel) &&
       (filter === 'todas' || t.status === filter) &&
       (!needle ||
         [t.numeroTF, t.description, t.refText, t.pickupPoint, t.deliverPoint, t.driverName, t.placa, t.receivedByName, t.notes]
@@ -136,6 +243,73 @@ export function RouteTasksAdminTab() {
                 </div>
               ))}
             </div>
+            {routes.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-sm font-semibold">Avance por mensajero</p>
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {routes.map((r) => {
+                    const done = r.pending === 0;
+                    const sel = routeSel === r.key;
+                    return (
+                      <button
+                        key={r.key}
+                        type="button"
+                        onClick={() => setRouteSel(sel ? null : r.key)}
+                        className={`rounded-md border p-3 text-left transition ${sel ? 'border-blue-600 ring-2 ring-blue-200' : 'hover:bg-muted/50'}`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-semibold">{r.driverName}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {r.placa}
+                              {from !== to ? ` · ${r.day}` : ''}
+                              {r.lastAt ? ` · último registro ${fmt(r.lastAt)}` : ''}
+                            </p>
+                          </div>
+                          <Badge
+                            className={
+                              !done ? 'bg-amber-500 text-white' : r.failed > 0 ? 'bg-orange-600 text-white' : 'bg-green-600 text-white'
+                            }
+                          >
+                            {!done ? `Faltan ${r.pending}` : r.failed > 0 ? 'Finalizada con novedades' : 'Ruta completa'}
+                          </Badge>
+                        </div>
+                        <div className="mt-2 h-2 overflow-hidden rounded bg-muted">
+                          <div className="h-full bg-green-600" style={{ width: `${Math.round(((r.total - r.pending) / r.total) * 100)}%` }} />
+                        </div>
+                        <p className="mt-2 text-xs">
+                          {r.total} TF/envíos · recogidas {r.picked}/{r.withPickup} · entregadas {r.delivered}
+                          {r.failed > 0 && <span className="text-red-700"> · {r.failed} novedad(es)</span>}
+                        </p>
+                      </button>
+                    );
+                  })}
+                </div>
+                {selectedRoute && (
+                  <div className="space-y-2 rounded-md border p-3">
+                    <p className="text-sm font-semibold">
+                      Ruta de {selectedRoute.driverName} · {selectedRoute.day}
+                      <span className="ml-2 text-xs font-normal text-muted-foreground">La tabla de abajo quedó filtrada a este mensajero.</span>
+                    </p>
+                    {selectedRoute.stops.map((s) => (
+                      <div key={s.point} className="rounded border p-2">
+                        <p className="text-xs font-semibold uppercase text-muted-foreground">
+                          Parada {s.n} · <span className="text-foreground">{s.point}</span>
+                        </p>
+                        <ul className="mt-1 space-y-0.5 text-xs">
+                          {s.lines.map((l) => (
+                            <li key={`${l.task.id}-${l.kind}`} className={LINE_STATE[l.state]}>
+                              {l.state === 'hecho' ? '✓ ' : l.state === 'novedad' ? '✗ ' : '○ '}
+                              {lineText(l)}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               <Badge variant={filter === 'todas' ? 'default' : 'outline'} className="cursor-pointer" onClick={() => setFilter('todas')}>Todas ({tasks.length})</Badge>
               {(Object.keys(ROUTE_TASK_STATUS) as DriverRouteTaskStatus[]).map((s) => (

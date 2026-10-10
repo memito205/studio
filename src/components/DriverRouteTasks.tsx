@@ -64,7 +64,7 @@ function captureGps(): Promise<Gps | null> {
 
 const NO_ORDER = 9999;
 
-const deliverOrderOf = (t: DriverRouteTask) => t.deliverOrder ?? (t.pickupPoint ? NO_ORDER : t.order ?? NO_ORDER);
+export const deliverOrderOf = (t: DriverRouteTask) => t.deliverOrder ?? (t.pickupPoint ? NO_ORDER : t.order ?? NO_ORDER);
 
 /**
  * Paradas en el orden del planificador: en cada punto, lo que se recoge y lo que se entrega.
