@@ -2078,6 +2078,26 @@ export async function finishTalladoUnit(input: {
   }
 }
 
+/** Código de barras de TF impresa: DESTINO-TF (ej. 20801-638269). */
+const DESTINO_TF_RE = /^([A-Z0-9]{2,10})-(\d{5,9})$/;
+
+/**
+ * Si el código es DESTINO-TF y existe esa TF con ese destino, devuelve el número de TF.
+ * Así cuenta igual que escanear el TF solo (mismo duplicado / mismas líneas).
+ */
+async function resolveDestinoTfScanCode(scanCode: string): Promise<string | null> {
+  const m = scanCode.match(DESTINO_TF_RE);
+  if (!m) return null;
+  const [, destino, tf] = m;
+  const snap = await getDocs(
+    query(collection(firestore, TRANSFERS_COL), where('numeroTF', '==', tf), limit(50))
+  );
+  const sameDest = snap.docs.some(
+    (d) => String(d.data().bodegaDestino || '').trim().toUpperCase() === destino
+  );
+  return sameDest ? tf : null;
+}
+
 /** Escaneo: 1 lectura confirma la unidad (done). Si hay in_progress legado → cierra Fin. */
 export async function scanTalladoCode(input: {
   shiftId: string;
@@ -2099,8 +2119,9 @@ export async function scanTalladoCode(input: {
   error?: string;
 }> {
   try {
-    const scanCode = normalizeTalladoScanCode(input.rawCode);
-    if (!scanCode) return { success: false, error: 'Código vacío.' };
+    const normalized = normalizeTalladoScanCode(input.rawCode);
+    if (!normalized) return { success: false, error: 'Código vacío.' };
+    const scanCode = (await resolveDestinoTfScanCode(normalized)) || normalized;
 
     const prior = await findUnitsMatchingCode(scanCode);
     const openMatches = prior
