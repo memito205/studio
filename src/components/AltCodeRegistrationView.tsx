@@ -20,6 +20,7 @@ import { useAuth } from '@/hooks/use-auth-context';
 import {
   correctAltCodeReceipt,
   getAltCodeReceipts,
+  getAltCodeReceiptById,
   getWarehouseLocationConfig,
   linkPendingAltCodeReceipts,
   loadOperatorMappings,
@@ -292,8 +293,23 @@ export function AltCodeRegistrationView() {
       void: 'Registro anulado.',
     };
     toast({ title: 'Listo', description: messages[action.mode] });
+    const receiptId = action.receipt.id;
     setAction(null);
-    refreshLists();
+    // Solo cambió este registro: actualizar su fila en vez de releer las dos listas.
+    const fresh = await getAltCodeReceiptById(receiptId);
+    if (!fresh.data) {
+      refreshLists();
+      return;
+    }
+    const updated = fresh.data;
+    setTodayList((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+    setPendingList((prev) =>
+      updated.status === 'pending'
+        ? prev.some((r) => r.id === updated.id)
+          ? prev.map((r) => (r.id === updated.id ? updated : r))
+          : [...prev, updated].sort((a, b) => a.registeredAt.localeCompare(b.registeredAt))
+        : prev.filter((r) => r.id !== updated.id)
+    );
   };
 
   const visiblePending = onlyStale ? pendingList.filter((r) => hoursSince(r.registeredAt) >= STALE_HOURS) : pendingList;

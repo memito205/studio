@@ -7,17 +7,47 @@ import { FirebaseError } from 'firebase/app';
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   limit,
   orderBy,
   query,
+  setDoc,
   Timestamp,
   updateDoc,
 } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
+import { readLocalSnapshot, writeLocalSnapshot } from '@/lib/localSnapshotCache';
 import type { ExternalServiceRow } from '@/types';
 
 const COL = 'externalServices';
+const SNAPSHOT_KEY = 'externalServices';
+
+/** Debe cambiar en toda escritura de `externalServices` (también en `saveExternalServiceRows` de actions.ts). */
+function externalServicesVersionRef() {
+  return doc(firestore, 'systemCache', 'externalServicesVersion');
+}
+
+async function bumpExternalServicesVersion(): Promise<string | null> {
+  const version = `${Date.now()}`;
+  try {
+    await setDoc(externalServicesVersionRef(), { version, at: Timestamp.now() });
+    return version;
+  } catch {
+    return null;
+  }
+}
+
+async function readExternalServicesVersion(): Promise<string | null> {
+  try {
+    const snap = await getDoc(externalServicesVersionRef());
+    const v = snap.exists() ? snap.data()?.version : null;
+    if (typeof v === 'string' && v) return v;
+    return await bumpExternalServicesVersion();
+  } catch {
+    return null;
+  }
+}
 
 export function formatExternalServicesError(e: unknown): string {
   if (e instanceof FirebaseError) {
@@ -85,9 +115,17 @@ export async function getExternalServiceRows(): Promise<{
     if (!firestore) {
       return { success: false, error: 'Firestore no inicializado.' };
     }
+    const [version, local] = await Promise.all([
+      readExternalServicesVersion(),
+      readLocalSnapshot<ExternalServiceRow[]>(SNAPSHOT_KEY),
+    ]);
+    if (version && local && local.version === version && Array.isArray(local.data)) {
+      return { success: true, data: local.data };
+    }
     const q = query(collection(firestore, COL), orderBy('fechaServicio', 'desc'), limit(1000));
     const snap = await getDocs(q);
     const rows = snap.docs.map((d) => rowFromDoc(d.id, d.data() as Record<string, unknown>));
+    if (version) void writeLocalSnapshot(SNAPSHOT_KEY, version, rows);
     return { success: true, data: rows };
   } catch (e) {
     console.error('[getExternalServiceRows]', e);
@@ -115,6 +153,7 @@ export async function updateExternalServiceRow(
       return { success: true };
     }
     await updateDoc(doc(firestore, COL, docId), payload);
+    await bumpExternalServicesVersion();
     return { success: true };
   } catch (e) {
     console.error('[updateExternalServiceRow]', idOrRow, updates, e);

@@ -36,7 +36,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { loadTransfersForDispatch, saveVerificationSession, getAltCodeReceipts } from '@/app/actions';
+import { loadTransfersForDispatch, saveVerificationSession, getPendingAltCodeReceipts } from '@/app/actions';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
@@ -226,7 +226,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
             upsertWarehouse(warehouseByTf, tfKey, t);
         });
 
-        const pendingRes = await getAltCodeReceipts();
+        const pendingRes = await getPendingAltCodeReceipts();
         setPendingAltReceipts(pendingRes.pending || []);
         const linesByTfDest = new Map<string, typeof receivedInWarehouseTransfers>();
         receivedInWarehouseTransfers.forEach((t) => {

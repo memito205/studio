@@ -4460,13 +4460,42 @@ export async function syncAnalysisRecords(
         };
 
         // 1) Escribir todo lo nuevo/actualizado. 2) Solo entonces podar ausentes.
-        await commitOps(upsertOps);
-        if (deleteOps.length) await commitOps(deleteOps);
+        try {
+            await commitOps(upsertOps);
+            if (deleteOps.length) await commitOps(deleteOps);
+        } finally {
+            // Aun si falla a mitad, la colección pudo cambiar: invalidar copias locales.
+            await bumpAnalysisVersion();
+        }
 
         return { success: true, count: incomingDocs.size, pruned: deleteOps.length };
     } catch (error: any) {
         console.error('Error syncing analysis records:', error);
         return { success: false, error: error.message };
+    }
+}
+
+const ANALYSIS_VERSION_REF = () => doc(firestore, 'systemCache', 'analysisVersion');
+
+async function bumpAnalysisVersion() {
+    await setDoc(ANALYSIS_VERSION_REF(), { version: `${Date.now()}`, at: Timestamp.now() }).catch(() => undefined);
+}
+
+/**
+ * Versión de `transfers_analysis` (cambia en cada sincronización del Excel). El Analizador guarda una copia local
+ * y solo vuelve a leer la colección (~2.800 docs) si la versión cambió: 1 lectura por apertura.
+ */
+export async function getAnalysisVersion(): Promise<{ version?: string; error?: string }> {
+    try {
+        const snap = await getDoc(ANALYSIS_VERSION_REF());
+        if (!snap.exists()) {
+            await bumpAnalysisVersion();
+            const again = await getDoc(ANALYSIS_VERSION_REF());
+            return { version: String(again.data()?.version || '') || undefined };
+        }
+        return { version: String(snap.data().version || '') || undefined };
+    } catch (error: any) {
+        return { error: error.message || 'No se pudo leer la versión del análisis.' };
     }
 }
 
@@ -5874,6 +5903,28 @@ export async function voidAltCodeReceipt(receiptId: string, reason: string, acto
 }
 
 /** Registros del día (hora Bogotá) y todos los pendientes. */
+/** Solo pendientes de TF (el Gestor de despachos no usa la lista de hoy). */
+export async function getPendingAltCodeReceipts(): Promise<{ pending?: AltCodeReceipt[]; error?: string }> {
+    try {
+        const snap = await getDocs(query(collection(firestore, ALT_CODE_RECEIPTS), where('status', '==', 'pending')));
+        return {
+            pending: snap.docs.map((d) => toAltCodeReceipt(d.id, d.data())).sort((a, b) => a.registeredAt.localeCompare(b.registeredAt)),
+        };
+    } catch (error: any) {
+        return { error: error.message || 'No se pudieron cargar los pendientes.' };
+    }
+}
+
+/** Un registro (1 lectura) para refrescar la fila tras corregir / enlazar / anular, sin recargar las listas. */
+export async function getAltCodeReceiptById(id: string): Promise<{ data?: AltCodeReceipt; error?: string }> {
+    try {
+        const snap = await getDoc(doc(firestore, ALT_CODE_RECEIPTS, id));
+        return snap.exists() ? { data: toAltCodeReceipt(snap.id, snap.data()) } : { error: 'Registro no encontrado.' };
+    } catch (error: any) {
+        return { error: error.message || 'No se pudo leer el registro.' };
+    }
+}
+
 export async function getAltCodeReceipts(): Promise<{ today?: AltCodeReceipt[]; pending?: AltCodeReceipt[]; error?: string }> {
     try {
         const bogotaNow = new Date(Date.now() - 5 * 3600 * 1000);
@@ -7997,7 +8048,15 @@ export async function loadOperatorMappings(): Promise<{ data?: ManualOperatorMap
 
 // --- External Services Conciliation Actions ---
 
-export async function saveExternalServiceRows(rows: ExternalServiceRow[]): Promise<{ success: boolean; data?: { uploaded: number, skipped: number }, error?: string }> {
+/** Cambia en cada escritura de `externalServices`; la Conciliación reutiliza su copia local si no cambió. */
+async function bumpExternalServicesVersion() {
+    await setDoc(doc(firestore, 'systemCache', 'externalServicesVersion'), { version: `${Date.now()}`, at: Timestamp.now() }).catch(
+        () => undefined
+    );
+}
+
+export async function saveExternalServiceRows(rows: ExternalServiceRow[]): Promise<{ success: boolean; data?: { uploaded: number, skipped: number, uploadedIds: string[] }, error?: string }> {
+    const uploadedIds: string[] = [];
     try {
         const colRef = collection(firestore, 'externalServices');
         let uploaded = 0;
@@ -8015,15 +8074,18 @@ export async function saveExternalServiceRows(rows: ExternalServiceRow[]): Promi
                 if (!snap.exists()) {
                     batch.set(docRef, convertDatesToTimestamps({ ...row, id: docRef.id, createdAt: new Date() }));
                     uploaded++;
+                    uploadedIds.push(docRef.id);
                 } else {
                     skipped++;
                 }
             }
             await batch.commit();
         }
-        return { success: true, data: { uploaded, skipped } };
+        if (uploaded > 0) await bumpExternalServicesVersion();
+        return { success: true, data: { uploaded, skipped, uploadedIds } };
     } catch (e: any) {
         console.error("Error saving external services:", e);
+        if (uploadedIds.length > 0) await bumpExternalServicesVersion();
         return { success: false, error: e.message };
     }
 }
@@ -8047,6 +8109,7 @@ export async function updateExternalServiceRow(id: string, updates: Partial<Exte
     try {
         const docRef = doc(firestore, 'externalServices', id);
         await updateDoc(docRef, convertDatesToTimestamps(updates));
+        await bumpExternalServicesVersion();
         return { success: true };
     } catch (e: any) {
         return { success: false, error: e.message };

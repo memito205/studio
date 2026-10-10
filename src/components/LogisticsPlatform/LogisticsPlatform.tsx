@@ -20,7 +20,8 @@ import { findHeader, normalizeDate, formatDate, parseDateString, generatePending
 import type { AnalyzerRouteMatch } from './utils/helpers';
 import type { ExcelDataRow, BreaksReportData, ProcessedBreak, EmployeeDailyAnalysis, DailyAnalysis, WeeklyTrend, EmployeePerformance } from './types';
 import type { TransferEntry } from '@/types';
-import { loadAnalysisRecords, syncAnalysisRecords, persistTfPlatformStatuses, getAnalyzerAppStatusKeys, type OpenRouteTf } from '@/app/actions';
+import { loadAnalysisRecords, syncAnalysisRecords, persistTfPlatformStatuses, getAnalyzerAppStatusKeys, getAnalysisVersion, type OpenRouteTf } from '@/app/actions';
+import { readLocalSnapshot, writeLocalSnapshot } from '@/lib/localSnapshotCache';
 import { buildTfPlatformDocId, buildTfPlatformStatusRecords } from '@/lib/tfPlatformStatus';
 import { getAppPodIndex } from '@/app/podActions';
 import { buildAppPodIndex, overlayAppPods, type AppPodEntry } from '@/lib/podPlatform';
@@ -219,8 +220,17 @@ const WarehouseAnalyzer: React.FC = () => {
     setError(null);
     try {
         // Snapshot del último Excel (`transfers_analysis`) + estados del aplicativo en paralelo.
+        const loadAnalysisCached = async (): Promise<{ data?: any[]; error?: string }> => {
+          const [ver, local] = await Promise.all([getAnalysisVersion(), readLocalSnapshot<any[]>('transfers_analysis')]);
+          if (ver.version && local && local.version === ver.version && Array.isArray(local.data)) {
+            return { data: local.data };
+          }
+          const fresh = await loadAnalysisRecords();
+          if (fresh.data && ver.version) void writeLocalSnapshot('transfers_analysis', ver.version, fresh.data);
+          return fresh;
+        };
         const [result] = await Promise.all([
-          loadAnalysisRecords(),
+          loadAnalysisCached(),
           loadAppStatuses().catch((e) => setError(`Estados del aplicativo: ${e.message}`)),
         ]);
         if (result.error) {

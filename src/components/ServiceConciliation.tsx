@@ -94,6 +94,24 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
     };
     loadInitialData();
   }, []);
+
+  /** Igual a releer `externalServices` (fechaServicio desc, máx. 1000) pero sin volver a leer lo ya cargado. */
+  const mergeSavedRows = (rows: ExternalServiceRow[], uploadedIds?: string[]) => {
+    if (!uploadedIds) {
+      void getExternalServiceRows().then((r) => { if (r.success && r.data) setData(r.data); });
+      return;
+    }
+    const ids = new Set(uploadedIds);
+    const added = rows
+      .filter((r) => ids.has(r.duplicateHash))
+      .map((r) => ({ ...r, id: r.duplicateHash, createdAt: new Date() }));
+    if (added.length === 0) return;
+    setData((prev) =>
+      [...added, ...prev.filter((p) => !ids.has(p.id))]
+        .sort((a, b) => new Date(b.fechaServicio).getTime() - new Date(a.fechaServicio).getTime())
+        .slice(0, 1000)
+    );
+  };
   
   // Helpers
   const normalize = (str: string) => {
@@ -700,8 +718,7 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
         setIsSaving(false);
 
         if (res.success) {
-            const refreshRes = await getExternalServiceRows();
-            if (refreshRes.success && refreshRes.data) setData(refreshRes.data);
+            mergeSavedRows(cleanedData, res.data?.uploadedIds);
             toast({ 
                 title: "Carga Finalizada", 
                 description: `Subidos: ${res.data?.uploaded}. Omitidos (duplicados): ${res.data?.skipped}.` 
@@ -1177,8 +1194,7 @@ export const ServiceConciliation: React.FC<{ onReturn: () => void }> = ({ onRetu
              // For simplicity, we'll just save it to get an ID.
              const res = await saveExternalServiceRows([newRow]);
              if (res.success) {
-                const refresh = await getExternalServiceRows();
-                if (refresh.success && refresh.data) setData(refresh.data);
+                mergeSavedRows([newRow], res.data?.uploadedIds);
                 setActiveTab('logistica');
              }
          }} className="bg-indigo-600 text-white p-5 rounded-full shadow-2xl hover:scale-110 transition-all"><Plus size={28} /></button>
