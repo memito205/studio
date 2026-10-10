@@ -1353,7 +1353,9 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       });
       if (!res.success) throw new Error(res.error);
       toast({ title: 'Conteo borrado', description: `${label} quedó sin contar.` });
-      await loadLines();
+      setLines((prev) =>
+        prev.map((l) => (l.id === row.line.id ? { ...l, countedQty: null, countedAt: null, countedBy: null } : l))
+      );
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
@@ -1407,6 +1409,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
     setSavingScanCounts(true);
     try {
       const items: { lineIds: string[]; countedQty: number }[] = [];
+      let createdLines = false;
       for (const row of targets) {
         let lineIds = row.line.consolidatedLineIds?.length
           ? row.line.consolidatedLineIds
@@ -1428,6 +1431,7 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
             );
           }
           lineIds = [ensured.data.id];
+          createdLines = true;
         }
         items.push({ lineIds, countedQty: row.scannedQty });
       }
@@ -1445,7 +1449,20 @@ export const CyclicInventoryModule: React.FC<{ onReturnToSuite: () => void }> = 
       toast({ title: 'Escaneo', description: `Se guardaron ${save.saved ?? items.length} línea(s) de reconteo de ${scanLocation}.` });
       setScanSessionCounts({});
       setScanEvents([]);
-      await loadLines();
+      if (createdLines) {
+        await loadLines();
+      } else {
+        // Sin sobrantes nuevos basta con actualizar en memoria (recargar el día completo son ~1.000+ lecturas).
+        const savedAt = new Date().toISOString();
+        const qtyById = new Map(targets.map((r) => [r.line.id, r.scannedQty]));
+        setLines((prev) =>
+          prev.map((l) =>
+            qtyById.has(l.id)
+              ? { ...l, countedQty: qtyById.get(l.id)!, countedAt: savedAt, countedBy: user.uid }
+              : l
+          )
+        );
+      }
     } catch (e: unknown) {
       toast({
         variant: 'destructive',

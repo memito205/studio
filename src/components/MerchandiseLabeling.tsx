@@ -470,7 +470,13 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
         if (!soft) setIsLoading(false);
         setLoadingVendors(false);
 
+        // En el refresco automático solo cambian los logs de tareas vivas; las completadas ya están en memoria.
         const forMetrics = fetchedOps
+          .filter((op) =>
+            soft
+              ? op.status === 'En Progreso' || op.status === 'Pausada' || !activityLogsRef.current.has(op.id)
+              : op.status !== 'Pendiente' && op.status !== 'Asignada'
+          )
           .filter((op) => op.status !== 'Pendiente' && op.status !== 'Asignada')
           .slice(0, soft ? 25 : 40);
 
@@ -580,7 +586,7 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     if (!hasLivePack) return;
     const id = window.setInterval(() => {
       if (document.visibilityState === 'visible') void fetchOperationsAndProductivity({ soft: true });
-    }, 120000);
+    }, 300000);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [

@@ -1031,13 +1031,23 @@ export async function resolveReceptionLocationsForReferences(
   if (pending.length === 0) return out;
 
   try {
-    const itemsSnap = await getDocs(
-      query(
-        collection(firestore, 'scannedItems'),
-        where('reception_id', '==', receptionOperationId),
-        limit(800)
+    // Solo escaneos de las refs pendientes (antes: 800 escaneos de toda la recepción por llamada).
+    const refVariants = [
+      ...new Set(pending.flatMap((r) => [r, r.trim().toUpperCase(), normalizeReceptionReference(r)]).filter(Boolean)),
+    ];
+    const snaps = await Promise.all(
+      Array.from({ length: Math.ceil(refVariants.length / 30) }, (_, i) =>
+        getDocs(
+          query(
+            collection(firestore, 'scannedItems'),
+            where('reception_id', '==', receptionOperationId),
+            where('reference', 'in', refVariants.slice(i * 30, i * 30 + 30)),
+            limit(150)
+          )
+        )
       )
     );
+    const itemsSnap = { empty: snaps.every((s) => s.empty), docs: snaps.flatMap((s) => s.docs) };
     if (itemsSnap.empty) return out;
 
     const pendingNorm = new Map(

@@ -523,6 +523,41 @@ export async function getCyclicInventoryLinesForDate(inventoryDate: string): Pro
   }
 }
 
+/** Líneas del día de una sola referencia (consolidadas y con ajustes); evita leer el día completo. */
+export async function getCyclicInventoryLinesForReference(
+  inventoryDate: string,
+  reference: string
+): Promise<{ success: boolean; data?: CyclicInventoryLine[]; error?: string }> {
+  try {
+    const dateKey = String(inventoryDate || '').trim();
+    const ref = normRef(reference);
+    if (!isValidInventoryDateKey(dateKey)) return { success: false, error: 'Fecha inválida. Use AAAA-MM-DD.' };
+    if (!ref) return { success: false, error: 'Referencia requerida.' };
+    const snap = await getDocs(
+      query(collection(firestore, LINES_COL), where('inventoryDate', '==', dateKey), where('reference', '==', ref))
+    );
+    const data = snap.docs.map(
+      (d) => convertTimestampsToDates({ id: d.id, ...d.data() } as Record<string, unknown>) as unknown as CyclicInventoryLine
+    );
+    const consolidated = consolidateLinesByRefLocSize(data);
+    const adjustmentMap = await fetchAdjustmentDeltaPerKey(dateKey);
+    return {
+      success: true,
+      data: consolidated.map((line) => {
+        const delta = adjustmentMap.get(adjustmentRefLocSizeKey(line.reference, line.size ?? '', line.location)) ?? 0;
+        return {
+          ...line,
+          expectedQty: Math.max(0, Math.floor(Number(line.expectedQty) || 0) + delta),
+          expectedQtyBase: Math.max(0, Math.floor(Number(line.expectedQty) || 0)),
+          expectedQtyDelta: delta,
+        } as CyclicInventoryLine;
+      }),
+    };
+  } catch (e: unknown) {
+    return { success: false, error: e instanceof Error ? e.message : 'Error al cargar líneas.' };
+  }
+}
+
 export async function saveCyclicInventoryLineCount(input: {
   lineIds: string[];
   countedQty: number;

@@ -1465,6 +1465,14 @@ export async function getPodPlatformShare(opts: {
   to: string;
 }): Promise<{ data?: { entregados: number; app: number; quick: number; inferidos: number }; error?: string }> {
   try {
+    // Recorre ~1.700 docs del mes: caché compartida 10 min (el panel recarga tras cada aprobación/rechazo).
+    const cacheKey = `podShare_${opts.from}_${opts.to}`.replace(/[^\w-]/g, '_').slice(0, 300);
+    const cacheRef = doc(firestore, 'systemCache', cacheKey);
+    const cached = await getDoc(cacheRef);
+    const c = cached.exists() ? (cached.data() as any) : null;
+    if (c?.at?.toMillis && Date.now() - c.at.toMillis() < 10 * 60 * 1000) {
+      return { data: { entregados: c.entregados || 0, app: c.app || 0, quick: c.quick || 0, inferidos: c.inferidos || 0 } };
+    }
     const snap = await getDocs(
       query(
         collection(firestore, PLATFORM_COLLECTION),
@@ -1481,6 +1489,7 @@ export async function getPodPlatformShare(opts: {
       else if (r.entregaInferida) out.inferidos++;
       else out.quick++;
     });
+    await setDoc(cacheRef, { ...out, at: Timestamp.now() }).catch(() => undefined);
     return { data: out };
   } catch (error: any) {
     return { error: error.message || 'No se pudo calcular la fuente de las entregas.' };

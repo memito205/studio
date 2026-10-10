@@ -12,9 +12,7 @@ import { useToast } from '@/hooks/use-toast';
 import type { TalladoCyclicAggLine, TalladoUnit } from '@/types';
 import {
   confirmTalladoManualFromCyclic,
-  getTalladoCyclicAggForLocation,
   getTalladoCyclicDayBundle,
-  getTalladoCyclicLocationsForReference,
 } from '@/app/talladoMercanciaActions';
 import { talladoLocalDayKey } from '@/lib/talladoProductivity';
 
@@ -48,6 +46,7 @@ export function TalladoCyclicLocationPanel(props: {
   const [loadingIndex, setLoadingIndex] = useState(false);
   const [locations, setLocations] = useState<string[]>([]);
   const [references, setReferences] = useState<string[]>([]);
+  const [dayLines, setDayLines] = useState<TalladoCyclicAggLine[]>([]);
 
   const [locQuery, setLocQuery] = useState('');
   const [refQuery, setRefQuery] = useState('');
@@ -76,10 +75,12 @@ export function TalladoCyclicLocationPanel(props: {
         });
         setLocations([]);
         setReferences([]);
+        setDayLines([]);
         return;
       }
       setLocations(res.locations || []);
       setReferences(res.references || []);
+      setDayLines(res.lines || []);
     } finally {
       setLoadingIndex(false);
     }
@@ -104,33 +105,29 @@ export function TalladoCyclicLocationPanel(props: {
     setHighlightRef('');
   };
 
+  /** Filtra en memoria las líneas del día ya cargadas (no vuelve a leer el inventario completo). */
   const loadLocationLines = async (location: string, highlight?: string) => {
-    const loc = String(location || '').trim();
+    const loc = String(location || '').trim().toUpperCase();
     if (!loc) return;
-    setLoadingLines(true);
     resetLines();
-    try {
-      const res = await getTalladoCyclicAggForLocation({ inventoryDate, location: loc });
-      if (!res.success || !res.lines) {
-        toast({
-          variant: 'destructive',
-          title: 'Ubicación',
-          description: res.error || 'Sin líneas.',
-        });
-        return;
-      }
-      setSelectedLocation(res.location || loc);
-      setLocQuery(res.location || loc);
-      setAggLines(res.lines);
-      const next: DraftQty = {};
-      for (const l of res.lines) {
-        next[lineKey(l)] = String(l.expectedQtyAgg);
-      }
-      setDraftQty(next);
-      if (highlight) setHighlightRef(String(highlight).trim().toUpperCase());
-    } finally {
-      setLoadingLines(false);
+    const lines = dayLines.filter((l) => String(l.location || '').trim().toUpperCase() === loc);
+    if (lines.length === 0) {
+      toast({
+        variant: 'destructive',
+        title: 'Ubicación',
+        description: `La ubicación "${loc}" no está en el inventario cíclico de ${inventoryDate}.`,
+      });
+      return;
     }
+    setSelectedLocation(lines[0].location);
+    setLocQuery(lines[0].location);
+    setAggLines(lines);
+    const next: DraftQty = {};
+    for (const l of lines) {
+      next[lineKey(l)] = String(l.expectedQtyAgg);
+    }
+    setDraftQty(next);
+    if (highlight) setHighlightRef(String(highlight).trim().toUpperCase());
   };
 
   const pickLocation = (loc: string) => {
@@ -156,29 +153,29 @@ export function TalladoCyclicLocationPanel(props: {
     setSelectedRef(exact);
     setRefQuery(exact);
     setRefSuggestionsOpen(false);
-    setLoadingLines(true);
     resetLines();
     setSelectedLocation('');
-    try {
-      const res = await getTalladoCyclicLocationsForReference({
-        inventoryDate,
-        reference: exact,
+    const byLoc = new Map<string, number>();
+    for (const l of dayLines) {
+      if (String(l.reference || '').trim().toUpperCase() !== exact.toUpperCase()) continue;
+      const loc = l.location || 'SIN_UBICACION';
+      byLoc.set(loc, (byLoc.get(loc) || 0) + l.expectedQtyAgg);
+    }
+    const options = [...byLoc.entries()]
+      .map(([location, expectedQtyAgg]) => ({ location, expectedQtyAgg }))
+      .sort((a, b) => a.location.localeCompare(b.location, 'es'));
+    if (options.length === 0) {
+      toast({
+        variant: 'destructive',
+        title: 'Referencia',
+        description: `La referencia "${exact}" no está en el inventario cíclico de ${inventoryDate}.`,
       });
-      if (!res.success || !res.locations) {
-        toast({
-          variant: 'destructive',
-          title: 'Referencia',
-          description: res.error || 'Sin ubicaciones.',
-        });
-        setRefLocOptions([]);
-        return;
-      }
-      setRefLocOptions(res.locations);
-      if (res.locations.length === 1) {
-        await loadLocationLines(res.locations[0].location, exact);
-      }
-    } finally {
-      setLoadingLines(false);
+      setRefLocOptions([]);
+      return;
+    }
+    setRefLocOptions(options);
+    if (options.length === 1) {
+      await loadLocationLines(options[0].location, exact);
     }
   };
 

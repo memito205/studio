@@ -34,7 +34,7 @@ import type {
 } from '@/types';
 import { isTalladoSameLocalDay, talladoLocalDayKey, filterTalladoBundleToDay, talladoBogotaDayBounds } from '@/lib/talladoProductivity';
 import { resolveTalladoEtiquetadoModo } from '@/lib/talladoEtiquetado';
-import { getCyclicInventoryLinesForDate } from '@/app/cyclicInventoryActions';
+import { getCyclicInventoryLinesForDate, getCyclicInventoryLinesForReference } from '@/app/cyclicInventoryActions';
 import { isValidInventoryDateKey } from '@/lib/cyclicInventoryDate';
 
 const SHIFTS_COL = 'talladoShifts';
@@ -3159,7 +3159,7 @@ export async function confirmTalladoManualFromCyclic(input: {
 
     const cantidad = Math.max(0, Math.floor(Number(input.cantidad) || 0));
 
-    const dayRes = await getCyclicInventoryLinesForDate(dateKey);
+    const dayRes = await getCyclicInventoryLinesForReference(dateKey, reference);
     if (!dayRes.success || !dayRes.data) {
       return { success: false, error: dayRes.error || 'No se pudo validar el inventario cíclico.' };
     }
