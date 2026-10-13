@@ -34,7 +34,7 @@ import type {
 } from '@/types';
 import { isTalladoSameLocalDay, talladoLocalDayKey, filterTalladoBundleToDay, talladoBogotaDayBounds } from '@/lib/talladoProductivity';
 import { resolveTalladoEtiquetadoModo } from '@/lib/talladoEtiquetado';
-import { getCyclicInventoryLinesForDate, getCyclicInventoryLinesForReference } from '@/app/cyclicInventoryActions';
+import { getCyclicExpectedByRefLoc, getCyclicInventoryLinesForDate, getCyclicInventoryLinesForReference } from '@/app/cyclicInventoryActions';
 import { isValidInventoryDateKey } from '@/lib/cyclicInventoryDate';
 
 const SHIFTS_COL = 'talladoShifts';
@@ -3263,5 +3263,189 @@ export async function confirmTalladoManualFromCyclic(input: {
   } catch (error: any) {
     console.error('confirmTalladoManualFromCyclic:', error);
     return { success: false, error: error?.message || 'No se pudo confirmar la línea cíclica.' };
+  }
+}
+
+export type TalladoModeQty = { normal: number; tallarEtiquetar: number; yaEtiquetada: number };
+
+export type TalladoCompareRow = {
+  reference: string;
+  marca?: string;
+  /** Unidades leídas en la RK (null = la ref no vino en la RK o no se eligió RK). */
+  recibido: number | null;
+  rk: TalladoModeQty;
+  ubicacion: TalladoModeQty;
+  /** Inventario cíclico del día (todas las ubicaciones). null = la ref no está en el cíclico. */
+  inventario: number | null;
+  boxes: Array<{ packingUnitId: string; unitNumber?: number; recibido: number; tallado: number; modo?: string; userName?: string; at?: string }>;
+  locations: Array<{ location: string; inventario: number; registrado: number; modo?: string; userName?: string; at?: string }>;
+};
+
+const emptyModeQty = (): TalladoModeQty => ({ normal: 0, tallarEtiquetar: 0, yaEtiquetada: 0 });
+const addModeQty = (m: TalladoModeQty, modo: TalladoUnit['etiquetadoModo'], qty: number) => {
+  if (modo === 'tallar_y_etiquetar') m.tallarEtiquetar += qty;
+  else if (modo === 'ya_etiquetada') m.yaEtiquetada += qty;
+  else m.normal += qty;
+};
+const modoLabel = (modo: TalladoUnit['etiquetadoModo']) =>
+  modo === 'tallar_y_etiquetar' ? 'Tallar y etiquetar' : modo === 'ya_etiquetada' ? 'Ya etiquetada' : 'Normal';
+
+/** Reparte `total` según los pesos (cantidades de la caja en recepción), sin perder unidades. */
+function splitByWeights(total: number, weights: Array<[string, number]>): Map<string, number> {
+  const out = new Map<string, number>();
+  const sum = weights.reduce((s, [, w]) => s + w, 0);
+  if (sum <= 0 || weights.length === 0) return out;
+  if (sum === total) {
+    weights.forEach(([k, w]) => out.set(k, (out.get(k) ?? 0) + w));
+    return out;
+  }
+  let assigned = 0;
+  weights.forEach(([k, w]) => {
+    const q = Math.floor((total * w) / sum);
+    out.set(k, (out.get(k) ?? 0) + q);
+    assigned += q;
+  });
+  const [maxKey] = weights.reduce((a, b) => (b[1] > a[1] ? b : a));
+  out.set(maxKey, (out.get(maxKey) ?? 0) + (total - assigned));
+  return out;
+}
+
+/**
+ * Reporte Recepción vs Tallado: por referencia, lo recibido en la RK vs lo tallado de esa RK (por modo),
+ * y lo registrado por ubicación en el día vs el inventario cíclico del día.
+ * Lecturas: referenceStats de la RK (~10–20) + unidades de la RK + unidades por ubicación del día
+ * + líneas del cíclico de esas refs (lotes de 30) + ajustes del día.
+ */
+export async function getTalladoReceptionCompare(input: {
+  receptionOperationId?: string;
+  inventoryDate: string;
+}): Promise<{ success: boolean; data?: TalladoCompareRow[]; rk?: string; error?: string }> {
+  try {
+    const rkId = String(input.receptionOperationId || '').trim();
+    const dateKey = String(input.inventoryDate || '').trim();
+    if (!isValidInventoryDateKey(dateKey)) return { success: false, error: 'Fecha de inventario inválida.' };
+
+    const rows = new Map<string, TalladoCompareRow>();
+    const row = (ref: string) => {
+      const key = talladoCyclicNormRef(ref);
+      let r = rows.get(key);
+      if (!r) {
+        r = { reference: key, recibido: null, rk: emptyModeQty(), ubicacion: emptyModeQty(), inventario: null, boxes: [], locations: [] };
+        rows.set(key, r);
+      }
+      return r;
+    };
+
+    let rkLabel: string | undefined;
+    if (rkId) {
+      const [opSnap, statsSnap, unitsSnap] = await Promise.all([
+        getDoc(doc(firestore, RECEPTION_OPS_COL, rkId)),
+        getDocs(collection(firestore, RECEPTION_OPS_COL, rkId, 'referenceStats')),
+        getDocs(query(collection(firestore, UNITS_COL), where('receptionOperationId', '==', rkId))),
+      ]);
+      const op = opSnap.exists() ? (opSnap.data() as ReceptionOperation) : null;
+      rkLabel = op ? String(op.rk_identifier || rkId) : rkId;
+      const supplier = op ? String(op.supplier || '').trim() : '';
+
+      /** packingUnitId → [ref, qty][] según recepción. */
+      const boxRefs = new Map<string, Array<[string, number]>>();
+      const boxNumber = new Map<string, number | undefined>();
+      statsSnap.docs.forEach((d) => {
+        const x = d.data() as { reference?: string; totalScanned?: number; packUnitsById?: Record<string, { qty?: number; unitNumber?: number }> };
+        const ref = talladoCyclicNormRef(String(x.reference || d.id));
+        if (!ref) return;
+        const r = row(ref);
+        if (supplier && !r.marca) r.marca = supplier;
+        let recibido = 0;
+        Object.entries(x.packUnitsById || {}).forEach(([pid, det]) => {
+          const qty = Math.max(0, Number(det?.qty) || 0);
+          if (qty <= 0) return;
+          recibido += qty;
+          boxRefs.set(pid, [...(boxRefs.get(pid) || []), [ref, qty]]);
+          if (det?.unitNumber !== undefined) boxNumber.set(pid, det.unitNumber);
+          r.boxes.push({ packingUnitId: pid, unitNumber: det?.unitNumber, recibido: qty, tallado: 0 });
+        });
+        r.recibido = (r.recibido ?? 0) + (recibido || Math.max(0, Number(x.totalScanned) || 0));
+      });
+
+      const units = unitsSnap.docs
+        .map((d) => ({ id: d.id, ...d.data() }) as TalladoUnit)
+        .filter((u) => u.status === 'done' && !isTalladoSoftDeleted(u as { deletedAt?: string | null }));
+      for (const u of units) {
+        const qty = Math.max(0, Number(u.cantidad) || 0);
+        const weights = u.packingUnitId ? boxRefs.get(u.packingUnitId) : undefined;
+        const split = weights?.length
+          ? splitByWeights(qty, weights)
+          : new Map([[talladoCyclicNormRef(u.referencia || u.numeroTF || ''), qty]]);
+        for (const [ref, q] of split) {
+          if (!ref) continue;
+          const r = row(ref);
+          if (!r.marca && u.marca) r.marca = u.marca;
+          addModeQty(r.rk, u.etiquetadoModo, q);
+          const box = u.packingUnitId ? r.boxes.find((b) => b.packingUnitId === u.packingUnitId) : undefined;
+          if (box) {
+            box.tallado += q;
+            box.modo = modoLabel(u.etiquetadoModo);
+            box.userName = u.userName;
+            box.at = u.endedAt || u.startedAt;
+          } else {
+            r.boxes.push({
+              packingUnitId: u.packingUnitId || u.id,
+              unitNumber: u.unitNumber,
+              recibido: 0,
+              tallado: q,
+              modo: modoLabel(u.etiquetadoModo),
+              userName: u.userName,
+              at: u.endedAt || u.startedAt,
+            });
+          }
+        }
+      }
+    }
+
+    const manualSnap = await getDocs(query(collection(firestore, UNITS_COL), where('inventoryDate', '==', dateKey)));
+    manualSnap.docs
+      .map((d) => ({ id: d.id, ...d.data() }) as TalladoUnit & { ubicacion?: string })
+      .filter((u) => u.status === 'done' && u.source === 'manual' && !isTalladoSoftDeleted(u as { deletedAt?: string | null }))
+      .forEach((u) => {
+        const r = row(u.referencia || u.numeroTF || '');
+        if (!r.marca && u.marca && u.marca !== 'SIN_MARCA') r.marca = u.marca;
+        const qty = Math.max(0, Number(u.cantidad) || 0);
+        addModeQty(r.ubicacion, u.etiquetadoModo, qty);
+        const location = talladoCyclicNormLoc(u.ubicacion || '');
+        const loc = r.locations.find((l) => l.location === location);
+        if (loc) {
+          loc.registrado += qty;
+          loc.modo = modoLabel(u.etiquetadoModo);
+          loc.userName = u.userName;
+          loc.at = u.endedAt || u.startedAt;
+        } else {
+          r.locations.push({ location, inventario: 0, registrado: qty, modo: modoLabel(u.etiquetadoModo), userName: u.userName, at: u.endedAt || u.startedAt });
+        }
+      });
+
+    const inv = await getCyclicExpectedByRefLoc(dateKey, Array.from(rows.keys()));
+    if (!inv.success) return { success: false, error: inv.error };
+    (inv.data || []).forEach((l) => {
+      const r = rows.get(talladoCyclicNormRef(l.reference));
+      if (!r) return;
+      r.inventario = (r.inventario ?? 0) + l.expectedQty;
+      const location = talladoCyclicNormLoc(l.location);
+      const loc = r.locations.find((x) => x.location === location);
+      if (loc) loc.inventario += l.expectedQty;
+      else if (l.expectedQty > 0) r.locations.push({ location, inventario: l.expectedQty, registrado: 0 });
+    });
+
+    const data = Array.from(rows.values())
+      .map((r) => ({
+        ...r,
+        boxes: r.boxes.sort((a, b) => (a.unitNumber ?? 1e9) - (b.unitNumber ?? 1e9)),
+        locations: r.locations.sort((a, b) => a.location.localeCompare(b.location, 'es')),
+      }))
+      .sort((a, b) => a.reference.localeCompare(b.reference, 'es'));
+    return { success: true, data, rk: rkLabel };
+  } catch (error: any) {
+    console.error('getTalladoReceptionCompare:', error);
+    return { success: false, error: error?.message || 'No se pudo armar el reporte.' };
   }
 }

@@ -20,10 +20,12 @@ import {
   XCircle,
   Upload,
   FileSpreadsheet,
+  Scale,
   Search,
   Trash2,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { TalladoReceptionCompareReport } from './TalladoReceptionCompareReport';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -286,7 +288,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const canAdmin = role === 'admin' || role === 'supervisor';
   const scanRef = useRef<HTMLInputElement>(null);
 
-  const [mainTab, setMainTab] = useState<'operario' | 'admin' | 'vivo'>(canAdmin ? 'operario' : 'operario');
+  const [mainTab, setMainTab] = useState<'operario' | 'admin' | 'vivo' | 'comparar'>(canAdmin ? 'operario' : 'operario');
   const [operatorWorkMode, setOperatorWorkMode] = useState<'escanear' | 'ciclico'>('escanear');
   const [grupo, setGrupo] = useState('Grupo 1');
   const [peopleCount, setPeopleCount] = useState(1);
@@ -1718,7 +1720,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         </CardContent>
       </Card>
 
-      <Tabs value={mainTab} onValueChange={(v) => setMainTab(v as 'operario' | 'admin' | 'vivo')}>
+      <Tabs value={mainTab} onValueChange={(v) => setMainTab(v as 'operario' | 'admin' | 'vivo' | 'comparar')}>
         <TabsList>
           <TabsTrigger value="operario">
             <PlayCircle className="mr-1.5 h-4 w-4" />
@@ -1736,7 +1738,19 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
               Dashboard
             </TabsTrigger>
           ) : null}
+          {canAdmin ? (
+            <TabsTrigger value="comparar">
+              <Scale className="mr-1.5 h-4 w-4" />
+              Recepción vs Tallado
+            </TabsTrigger>
+          ) : null}
         </TabsList>
+
+        {canAdmin && mainTab === 'comparar' ? (
+          <TabsContent value="comparar" className="mt-4">
+            <TalladoReceptionCompareReport />
+          </TabsContent>
+        ) : null}
 
         <TabsContent value="operario" className="space-y-4 mt-4">
           {!shift ? (

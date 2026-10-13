@@ -480,6 +480,50 @@ async function fetchAdjustmentDeltaPerKey(inventoryDate: string): Promise<Map<st
   return out;
 }
 
+/**
+ * Inventario esperado del día por referencia y ubicación (con ajustes), solo para las refs pedidas.
+ * Lecturas: líneas de esas refs (lotes de 30 con `in`) + ajustes del día una vez.
+ */
+export async function getCyclicExpectedByRefLoc(
+  inventoryDate: string,
+  references: string[]
+): Promise<{ success: boolean; data?: Array<{ reference: string; location: string; expectedQty: number }>; error?: string }> {
+  try {
+    const dateKey = String(inventoryDate || '').trim();
+    if (!isValidInventoryDateKey(dateKey)) return { success: false, error: 'Fecha inválida. Use AAAA-MM-DD.' };
+    const refs = Array.from(new Set(references.map(normRef).filter(Boolean)));
+    if (refs.length === 0) return { success: true, data: [] };
+    const bySizeKey = new Map<string, { reference: string; location: string; size: string; qty: number }>();
+    for (let i = 0; i < refs.length; i += 30) {
+      const snap = await getDocs(
+        query(collection(firestore, LINES_COL), where('inventoryDate', '==', dateKey), where('reference', 'in', refs.slice(i, i + 30)))
+      );
+      snap.docs.forEach((d) => {
+        const x = d.data() as Record<string, unknown>;
+        const reference = normRef(String(x.reference ?? ''));
+        const location = normLoc(String(x.location ?? ''));
+        const size = normSize(String(x.size ?? ''));
+        const key = adjustmentRefLocSizeKey(reference, size, location);
+        const cur = bySizeKey.get(key) || { reference, location, size, qty: 0 };
+        cur.qty += Math.max(0, Math.floor(Number(x.expectedQty) || 0));
+        bySizeKey.set(key, cur);
+      });
+    }
+    const adjustments = await fetchAdjustmentDeltaPerKey(dateKey);
+    const byRefLoc = new Map<string, { reference: string; location: string; expectedQty: number }>();
+    for (const [key, v] of bySizeKey) {
+      const qty = Math.max(0, v.qty + (adjustments.get(key) ?? 0));
+      const k = `${v.reference}|${v.location}`;
+      const cur = byRefLoc.get(k) || { reference: v.reference, location: v.location, expectedQty: 0 };
+      cur.expectedQty += qty;
+      byRefLoc.set(k, cur);
+    }
+    return { success: true, data: Array.from(byRefLoc.values()) };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'No se pudo leer el inventario del día.' };
+  }
+}
+
 export async function getCyclicInventoryLinesForDate(inventoryDate: string): Promise<{
   success: boolean;
   data?: CyclicInventoryLine[];
