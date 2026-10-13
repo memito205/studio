@@ -124,6 +124,7 @@ function lineText(l: StopLine): string {
     if (l.state === 'novedad') return `No recogió ${what} · ${t.failReason || ''}`;
     return `Por recoger ${what} (→ ${t.deliverPoint})`;
   }
+  if (l.state === 'hecho' && t.leftInCajon) return `Dejó ${what} en el cajón · ${fmt(t.deliveredAt)}`;
   if (l.state === 'hecho') return `Entregó ${what} · ${fmt(t.deliveredAt)}${t.receivedByName ? ` · recibió ${t.receivedByName}` : ''}`;
   if (l.state === 'novedad') return `No entregó ${what} · ${t.failReason || ''}`;
   if (l.state === 'bloqueada') return `Entregar ${what} (falta recogerla en ${t.pickupPoint})`;
@@ -189,6 +190,7 @@ export function RouteTasksAdminTab() {
       Entregada: fmt(t.deliveredAt),
       'Recibió': t.receivedByName || '',
       'TF marcada entregada': t.tfMarkedDelivered ? 'Sí' : '',
+      'Dejada en cajón': t.leftInCajon ? 'Sí' : '',
       'Distancia (m)': t.distanceM ?? '',
       Motivo: t.failReason || '',
       Unidades: t.unidades,
@@ -363,6 +365,7 @@ export function RouteTasksAdminTab() {
                           {t.receivedByName && <span className="block">Recibió: {t.receivedByName}</span>}
                           {typeof t.distanceM === 'number' && <span className="block text-muted-foreground">a {t.distanceM} m</span>}
                           {t.tfMarkedDelivered && <span className="block text-green-700">TF entregada en plataforma</span>}
+                          {t.leftInCajon && <span className="block font-medium text-amber-700">Dejada en CAJON NORTE</span>}
                           <Photos list={t.deliveryPhotos} />
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">

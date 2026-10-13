@@ -5,10 +5,12 @@ import {
   collection,
   deleteField,
   doc,
+  getDoc,
   getDocs,
   query,
   runTransaction,
   Timestamp,
+  updateDoc,
   where,
   writeBatch,
   type DocumentData,
@@ -27,6 +29,9 @@ const NON_STORE_POINTS = ['TRASLADOS', 'OFICINA', 'GARANTIAS', 'RECEPCION', 'CAJ
 const BODEGA_POINTS = ['BODEGA', 'CAJON NORTE', 'BODEGA PIONEROS', 'PIONEROS', 'RECEPCION'];
 const DELIVERABLE: TransferStatus[] = ['Recolectado en Ruta', 'En Tránsito', 'Enviado a Destino', 'Novedad de Entrega'];
 const NOVEDAD_FROM: TransferStatus[] = ['Recolectado en Ruta', 'En Tránsito', 'Enviado a Destino'];
+/** Cajón externo donde el mensajero deja lo que no pudo entregar. */
+const CAJON_POINT = 'CAJON NORTE';
+const isInCajon = (d: DocumentData) => d.status === 'Recibido en Bodega' && normPoint(d.ubicacion) === CAJON_POINT;
 
 const platformTf = (v: unknown) => {
   const digits = String(v || '').replace(/\D/g, '');
@@ -286,6 +291,18 @@ export async function getMyRouteTasks(driverId: string): Promise<{ data?: Driver
   }
 }
 
+/** TF que el mensajero dejó en el cajón y siguen allí (2 igualdades, sin índice compuesto). */
+export async function getTransfersInCajon(): Promise<{ data?: Array<DocumentData & { id: string }>; error?: string }> {
+  try {
+    const snap = await getDocs(
+      query(collection(firestore, 'transfers'), where('status', '==', 'Recibido en Bodega'), where('ubicacion', '==', CAJON_POINT))
+    );
+    return { data: snap.docs.map((d) => toDates({ id: d.id, ...d.data() })) };
+  } catch (error: any) {
+    return { error: error.message || 'No se pudieron cargar las TF del cajón.' };
+  }
+}
+
 /** Tareas en un rango de días (máx. 31) para el buscador; filtra texto en memoria. */
 export async function getRouteTasksByRange(from: string, to: string): Promise<{ data?: DriverRouteTask[]; error?: string }> {
   try {
@@ -315,7 +332,8 @@ export async function getRouteTasksByDay(day: string): Promise<{ data?: DriverRo
   }
 }
 
-export type RouteTaskAction = 'recoger' | 'no_recoger' | 'entregar' | 'no_entregar';
+/** `cajon` = dejó la mercancía en el cajón: la TF queda Recibido en Bodega · CAJON NORTE para asignarla otro día. */
+export type RouteTaskAction = 'recoger' | 'no_recoger' | 'entregar' | 'no_entregar' | 'cajon';
 
 export type SubmitRouteTasksInput = {
   action: RouteTaskAction;
@@ -351,6 +369,7 @@ export async function submitRouteTasks(
         : { match: (_: unknown) => undefined as DeliveryStore | undefined };
     const publishLines = new Map<string, PlatformLine>();
     const podMeta: { distanceM?: number; placa?: string; taskIds: string[] } = { taskIds: [] };
+    const cajonPlatformIds = new Set<string>();
 
     const result = await runTransaction(firestore, async (tx) => {
       publishLines.clear();
@@ -360,6 +379,7 @@ export async function submitRouteTasks(
       const tasks = snaps.filter((s) => s.exists()).map((s) => ({ ref: s.ref, t: toTask(s.id, s.data()!), raw: s.data()! }));
       if (tasks.length === 0) throw new Error('Las tareas ya no existen.');
       if (tasks.every((x) => x.raw.lastSubmissionId === submissionId)) return { success: true, already: true };
+      cajonPlatformIds.clear();
       const expected = action === 'recoger' || action === 'no_recoger' ? 'por_recoger' : 'por_entregar';
       const stale = tasks.find((x) => x.t.status !== expected);
       if (stale) {
@@ -374,7 +394,7 @@ export async function submitRouteTasks(
       if (libreDelivery && input.photos.length === 0) throw new Error('Tome la foto de la entrega.');
       if ((toStore || libreDelivery) && !String(input.receivedByName || '').trim()) throw new Error('Falta el nombre de quien recibe.');
 
-      const lineIds = action === 'recoger' || action === 'entregar' || action === 'no_entregar' ? Array.from(new Set(tasks.flatMap((x) => x.t.transferIds || []))) : [];
+      const lineIds = action !== 'no_recoger' ? Array.from(new Set(tasks.flatMap((x) => x.t.transferIds || []))) : [];
       const lineSnaps = await Promise.all(lineIds.map((id) => tx.get(doc(firestore, 'transfers', id))));
       const lineById = new Map(lineSnaps.filter((s) => s.exists()).map((s) => [s.id, s]));
 
@@ -384,6 +404,47 @@ export async function submitRouteTasks(
         : null;
       const photos = input.photos.map((p) => clean({ path: p.path, url: p.url, category: p.category }));
       const closeKeys = { driverOpen: deleteField(), openKey: deleteField() };
+
+      if (action === 'cajon') {
+        if (photos.length === 0) throw new Error('Tome la foto de la mercancía en el cajón.');
+        tasks.forEach(({ ref, t }) => {
+          if (t.kind !== 'libre') {
+            (t.transferIds || []).forEach((id) => {
+              const s = lineById.get(id);
+              if (!s) return;
+              const d = s.data()!;
+              if (d.storeReceivedAt || !DELIVERABLE.includes(d.status)) return;
+              const pid = platformDocId(d.numeroTF, d.bodegaDestino);
+              cajonPlatformIds.add(pid);
+              tx.update(s.ref, {
+                status: 'Recibido en Bodega',
+                ubicacion: CAJON_POINT,
+                ubicacionAt: now,
+                reprogramada: true,
+                cajonAt: now,
+                cajonByName: actorName,
+                cajonRouteTaskId: t.id,
+                routeTaskId: t.id,
+                statusHistory: arrayUnion({ status: 'Recibido en Bodega', at: now, userId: actor.userId, userName: `${actorName} (cajón)` }),
+              });
+            });
+          }
+          tx.update(ref, clean({
+            status: 'entregada',
+            leftInCajon: true,
+            deliveredAt: now,
+            deliveredById: actor.userId,
+            deliveredByName: actorName,
+            deliveryPhotos: photos,
+            deliveryGps: gps,
+            deliveryNotes: String(input.notes || '').trim() || undefined,
+            tfMarkedDelivered: false,
+            lastSubmissionId: submissionId,
+            ...closeKeys,
+          }));
+        });
+        return { success: true };
+      }
 
       if (action === 'no_entregar') {
         // Igual que la relación de camión: la TF queda en Novedad de Entrega para decidir en "Novedades".
@@ -453,13 +514,15 @@ export async function submitRouteTasks(
         tasks.forEach(({ t }) =>
           (t.transferIds || []).forEach((id) => {
             const s = lineById.get(id);
-            if (!s || s.data()?.status !== 'En Tránsito') return;
+            if (!s) return;
             const d = s.data()!;
+            const fromCajon = isInCajon(d);
+            if (d.status !== 'En Tránsito' && !fromCajon) return;
             changed.push(id);
             destinations[d.bodegaDestino] = (destinations[d.bodegaDestino] || 0) + (Number(d.cantidad) || 1);
             tx.update(s.ref, {
               status: 'Recolectado en Ruta',
-              recibidoAt: now,
+              ...(fromCajon ? { ubicacion: deleteField(), ubicacionAt: deleteField() } : { recibidoAt: now }),
               recolectadoBy: actor.userId,
               recolectadoByName: actorName,
               routeTaskId: t.id,
@@ -560,6 +623,18 @@ export async function submitRouteTasks(
       });
       return { success: true };
     });
+
+    if (result.success && !result.already && cajonPlatformIds.size > 0) {
+      const at = Timestamp.now();
+      for (const id of cajonPlatformIds) {
+        const ref = doc(firestore, 'tf_platform_status', id);
+        const snap = await getDoc(ref).catch(() => null);
+        if (!snap?.exists() || snap.data()?.estadoPlataforma === 'ENTREGADO') continue;
+        await updateDoc(ref, { estadoPlataforma: 'EN BODEGA', ubicacionActual: CAJON_POINT, cajonAt: at, cajonByName: actorName, updatedAt: at }).catch((e) =>
+          console.error('Cajón sin estado plataforma:', e)
+        );
+      }
+    }
 
     if (result.success && !result.already && publishLines.size > 0 && (action === 'no_entregar' || input.photos.length > 0)) {
       const now = Timestamp.now();

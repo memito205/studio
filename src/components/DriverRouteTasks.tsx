@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { format } from 'date-fns';
-import { ArrowLeft, Camera, CheckCircle2, ImagePlus, Loader2, MapPin, PackageCheck, PackageX, RefreshCw, X } from 'lucide-react';
+import { Archive, ArrowLeft, Camera, CheckCircle2, ImagePlus, Loader2, MapPin, PackageCheck, PackageX, RefreshCw, X } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import type { RouteTaskAction } from '@/app/routeTaskActions';
 import { compressImage, enqueueDelivery, type QueuedPhoto, type QueuedRouteSubmission } from '@/lib/podQueue';
@@ -63,6 +63,8 @@ function captureGps(): Promise<Gps | null> {
 }
 
 const NO_ORDER = 9999;
+
+const isCajonPoint = (point: string) => /CAJ[OÓ]N/i.test(point || '');
 
 export const deliverOrderOf = (t: DriverRouteTask) => t.deliverOrder ?? (t.pickupPoint ? NO_ORDER : t.order ?? NO_ORDER);
 
@@ -146,6 +148,8 @@ const RouteTaskForm: React.FC<{
   const libreDelivery = action === 'entregar' && chosenTasks.some((t) => t.kind === 'libre');
   const categories = action === 'recoger'
     ? [{ id: 'mercancia' as DeliveryPhotoCategory, label: 'Mercancía recogida', required: true }]
+    : action === 'cajon'
+    ? [{ id: 'mercancia' as DeliveryPhotoCategory, label: 'Mercancía en el cajón', required: true }]
     : action === 'entregar'
       ? PHOTO_CATEGORIES.map((c) => ({ ...c, required: toStore && c.required }))
       : [{ id: 'otra' as DeliveryPhotoCategory, label: 'Evidencia (opcional)', required: false }];
@@ -192,6 +196,7 @@ const RouteTaskForm: React.FC<{
   if (selected.size === 0) problems.push('Seleccione al menos una TF.');
   if (failing && !reason) problems.push('Indique el motivo.');
   if (action === 'recoger' && photos.length === 0) problems.push('Tome la foto de lo que recoge.');
+  if (action === 'cajon' && photos.length === 0) problems.push('Tome la foto de la mercancía en el cajón.');
   if (toStore && !photos.some((p) => p.category === 'remision')) problems.push('Tome la foto de la remisión firmada.');
   if (libreDelivery && photos.length === 0) problems.push('Tome la foto de la entrega.');
   if ((toStore || libreDelivery) && !receivedBy.trim()) problems.push('Escriba el nombre de quien recibe.');
@@ -205,7 +210,7 @@ const RouteTaskForm: React.FC<{
       const record: QueuedRouteSubmission = {
         kind: 'route',
         submissionId,
-        label: `${failing ? 'No ' : ''}${action.includes('recoger') ? 'recoger' : 'entregar'} · ${group.point} (${chosen.length} TF)`,
+        label: `${action === 'cajon' ? 'Dejar en cajón' : `${failing ? 'No ' : ''}${action.includes('recoger') ? 'recoger' : 'entregar'}`} · ${group.point} (${chosen.length} TF)`,
         storeKey: (chosen[0].deliverStoreCode || group.point || 'RUTA').replace(/[\/\s]+/g, '-'),
         monthKey: format(new Date(), 'yyyy-MM'),
         input: {
@@ -234,6 +239,7 @@ const RouteTaskForm: React.FC<{
     no_recoger: 'No recogida',
     entregar: group.deliverType === 'bodega' ? 'Dejar en bodega' : 'Entregar en tienda',
     no_entregar: 'No entregada',
+    cajon: 'Dejar en cajón',
   }[action];
 
   return (
@@ -429,7 +435,7 @@ export const DriverRouteTasksSection: React.FC<{
                   </CardDescription>
                 </div>
                 <Badge className={g.locked ? 'bg-gray-400 text-white' : g.kind === 'recoger' ? 'bg-blue-600 text-white' : 'bg-emerald-600 text-white'}>
-                  {g.kind === 'recoger' ? 'Recoger' : g.deliverType === 'bodega' ? 'Dejar en bodega' : 'Entregar'}
+                  {g.kind === 'recoger' ? 'Recoger' : isCajonPoint(g.point) ? 'Dejar en cajón' : g.deliverType === 'bodega' ? 'Dejar en bodega' : 'Entregar'}
                 </Badge>
               </div>
             </CardHeader>
@@ -449,12 +455,23 @@ export const DriverRouteTasksSection: React.FC<{
                 </p>
               ) : (
               <div className="grid grid-cols-2 gap-2">
-                <Button onClick={() => onOpenForm({ group: g, action: g.kind === 'recoger' ? 'recoger' : 'entregar' })}>
-                  <PackageCheck className="mr-2 h-4 w-4" /> {g.kind === 'recoger' ? 'Recoger' : 'Entregar'}
-                </Button>
+                {g.kind === 'entregar' && isCajonPoint(g.point) ? (
+                  <Button onClick={() => onOpenForm({ group: g, action: 'cajon' })}>
+                    <Archive className="mr-2 h-4 w-4" /> Dejar en cajón
+                  </Button>
+                ) : (
+                  <Button onClick={() => onOpenForm({ group: g, action: g.kind === 'recoger' ? 'recoger' : 'entregar' })}>
+                    <PackageCheck className="mr-2 h-4 w-4" /> {g.kind === 'recoger' ? 'Recoger' : 'Entregar'}
+                  </Button>
+                )}
                 <Button variant="outline" className="text-red-700" onClick={() => onOpenForm({ group: g, action: g.kind === 'recoger' ? 'no_recoger' : 'no_entregar' })}>
                   <PackageX className="mr-2 h-4 w-4" /> {g.kind === 'recoger' ? 'No recogida' : 'No entregada'}
                 </Button>
+                {g.kind === 'entregar' && g.deliverType === 'tienda' && !isCajonPoint(g.point) && (
+                  <Button variant="secondary" className="col-span-2" onClick={() => onOpenForm({ group: g, action: 'cajon' })}>
+                    <Archive className="mr-2 h-4 w-4" /> No se pudo entregar: dejar en cajón
+                  </Button>
+                )}
               </div>
               )}
             </CardContent>

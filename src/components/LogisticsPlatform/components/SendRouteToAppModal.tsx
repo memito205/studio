@@ -8,7 +8,10 @@ import { DriverUserSelect, type DriverValue } from '@/components/DriverUserSelec
 import { looksLikeTfNumber } from '@/lib/pod';
 import type { VehiclePlan } from '../types';
 
-const cleanPoint = (v: string) => String(v || '').trim().toUpperCase().replace(/-[RP]$/, '');
+const cleanPoint = (v: string) => {
+  const p = String(v || '').trim().toUpperCase().replace(/-[RP]$/, '');
+  return /CAJ[OÓ]N/.test(p) ? 'CAJON NORTE' : p;
+};
 
 /**
  * Una tarea por TF: RECOGER = punto de recogida, ENTREGAR = punto de entrega. Solo RECOGER → se deja en bodega.

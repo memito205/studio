@@ -736,6 +736,8 @@ export interface DriverRouteTask {
     receivedByName?: string;
     distanceM?: number;
     tfMarkedDelivered?: boolean;
+    /** La dejó en el cajón (no en la tienda): la TF queda Recibido en Bodega · CAJON NORTE. */
+    leftInCajon?: boolean;
     failedAt?: Date;
     failedByName?: string;
     failReason?: string;

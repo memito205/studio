@@ -7,7 +7,7 @@ import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import { getTransfersByStatus } from '@/app/actions';
 import { getDeliveryStores } from '@/app/deliveryActions';
-import { cancelRouteTasks, createRouteTasks, getRouteTasksByDay, reassignRouteTasks } from '@/app/routeTaskActions';
+import { cancelRouteTasks, createRouteTasks, getRouteTasksByDay, getTransfersInCajon, reassignRouteTasks } from '@/app/routeTaskActions';
 import { DriverUserSelect, type DriverValue } from '@/components/DriverUserSelect';
 import type { DeliveryStore, DriverRouteTask, DriverRouteTaskStatus, TransferActor, TransferEntry } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -43,6 +43,7 @@ export const RouteTasksAssignView: React.FC = () => {
   const [fOrigin, setFOrigin] = useState(ALL);
   const [fDest, setFDest] = useState(ALL);
   const [lines, setLines] = useState<TransferEntry[]>([]);
+  const [linesSource, setLinesSource] = useState<'transito' | 'cajon'>('transito');
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [driver, setDriver] = useState<DriverValue>({ driver: '' });
@@ -112,6 +113,24 @@ export const RouteTasksAssignView: React.FC = () => {
   const allVisibleSelected = visibleGroups.length > 0 && visibleGroups.every((g) => selected.has(g.key));
   const selectedUnits = groups.filter((g) => selected.has(g.key)).reduce((n, g) => n + g.unidades, 0);
 
+  /** TF que el mensajero dejó en el cajón: se recogen allí y se entregan en su tienda destino. */
+  const loadCajon = async () => {
+    setSearching(true);
+    const res = await getTransfersInCajon();
+    setSearching(false);
+    if (res.error) {
+      toast({ variant: 'destructive', title: 'Error', description: res.error });
+      return;
+    }
+    setLinesSource('cajon');
+    setDeliverTo('destino');
+    setLines((res.data || []) as TransferEntry[]);
+    setSelected(new Set());
+    setFOrigin(ALL);
+    setFDest(ALL);
+    if (!res.data?.length) toast({ title: 'Sin resultados', description: 'No hay TF en el cajón.' });
+  };
+
   /** Trae todas las TF En Tránsito una vez (~800 líneas); los filtros trabajan en pantalla sin nuevas lecturas. */
   const loadInTransit = async () => {
     setSearching(true);
@@ -121,6 +140,7 @@ export const RouteTasksAssignView: React.FC = () => {
       toast({ variant: 'destructive', title: 'Error', description: res.error });
       return;
     }
+    setLinesSource('transito');
     setLines(res.data || []);
     setSelected(new Set());
     setFOrigin(ALL);
@@ -164,7 +184,7 @@ export const RouteTasksAssignView: React.FC = () => {
       tasks: chosen.map((g) => ({
         numeroTF: g.numeroTF,
         transferIds: g.ids,
-        pickupPoint: g.bodegaOrigen,
+        pickupPoint: linesSource === 'cajon' ? 'CAJON NORTE' : g.bodegaOrigen,
         deliverPoint: deliverTo === 'bodega' ? 'BODEGA' : deliverTo === 'destino' ? g.bodegaDestino : otherStore,
       })),
       driverId: driver.driverUserId!,
@@ -258,10 +278,15 @@ export const RouteTasksAssignView: React.FC = () => {
           </div>
 
           <div className="grid gap-2 rounded-lg border bg-muted/50 p-3 md:grid-cols-[auto_1fr_1fr_1fr]">
-            <Button onClick={() => void loadInTransit()} disabled={searching}>
-              {searching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
-              {lines.length ? 'Recargar En Tránsito' : 'Cargar TF En Tránsito'}
-            </Button>
+            <div className="flex gap-2">
+              <Button onClick={() => void loadInTransit()} disabled={searching} variant={linesSource === 'transito' ? 'default' : 'outline'}>
+                {searching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
+                {lines.length && linesSource === 'transito' ? 'Recargar En Tránsito' : 'Cargar TF En Tránsito'}
+              </Button>
+              <Button onClick={() => void loadCajon()} disabled={searching} variant={linesSource === 'cajon' ? 'default' : 'outline'}>
+                TF en cajón
+              </Button>
+            </div>
             <Select value={fOrigin} onValueChange={setFOrigin} disabled={!groups.length}>
               <SelectTrigger><SelectValue placeholder="Bodega origen" /></SelectTrigger>
               <SelectContent>
@@ -334,7 +359,7 @@ export const RouteTasksAssignView: React.FC = () => {
                         />
                       </TableCell>
                       <TableCell className="font-medium">{g.numeroTF}</TableCell>
-                      <TableCell>{g.bodegaOrigen}</TableCell>
+                      <TableCell>{linesSource === 'cajon' ? 'CAJON NORTE' : g.bodegaOrigen}</TableCell>
                       <TableCell>{g.bodegaDestino}</TableCell>
                       <TableCell className="text-right">{g.unidades}</TableCell>
                     </TableRow>
