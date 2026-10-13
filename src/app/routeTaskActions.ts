@@ -26,6 +26,7 @@ const NON_STORE_POINTS = ['TRASLADOS', 'OFICINA', 'GARANTIAS', 'RECEPCION', 'CAJ
 /** Dejar la mercancía aquí = sigue la recepción normal en bodega (sin prueba de entrega). */
 const BODEGA_POINTS = ['BODEGA', 'CAJON NORTE', 'BODEGA PIONEROS', 'PIONEROS', 'RECEPCION'];
 const DELIVERABLE: TransferStatus[] = ['Recolectado en Ruta', 'En Tránsito', 'Enviado a Destino', 'Novedad de Entrega'];
+const NOVEDAD_FROM: TransferStatus[] = ['Recolectado en Ruta', 'En Tránsito', 'Enviado a Destino'];
 
 const platformTf = (v: unknown) => {
   const digits = String(v || '').replace(/\D/g, '');
@@ -344,7 +345,10 @@ export async function submitRouteTasks(
   const actorName = actorNameOf(actor);
 
   try {
-    const { match } = action === 'entregar' ? await loadStores() : { match: (_: unknown) => undefined as DeliveryStore | undefined };
+    const { match } =
+      action === 'entregar' || action === 'no_entregar'
+        ? await loadStores()
+        : { match: (_: unknown) => undefined as DeliveryStore | undefined };
     const publishLines = new Map<string, PlatformLine>();
     const podMeta: { distanceM?: number; placa?: string; taskIds: string[] } = { taskIds: [] };
 
@@ -370,7 +374,7 @@ export async function submitRouteTasks(
       if (libreDelivery && input.photos.length === 0) throw new Error('Tome la foto de la entrega.');
       if ((toStore || libreDelivery) && !String(input.receivedByName || '').trim()) throw new Error('Falta el nombre de quien recibe.');
 
-      const lineIds = action === 'recoger' || action === 'entregar' ? Array.from(new Set(tasks.flatMap((x) => x.t.transferIds || []))) : [];
+      const lineIds = action === 'recoger' || action === 'entregar' || action === 'no_entregar' ? Array.from(new Set(tasks.flatMap((x) => x.t.transferIds || []))) : [];
       const lineSnaps = await Promise.all(lineIds.map((id) => tx.get(doc(firestore, 'transfers', id))));
       const lineById = new Map(lineSnaps.filter((s) => s.exists()).map((s) => [s.id, s]));
 
@@ -380,6 +384,49 @@ export async function submitRouteTasks(
         : null;
       const photos = input.photos.map((p) => clean({ path: p.path, url: p.url, category: p.category }));
       const closeKeys = { driverOpen: deleteField(), openKey: deleteField() };
+
+      if (action === 'no_entregar') {
+        // Igual que la relación de camión: la TF queda en Novedad de Entrega para decidir en "Novedades".
+        tasks.forEach(({ t }) => {
+          if (t.kind === 'libre' || t.deliverType !== 'tienda') return;
+          const store = t.deliverStoreCode ? match(t.deliverStoreCode) : match(t.deliverPoint);
+          (t.transferIds || []).forEach((id) => {
+            const s = lineById.get(id);
+            if (!s) return;
+            const d = s.data()!;
+            const forThisStop = store
+              ? match(d.bodegaDestino)?.codigoErp === store.codigoErp
+              : !!t.bodegaDestino && platformWhs(d.bodegaDestino) === platformWhs(t.bodegaDestino);
+            if (!forThisStop || d.storeReceivedAt || !NOVEDAD_FROM.includes(d.status)) return;
+            const pid = platformDocId(d.numeroTF, d.bodegaDestino);
+            const line = publishLines.get(pid) || {
+              id: pid,
+              numeroTF: platformTf(d.numeroTF),
+              bodegaDestino: platformWhs(d.bodegaDestino),
+              cantidad: 0,
+              fechaDocumento: d.fecha ?? null,
+              delivered: false,
+              motivo: reason,
+            };
+            line.cantidad += Number(d.cantidad || 0) || 0;
+            publishLines.set(pid, line);
+            podMeta.placa = t.placa;
+            if (!podMeta.taskIds.includes(t.id)) podMeta.taskIds.push(t.id);
+            tx.update(s.ref, {
+              status: 'Novedad de Entrega',
+              novedadEntregaAt: now,
+              novedadEntregaBy: actor.userId,
+              novedadEntregaByName: actorName,
+              novedadEntregaMotivo: reason,
+              novedadRouteTaskId: t.id,
+              podManifestDocId: deleteField(),
+              podStopId: deleteField(),
+              reprogramada: false,
+              statusHistory: arrayUnion({ status: 'Novedad de Entrega', at: now, userId: actor.userId, userName: actorName }),
+            });
+          });
+        });
+      }
 
       if (action === 'no_recoger' || action === 'no_entregar') {
         tasks.forEach(({ ref }) =>
@@ -514,7 +561,7 @@ export async function submitRouteTasks(
       return { success: true };
     });
 
-    if (result.success && !result.already && publishLines.size > 0 && input.photos.length > 0) {
+    if (result.success && !result.already && publishLines.size > 0 && (action === 'no_entregar' || input.photos.length > 0)) {
       const now = Timestamp.now();
       const ordered = [...input.photos.filter((p) => p.category === 'remision'), ...input.photos.filter((p) => p.category !== 'remision')];
       await publishPodToPlatform({

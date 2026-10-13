@@ -498,6 +498,7 @@ function ManifestDetail({
 type NovedadGroup = {
   key: string;
   ids: string[];
+  routeTaskId?: string;
   numeroTF: string;
   bodegaDestino: string;
   cantidad: number;
@@ -631,7 +632,7 @@ function NovedadesTab({ actor, askNote }: { actor: TransferActor; askNote: (r: N
                   <TableCell className="text-xs">{fmt(g.at, 'dd/MM HH:mm')}</TableCell>
                   <TableCell className="text-xs">{g.byName || '—'}</TableCell>
                   <TableCell className="text-xs">
-                    {g.manifestId ? `#${g.manifestId}` : '—'}
+                    {g.manifestId ? `#${g.manifestId}` : g.routeTaskId ? 'Ruta mensajero' : '—'}
                     {g.placa ? ` · ${g.placa}` : ''}
                   </TableCell>
                 </TableRow>

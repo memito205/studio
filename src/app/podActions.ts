@@ -869,6 +869,8 @@ export type PodNovedadLine = {
   manifestDocId?: string;
   manifestId?: number;
   placa?: string;
+  /** Novedad reportada en la ruta del mensajero (no en una relación de camión). */
+  routeTaskId?: string;
 };
 
 /** Líneas en Novedad de Entrega pendientes de decisión del admin. */
@@ -901,6 +903,7 @@ export async function getPodNovedades(): Promise<{ data?: PodNovedadLine[]; erro
         manifestDocId: t.podManifestDocId || undefined,
         manifestId: m?.manifestId,
         placa: m?.resource,
+        routeTaskId: !t.podManifestDocId ? t.novedadRouteTaskId || undefined : undefined,
       };
     });
     return { data };
