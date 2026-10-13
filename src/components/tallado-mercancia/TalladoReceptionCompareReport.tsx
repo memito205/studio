@@ -21,7 +21,18 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { cn } from '@/lib/utils';
 
 const NO_RK = '__none__';
+type TipoFiltro = 'calzado' | 'calzado_sin' | 'todos';
+const TIPO_FILTRO_LABEL: Record<TipoFiltro, string> = {
+  calzado: 'Solo calzado',
+  calzado_sin: 'Calzado + sin clasificar',
+  todos: 'Todos los tipos',
+};
 const sumModes = (m: TalladoCompareRow['rk']) => m.normal + m.tallarEtiquetar + m.yaEtiquetada;
+/** Ubicaciones con registro primero; si no hay, las del inventario del día. */
+const ubicacionesDe = (r: TalladoCompareRow) => {
+  const reg = r.locations.filter((l) => l.registrado > 0).map((l) => l.location);
+  return (reg.length ? reg : r.locations.filter((l) => l.inventario > 0).map((l) => l.location)).filter(Boolean);
+};
 const fmtAt = (iso?: string) => (iso ? format(new Date(iso), 'dd/MM HH:mm') : '');
 
 type Estado = { label: string; className: string };
@@ -53,6 +64,7 @@ export function TalladoReceptionCompareReport() {
   const [loading, setLoading] = useState(false);
   const [text, setText] = useState('');
   const [onlyDiff, setOnlyDiff] = useState(false);
+  const [tipoFiltro, setTipoFiltro] = useState<TipoFiltro>('calzado');
   const [open, setOpen] = useState<string | null>(null);
 
   useEffect(() => {
@@ -74,7 +86,9 @@ export function TalladoReceptionCompareReport() {
 
   const computed = useMemo(
     () =>
-      (rows || []).map((r) => {
+      (rows || [])
+        .filter((r) => tipoFiltro === 'todos' || r.tipo === 'CALZADO' || (tipoFiltro === 'calzado_sin' && r.tipo === 'SIN CLASIFICAR'))
+        .map((r) => {
         const rkTotal = sumModes(r.rk);
         const ubTotal = sumModes(r.ubicacion);
         return {
@@ -85,16 +99,27 @@ export function TalladoReceptionCompareReport() {
           difInv: r.inventario === null && ubTotal === 0 ? null : ubTotal - (r.inventario ?? 0),
           estadoRk: estadoDe(r.recibido, rkTotal),
           estadoUb: ubTotal > 0 || r.inventario !== null ? estadoDe(r.inventario ?? 0, ubTotal) : null,
+          ubicaciones: ubicacionesDe(r),
         };
       }),
-    [rows]
+    [rows, tipoFiltro]
   );
+
+  const tipoCounts = useMemo(() => {
+    const c = { CALZADO: 0, OTRO: 0, 'SIN CLASIFICAR': 0 };
+    (rows || []).forEach((r) => (c[r.tipo] += 1));
+    return c;
+  }, [rows]);
 
   const visible = useMemo(() => {
     const needle = text.trim().toUpperCase();
     return computed.filter(
       (c) =>
-        (!needle || c.r.reference.includes(needle) || String(c.r.marca || '').toUpperCase().includes(needle)) &&
+        (!needle ||
+          c.r.reference.includes(needle) ||
+          String(c.r.marca || '').toUpperCase().includes(needle) ||
+          String(c.r.descripcion || '').includes(needle) ||
+          c.ubicaciones.some((u) => u.includes(needle))) &&
         (!onlyDiff || (c.difRk !== null && c.difRk !== 0) || (c.difInv !== null && c.difInv !== 0))
     );
   }, [computed, text, onlyDiff]);
@@ -116,7 +141,10 @@ export function TalladoReceptionCompareReport() {
   const exportXlsx = () => {
     const main = visible.map((c) => ({
       Referencia: c.r.reference,
+      Descripción: c.r.descripcion || '',
       Marca: c.r.marca || '',
+      Tipo: c.r.tipo,
+      Ubicación: c.ubicaciones.join(', '),
       'Llegó en recepción': c.r.recibido ?? '',
       'RK · Normal': c.r.rk.normal,
       'RK · Tallar y etiquetar': c.r.rk.tallarEtiquetar,
@@ -168,8 +196,8 @@ export function TalladoReceptionCompareReport() {
       <CardHeader>
         <CardTitle>Recepción vs Tallado</CardTitle>
         <CardDescription>
-          Por referencia: lo que llegó en la RK contra lo tallado de esa RK (Normal, Tallar y etiquetar, Ya etiquetada), y lo registrado por
-          ubicación contra el inventario cíclico del día. Se consulta solo al oprimir Consultar.
+          Por referencia de calzado: lo que llegó en la RK contra lo tallado de esa RK (Normal, Tallar y etiquetar, Ya etiquetada), y lo
+          registrado por ubicación contra el inventario cíclico del día. Se consulta solo al oprimir Consultar.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -198,7 +226,23 @@ export function TalladoReceptionCompareReport() {
           </Button>
           {rows && rows.length > 0 && (
             <>
-              <Input className="h-9 w-56" placeholder="Buscar referencia o marca" value={text} onChange={(e) => setText(e.target.value)} />
+              <Select value={tipoFiltro} onValueChange={(v) => setTipoFiltro(v as TipoFiltro)}>
+                <SelectTrigger className="h-9 w-56"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(TIPO_FILTRO_LABEL) as TipoFiltro[]).map((k) => (
+                    <SelectItem key={k} value={k}>
+                      {TIPO_FILTRO_LABEL[k]} (
+                      {k === 'calzado'
+                        ? tipoCounts.CALZADO
+                        : k === 'calzado_sin'
+                          ? tipoCounts.CALZADO + tipoCounts['SIN CLASIFICAR']
+                          : rows.length}
+                      )
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Input className="h-9 w-56" placeholder="Buscar referencia, marca o ubicación" value={text} onChange={(e) => setText(e.target.value)} />
               <Button variant={onlyDiff ? 'default' : 'outline'} size="sm" onClick={() => setOnlyDiff((v) => !v)}>
                 Solo con diferencia
               </Button>
@@ -233,6 +277,7 @@ export function TalladoReceptionCompareReport() {
                 <TableRow>
                   <TableHead rowSpan={2} className="w-6" />
                   <TableHead rowSpan={2}>Referencia</TableHead>
+                  <TableHead rowSpan={2}>Ubicación</TableHead>
                   <TableHead rowSpan={2} className="text-right">Llegó RK</TableHead>
                   <TableHead colSpan={5} className="border-l text-center">Tallado de la RK</TableHead>
                   <TableHead colSpan={6} className="border-l text-center">Por ubicación vs inventario del día</TableHead>
@@ -254,7 +299,7 @@ export function TalladoReceptionCompareReport() {
               <TableBody>
                 {visible.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={14} className="h-16 text-center text-muted-foreground">Sin referencias con esos filtros.</TableCell>
+                    <TableCell colSpan={15} className="h-16 text-center text-muted-foreground">Sin referencias con esos filtros.</TableCell>
                   </TableRow>
                 ) : (
                   visible.map((c) => {
@@ -265,7 +310,22 @@ export function TalladoReceptionCompareReport() {
                           <TableCell>{isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}</TableCell>
                           <TableCell className="font-medium">
                             {c.r.reference}
-                            {c.r.marca && <span className="block text-xs text-muted-foreground">{c.r.marca}</span>}
+                            <span className="block text-xs text-muted-foreground">
+                              {[c.r.marca, c.r.descripcion].filter(Boolean).join(' · ')}
+                              {c.r.tipo !== 'CALZADO' && (
+                                <Badge variant="outline" className="ml-1 px-1 py-0 text-[10px]">{c.r.tipo}</Badge>
+                              )}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-xs">
+                            {c.ubicaciones.length === 0 ? (
+                              <span className="text-muted-foreground">—</span>
+                            ) : (
+                              <span title={c.ubicaciones.join(', ')}>
+                                {c.ubicaciones.slice(0, 2).join(', ')}
+                                {c.ubicaciones.length > 2 && ` +${c.ubicaciones.length - 2}`}
+                              </span>
+                            )}
                           </TableCell>
                           <TableCell className="text-right">{c.r.recibido ?? '—'}</TableCell>
                           <TableCell className="border-l text-right">{c.r.rk.normal || ''}</TableCell>
@@ -282,7 +342,7 @@ export function TalladoReceptionCompareReport() {
                         </TableRow>
                         {isOpen && (
                           <TableRow>
-                            <TableCell colSpan={14} className="bg-muted/30">
+                            <TableCell colSpan={15} className="bg-muted/30">
                               <div className="grid gap-4 lg:grid-cols-2">
                                 <div>
                                   <p className="mb-1 text-xs font-semibold">Por caja (RK)</p>

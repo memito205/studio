@@ -3268,9 +3268,13 @@ export async function confirmTalladoManualFromCyclic(input: {
 
 export type TalladoModeQty = { normal: number; tallarEtiquetar: number; yaEtiquetada: number };
 
+export type TalladoProductTipo = 'CALZADO' | 'OTRO' | 'SIN CLASIFICAR';
+
 export type TalladoCompareRow = {
   reference: string;
   marca?: string;
+  tipo: TalladoProductTipo;
+  descripcion?: string;
   /** Unidades leídas en la RK (null = la ref no vino en la RK o no se eligió RK). */
   recibido: number | null;
   rk: TalladoModeQty;
@@ -3310,6 +3314,59 @@ function splitByWeights(total: number, weights: Array<[string, number]>): Map<st
   return out;
 }
 
+const REF_TIPO_CACHE_DOC = ['systemCache', 'talladoRefTipo'] as const;
+const CALZADO_WORDS = /\b(CALZADO|TENIS|ZAPATOS?|ZAPATILLAS?|BOTAS?|BOTINES?|GUAYOS?|SANDALIAS?|CHANCLAS?|BALETAS?|MOCASINES?|PANTUFLAS?)\b/;
+const OTRO_WORDS = /\b(ROPA|CAMISETAS?|CAMISILLAS?|PANTALON(ES|ETAS?)?|CHAQUETAS?|SUDADERAS?|BUZOS?|CAMIBUZOS?|LICRAS?|SHORTS?|LEGGINS?|BRASIER|TOPS?|ACCESORIOS|GORRAS?|MEDIAS|BOLSOS?|MALETIN(ES)?|MORRAL(ES)?|BALON(ES)?|GUANTES)\b/;
+
+/**
+ * Tipo de producto por referencia (CALZADO es lo que se talla). Combina `grupo`/`location`, `merchandise_type`
+ * (a veces trae el origen, ej. IMPORTADA) y palabras de la descripción de todos los códigos de la referencia.
+ * Caché en un doc (`systemCache/talladoRefTipo`) para no releer el maestro: solo se consultan refs nuevas.
+ */
+async function classifyTalladoReferences(refs: string[]): Promise<Map<string, { tipo: TalladoProductTipo; descripcion?: string }>> {
+  const out = new Map<string, { tipo: TalladoProductTipo; descripcion?: string }>();
+  const cacheRef = doc(firestore, ...REF_TIPO_CACHE_DOC);
+  const cacheSnap = await getDoc(cacheRef);
+  const cached = (cacheSnap.exists() ? cacheSnap.data().refs : null) as Record<string, { t: TalladoProductTipo; d?: string }> | null;
+  const missing: string[] = [];
+  refs.forEach((ref) => {
+    const c = cached?.[ref];
+    if (c) out.set(ref, { tipo: c.t, descripcion: c.d });
+    else missing.push(ref);
+  });
+  if (missing.length === 0) return out;
+
+  const found = new Map<string, { calzado: boolean; otro: boolean; descripcion?: string }>();
+  for (let i = 0; i < missing.length; i += 30) {
+    const snap = await getDocs(query(collection(firestore, 'productDatabase'), where('reference', 'in', missing.slice(i, i + 30))));
+    snap.docs.forEach((d) => {
+      const x = d.data() as Record<string, unknown>;
+      const ref = talladoCyclicNormRef(String(x.reference || ''));
+      const desc = String(x.item || x.description || x.name || '').trim().toUpperCase();
+      const labels = [x.grupo, x.location, x.merchandise_type].map((v) => String(v || '').trim().toUpperCase());
+      const f = found.get(ref) || { calzado: false, otro: false };
+      if (labels.includes('CALZADO') || CALZADO_WORDS.test(desc)) f.calzado = true;
+      else if (labels.some((l) => l === 'ROPA' || l === 'ACCESORIOS') || OTRO_WORDS.test(desc)) f.otro = true;
+      if (!f.descripcion && desc && !/^\d+$/.test(desc)) f.descripcion = desc;
+      found.set(ref, f);
+    });
+  }
+
+  const toCache: Record<string, { t: TalladoProductTipo; d?: string }> = {};
+  missing.forEach((ref) => {
+    const f = found.get(ref);
+    const tipo: TalladoProductTipo = f?.calzado ? 'CALZADO' : f?.otro ? 'OTRO' : 'SIN CLASIFICAR';
+    out.set(ref, { tipo, descripcion: f?.descripcion });
+    if (tipo !== 'SIN CLASIFICAR') toCache[ref] = f?.descripcion ? { t: tipo, d: f.descripcion } : { t: tipo };
+  });
+  if (Object.keys(toCache).length > 0) {
+    await setDoc(cacheRef, { refs: toCache, updatedAt: new Date().toISOString() }, { merge: true }).catch((e) =>
+      console.warn('talladoRefTipo cache:', e)
+    );
+  }
+  return out;
+}
+
 /**
  * Reporte Recepción vs Tallado: por referencia, lo recibido en la RK vs lo tallado de esa RK (por modo),
  * y lo registrado por ubicación en el día vs el inventario cíclico del día.
@@ -3330,7 +3387,7 @@ export async function getTalladoReceptionCompare(input: {
       const key = talladoCyclicNormRef(ref);
       let r = rows.get(key);
       if (!r) {
-        r = { reference: key, recibido: null, rk: emptyModeQty(), ubicacion: emptyModeQty(), inventario: null, boxes: [], locations: [] };
+        r = { reference: key, tipo: 'SIN CLASIFICAR', recibido: null, rk: emptyModeQty(), ubicacion: emptyModeQty(), inventario: null, boxes: [], locations: [] };
         rows.set(key, r);
       }
       return r;
@@ -3423,6 +3480,14 @@ export async function getTalladoReceptionCompare(input: {
           r.locations.push({ location, inventario: 0, registrado: qty, modo: modoLabel(u.etiquetadoModo), userName: u.userName, at: u.endedAt || u.startedAt });
         }
       });
+
+    const tipos = await classifyTalladoReferences(Array.from(rows.keys()));
+    rows.forEach((r, key) => {
+      const t = tipos.get(key);
+      if (!t) return;
+      r.tipo = t.tipo;
+      if (t.descripcion) r.descripcion = t.descripcion;
+    });
 
     const inv = await getCyclicExpectedByRefLoc(dateKey, Array.from(rows.keys()));
     if (!inv.success) return { success: false, error: inv.error };
