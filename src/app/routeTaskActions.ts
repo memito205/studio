@@ -455,12 +455,17 @@ export async function submitRouteTasks(
             ? distanceMeters({ lat: gps.lat, lng: gps.lng }, { lat: store.latitud, lng: store.longitud })
             : undefined;
         let marked = false;
-        if (t.deliverType === 'tienda' && store) {
+        // Punto fuera del maestro de tiendas (ej. B12): vale el destino de la TF guardado en la tarea, como en las relaciones de camión.
+        const lineIsForThisStop = (d: DocumentData) =>
+          store
+            ? match(d.bodegaDestino)?.codigoErp === store.codigoErp
+            : !!t.bodegaDestino && platformWhs(d.bodegaDestino) === platformWhs(t.bodegaDestino);
+        if (t.deliverType === 'tienda' && t.kind !== 'libre') {
           (t.transferIds || []).forEach((id) => {
             const s = lineById.get(id);
             if (!s) return;
             const d = s.data()!;
-            if (match(d.bodegaDestino)?.codigoErp !== store.codigoErp) return;
+            if (!lineIsForThisStop(d)) return;
             marked = true;
             if (d.storeReceivedAt || !DELIVERABLE.includes(d.status)) return;
             const pid = platformDocId(d.numeroTF, d.bodegaDestino);
