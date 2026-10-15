@@ -1,42 +1,12 @@
-
 "use server";
 
-import type { UserRecord } from "firebase-admin/auth";
+import { collection, doc, getDoc, getDocs, setDoc, updateDoc } from "firebase/firestore";
+import { firestore } from "@/services/firebase";
 import type { AppUser } from "@/types";
-// The following imports are commented out or removed because firebase-admin
-// requires the Blaze plan and is not compatible with the Spark plan deployment.
-// import { getFirestore } from "firebase-admin/firestore";
-// import { initializeApp, getApps, cert, App } from "firebase-admin/app";
-// import { getAuth } from "firebase-admin/auth";
 import type { UserRole } from "@/hooks/use-auth-context";
 
-// This function initializes the Firebase Admin SDK.
-// It's designed to be "lazy" - it only initializes the app once.
-// NOTE: Using the Firebase Admin SDK requires the Blaze plan for deployment.
-// This function is commented out to allow deployment on the Spark plan.
-function initializeAdminApp() {
-    // --- START: DISABLED FOR SPARK PLAN ---
-    // The logic has been commented out to prevent deployment errors on Spark.
-    // To re-enable, you must upgrade to Blaze, add "firebase-admin" to package.json,
-    // and uncomment the logic in this file.
-    const serviceAccountKey = process.env.NEXUS_OPERATIVO_FIREBASE_ADMIN_KEY;
-    if (!serviceAccountKey) {
-        console.error("NEXUS_OPERATIVO_FIREBASE_ADMIN_KEY environment variable is not set. Admin features are disabled.");
-        return null;
-    }
-     try {
-        // const serviceAccount = JSON.parse(serviceAccountKey);
-        // const adminApp = getApps().find(app => app.name === 'admin') || initializeApp({
-        //     credential: cert(serviceAccount),
-        // }, 'admin');
-        // return adminApp;
-    } catch (error) {
-        console.error("Error parsing service account key or initializing Firebase Admin SDK:", error);
-        return null;
-    }
-    // --- END: DISABLED FOR SPARK PLAN ---
-}
-
+// Sin Firebase Admin (plan Spark): las cuentas se crean con la API REST de Firebase Auth
+// (misma API key pública de la app) y el perfil se guarda en `users/{uid}`.
 
 interface ActionResponse<T> {
     success: boolean;
@@ -44,125 +14,183 @@ interface ActionResponse<T> {
     error?: string;
 }
 
-const ADMIN_SDK_ERROR_MESSAGE = "Error: Las funciones de administrador están desactivadas en este entorno.";
+const VALID_ROLES: UserRole[] = ['operator', 'supervisor', 'conductor', 'tiendas', 'external_operator', 'admin', 'office'];
 
-// Action to create a new user
-export async function createUser(data: { email: string; password?: string; displayName: string; role: UserRole; }): Promise<ActionResponse<{ uid: string }>> {
-  return { success: false, error: ADMIN_SDK_ERROR_MESSAGE };
-  /* --- START: DISABLED FOR SPARK PLAN ---
-  const app = initializeAdminApp();
-  if (!app) {
-    return { success: false, error: adminAppError?.message || ADMIN_SDK_ERROR_MESSAGE };
-  }
+const ROLE_ALIASES: Record<string, UserRole> = {
+    operario: 'operator',
+    operator: 'operator',
+    supervisor: 'supervisor',
+    conductor: 'conductor',
+    mensajero: 'conductor',
+    tiendas: 'tiendas',
+    tienda: 'tiendas',
+    externo: 'external_operator',
+    'etiquetado externo': 'external_operator',
+    'external_operator': 'external_operator',
+    tallado: 'external_operator',
+    admin: 'admin',
+    administrador: 'admin',
+    oficina: 'office',
+    office: 'office',
+};
 
-  try {
-    const auth = getAuth(app);
-    const firestore = getFirestore(app);
-
-    const userRecord = await auth.createUser({
-      email: data.email,
-      password: data.password,
-      displayName: data.displayName,
-    });
-
-    await firestore.collection("users").doc(userRecord.uid).set({
-      role: data.role,
-      email: data.email,
-      displayName: data.displayName,
-    });
-
-    return { success: true, data: { uid: userRecord.uid } };
-  } catch (error: any) {
-    console.error("Error creating user:", error);
-    return { success: false, error: error.message || "Unknown error occurred." };
-  }
-  --- END: DISABLED FOR SPARK PLAN --- */
+export async function normalizeUserRole(raw: string): Promise<UserRole | null> {
+    const key = String(raw || '').trim().toLowerCase();
+    if (!key) return 'operator';
+    return ROLE_ALIASES[key] || (VALID_ROLES.includes(key as UserRole) ? (key as UserRole) : null);
 }
 
-// Action to list all users
+const AUTH_ERRORS: Record<string, string> = {
+    EMAIL_EXISTS: 'El correo ya existe en Firebase y la contraseña no coincide.',
+    INVALID_EMAIL: 'Correo inválido.',
+    OPERATION_NOT_ALLOWED: 'El inicio con correo y contraseña está desactivado en Firebase.',
+    TOO_MANY_ATTEMPTS_TRY_LATER: 'Firebase bloqueó temporalmente la creación por exceso de intentos. Reintente en unos minutos.',
+};
+
+function authErrorText(code: string): string {
+    if (code.startsWith('WEAK_PASSWORD')) return 'Contraseña débil (mínimo 6 caracteres).';
+    return AUTH_ERRORS[code] || code;
+}
+
+async function authRest(endpoint: 'signUp' | 'signInWithPassword', email: string, password: string) {
+    const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
+    const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:${endpoint}?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, returnSecureToken: false }),
+        cache: 'no-store',
+    });
+    const json = (await res.json()) as { localId?: string; error?: { message?: string } };
+    return { uid: json.localId, error: json.error?.message ? String(json.error.message) : undefined };
+}
+
+type CreateUserInput = { email: string; password?: string; displayName: string; role: UserRole };
+type CreateUserResult = { uid: string; status: 'creado' | 'ya_existia' };
+
+/**
+ * Crea la cuenta en Firebase Auth y el doc `users/{uid}`. Si el correo ya existía y la contraseña
+ * es la misma, solo crea/actualiza el doc (caso "se creó en Auth pero faltó la colección").
+ */
+async function createOneUser(data: CreateUserInput): Promise<ActionResponse<CreateUserResult>> {
+    const email = String(data.email || '').trim().toLowerCase();
+    const password = String(data.password || '');
+    const displayName = String(data.displayName || '').trim();
+    if (!email || !email.includes('@')) return { success: false, error: 'Correo inválido.' };
+    if (password.length < 6) return { success: false, error: 'Contraseña débil (mínimo 6 caracteres).' };
+    if (!displayName) return { success: false, error: 'Falta el nombre.' };
+    if (!VALID_ROLES.includes(data.role)) return { success: false, error: `Rol inválido: ${data.role}` };
+
+    let status: CreateUserResult['status'] = 'creado';
+    let { uid, error } = await authRest('signUp', email, password);
+    if (error === 'EMAIL_EXISTS') {
+        const signIn = await authRest('signInWithPassword', email, password);
+        if (!signIn.uid) return { success: false, error: authErrorText('EMAIL_EXISTS') };
+        uid = signIn.uid;
+        error = undefined;
+        status = 'ya_existia';
+    }
+    if (error || !uid) return { success: false, error: authErrorText(error || 'Error desconocido al crear la cuenta.') };
+
+    const ref = doc(firestore, 'users', uid);
+    const existing = await getDoc(ref);
+    await setDoc(
+        ref,
+        {
+            email,
+            displayName,
+            role: data.role,
+            ...(existing.exists() ? {} : { createdAt: new Date().toISOString() }),
+        },
+        { merge: true }
+    );
+    return { success: true, data: { uid, status } };
+}
+
+export async function createUser(data: CreateUserInput): Promise<ActionResponse<{ uid: string }>> {
+    try {
+        const res = await createOneUser(data);
+        return res.success ? { success: true, data: { uid: res.data!.uid } } : { success: false, error: res.error };
+    } catch (error: any) {
+        console.error("Error creating user:", error);
+        return { success: false, error: error?.message || "No se pudo crear el usuario." };
+    }
+}
+
+export type BulkUserRow = { email: string; password: string; displayName: string; role: string };
+export type BulkUserResult = { email: string; displayName: string; ok: boolean; status?: CreateUserResult['status']; uid?: string; error?: string };
+
+/** Carga masiva desde Excel: una fila por usuario, en serie para no disparar el límite de Firebase. */
+export async function createUsersBulk(rows: BulkUserRow[]): Promise<ActionResponse<BulkUserResult[]>> {
+    if (!Array.isArray(rows) || rows.length === 0) return { success: false, error: 'El archivo no tiene filas.' };
+    if (rows.length > 200) return { success: false, error: 'Máximo 200 usuarios por archivo.' };
+    const out: BulkUserResult[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+        const email = String(row.email || '').trim().toLowerCase();
+        const displayName = String(row.displayName || '').trim();
+        if (seen.has(email)) {
+            out.push({ email, displayName, ok: false, error: 'Correo repetido en el archivo.' });
+            continue;
+        }
+        seen.add(email);
+        const role = await normalizeUserRole(row.role);
+        if (!role) {
+            out.push({ email, displayName, ok: false, error: `Rol no reconocido: "${row.role}".` });
+            continue;
+        }
+        try {
+            const res = await createOneUser({ email, password: String(row.password ?? ''), displayName, role });
+            out.push(
+                res.success
+                    ? { email, displayName, ok: true, status: res.data!.status, uid: res.data!.uid }
+                    : { email, displayName, ok: false, error: res.error }
+            );
+        } catch (e: any) {
+            out.push({ email, displayName, ok: false, error: e?.message || 'Error inesperado.' });
+        }
+    }
+    return { success: true, data: out };
+}
+
+/** Lista los perfiles de `users` (~60 docs; solo al abrir la pantalla o tras un cambio). */
 export async function listAllUsers(): Promise<ActionResponse<{ users: AppUser[] }>> {
-    return { success: false, error: ADMIN_SDK_ERROR_MESSAGE, data: { users: [] } };
-   /* --- START: DISABLED FOR SPARK PLAN ---
-  const app = initializeAdminApp();
-  if (!app) {
-    // Return a specific, identifiable error if the SDK failed to initialize.
-    return { success: false, error: adminAppError?.message || ADMIN_SDK_ERROR_MESSAGE, data: { users: [] } };
-  }
-
-  try {
-    const auth = getAuth(app);
-    const firestore = getFirestore(app);
-
-    const listUsersResult = await auth.listUsers(1000);
-    const usersCollection = await firestore.collection("users").get();
-    
-    const rolesMap = new Map<string, { role: UserRole; displayName: string }>();
-    usersCollection.forEach(doc => {
-      rolesMap.set(doc.id, {
-          role: doc.data().role || 'operator',
-          displayName: doc.data().displayName || ''
-      });
-    });
-
-    const appUsers: AppUser[] = listUsersResult.users.map((userRecord: UserRecord) => {
-      const firestoreData = rolesMap.get(userRecord.uid);
-      return {
-        uid: userRecord.uid,
-        email: userRecord.email,
-        displayName: firestoreData?.displayName || userRecord.displayName, // Prefer Firestore display name
-        role: firestoreData?.role || 'operator',
-        disabled: userRecord.disabled,
-      };
-    });
-
-    return { success: true, data: { users: appUsers } };
-  } catch (error: any) {
-    console.error("Error listing users:", error);
-    return { success: false, error: error.message || "Unknown error occurred.", data: { users: [] } };
-  }
-  --- END: DISABLED FOR SPARK PLAN --- */
+    try {
+        const snap = await getDocs(collection(firestore, 'users'));
+        const users: AppUser[] = snap.docs
+            .map((d) => {
+                const v = d.data() as Record<string, unknown>;
+                return {
+                    uid: d.id,
+                    email: String(v.email || ''),
+                    displayName: String(v.displayName || v.dsiplayName || v.userName || ''),
+                    role: (String(v.role || 'operator').trim().toLowerCase() as UserRole),
+                    disabled: false,
+                };
+            })
+            .sort((a, b) => (a.displayName || a.email || '').localeCompare(b.displayName || b.email || '', 'es'));
+        return { success: true, data: { users } };
+    } catch (error: any) {
+        console.error("Error listing users:", error);
+        return { success: false, error: error?.message || "No se pudieron listar los usuarios.", data: { users: [] } };
+    }
 }
 
-// Action to update a user's role
 export async function updateUserRole(data: { uid: string; role: UserRole }): Promise<ActionResponse<null>> {
-  return { success: false, error: ADMIN_SDK_ERROR_MESSAGE, data: null };
-  /* --- START: DISABLED FOR SPARK PLAN ---
-  const app = initializeAdminApp();
-  if (!app) {
-    return { success: false, error: ADMIN_SDK_ERROR_MESSAGE };
-  }
-
-  try {
-    const firestore = getFirestore(app);
-    await firestore.collection("users").doc(data.uid).update({ role: data.role });
-    return { success: true, data: null };
-  } catch (error: any) {
-    console.error("Error updating user role:", error);
-    return { success: false, error: error.message || "Unknown error occurred." };
-  }
-  --- END: DISABLED FOR SPARK PLAN --- */
+    try {
+        if (!VALID_ROLES.includes(data.role)) return { success: false, error: 'Rol inválido.' };
+        await updateDoc(doc(firestore, 'users', data.uid), { role: data.role });
+        return { success: true, data: null };
+    } catch (error: any) {
+        console.error("Error updating user role:", error);
+        return { success: false, error: error?.message || "No se pudo actualizar el rol." };
+    }
 }
 
-// Action to delete a user
-export async function deleteUser(data: { uid: string }): Promise<ActionResponse<null>> {
-  return { success: false, error: ADMIN_SDK_ERROR_MESSAGE, data: null };
-  /* --- START: DISABLED FOR SPARK PLAN ---
-  const app = initializeAdminApp();
-  if (!app) {
-    return { success: false, error: ADMIN_SDK_ERROR_MESSAGE };
-  }
-
-  try {
-    const auth = getAuth(app);
-    const firestore = getFirestore(app);
-
-    await auth.deleteUser(data.uid);
-    await firestore.collection("users").doc(data.uid).delete();
-
-    return { success: true, data: null };
-  } catch (error: any) {
-    console.error("Error deleting user:", error);
-    return { success: false, error: error.message || "Unknown error occurred." };
-  }
-  --- END: DISABLED FOR SPARK PLAN --- */
+// Borrar la cuenta de Firebase Auth requiere Firebase Admin (plan Blaze).
+export async function deleteUser(_data: { uid: string }): Promise<ActionResponse<null>> {
+    return {
+        success: false,
+        error: 'Eliminar la cuenta requiere la consola de Firebase (Authentication). Mientras tanto, cámbiele el rol.',
+        data: null,
+    };
 }

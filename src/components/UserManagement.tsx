@@ -17,8 +17,9 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import type { AppUser } from '@/types';
 import type { UserRole } from '@/hooks/use-auth-context';
-import { Loader2, PlusCircle, Trash2 } from 'lucide-react';
-import { createUser, listAllUsers, updateUserRole, deleteUser } from '@/app/admin/actions';
+import { Download, FileSpreadsheet, Loader2, PlusCircle, Trash2 } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { createUser, createUsersBulk, listAllUsers, updateUserRole, deleteUser, type BulkUserResult, type BulkUserRow } from '@/app/admin/actions';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 
 export const UserManagement = () => {
@@ -63,6 +64,69 @@ export const UserManagement = () => {
             toast({ variant: 'destructive', title: 'Error al crear usuario', description: result.error });
         }
         setIsSubmitting(false);
+    };
+
+    const fileRef = React.useRef<HTMLInputElement>(null);
+    const [bulkResults, setBulkResults] = useState<BulkUserResult[] | null>(null);
+    const [isBulkLoading, setIsBulkLoading] = useState(false);
+
+    const downloadTemplate = () => {
+        const ws = XLSX.utils.json_to_sheet([
+            { Nombre: 'JUAN PEREZ', Correo: 'juan.perez@tiendasbranchos.com', Contraseña: 'Clave123', Rol: 'Operario' },
+        ]);
+        const help = XLSX.utils.aoa_to_sheet([
+            ['Roles válidos'],
+            ['Operario'], ['Supervisor'], ['Conductor'], ['Tiendas'], ['Etiquetado externo'], ['Administrador'], ['Oficina'],
+            [],
+            ['Contraseña: mínimo 6 caracteres. Si el correo ya existe con esa misma contraseña, solo se crea/actualiza el perfil.'],
+        ]);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Usuarios');
+        XLSX.utils.book_append_sheet(wb, help, 'Ayuda');
+        XLSX.writeFile(wb, 'Plantilla_usuarios.xlsx');
+    };
+
+    const handleBulkFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        e.target.value = '';
+        if (!file) return;
+        setIsBulkLoading(true);
+        setBulkResults(null);
+        try {
+            const wb = XLSX.read(await file.arrayBuffer());
+            const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+            const pick = (row: Record<string, unknown>, ...names: string[]) => {
+                const key = Object.keys(row).find((k) =>
+                    names.includes(k.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
+                );
+                return key ? String(row[key] ?? '').trim() : '';
+            };
+            const rows: BulkUserRow[] = raw
+                .map((r) => ({
+                    displayName: pick(r, 'nombre', 'name', 'displayname'),
+                    email: pick(r, 'correo', 'email', 'correo electronico'),
+                    password: pick(r, 'contrasena', 'password', 'clave'),
+                    role: pick(r, 'rol', 'role'),
+                }))
+                .filter((r) => r.email || r.displayName);
+            if (rows.length === 0) {
+                toast({ variant: 'destructive', title: 'Archivo vacío', description: 'Use las columnas Nombre, Correo, Contraseña y Rol.' });
+                return;
+            }
+            const res = await createUsersBulk(rows);
+            if (!res.success || !res.data) {
+                toast({ variant: 'destructive', title: 'No se pudo procesar', description: res.error });
+                return;
+            }
+            setBulkResults(res.data);
+            const ok = res.data.filter((r) => r.ok).length;
+            toast({ title: 'Carga terminada', description: `${ok} de ${res.data.length} usuarios listos.` });
+            fetchUsers();
+        } catch (err: any) {
+            toast({ variant: 'destructive', title: 'Error leyendo el Excel', description: err?.message });
+        } finally {
+            setIsBulkLoading(false);
+        }
     };
 
     const handleRoleChange = async (uid: string, newRole: UserRole) => {
@@ -136,6 +200,51 @@ export const UserManagement = () => {
             </form>
         </div>
 
+        <div className="p-6 border rounded-lg space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                    <h3 className="text-lg font-medium">Cargar usuarios desde Excel</h3>
+                    <p className="text-sm text-muted-foreground">
+                        Columnas: Nombre, Correo, Contraseña, Rol. Crea la cuenta en Firebase y el perfil con su rol, sin copiar IDs.
+                    </p>
+                </div>
+                <div className="flex gap-2">
+                    <Button type="button" variant="outline" onClick={downloadTemplate}>
+                        <Download className="mr-2 h-4 w-4" /> Plantilla
+                    </Button>
+                    <Button type="button" onClick={() => fileRef.current?.click()} disabled={isBulkLoading}>
+                        {isBulkLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileSpreadsheet className="mr-2 h-4 w-4" />}
+                        Subir Excel
+                    </Button>
+                    <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleBulkFile} />
+                </div>
+            </div>
+            {bulkResults && (
+                <div className="border rounded-lg overflow-hidden">
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead>Nombre</TableHead>
+                                <TableHead>Correo</TableHead>
+                                <TableHead>Resultado</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {bulkResults.map((r, i) => (
+                                <TableRow key={`${r.email}-${i}`}>
+                                    <TableCell>{r.displayName}</TableCell>
+                                    <TableCell>{r.email}</TableCell>
+                                    <TableCell className={r.ok ? 'text-green-700' : 'text-destructive'}>
+                                        {r.ok ? (r.status === 'ya_existia' ? 'Ya existía: perfil actualizado' : 'Creado') : r.error}
+                                    </TableCell>
+                                </TableRow>
+                            ))}
+                        </TableBody>
+                    </Table>
+                </div>
+            )}
+        </div>
+
         {/* Users Table */}
         <div>
           <h3 className="text-lg font-medium mb-4">Usuarios Existentes</h3>
@@ -159,7 +268,7 @@ export const UserManagement = () => {
                     ) : users.length === 0 ? (
                         <TableRow>
                             <TableCell colSpan={4} className="text-center text-muted-foreground">
-                                No se encontraron usuarios o el SDK de Admin no está configurado.
+                                No se encontraron usuarios.
                             </TableCell>
                         </TableRow>
                     ) : (
