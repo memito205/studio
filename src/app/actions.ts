@@ -5016,6 +5016,56 @@ export async function getTransfersByStatus(status: TransferStatus, maxItems = 10
     }
 }
 
+/**
+ * Recolección: En Tránsito filtrado por origen/destino/TF en la misma consulta.
+ * Evita el bug de traer 1000 de un origen (cualquier estado) y luego filtrar En Tránsito
+ * (un origen con >1000 líneas históricas ocultaba TF válidas, ej. 47441 / 21201).
+ */
+export async function getTransfersInTransitForCollection(filters: {
+    numeroTF?: string;
+    bodegaOrigen?: string;
+    bodegaDestino?: string;
+    maxItems?: number;
+}): Promise<{ data?: TransferEntry[]; error?: string }> {
+    try {
+        const status: TransferStatus = 'En Tránsito';
+        const max = Math.min(Math.max(filters.maxItems ?? 3000, 1), 10000);
+        const tfDigits = String(filters.numeroTF || '').replace(/\D/g, '');
+        const tf = tfDigits ? String(Number(tfDigits)) : '';
+        const origen = String(filters.bodegaOrigen || '').trim().toUpperCase();
+        const destino = String(filters.bodegaDestino || '').trim().toUpperCase();
+
+        if (tf) {
+            const byNumber = await getTransfersByQuery(tf, 'number');
+            if (byNumber.error) return byNumber;
+            const data = (byNumber.data || []).filter((t) => {
+                if (t.status !== status) return false;
+                if (origen && String(t.bodegaOrigen || '').trim().toUpperCase() !== origen) return false;
+                if (destino && String(t.bodegaDestino || '').trim().toUpperCase() !== destino) return false;
+                return true;
+            });
+            return { data };
+        }
+
+        const constraints = [where('status', '==', status)];
+        if (origen) constraints.push(where('bodegaOrigen', '==', origen));
+        else if (destino) constraints.push(where('bodegaDestino', '==', destino));
+        const snap = await getDocs(query(collection(firestore, 'transfers'), ...constraints, limit(max)));
+        let data = snap.docs.map((d) => ({
+            id: d.id,
+            ...convertTimestampsToDates(d.data()),
+        })) as TransferEntry[];
+        // Si filtró por origen y también hay destino (o al revés), afinar en memoria.
+        if (origen && destino) {
+            data = data.filter((t) => String(t.bodegaDestino || '').trim().toUpperCase() === destino);
+        }
+        return { data };
+    } catch (error: any) {
+        console.error('Error getTransfersInTransitForCollection:', error);
+        return { error: error.message || 'No se pudieron cargar las transferencias En Tránsito.' };
+    }
+}
+
 export async function getTransfersByQuery(searchQuery: string, type: 'number' | 'origin' | 'destination' | 'altCode'): Promise<{ data?: TransferEntry[]; error?: string }> {
     try {
         let field = 'numeroTF';

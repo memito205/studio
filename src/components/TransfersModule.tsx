@@ -14,7 +14,7 @@ import { serverActionErrorText } from '@/lib/serverActionError';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { TransferEntry, TransferStatus, DeliveryManifest, DeliveryManifestDraft, UserRole, CollectionLog, AppUser, RouteEntry, TransferActor } from '@/types';
-import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, findMixedStatusTransfers, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders, repairSingleTransferStorageOrder, reindexTransferStorageOrdersByDestination, getOpenDeliveryManifestDrafts, upsertDeliveryManifestDraft, closeDeliveryManifestDraft, discardDeliveryManifestDraft, receiveTransfersInWarehouse, getWarehouseLocationConfig, loadOperatorMappings } from '@/app/actions';
+import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, findMixedStatusTransfers, getTransfersInTransitForCollection, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders, repairSingleTransferStorageOrder, reindexTransferStorageOrdersByDestination, getOpenDeliveryManifestDrafts, upsertDeliveryManifestDraft, closeDeliveryManifestDraft, discardDeliveryManifestDraft, receiveTransfersInWarehouse, getWarehouseLocationConfig, loadOperatorMappings } from '@/app/actions';
 import type { WarehouseLocationConfig } from '@/types';
 import { EMPTY_WAREHOUSE_LOCATION_CONFIG, suggestLocationsForDestino, suggestLocationsForDestinos, weekdayShortEs } from '@/lib/warehouseLocations';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect';
@@ -3023,22 +3023,18 @@ const CollectionTabView: React.FC<{
         const { numeroTF, bodegaOrigen, bodegaDestino } = filters;
         setIsLoading(true);
         try {
-            let result: { data?: TransferEntry[]; error?: string };
-            if (numeroTF.trim()) {
-                result = await getTransfersByQuery(numeroTF.trim(), 'number');
-            } else if (bodegaOrigen.trim()) {
-                result = await getTransfersByQuery(bodegaOrigen.trim(), 'origin');
-            } else if (bodegaDestino.trim()) {
-                result = await getTransfersByQuery(bodegaDestino.trim(), 'destination');
-            } else {
-                result = await getTransfersByStatus('En Tránsito', 3000);
-            }
+            // Consulta ya restringida a En Tránsito (+ origen/destino/TF). No traer todo el origen
+            // y filtrar después: un origen con >1000 históricos ocultaba TF válidas (ej. 47441).
+            const result = await getTransfersInTransitForCollection({
+                numeroTF: numeroTF.trim() || undefined,
+                bodegaOrigen: bodegaOrigen.trim() || undefined,
+                bodegaDestino: bodegaDestino.trim() || undefined,
+            });
 
             if (result.error) {
                 toast({ variant: 'destructive', title: 'Error', description: result.error });
                 return;
             }
-            // Solo En Tránsito (comparación sin acento por si el estado viene con otra codificación).
             const collected = (result.data || []).filter((t) => isEnTransitoStatus(t.status));
             const sorted = [...collected].sort((a, b) =>
                 a.numeroTF.localeCompare(b.numeroTF, undefined, { numeric: true, sensitivity: 'base' })
