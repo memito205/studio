@@ -8,6 +8,7 @@ import { ArrowLeft } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { UserManagement } from './UserManagement';
+import { UsageMonitor } from './UsageMonitor';
 import { useAuth } from '@/hooks/use-auth-context';
 import { ProductivitySettings } from './ProductivitySettings';
 import { UserGoals } from './UserGoals';
@@ -146,6 +147,7 @@ export const GeneralSettings: React.FC<GeneralSettingsProps> = ({
 
       {role === 'admin' && (
         <div className="space-y-8">
+            <UsageMonitor />
             <UserManagement />
             <ExternalVendorManager />
         </div>
