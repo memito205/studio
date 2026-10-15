@@ -10,6 +10,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/
 import { Input } from './ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { playScanSound } from '@/lib/scanSound';
+import { serverActionErrorText } from '@/lib/serverActionError';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { TransferEntry, TransferStatus, DeliveryManifest, DeliveryManifestDraft, UserRole, CollectionLog, AppUser, RouteEntry, TransferActor } from '@/types';
@@ -3490,27 +3491,31 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
 
         setIsLoading(true);
         let result: { data?: TransferEntry[]; error?: string; mixedGroupCount?: number };
-        if (isMixedFilter && !numeroTF && !bodegaOrigen && !bodegaDestino) {
-            // Escaneo dedicado: solo TF con estados mixtos (por defecto desde mar-2026).
-            result = await findMixedStatusTransfers({
-                startDate: startDate ? new Date(startDate) : undefined,
-                endDate: endDate ? new Date(endDate) : undefined,
-            });
-        } else if (numeroTF) {
-            result = await getTransfersByQuery(numeroTF, 'number');
-        } else if (codigoAlterno) {
-            result = await getTransfersByQuery(codigoAlterno, 'altCode');
-        } else if (bodegaOrigen) {
-            result = await getTransfersByQuery(bodegaOrigen, 'origin');
-        } else if (bodegaDestino) {
-            result = await getTransfersByQuery(bodegaDestino, 'destination');
-        } else if (startDate || endDate) {
-            const start = startDate ? new Date(startDate) : new Date(0);
-            const end = endDate ? new Date(endDate) : new Date();
-            result = await getTransfersByDateRange(start, end);
-        } else {
-            // Status only search (estados normales)
-            result = await getTransfersByStatus(status as TransferStatus);
+        try {
+            if (isMixedFilter && !numeroTF && !bodegaOrigen && !bodegaDestino) {
+                // Escaneo dedicado: solo TF con estados mixtos (por defecto desde mar-2026).
+                result = await findMixedStatusTransfers({
+                    startDate: startDate ? new Date(startDate) : undefined,
+                    endDate: endDate ? new Date(endDate) : undefined,
+                });
+            } else if (numeroTF) {
+                result = await getTransfersByQuery(numeroTF, 'number');
+            } else if (codigoAlterno) {
+                result = await getTransfersByQuery(codigoAlterno, 'altCode');
+            } else if (bodegaOrigen) {
+                result = await getTransfersByQuery(bodegaOrigen, 'origin');
+            } else if (bodegaDestino) {
+                result = await getTransfersByQuery(bodegaDestino, 'destination');
+            } else if (startDate || endDate) {
+                const start = startDate ? new Date(startDate) : new Date(0);
+                const end = endDate ? new Date(endDate) : new Date();
+                result = await getTransfersByDateRange(start, end);
+            } else {
+                // Status only search (estados normales)
+                result = await getTransfersByStatus(status as TransferStatus);
+            }
+        } catch (e) {
+            result = { error: serverActionErrorText(e) };
         }
 
         if (result.error) {

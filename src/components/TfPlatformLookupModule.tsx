@@ -14,6 +14,7 @@ import { format } from 'date-fns';
 import { StoreReceiveCard } from '@/components/StoreReceiveCard';
 import { AnalyzerSnapshotView } from '@/components/AnalyzerSnapshotView';
 import { useAuth } from '@/hooks/use-auth-context';
+import { serverActionErrorText } from '@/lib/serverActionError';
 
 const statusBadge = (status: string, entregaInferida?: boolean) => {
   switch (status as TfPlatformEstado) {
@@ -87,13 +88,18 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
     setIsLoading(true);
     setError(null);
     setResults([]);
-    const res = await getTfPlatformStatusByTf(tfQuery);
-    if (res.error) setError(res.error);
-    else {
-      setResults(res.data || []);
-      if (!res.data?.length) setError('No se encontraron estados plataforma para esa TF. Deben publicarse desde Plataforma Logística (Analizador, 4 pasos). Colección: tf_platform_status.');
+    try {
+      const res = await getTfPlatformStatusByTf(tfQuery);
+      if (res.error) setError(res.error);
+      else {
+        setResults(res.data || []);
+        if (!res.data?.length) setError('No se encontraron estados plataforma para esa TF. Deben publicarse desde Plataforma Logística (Analizador, 4 pasos). Colección: tf_platform_status.');
+      }
+    } catch (e) {
+      setError(serverActionErrorText(e));
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
   return (
