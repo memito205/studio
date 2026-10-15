@@ -217,14 +217,14 @@ export function StoreReceiveCard() {
         {activeStore && (
           <div className="space-y-2 rounded-md border p-3">
             <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold">Relaciones enviadas a la tienda</p>
+              <p className="text-sm font-semibold">Relaciones pendientes por recibir</p>
               <Button variant="ghost" size="sm" onClick={() => void loadManifests()}>
                 <RefreshCw className="mr-1 h-3.5 w-3.5" /> Actualizar
               </Button>
             </div>
             {manifests.length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                No hay relaciones abiertas para esta tienda. Puede leer las cajas sueltas igual.
+                No hay relaciones pendientes para esta tienda. Puede leer las cajas sueltas igual.
               </p>
             ) : (
               <div className="flex flex-wrap gap-2">

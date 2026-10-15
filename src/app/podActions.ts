@@ -1249,21 +1249,17 @@ export type StoreManifestSummary = {
   receptionStatus?: StoreReceptionStatus;
 };
 
-const lastDays = (n: number) =>
-  Array.from({ length: n }, (_, i) => bogotaDay(new Date(Date.now() - i * 24 * 3600 * 1000)));
-
-/** Relaciones enviadas a la tienda: abiertas + cerradas en los últimos 7 días (desde STORE_RECEPTION_START_AT). */
+/**
+ * Relaciones pendientes por recibir en la tienda (desde STORE_RECEPTION_START_AT). Las cerradas por la tienda
+ * o completadas por el conductor/logística salen de `storeOpenCodes` y no se muestran.
+ */
 export async function getStoreManifests(storeCode: string): Promise<{ data?: StoreManifestSummary[]; error?: string }> {
   const code = String(storeCode || '').trim();
   if (!code) return { data: [] };
   try {
-    const manifests = collection(firestore, 'deliveryManifests');
-    const [openSnap, doneSnap] = await Promise.all([
-      getDocs(query(manifests, where('storeOpenCodes', 'array-contains', code))),
-      getDocs(query(manifests, where('storeDoneKeys', 'array-contains-any', lastDays(7).map((d) => `${code}|${d}`)))),
-    ]);
+    const openSnap = await getDocs(query(collection(firestore, 'deliveryManifests'), where('storeOpenCodes', 'array-contains', code)));
     const byId = new Map<string, StoreManifestSummary>();
-    [...openSnap.docs, ...doneSnap.docs].forEach((d) => {
+    openSnap.docs.forEach((d) => {
       const m = d.data() as any;
       const createdAt = m.createdAt instanceof Timestamp ? m.createdAt.toDate() : null;
       if (!createdAt || createdAt < STORE_RECEPTION_START_AT) return;
