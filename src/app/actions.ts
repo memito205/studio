@@ -5022,8 +5022,17 @@ export async function getTransfersByQuery(searchQuery: string, type: 'number' | 
         if (type === 'origin') field = 'bodegaOrigen';
         if (type === 'destination') field = 'bodegaDestino';
         if (type === 'altCode') field = 'codigoAlterno';
+        // Por número: acepta "47441", "TF-47441", "TF 47441" (solo dígitos, sin ceros a la izquierda).
         const value =
-            type === 'altCode' ? searchQuery.toUpperCase().replace(/\s+/g, '') : searchQuery.toUpperCase().trim();
+            type === 'altCode'
+                ? searchQuery.toUpperCase().replace(/\s+/g, '')
+                : type === 'number'
+                  ? (() => {
+                        const digits = String(searchQuery || '').replace(/\D/g, '');
+                        return digits ? String(Number(digits)) : '';
+                    })()
+                  : searchQuery.toUpperCase().trim();
+        if (!value) return { data: [] };
 
         const q = query(
             collection(firestore, "transfers"), 

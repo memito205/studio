@@ -2998,6 +2998,12 @@ const OperatorView: React.FC<{
     );
 };
 
+const isEnTransitoStatus = (status: string) =>
+    String(status || '')
+        .normalize('NFD')
+        .replace(/\p{M}/gu, '')
+        .toLowerCase() === 'en transito';
+
 const CollectionTabView: React.FC<{
   onRefresh: () => void;
   onOpenManualEntry?: () => void;
@@ -3016,31 +3022,41 @@ const CollectionTabView: React.FC<{
     const fetchTransfers = useCallback(async () => {
         const { numeroTF, bodegaOrigen, bodegaDestino } = filters;
         setIsLoading(true);
-        
-        let result;
-        if (numeroTF) {
-            result = await getTransfersByQuery(numeroTF, 'number');
-        } else if (bodegaOrigen) {
-            result = await getTransfersByQuery(bodegaOrigen, 'origin');
-        } else if (bodegaDestino) {
-            result = await getTransfersByQuery(bodegaDestino, 'destination');
-        } else {
-            result = await getTransfersByStatus('En Tránsito');
-        }
+        try {
+            let result: { data?: TransferEntry[]; error?: string };
+            if (numeroTF.trim()) {
+                result = await getTransfersByQuery(numeroTF.trim(), 'number');
+            } else if (bodegaOrigen.trim()) {
+                result = await getTransfersByQuery(bodegaOrigen.trim(), 'origin');
+            } else if (bodegaDestino.trim()) {
+                result = await getTransfersByQuery(bodegaDestino.trim(), 'destination');
+            } else {
+                result = await getTransfersByStatus('En Tránsito', 3000);
+            }
 
-        if (result.data) {
-            // Filter only 'En Tránsito' records from the query result
-            const collected = result.data.filter(t => t.status === 'En Tránsito');
-            // Sort by TF number (Natural Sort)
-            const sorted = [...collected].sort((a, b) => a.numeroTF.localeCompare(b.numeroTF, undefined, { numeric: true, sensitivity: 'base' }));
+            if (result.error) {
+                toast({ variant: 'destructive', title: 'Error', description: result.error });
+                return;
+            }
+            // Solo En Tránsito (comparación sin acento por si el estado viene con otra codificación).
+            const collected = (result.data || []).filter((t) => isEnTransitoStatus(t.status));
+            const sorted = [...collected].sort((a, b) =>
+                a.numeroTF.localeCompare(b.numeroTF, undefined, { numeric: true, sensitivity: 'base' })
+            );
             setTransfers(sorted);
             if (sorted.length === 0) {
-                toast({ title: 'Sin resultados', description: 'No se encontraron transferencias En Tránsito con esos criterios.' });
+                toast({
+                    title: 'Sin resultados',
+                    description: numeroTF.trim()
+                        ? `No hay TF ${numeroTF.trim()} en estado En Tránsito (si existe, puede estar ya recolectada u otro estado).`
+                        : 'No se encontraron transferencias En Tránsito con esos criterios.',
+                });
             }
-        } else {
-            toast({ variant: 'destructive', title: 'Error', description: result.error || 'Failed to load transfers' });
+        } catch (e) {
+            toast({ variant: 'destructive', title: 'Error', description: serverActionErrorText(e) });
+        } finally {
+            setIsLoading(false);
         }
-        setIsLoading(false);
     }, [filters, toast]);
 
     useEffect(() => {
@@ -3055,11 +3071,17 @@ const CollectionTabView: React.FC<{
     }, [filters]);
 
     const availableTransfers = useMemo(() => {
-        return transfers.filter(t => 
-            t.status === 'En Tránsito' &&
-            (debouncedFilters.numeroTF ? t.numeroTF.toLowerCase().includes(debouncedFilters.numeroTF.toLowerCase()) : true) &&
-            (debouncedFilters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(debouncedFilters.bodegaOrigen.toLowerCase()) : true) &&
-            (debouncedFilters.bodegaDestino ? t.bodegaDestino.toLowerCase().includes(debouncedFilters.bodegaDestino.toLowerCase()) : true)
+        const tfNeedle = debouncedFilters.numeroTF.replace(/\D/g, '');
+        return transfers.filter(
+            (t) =>
+                isEnTransitoStatus(t.status) &&
+                (tfNeedle ? String(t.numeroTF).replace(/\D/g, '').includes(tfNeedle) : true) &&
+                (debouncedFilters.bodegaOrigen
+                    ? t.bodegaOrigen.toLowerCase().includes(debouncedFilters.bodegaOrigen.toLowerCase())
+                    : true) &&
+                (debouncedFilters.bodegaDestino
+                    ? t.bodegaDestino.toLowerCase().includes(debouncedFilters.bodegaDestino.toLowerCase())
+                    : true)
         );
     }, [transfers, debouncedFilters]);
 
@@ -3229,15 +3251,31 @@ const CollectionTabView: React.FC<{
                     </Button>
                 </div>
                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4 p-4 border rounded-lg bg-muted/50 items-end">
-                    <Input placeholder="Filtrar por # TF..." value={filters.numeroTF} onChange={e => setFilters(prev => ({...prev, numeroTF: e.target.value}))} />
-                    <Input placeholder="Filtrar por Origen..." value={filters.bodegaOrigen} onChange={e => setFilters(prev => ({...prev, bodegaOrigen: e.target.value}))} />
-                    <Input placeholder="Filtrar por Destino..." value={filters.bodegaDestino} onChange={e => setFilters(prev => ({...prev, bodegaDestino: e.target.value}))} />
-                    <Button onClick={fetchTransfers} disabled={isLoading}>
+                    <Input
+                        placeholder="Número TF (ej. 47441)"
+                        value={filters.numeroTF}
+                        onChange={(e) => setFilters((prev) => ({ ...prev, numeroTF: e.target.value }))}
+                        onKeyDown={(e) => e.key === 'Enter' && void fetchTransfers()}
+                    />
+                    <Input
+                        placeholder="Filtrar por Origen..."
+                        value={filters.bodegaOrigen}
+                        onChange={(e) => setFilters((prev) => ({ ...prev, bodegaOrigen: e.target.value }))}
+                        onKeyDown={(e) => e.key === 'Enter' && void fetchTransfers()}
+                    />
+                    <Input
+                        placeholder="Filtrar por Destino..."
+                        value={filters.bodegaDestino}
+                        onChange={(e) => setFilters((prev) => ({ ...prev, bodegaDestino: e.target.value }))}
+                        onKeyDown={(e) => e.key === 'Enter' && void fetchTransfers()}
+                    />
+                    <Button onClick={() => void fetchTransfers()} disabled={isLoading}>
                         {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Search className="mr-2 h-4 w-4" />}
                         Buscar
                     </Button>
                     <Button variant="ghost" onClick={() => { setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' }); setTransfers([]); }}>Limpiar</Button>
                 </div>
+                <p className="text-xs text-muted-foreground">Escriba el número y oprima Buscar (o Enter). Acepta 47441, TF-47441 o TF 47441.</p>
                  <div className="border rounded-md max-h-[60vh] overflow-auto">
                     <Table>
                         <TableHeader>
