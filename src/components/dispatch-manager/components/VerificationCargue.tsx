@@ -131,7 +131,9 @@ const VerificationCargue: React.FC<{
   useEffect(() => {
     if (!polling) return;
     void refreshScans();
-    const t = setInterval(() => void refreshScans(), 4000);
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshScans();
+    }, 30000);
     return () => clearInterval(t);
   }, [polling, refreshScans]);
 
@@ -156,7 +158,7 @@ const VerificationCargue: React.FC<{
         setScansReady(true);
       },
       (err) => {
-        console.warn('loadScans snapshot no disponible, se consulta cada 4 s', err);
+        console.warn('loadScans snapshot no disponible, se consulta cada 30 s', err);
         setPolling(true);
       }
     );

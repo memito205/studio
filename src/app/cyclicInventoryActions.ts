@@ -273,6 +273,12 @@ async function mergeLatestCountsOntoLines(inventoryDate: string): Promise<void> 
  * Reemplaza las líneas de inventario esperado del día. Los conteos no se borran: viven en `cyclicInventoryCountRecords`
  * y se vuelven a aplicar a las líneas nuevas por referencia y ubicación (hoy sin talla en re-aplicación; ver consolidate/merge).
  */
+/** Borra la caché del agregado de Tallado (`systemCache/talladoCyclic_{fecha}`) tras cambiar líneas o ajustes. */
+async function invalidateTalladoCyclicCache(inventoryDate: string): Promise<void> {
+  if (!inventoryDate) return;
+  await deleteDoc(doc(firestore, 'systemCache', `talladoCyclic_${inventoryDate}`)).catch(() => undefined);
+}
+
 export async function importCyclicInventoryForDate(input: {
   inventoryDate: string;
   lines: { reference: string; size: string; location: string; expectedQty: number; marca?: string }[];
@@ -371,6 +377,7 @@ export async function importCyclicInventoryForDate(input: {
       },
       { merge: true }
     );
+    await invalidateTalladoCyclicCache(dateKey);
 
     return { success: true, imported };
   } catch (e: unknown) {
@@ -896,6 +903,7 @@ export async function ensureCyclicInventoryLineForRefLoc(input: {
       source: 'scan_overage',
     };
     await setDoc(lineRef, payload);
+    await invalidateTalladoCyclicCache(dateKey);
     const raw = convertTimestampsToDates({ id: lineRef.id, ...payload } as Record<string, unknown>);
     return { success: true, data: raw as unknown as CyclicInventoryLine };
   } catch (e: unknown) {
@@ -976,6 +984,7 @@ export async function createInventoryAdjustment(input: {
       createdBy: String(input.createdBy).trim(),
       createdByName: String(input.createdByName || '').trim(),
     });
+    await invalidateTalladoCyclicCache(inventoryDate);
     return { success: true, id: ref.id };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Error al crear ajuste.';
@@ -989,7 +998,10 @@ export async function deleteInventoryAdjustment(input: {
   try {
     const id = String(input.adjustmentId || '').trim();
     if (!id) return { success: false, error: 'Ajuste no identificado.' };
-    await deleteDoc(doc(firestore, ADJUSTMENTS_COL, id));
+    const ref = doc(firestore, ADJUSTMENTS_COL, id);
+    const snap = await getDoc(ref);
+    await deleteDoc(ref);
+    if (snap.exists()) await invalidateTalladoCyclicCache(String(snap.data().inventoryDate || ''));
     return { success: true };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Error al eliminar ajuste.';

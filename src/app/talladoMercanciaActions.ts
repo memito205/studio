@@ -3034,24 +3034,53 @@ export async function getTalladoCyclicDayBundle(inventoryDate?: string): Promise
     if (!isValidInventoryDateKey(dateKey)) {
       return { success: false, error: 'Fecha inválida. Use AAAA-MM-DD.' };
     }
-    const res = await getCyclicInventoryLinesForDate(dateKey);
-    if (!res.success || !res.data) {
-      return { success: false, error: res.error || 'No se pudo cargar el inventario cíclico.' };
+    const lines = await loadTalladoCyclicAggCached(dateKey);
+    if (!lines.success || !lines.data) {
+      return { success: false, error: lines.error || 'No se pudo cargar el inventario cíclico.' };
     }
-    const lines = aggregateCyclicLinesByRefLoc(res.data);
-    const locSet = new Set<string>();
-    const refSet = new Set<string>();
-    for (const l of lines) {
-      if (l.location) locSet.add(l.location);
-      if (l.reference) refSet.add(l.reference);
-    }
-    const locations = [...locSet].sort((a, b) => a.localeCompare(b, 'es'));
-    const references = [...refSet].sort((a, b) => a.localeCompare(b, 'es'));
-    return { success: true, inventoryDate: dateKey, locations, references, lines };
+    return bundleFromAggLines(dateKey, lines.data);
   } catch (error: any) {
     console.error('getTalladoCyclicDayBundle:', error);
     return { success: false, error: error?.message || 'Error al cargar inventario cíclico.' };
   }
+}
+
+const TALLADO_CYCLIC_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Agregado ref|ubicación del cíclico del día, cacheado en `systemCache/talladoCyclic_{fecha}` (TTL 5 min):
+ * N operarios leen 1 doc en vez de ~1.100 líneas por apertura/búsqueda. Se invalida al importar o ajustar.
+ */
+async function loadTalladoCyclicAggCached(
+  dateKey: string
+): Promise<{ success: boolean; data?: TalladoCyclicAggLine[]; error?: string }> {
+  const cacheRef = doc(firestore, 'systemCache', `talladoCyclic_${dateKey}`);
+  const cached = await getDoc(cacheRef).catch(() => null);
+  if (cached?.exists()) {
+    const c = cached.data() as { builtAtMs?: number; lines?: TalladoCyclicAggLine[] };
+    if (Array.isArray(c.lines) && Date.now() - Number(c.builtAtMs || 0) < TALLADO_CYCLIC_CACHE_TTL_MS) {
+      return { success: true, data: c.lines };
+    }
+  }
+  const res = await getCyclicInventoryLinesForDate(dateKey);
+  if (!res.success || !res.data) return { success: false, error: res.error };
+  const lines = aggregateCyclicLinesByRefLoc(res.data);
+  await setDoc(cacheRef, { builtAtMs: Date.now(), inventoryDate: dateKey, lines }).catch((e) =>
+    console.warn('talladoCyclic cache:', e)
+  );
+  return { success: true, data: lines };
+}
+
+function bundleFromAggLines(dateKey: string, lines: TalladoCyclicAggLine[]) {
+  const locSet = new Set<string>();
+  const refSet = new Set<string>();
+  for (const l of lines) {
+    if (l.location) locSet.add(l.location);
+    if (l.reference) refSet.add(l.reference);
+  }
+  const locations = [...locSet].sort((a, b) => a.localeCompare(b, 'es'));
+  const references = [...refSet].sort((a, b) => a.localeCompare(b, 'es'));
+  return { success: true, inventoryDate: dateKey, locations, references, lines };
 }
 
 /** Líneas agregadas (sin talla) de una ubicación del día cíclico. */
