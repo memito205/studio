@@ -551,10 +551,16 @@ export async function exportBasicOperationReport(operationId: string): Promise<{
       existing.barcodes.add(item.barcode);
       allItems.set(key, existing);
     });
+    /** Refs esperadas sin talla (accesorios talla única): lo leído de esa ref en cualquier talla cuenta ahí. */
+    const expectedNoSizeKeys = new Set(
+      expectedItems.filter((item) => normalizeReceptionSize(item.size) === 'N/A').map((item) => receptionRefSizeKey(item.reference, ''))
+    );
 
     scannedItems.forEach(item => {
       const product = productMap.get(item.barcode);
-      const key = receptionRefSizeKey(item.reference, item.talla);
+      const exactKey = receptionRefSizeKey(item.reference, item.talla);
+      const noSizeKey = receptionRefSizeKey(item.reference, '');
+      const key = !allItems.has(exactKey) && expectedNoSizeKeys.has(noSizeKey) ? noSizeKey : exactKey;
       const existing = allItems.get(key) || {
         expected: 0,
         scanned: 0,
@@ -839,15 +845,13 @@ export async function bulkUploadReceptionDataFromExcel(fileContent: string, user
             // para no pisar marcas ya corregidas al re-subir plantillas antiguas sin esta columna.
             const marca = readCell(row, 'Marca', 'Brand').toUpperCase();
 
+            // Celdas vacías del archivo no pisan el maestro (ej. RK de accesorios sin talla borraba la talla real).
             const productData: Record<string, unknown> = {
-                name: description,
-                item: description,
                 barcode,
-                reference,
-                referencia: reference,
-                size,
-                talla: size,
                 updated_at: Timestamp.now(),
+                ...(description ? { name: description, item: description } : {}),
+                ...(reference ? { reference, referencia: reference } : {}),
+                ...(size ? { size, talla: size } : {}),
             };
 
             if (merchandiseType) {

@@ -410,12 +410,15 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
         let expectedItemData = expectedItems.find(item => item.barcode === product.codigoBarras);
         
         // FALLBACK: If barcode not in expected (alternate code), find by Reference + Size
-        if (!expectedItemData && productRef && productSize) {
-            expectedItemData = expectedItems.find(expItem => {
-                const expRef = normalizeReceptionReference(expItem.reference || (expItem as any).referencia || '');
-                const expSize = normalizeReceptionSize(expItem.size || (expItem as any).talla || '');
-                return expRef === productRef && expSize === productSize;
-            });
+        if (!expectedItemData && productRef) {
+            const sameRef = expectedItems.filter(
+                (expItem) => normalizeReceptionReference(expItem.reference || (expItem as any).referencia || '') === productRef
+            );
+            const sizeOf = (expItem: (typeof expectedItems)[number]) => normalizeReceptionSize(expItem.size || (expItem as any).talla || '');
+            expectedItemData =
+                (productSize ? sameRef.find((expItem) => sizeOf(expItem) === productSize) : undefined) ||
+                // Esperado sin talla (talla única): acepta la ref en cualquier talla.
+                sameRef.find((expItem) => sizeOf(expItem) === 'N/A');
         }
 
         // Misma referencia en la operación (otra talla): heredar ubicación de esta recepción.

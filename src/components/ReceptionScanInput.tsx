@@ -12,7 +12,7 @@ import { playScanSound } from '@/lib/scanSound';
 import { Search, Loader2 } from 'lucide-react';
 import type { PackingUnit, ProductDatabaseItem, PackingScanResult, ReceptionExpectedItem } from '@/types';
 import { UnexpectedItemDialog } from './UnexpectedItemDialog';
-import { normalizeReceptionReference } from '@/lib/receptionReference';
+import { normalizeReceptionReference, normalizeReceptionSize, receptionRefSizeKey } from '@/lib/receptionReference';
 
 
 interface ReceptionScanInputProps {
@@ -51,7 +51,12 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
   const [unexpectedItem, setUnexpectedItem] = useState<ProductDatabaseItem | null>(null);
 
   const expectedBarcodes = useMemo(() => new Set(expectedItems.map(item => String(item.barcode).trim())), [expectedItems]);
-  const expectedRefSizePairs = useMemo(() => new Set(expectedItems.map(item => `${String(item.reference || '').trim()}|${String(item.size || '').trim()}`)), [expectedItems]);
+  const expectedRefSizePairs = useMemo(() => new Set(expectedItems.map(item => receptionRefSizeKey(item.reference, item.size))), [expectedItems]);
+  /** Refs esperadas sin talla (talla única): se aceptan en cualquier talla. */
+  const expectedNoSizeRefs = useMemo(
+    () => new Set(expectedItems.filter(item => normalizeReceptionSize(item.size) === 'N/A').map(item => normalizeReceptionReference(item.reference))),
+    [expectedItems]
+  );
   const productByBarcode = useMemo(() => {
     const map = new Map<string, ProductDatabaseItem>();
     for (const p of productDB) {
@@ -104,10 +109,12 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
 
     if (result.status === 'success' && result.item) {
         const itemRef = (result.item.referencia || result.item.reference || '').trim();
-        const itemSize = (result.item.talla || result.item.size || 'N/A').trim();
-        const refSizeKey = `${itemRef}|${itemSize}`;
-        
-        const isExpected = expectedBarcodes.has(result.item.codigoBarras) || expectedRefSizePairs.has(refSizeKey);
+        const itemSize = (result.item.talla || result.item.size || '').trim();
+
+        const isExpected =
+            expectedBarcodes.has(result.item.codigoBarras) ||
+            expectedRefSizePairs.has(receptionRefSizeKey(itemRef, itemSize)) ||
+            (!!itemRef && expectedNoSizeRefs.has(normalizeReceptionReference(itemRef)));
         
         const productWithCorrectedLocation = { ...result.item };
         const knownLocation =
