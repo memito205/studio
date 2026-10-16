@@ -1324,11 +1324,16 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                     toast({ variant: 'destructive', title: 'No se pudo quitar', description: res.error });
                     return;
                 }
+                const unlinked = res.unlinkedReceipts || 0;
                 toast({
-                    title: 'Código alterno quitado',
-                    description: `${res.cleared || 0} línea(s)${label ? ` · ${label}` : ''}${
-                        res.unlinkedReceipts ? ` · ${res.unlinkedReceipts} enlace(s) de registro deshecho(s)` : ''
-                    }${res.skipped ? ` · ${res.skipped} ya sin código` : ''}.`,
+                    title: unlinked && !(res.cleared || 0) ? 'Enlace deshecho' : 'Código alterno quitado',
+                    description: `${res.cleared || 0} línea(s) limpiada(s)${label ? ` · ${label}` : ''}${
+                        unlinked ? ` · ${unlinked} registro(s) volvieron a pendiente` : ''
+                    }${res.skipped ? ` · ${res.skipped} ya sin código en TF` : ''}${
+                        !unlinked && !(res.cleared || 0)
+                            ? ' · No había código ni enlace que quitar'
+                            : ''
+                    }.`,
                 });
                 onTransfersChanged(ids);
                 onRefresh();
@@ -2373,10 +2378,9 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                         <AlertDialogHeader>
                                             <AlertDialogTitle>¿Quitar código alterno de la selección?</AlertDialogTitle>
                                             <AlertDialogDescription>
-                                                Se borrará el texto de código alterno en {bulkStatusSelectionCount.lineCount} línea(s)
-                                                ({bulkStatusSelectionCount.tfCount} TF) y se deshará el enlace en el registro de códigos
-                                                alternos (vuelve a pendiente). Use esto cuando una recolección en carro dejó un texto
-                                                erróneo.
+                                                En {bulkStatusSelectionCount.lineCount} línea(s) ({bulkStatusSelectionCount.tfCount} TF):
+                                                borra el código alterno si aún está, y deshace el enlace en el registro (vuelve a
+                                                pendiente). Sirve también si el código ya se había borrado y solo queda el enlace.
                                             </AlertDialogDescription>
                                         </AlertDialogHeader>
                                         <AlertDialogFooter>
@@ -2552,24 +2556,26 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                                                     )}
                                                                     Reparar Orden FIFO de esta TF
                                                                 </DropdownMenuItem>
-                                                                {String(t.codigoAlterno || '').trim() ? (
-                                                                    <DropdownMenuItem
-                                                                        onSelect={() =>
-                                                                            void handleClearAltCodes(
-                                                                                t.allIds,
-                                                                                `TF ${t.numeroTF} (era “${t.codigoAlterno}”)`
-                                                                            )
-                                                                        }
-                                                                        disabled={isClearingAltCodes}
-                                                                    >
-                                                                        {isClearingAltCodes ? (
-                                                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                                                        ) : (
-                                                                            <Eraser className="mr-2 h-4 w-4" />
-                                                                        )}
-                                                                        Quitar código alterno
-                                                                    </DropdownMenuItem>
-                                                                ) : null}
+                                                                <DropdownMenuItem
+                                                                    onSelect={() =>
+                                                                        void handleClearAltCodes(
+                                                                            t.allIds,
+                                                                            String(t.codigoAlterno || '').trim()
+                                                                                ? `TF ${t.numeroTF} (era “${t.codigoAlterno}”)`
+                                                                                : `TF ${t.numeroTF} (solo deshacer enlace)`
+                                                                        )
+                                                                    }
+                                                                    disabled={isClearingAltCodes}
+                                                                >
+                                                                    {isClearingAltCodes ? (
+                                                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                                    ) : (
+                                                                        <Eraser className="mr-2 h-4 w-4" />
+                                                                    )}
+                                                                    {String(t.codigoAlterno || '').trim()
+                                                                        ? 'Quitar código alterno'
+                                                                        : 'Deshacer enlace cód. alterno'}
+                                                                </DropdownMenuItem>
                                                                 <DropdownMenuSeparator />
                                                                 <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
                                                                     <AlertDialog>

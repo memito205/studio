@@ -5354,8 +5354,10 @@ export async function updateTransferStatus(
 
 /**
  * Admin: quita `codigoAlterno` / `altCodeReceiptId` de las líneas Y deshace el enlace en
- * `altCodeReceipts` (vuelve a pendiente). Sin eso el registro seguía “enlazado” a la TF errónea
- * y el match por código alterno seguía mal.
+ * `altCodeReceipts` (vuelve a pendiente).
+ *
+ * También sirve si el código ya se borró antes: busca recibos por
+ * `linkedTransferIds` (array-contains), `altCodeClearedPrevious` y número de TF.
  */
 export async function clearTransferAltCodes(
     transferIds: string[],
@@ -5369,6 +5371,7 @@ export async function clearTransferAltCodes(
         const idSet = new Set(ids);
         const receiptIds = new Set<string>();
         const previousAlts = new Set<string>();
+        const numeroTFs = new Set<string>();
         let cleared = 0;
         let skipped = 0;
         const CHUNK = 400;
@@ -5381,22 +5384,27 @@ export async function clearTransferAltCodes(
             const batch = writeBatch(firestore);
             let writes = 0;
             snaps.docs.forEach((d) => {
-                const alt = String(d.data().codigoAlterno || '').trim();
-                const receiptId = String(d.data().altCodeReceiptId || '').trim();
+                const data = d.data();
+                const alt = String(data.codigoAlterno || '').trim();
+                const receiptId = String(data.altCodeReceiptId || '').trim();
+                const clearedPrev = String(data.altCodeClearedPrevious || '').trim();
+                const ntf = String(data.numeroTF || '').trim();
+                if (ntf) numeroTFs.add(ntf);
+                if (receiptId) receiptIds.add(receiptId);
+                const norm = normalizeAltCode(alt || clearedPrev);
+                if (norm) previousAlts.add(norm);
+
                 if (!alt && !receiptId) {
                     skipped += 1;
                     return;
                 }
-                if (receiptId) receiptIds.add(receiptId);
-                const norm = normalizeAltCode(alt);
-                if (norm) previousAlts.add(norm);
                 batch.update(d.ref, {
                     codigoAlterno: deleteField(),
                     altCodeReceiptId: deleteField(),
                     altCodeClearedAt: now,
                     altCodeClearedBy: actor?.userId || null,
                     altCodeClearedByName: actorName,
-                    altCodeClearedPrevious: alt || null,
+                    altCodeClearedPrevious: alt || clearedPrev || null,
                 });
                 writes += 1;
                 cleared += 1;
@@ -5404,7 +5412,23 @@ export async function clearTransferAltCodes(
             if (writes > 0) await batch.commit();
         }
 
-        // Recibos enlazados por id o por el mismo código (texto) que se borró.
+        // Recibos que aún apuntan a estas líneas (caso: código ya borrado en TF).
+        // array-contains-any: hasta 30 ids por query (no full scan).
+        for (let i = 0; i < ids.length; i += 30) {
+            const snap = await getDocs(
+                query(
+                    collection(firestore, ALT_CODE_RECEIPTS),
+                    where('linkedTransferIds', 'array-contains-any', ids.slice(i, i + 30)),
+                    limit(50)
+                )
+            );
+            snap.docs.forEach((d) => {
+                if (d.data().status === 'void') return;
+                receiptIds.add(d.id);
+            });
+        }
+
+        // Por código (actual o el que se guardó al borrar antes).
         const altList = Array.from(previousAlts);
         for (let i = 0; i < altList.length; i += 30) {
             const snap = await getDocs(
@@ -5416,8 +5440,24 @@ export async function clearTransferAltCodes(
             });
         }
 
+        // Por número de TF exacto (cuando linkedNumeroTF es un solo TF).
+        const tfList = Array.from(numeroTFs);
+        for (let i = 0; i < tfList.length; i += 30) {
+            const snap = await getDocs(
+                query(
+                    collection(firestore, ALT_CODE_RECEIPTS),
+                    where('linkedNumeroTF', 'in', tfList.slice(i, i + 30))
+                )
+            );
+            snap.docs.forEach((d) => {
+                if (d.data().status === 'void') return;
+                receiptIds.add(d.id);
+            });
+        }
+
         let unlinkedReceipts = 0;
         const receiptIdList = Array.from(receiptIds);
+        const tfNeedle = Array.from(numeroTFs);
         for (let i = 0; i < receiptIdList.length; i += 30) {
             const chunk = receiptIdList.slice(i, i + 30);
             const batch = writeBatch(firestore);
@@ -5432,13 +5472,18 @@ export async function clearTransferAltCodes(
                     ? data.linkedTransferIds.map(String)
                     : [];
                 const code = normalizeAltCode(data.codigoAlterno);
+                const linkedTf = String(data.linkedNumeroTF || '');
                 const touchesById = linked.some((lid) => idSet.has(lid));
                 const touchesByCode = !!(code && previousAlts.has(code) && data.status === 'linked');
-                if (!touchesById && !touchesByCode) continue;
+                // Match exacto o lista "51667, 51668": si el admin limpia esa TF, hay que soltar el recibo
+                // aunque linkedTransferIds apunte a ids viejos / distintos a la selección actual.
+                const touchesByTf =
+                    data.status === 'linked' &&
+                    tfNeedle.some((tf) => linkedTf === tf || linkedTf.split(/[,\s]+/).map((s) => s.trim()).includes(tf));
+                if (!touchesById && !touchesByCode && !touchesByTf) continue;
 
-                const remaining = linked.filter((lid) => !idSet.has(lid));
+                const remaining = touchesByTf ? [] : linked.filter((lid) => !idSet.has(lid));
                 if (remaining.length === 0) {
-                    // Sin líneas: vuelve a pendiente para poder enlazarlo bien después.
                     batch.update(ref, {
                         status: 'pending',
                         linkedTransferIds: deleteField(),
@@ -6080,6 +6125,102 @@ export async function voidAltCodeReceipt(receiptId: string, reason: string, acto
         return { success: true };
     } catch (error: any) {
         return { success: false, error: error.message || 'No se pudo anular.' };
+    }
+}
+
+/**
+ * Admin: deshace el enlace de un registro (vuelve a pendiente) y quita codigoAlterno
+ * de las líneas de TF que aún lo tengan. Útil cuando la TF ya quedó sin código pero
+ * el registro sigue mostrando “Enlazada TF …”.
+ */
+export async function unlinkAltCodeReceipt(
+    receiptId: string,
+    actor?: TransferActor
+): Promise<{ success: boolean; clearedLines?: number; error?: string }> {
+    const id = String(receiptId || '').trim();
+    if (!id) return { success: false, error: 'Registro no indicado.' };
+    try {
+        const ref = doc(firestore, ALT_CODE_RECEIPTS, id);
+        const snap = await getDoc(ref);
+        if (!snap.exists()) return { success: false, error: 'Registro no encontrado.' };
+        const data = snap.data();
+        if (data.status === 'void') return { success: false, error: 'El registro está anulado.' };
+        if (data.status !== 'linked') return { success: false, error: 'Ese registro no está enlazado.' };
+
+        const now = Timestamp.now();
+        const actorName = (actor?.displayName || '').trim() || actor?.userId || null;
+        const linkedIds: string[] = Array.isArray(data.linkedTransferIds)
+            ? data.linkedTransferIds.map(String).filter(Boolean)
+            : [];
+        const code = normalizeAltCode(data.codigoAlterno);
+
+        let clearedLines = 0;
+        const writes: PendingWrite[] = [
+            {
+                ref,
+                data: {
+                    status: 'pending',
+                    linkedTransferIds: deleteField(),
+                    linkedNumeroTF: deleteField(),
+                    linkedDestino: deleteField(),
+                    linkedAt: deleteField(),
+                    linkNote: deleteField(),
+                    unlinkedAt: now,
+                    unlinkedByName: actorName,
+                    unlinkedReason: 'admin_unlink_receipt',
+                },
+            },
+        ];
+
+        // Quitar código en líneas apuntadas (y por código, por si los ids ya no coinciden).
+        const lineIdSet = new Set(linkedIds);
+        for (let i = 0; i < linkedIds.length; i += 30) {
+            const chunk = linkedIds.slice(i, i + 30);
+            const lineSnap = await getDocs(query(collection(firestore, 'transfers'), where(documentId(), 'in', chunk)));
+            lineSnap.docs.forEach((d) => {
+                const alt = String(d.data().codigoAlterno || '').trim();
+                const rid = String(d.data().altCodeReceiptId || '').trim();
+                if (!alt && !rid) return;
+                writes.push({
+                    ref: d.ref,
+                    data: {
+                        codigoAlterno: deleteField(),
+                        altCodeReceiptId: deleteField(),
+                        altCodeClearedAt: now,
+                        altCodeClearedBy: actor?.userId || null,
+                        altCodeClearedByName: actorName,
+                        altCodeClearedPrevious: alt || null,
+                    },
+                });
+                clearedLines += 1;
+            });
+        }
+        if (code) {
+            const byCode = await getDocs(
+                query(collection(firestore, 'transfers'), where('codigoAlterno', '==', code), limit(100))
+            );
+            byCode.docs.forEach((d) => {
+                if (lineIdSet.has(d.id)) return;
+                writes.push({
+                    ref: d.ref,
+                    data: {
+                        codigoAlterno: deleteField(),
+                        altCodeReceiptId: deleteField(),
+                        altCodeClearedAt: now,
+                        altCodeClearedBy: actor?.userId || null,
+                        altCodeClearedByName: actorName,
+                        altCodeClearedPrevious: code,
+                    },
+                });
+                clearedLines += 1;
+            });
+        }
+
+        await commitWrites(writes);
+        return { success: true, clearedLines };
+    } catch (error: any) {
+        console.error('unlinkAltCodeReceipt:', error);
+        return { success: false, error: error?.message || 'No se pudo deshacer el enlace.' };
     }
 }
 

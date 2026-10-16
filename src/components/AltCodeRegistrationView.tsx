@@ -4,7 +4,7 @@ import React, { FormEvent, useCallback, useEffect, useMemo, useRef, useState } f
 import JsBarcode from 'jsbarcode';
 import { buildAltCodeStickerPdf, openPdfForPrint } from '@/lib/labelPdf';
 import { format } from 'date-fns';
-import { AlertTriangle, CheckCircle2, Link2, Loader2, MapPin, Pencil, Printer, RefreshCw, ScanLine, Upload, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Link2, Link2Off, Loader2, MapPin, Pencil, Printer, RefreshCw, ScanLine, Upload, XCircle } from 'lucide-react';
 import { AltCodeBulkLoadDialog } from './AltCodeBulkLoadDialog';import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -27,6 +27,7 @@ import {
   manualLinkAltCodeReceipt,
   registerAltCodeReceipt,
   relocateAltCodeReceipt,
+  unlinkAltCodeReceipt,
   voidAltCodeReceipt,
 } from '@/app/actions';
 import type { AltCodeReceipt, TransferActor, WarehouseLocationConfig } from '@/types';
@@ -148,6 +149,7 @@ export function AltCodeRegistrationView() {
   const [isActing, setIsActing] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [listOpen, setListOpen] = useState(false);
+  const [unlinkingId, setUnlinkingId] = useState<string | null>(null);
   const refreshLists = useCallback(async () => {
     setIsLoadingLists(true);
     const res = await getAltCodeReceipts();
@@ -316,6 +318,38 @@ export function AltCodeRegistrationView() {
   const staleCount = pendingList.filter((r) => hoursSince(r.registeredAt) >= STALE_HOURS).length;
   const todayLinked = todayList.filter((r) => r.status === 'linked').length;
   const todayPending = todayList.filter((r) => r.status === 'pending').length;
+
+  const handleUnlink = async (r: AltCodeReceipt) => {
+    if (role !== 'admin' || unlinkingId) return;
+    if (!window.confirm(`¿Deshacer enlace del código ${r.codigoAlterno} (TF ${r.linkedNumeroTF || '—'})?\nVolverá a pendiente.`)) return;
+    setUnlinkingId(r.id);
+    try {
+      const res = await unlinkAltCodeReceipt(r.id, actor);
+      if (!res.success) {
+        toast({ variant: 'destructive', title: 'No se pudo desenlazar', description: res.error });
+        return;
+      }
+      toast({
+        title: 'Enlace deshecho',
+        description: `Código ${r.codigoAlterno} volvió a pendiente${res.clearedLines ? ` · ${res.clearedLines} línea(s) TF limpiada(s)` : ''}.`,
+      });
+      const fresh = await getAltCodeReceiptById(r.id);
+      if (!fresh.data) {
+        refreshLists();
+        return;
+      }
+      const updated = fresh.data;
+      setTodayList((prev) => prev.map((row) => (row.id === updated.id ? updated : row)));
+      setPendingList((prev) =>
+        prev.some((row) => row.id === updated.id)
+          ? prev.map((row) => (row.id === updated.id ? updated : row))
+          : [...prev, updated].sort((a, b) => a.registeredAt.localeCompare(b.registeredAt))
+      );
+      if (lastResult?.receipt.id === updated.id) setLastResult({ type: 'ok', receipt: updated });
+    } finally {
+      setUnlinkingId(null);
+    }
+  };
 
   const statusBadge = (r: AltCodeReceipt) =>
     r.status === 'linked' ? (
@@ -497,10 +531,27 @@ export function AltCodeRegistrationView() {
                       <TableCell className="text-xs">{r.ubicacion || '—'}</TableCell>
                       <TableCell className="text-xs">{r.packerName || r.registeredByName || '—'}</TableCell>
                       <TableCell>{statusBadge(r)}</TableCell>
-                      <TableCell>
+                      <TableCell className="whitespace-nowrap">
                         {r.status !== 'void' && (
                           <Button size="icon" variant="ghost" title="Reimprimir sticker" onClick={() => setStickerToPrint(r)}>
                             <Printer className="h-4 w-4" />
+                          </Button>
+                        )}
+                        {role === 'admin' && r.status === 'linked' && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="ml-1 h-7 px-2 text-amber-800 border-amber-300"
+                            title="Deshacer enlace (volver a pendiente)"
+                            disabled={unlinkingId === r.id}
+                            onClick={() => void handleUnlink(r)}
+                          >
+                            {unlinkingId === r.id ? (
+                              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Link2Off className="mr-1 h-3.5 w-3.5" />
+                            )}
+                            Desenlazar
                           </Button>
                         )}
                       </TableCell>
