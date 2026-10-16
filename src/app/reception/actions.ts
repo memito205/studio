@@ -1581,6 +1581,229 @@ export async function deletePackingUnitAndContents(unitFirestoreId: string): Pro
     }
 }
 
+/**
+ * Admin: elimina todas las cajas/lecturas de una referencia en una recepción.
+ * Bloquea si ya hay etiquetado o tallado de esa referencia (no deja huérfanos).
+ * Cajas son mono-ref en el flujo normal: se borran unidades completas.
+ */
+export async function deleteReceptionReferenceBoxes(
+  receptionId: string,
+  reference: string
+): Promise<{
+  success: boolean;
+  deletedUnits?: number;
+  deletedItems?: number;
+  deletedQuantity?: number;
+  error?: string;
+}> {
+  const rid = String(receptionId || '').trim();
+  const rawRef = String(reference || '').trim();
+  if (!rid) return { success: false, error: 'Falta la recepción.' };
+  if (!rawRef || rawRef === 'N/A' || rawRef === 'UNKNOWN') {
+    return { success: false, error: 'Indique una referencia válida.' };
+  }
+  const safeRef = normalizeReceptionReference(rawRef);
+
+  try {
+    const receptionRef = doc(firestore, 'receptionOperations', rid);
+    const receptionSnap = await getDoc(receptionRef);
+    if (!receptionSnap.exists()) return { success: false, error: 'La recepción no existe.' };
+
+    // --- Bloqueo: etiquetado de esa ref ---
+    let labelingSnap;
+    try {
+      labelingSnap = await getDocs(
+        query(
+          collection(firestore, 'labelingOperations'),
+          where('receptionOperationId', '==', rid),
+          limit(200)
+        )
+      );
+    } catch {
+      labelingSnap = await getDocs(
+        query(collection(firestore, 'labelingOperations'), where('receptionOperationId', '==', rid), limit(200))
+      );
+    }
+    const labelingHit = labelingSnap.docs.find((d) => {
+      const opRef = normalizeReceptionReference(d.data()?.reference);
+      return opRef === safeRef;
+    });
+    if (labelingHit) {
+      const st = String(labelingHit.data()?.status || 'Pendiente');
+      return {
+        success: false,
+        error: `No se puede borrar: ya hay etiquetado de ${safeRef} (estado: ${st}). Cancele o elimine esa tarea antes.`,
+      };
+    }
+
+    // Stats + packing unit ids (filtrado, sin full scan de scannedItems de la OP)
+    const statsRef = doc(firestore, 'receptionOperations', rid, 'referenceStats', safeRef);
+    const statsSnap = await getDoc(statsRef);
+    const statsData = statsSnap.exists() ? statsSnap.data() : null;
+    const unitIdSet = new Set<string>();
+    if (Array.isArray(statsData?.packingUnits)) {
+      statsData!.packingUnits.forEach((id: unknown) => {
+        const s = String(id || '').trim();
+        if (s) unitIdSet.add(s);
+      });
+    }
+    if (statsData?.packUnitsById && typeof statsData.packUnitsById === 'object') {
+      Object.keys(statsData.packUnitsById).forEach((id) => {
+        const s = String(id || '').trim();
+        if (s) unitIdSet.add(s);
+      });
+    }
+
+    // Cajas cerradas con closedRefs (por si stats está incompleto)
+    try {
+      const closedUnitsSnap = await getDocs(
+        query(
+          collection(firestore, 'packingUnits'),
+          where('reception_id', '==', rid),
+          where('closedRefs', 'array-contains', safeRef),
+          limit(200)
+        )
+      );
+      closedUnitsSnap.docs.forEach((d) => unitIdSet.add(d.id));
+    } catch {
+      // Índice compuesto puede faltar: no es crítico si stats trae las cajas.
+    }
+
+    // Ampliar unitIds con lecturas de esa ref (reception_id + reference), sin full-scan de la OP
+    const refVariants = Array.from(new Set([safeRef, rawRef]));
+    for (const refVal of refVariants) {
+      try {
+        const itemsSnap = await getDocs(
+          query(
+            collection(firestore, 'scannedItems'),
+            where('reception_id', '==', rid),
+            where('reference', '==', refVal),
+            limit(5000)
+          )
+        );
+        itemsSnap.docs.forEach((d) => {
+          if (normalizeReceptionReference(d.data()?.reference) !== safeRef) return;
+          const uid = String(d.data()?.packing_unit_id || '').trim();
+          if (uid) unitIdSet.add(uid);
+        });
+      } catch {
+        // Sin índice compuesto: seguimos con stats / closedRefs.
+      }
+    }
+
+    if (unitIdSet.size === 0 && !statsSnap.exists()) {
+      return { success: true, deletedUnits: 0, deletedItems: 0, deletedQuantity: 0 };
+    }
+
+    // --- Bloqueo: tallado de esa ref / sus cajas ---
+    const talladoSnap = await getDocs(
+      query(collection(firestore, 'talladoUnits'), where('receptionOperationId', '==', rid), limit(500))
+    );
+    const talladoHit = talladoSnap.docs.find((d) => {
+      const data = d.data();
+      if (data?.deletedAt) return false;
+      const tRef = normalizeReceptionReference(data?.referencia);
+      if (tRef === safeRef) return true;
+      const pid = String(data?.packingUnitId || '').trim();
+      return !!(pid && unitIdSet.has(pid));
+    });
+    if (talladoHit) {
+      return {
+        success: false,
+        error: `No se puede borrar: ya hay tallado de ${safeRef} (o de sus cajas). Revierta ese tallado antes.`,
+      };
+    }
+
+    // Ítems de esas cajas (caja = una ref): borrar todo el contenido de cada unidad
+    const itemRefByPath = new Map<string, DocumentReference>();
+    let totalQty = 0;
+    const unitIds = Array.from(unitIdSet);
+    for (const uid of unitIds) {
+      const snap = await getDocs(
+        query(collection(firestore, 'scannedItems'), where('packing_unit_id', '==', uid), limit(2000))
+      );
+      snap.docs.forEach((d) => {
+        itemRefByPath.set(d.ref.path, d.ref);
+        totalQty += Number(d.data()?.quantity) || 1;
+      });
+    }
+
+    // Lecturas de la ref sin packing_unit_id (huérfanas)
+    for (const refVal of refVariants) {
+      try {
+        const orphanSnap = await getDocs(
+          query(
+            collection(firestore, 'scannedItems'),
+            where('reception_id', '==', rid),
+            where('reference', '==', refVal),
+            limit(5000)
+          )
+        );
+        orphanSnap.docs.forEach((d) => {
+          if (normalizeReceptionReference(d.data()?.reference) !== safeRef) return;
+          if (itemRefByPath.has(d.ref.path)) return;
+          itemRefByPath.set(d.ref.path, d.ref);
+          totalQty += Number(d.data()?.quantity) || 1;
+        });
+      } catch {
+        // ignore
+      }
+    }
+
+    const uniqueItemRefs = Array.from(itemRefByPath.values());
+
+    let deletedItems = 0;
+    for (let i = 0; i < uniqueItemRefs.length; i += 400) {
+      const batch = writeBatch(firestore);
+      uniqueItemRefs.slice(i, i + 400).forEach((ref) => {
+        batch.delete(ref);
+        deletedItems += 1;
+      });
+      await batch.commit();
+    }
+
+    let deletedUnits = 0;
+    for (let i = 0; i < unitIds.length; i += 400) {
+      const batch = writeBatch(firestore);
+      unitIds.slice(i, i + 400).forEach((uid) => {
+        batch.delete(doc(firestore, 'packingUnits', uid));
+        deletedUnits += 1;
+      });
+      await batch.commit();
+    }
+
+    const qtyToDecrement =
+      totalQty > 0
+        ? totalQty
+        : Math.max(0, Number(statsData?.totalScanned) || 0);
+
+    if (qtyToDecrement > 0) {
+      await updateDoc(receptionRef, {
+        totalScannedQuantity: increment(-qtyToDecrement),
+        updated_at: new Date().toISOString(),
+      });
+    }
+
+    // Quitar stats de la referencia por completo (totalScanned, packingUnits, packUnitsById)
+    if (statsSnap.exists()) {
+      await deleteDoc(statsRef);
+    } else {
+      // Por si existía con otro id de doc
+      await deleteDoc(statsRef).catch(() => undefined);
+    }
+
+    return {
+      success: true,
+      deletedUnits,
+      deletedItems,
+      deletedQuantity: qtyToDecrement,
+    };
+  } catch (e: any) {
+    console.error('deleteReceptionReferenceBoxes:', e);
+    return { success: false, error: e?.message || 'No se pudieron eliminar las cajas de la referencia.' };
+  }
+}
+
 
 export async function startOperationPause(receptionId: string, userId: string, reason: string): Promise<{ success: boolean; error?: string; pauseId?: string }> {
     try {

@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/table";
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Download, Search, Eye, ChevronDown, ChevronRight, Boxes } from 'lucide-react';
+import { Download, Search, Eye, ChevronDown, ChevronRight, Boxes, Loader2, Trash2 } from 'lucide-react';
 import type { ReceptionOperation, DetailedReportItem, ScannedItem, ItemNovelty, PackingUnit, Location, ProductDatabaseItem, AppUser, OperationPause, ProductivitySettings, ReceptionExpectedItem, PackedItem } from '@/types';
 import { Badge } from '@/components/ui/badge';
 import { exportToXlsx } from '@/services/export';
@@ -22,6 +22,19 @@ import { showError } from '@/lib/toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'; // Import Tabs
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { useAuth } from '@/hooks/use-auth-context';
+import { deleteReceptionReferenceBoxes } from '@/app/reception/actions';
+import { useToast } from '@/hooks/use-toast';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 interface OperationDetailedReportProps {
   operation: ReceptionOperation;
@@ -72,6 +85,10 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
   onRefresh,
   productDB,
 }) => {
+  const { role } = useAuth();
+  const { toast } = useToast();
+  const canDeleteReference = role === 'admin' || role === 'supervisor';
+
   const [reportItems, setReportItems] = React.useState<DetailedReportItem[]>([]);
   const [consolidatedReportItems, setConsolidatedReportItems] = useState<ConsolidatedReportItem[]>([]);
   const [packingUnitSummaries, setPackingUnitSummaries] = useState<PackingUnitSummary[]>([]);
@@ -85,6 +102,8 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
   
   const [isDetailsDialogOpen, setIsDetailsDialogOpen] = React.useState(false);
   const [selectedUnitData, setSelectedUnitData] = React.useState<{ unit: PackingUnit; items: PackedItem[] } | null>(null);
+  const [deleteRefTarget, setDeleteRefTarget] = useState<ConsolidatedReportItem | null>(null);
+  const [isDeletingReference, setIsDeletingReference] = useState(false);
 
   const userMap = React.useMemo(() => new Map(allUsers.map(u => [u.uid, u.displayName || u.email])), [allUsers]);
   const productDetailsMap = React.useMemo(() => new Map(productDB.map(p => [p.codigoBarras, p])), [productDB]);
@@ -427,6 +446,28 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
     }
   };
 
+  const handleConfirmDeleteReference = async () => {
+    if (!deleteRefTarget || !operation?.id || isDeletingReference) return;
+    setIsDeletingReference(true);
+    try {
+      const res = await deleteReceptionReferenceBoxes(operation.id, deleteRefTarget.reference);
+      if (!res.success) {
+        toast({ variant: 'destructive', title: 'No se pudo eliminar', description: res.error });
+        return;
+      }
+      toast({
+        title: 'Referencia eliminada de la recepción',
+        description: `${deleteRefTarget.reference}: ${res.deletedUnits || 0} caja(s), ${res.deletedItems || 0} lectura(s), ${res.deletedQuantity || 0} und.`,
+      });
+      setDeleteRefTarget(null);
+      onRefresh();
+    } catch (e: any) {
+      toast({ variant: 'destructive', title: 'Error', description: e?.message || 'Error inesperado.' });
+    } finally {
+      setIsDeletingReference(false);
+    }
+  };
+
 
   return (
     <>
@@ -694,8 +735,21 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
                                   {openConsolidatedRows.has(item.reference) && (
                                      <TableRow>
                                           <TableCell colSpan={8} className="p-0">
-                                              <div className="p-4 bg-muted/50">
-                                                  <h4 className="font-semibold mb-2">Trazabilidad para Referencia: {item.reference}</h4>
+                                              <div className="p-4 bg-muted/50 space-y-3">
+                                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                                    <h4 className="font-semibold">Trazabilidad para Referencia: {item.reference}</h4>
+                                                    {canDeleteReference && item.scannedQuantity > 0 && (
+                                                      <Button
+                                                        size="sm"
+                                                        variant="destructive"
+                                                        onClick={() => setDeleteRefTarget(item)}
+                                                        disabled={isDeletingReference}
+                                                      >
+                                                        <Trash2 className="mr-2 h-4 w-4" />
+                                                        Eliminar todas las cajas de esta referencia
+                                                      </Button>
+                                                    )}
+                                                  </div>
                                                   <Table>
                                                   <TableHeader>
                                                       <TableRow>
@@ -821,6 +875,40 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
             onAction={onRefresh} // Using a generic onAction to trigger parent refresh
         />
       )}
+      <AlertDialog open={!!deleteRefTarget} onOpenChange={(o) => !o && !isDeletingReference && setDeleteRefTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar todas las cajas de {deleteRefTarget?.reference}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se borrarán {deleteRefTarget?.packingUnitBreakdown
+                ? new Set(deleteRefTarget.packingUnitBreakdown.map((b) => b.unitFirestoreId)).size
+                : 0}{' '}
+              caja(s) y {deleteRefTarget?.scannedQuantity || 0} unidad(es) leídas de esta referencia en la
+              recepción. No se puede deshacer. Si ya hay etiquetado o tallado de esta referencia, la acción
+              se bloqueará.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeletingReference}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={isDeletingReference}
+              onClick={(e) => {
+                e.preventDefault();
+                void handleConfirmDeleteReference();
+              }}
+            >
+              {isDeletingReference ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Eliminando…
+                </>
+              ) : (
+                'Sí, eliminar referencia'
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 };
