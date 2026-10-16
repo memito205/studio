@@ -531,6 +531,10 @@ export interface TransferEntry {
   altCodeReceiptId?: string;
   recolectadoBy?: string;
   recolectadoByName?: string;
+  /** Tarea abierta en Mis entregas (bloqueo Validar Bodega / Entregado en Ruta). */
+  misEntregasTaskOpen?: boolean;
+  misEntregasSource?: 'recoleccion_libre';
+  misEntregasAt?: Date;
   validatedBy?: string;
   validatedByName?: string;
   recibidoBodegaBy?: string;
@@ -722,14 +726,15 @@ export interface DriverRouteTask {
     order?: number;
     /** Posición de la fila de entrega en el planificador cuando hay recogida antes. */
     deliverOrder?: number;
-    source: 'transferencias' | 'planificador';
+    /** recoleccion_libre = creada al recolectar en ruta (Mis entregas · Recogidas de hoy). */
+    source: 'transferencias' | 'planificador' | 'recoleccion_libre';
     notes?: string;
+    collectionLogId?: string;
     createdAt: Date;
     createdByName?: string;
     pickedAt?: Date;
     pickedByName?: string;
     pickupPhotos?: DriverRouteTaskPhoto[];
-    collectionLogId?: string;
     deliveredAt?: Date;
     deliveredByName?: string;
     deliveryPhotos?: DriverRouteTaskPhoto[];

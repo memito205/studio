@@ -5,6 +5,7 @@ import {
   collection,
   deleteField,
   doc,
+  documentId,
   getDoc,
   getDocs,
   query,
@@ -132,6 +133,7 @@ export async function createRouteTasks(input: {
   day: string;
   source: DriverRouteTask['source'];
   actor: TransferActor;
+  collectionLogId?: string;
   reassignedFrom?: Record<string, string>;
 }): Promise<{ success: boolean; created?: number; skipped?: Array<{ numeroTF: string; reason: string }>; error?: string }> {
   const { actor } = input;
@@ -261,6 +263,7 @@ export async function createRouteTasks(input: {
           deliverOrder: t.deliverOrder,
           source: input.source,
           notes: t.notes?.trim() || undefined,
+          collectionLogId: input.collectionLogId || undefined,
           reassignedFrom: input.reassignedFrom?.[tf],
           createdAt: now,
           createdById: actor.userId,
@@ -288,6 +291,197 @@ export async function getMyRouteTasks(driverId: string): Promise<{ data?: Driver
     return { data };
   } catch (error: any) {
     return { error: error.message || 'No se pudieron cargar las tareas.' };
+  }
+}
+
+/**
+ * Destinos on-route (opción A): paradas de relaciones en_ruta del conductor
+ * + deliverPoint de sus routeTasks abiertas (excepto cajón).
+ */
+export async function getDriverOnRouteDestinationKeys(driverId: string): Promise<{
+  keys: Set<string>;
+  error?: string;
+}> {
+  const keys = new Set<string>();
+  if (!driverId) return { keys };
+  try {
+    const { match } = await loadStores();
+    const { destinationKeys } = await import('@/lib/collectionRouting');
+    const { getOpenDeliveryManifests } = await import('@/app/podActions');
+
+    const [tasksRes, manifestsRes] = await Promise.all([
+      getMyRouteTasks(driverId),
+      getOpenDeliveryManifests({ driverUserId: driverId }),
+    ]);
+
+    (tasksRes.data || []).forEach((t) => {
+      if (BODEGA_POINTS.includes(normPoint(t.deliverPoint))) return;
+      destinationKeys(t.deliverPoint, match).forEach((k) => keys.add(k));
+      if (t.deliverStoreCode) destinationKeys(t.deliverStoreCode, match).forEach((k) => keys.add(k));
+      if (t.bodegaDestino) destinationKeys(t.bodegaDestino, match).forEach((k) => keys.add(k));
+    });
+
+    const manifests = manifestsRes.data || [];
+    // Lecturas acotadas: paradas solo de relaciones abiertas del conductor (pocas).
+    for (const m of manifests.slice(0, 20)) {
+      const stopsSnap = await getDocs(collection(firestore, 'deliveryManifests', m.id, 'stops'));
+      stopsSnap.docs.forEach((d) => {
+        const data = d.data();
+        destinationKeys(data.storeCode || data.storeName || data.nombreCorto || data.codigoErp, match).forEach((k) =>
+          keys.add(k)
+        );
+        destinationKeys(data.bodegaDestino, match).forEach((k) => keys.add(k));
+      });
+    }
+    return { keys };
+  } catch (error: any) {
+    console.error('getDriverOnRouteDestinationKeys:', error);
+    return { keys, error: error?.message };
+  }
+}
+
+/**
+ * Tras recolección libre: parte el lote.
+ * - on-route → routeTask por_entregar (Mis entregas)
+ * - mensajero off-route → routeTask a CAJON NORTE
+ * - otro conductor off-route → queda para supervisor (sin tarea)
+ */
+export async function routeCollectedTransfersAfterFreeCollection(input: {
+  transferIds: string[];
+  driverId: string;
+  driverName: string;
+  placa: string;
+  collectionLogId?: string;
+  actor: TransferActor;
+  isMessenger?: boolean;
+}): Promise<{
+  success: boolean;
+  onRouteTasks?: number;
+  cajonTasks?: number;
+  supervisorLines?: number;
+  error?: string;
+}> {
+  const ids = Array.from(new Set((input.transferIds || []).map((id) => String(id || '').trim()).filter(Boolean)));
+  if (!ids.length || !input.driverId) return { success: true, onRouteTasks: 0, cajonTasks: 0, supervisorLines: 0 };
+
+  try {
+    const { isMessengerDriver, classifyCollectedTransfer, bogotaDayKey } = await import('@/lib/collectionRouting');
+    const { match } = await loadStores();
+    const messenger =
+      input.isMessenger === true ||
+      isMessengerDriver({ displayName: input.driverName, isMessenger: input.isMessenger });
+
+    const onRoute = await getDriverOnRouteDestinationKeys(input.driverId);
+    const onRouteKeys = onRoute.keys;
+
+    const lines: Array<{ id: string; data: DocumentData }> = [];
+    for (let i = 0; i < ids.length; i += 30) {
+      const chunk = ids.slice(i, i + 30);
+      const snap = await getDocs(query(collection(firestore, 'transfers'), where(documentId(), 'in', chunk)));
+      snap.docs.forEach((d) => lines.push({ id: d.id, data: d.data() }));
+    }
+
+    type Bucket = { numeroTF: string; transferIds: string[]; destino: string };
+    const onRouteBuckets = new Map<string, Bucket>();
+    const cajonBuckets = new Map<string, Bucket>();
+    let supervisorLines = 0;
+
+    lines.forEach(({ id, data }) => {
+      const tf = String(data.numeroTF || '').trim();
+      const destino = platformWhs(data.bodegaDestino) || 'SIN DESTINO';
+      const bucket = classifyCollectedTransfer(
+        { bodegaDestino: destino } as any,
+        { onRouteKeys, isMessenger: messenger, match }
+      );
+      if (bucket === 'supervisor') {
+        supervisorLines += 1;
+        return;
+      }
+      const key = `${tf}|${destino}|${bucket}`;
+      const map = bucket === 'on_route' ? onRouteBuckets : cajonBuckets;
+      const prev = map.get(key) || { numeroTF: tf, transferIds: [], destino };
+      prev.transferIds.push(id);
+      map.set(key, prev);
+    });
+
+    const day = bogotaDayKey();
+    const actor = input.actor;
+    let onRouteTasks = 0;
+    let cajonTasks = 0;
+
+    const onRouteList = Array.from(onRouteBuckets.values()).filter((b) => b.numeroTF);
+    if (onRouteList.length) {
+      const res = await createRouteTasks({
+        tasks: onRouteList.map((b) => ({
+          numeroTF: b.numeroTF,
+          transferIds: b.transferIds,
+          bodegaDestino: b.destino,
+          deliverPoint: b.destino,
+          notes: 'Recogida en ruta · entregar en destino',
+        })),
+        driverId: input.driverId,
+        driverName: input.driverName,
+        placa: input.placa,
+        day,
+        source: 'recoleccion_libre',
+        collectionLogId: input.collectionLogId,
+        actor,
+      });
+      onRouteTasks = res.created || 0;
+    }
+
+    const cajonList = Array.from(cajonBuckets.values()).filter((b) => b.numeroTF);
+    if (cajonList.length) {
+      await ensureNonStorePoints([CAJON_POINT], (await loadStores()).stores, actorNameOf(actor));
+      const res = await createRouteTasks({
+        tasks: cajonList.map((b) => ({
+          numeroTF: b.numeroTF,
+          transferIds: b.transferIds,
+          bodegaDestino: b.destino,
+          deliverPoint: CAJON_POINT,
+          notes: 'Recogida fuera de ruta (mensajero) · dejar en cajón',
+        })),
+        driverId: input.driverId,
+        driverName: input.driverName,
+        placa: input.placa,
+        day,
+        source: 'recoleccion_libre',
+        collectionLogId: input.collectionLogId,
+        actor,
+      });
+      cajonTasks = res.created || 0;
+    }
+
+    // Marcar líneas que quedaron en Mis entregas (bloqueo supervisor).
+    const pendingIds = [
+      ...Array.from(onRouteBuckets.values()).flatMap((b) => b.transferIds),
+      ...Array.from(cajonBuckets.values()).flatMap((b) => b.transferIds),
+    ];
+    for (let i = 0; i < pendingIds.length; i += 400) {
+      const batch = writeBatch(firestore);
+      pendingIds.slice(i, i + 400).forEach((id) => {
+        batch.update(doc(firestore, 'transfers', id), {
+          misEntregasTaskOpen: true,
+          misEntregasSource: 'recoleccion_libre',
+          misEntregasAt: Timestamp.now(),
+        });
+      });
+      await batch.commit();
+    }
+
+    if (input.collectionLogId) {
+      await updateDoc(doc(firestore, 'collectionLogs', input.collectionLogId), {
+        routedOnRoute: onRouteTasks,
+        routedCajon: cajonTasks,
+        routedSupervisor: supervisorLines,
+        isMessengerRoute: messenger,
+      }).catch(() => undefined);
+    }
+
+    return { success: true, onRouteTasks, cajonTasks, supervisorLines };
+  } catch (error: any) {
+    console.error('routeCollectedTransfersAfterFreeCollection:', error);
+    return { success: false, error: error?.message || 'No se pudo enrutar la recolección a Mis entregas.' };
   }
 }
 
@@ -332,6 +526,13 @@ export async function getRouteTasksByDay(day: string): Promise<{ data?: DriverRo
   }
 }
 
+/** Limpia el bloqueo de supervisor cuando la tarea de Mis entregas se cierra. */
+const clearMisEntregasFields = {
+  misEntregasTaskOpen: deleteField(),
+  misEntregasSource: deleteField(),
+  misEntregasAt: deleteField(),
+};
+
 /** `cajon` = dejó la mercancía en el cajón: la TF queda Recibido en Bodega · CAJON NORTE para asignarla otro día. */
 export type RouteTaskAction = 'recoger' | 'no_recoger' | 'entregar' | 'no_entregar' | 'cajon';
 
@@ -367,6 +568,8 @@ export async function submitRouteTasks(
       action === 'entregar' || action === 'no_entregar'
         ? await loadStores()
         : { match: (_: unknown) => undefined as DeliveryStore | undefined };
+    const { isMessengerDriver } =
+      action === 'no_entregar' ? await import('@/lib/collectionRouting') : { isMessengerDriver: () => false };
     const publishLines = new Map<string, PlatformLine>();
     const podMeta: { distanceM?: number; placa?: string; taskIds: string[] } = { taskIds: [] };
     const cajonPlatformIds = new Set<string>();
@@ -425,6 +628,7 @@ export async function submitRouteTasks(
                 cajonByName: actorName,
                 cajonRouteTaskId: t.id,
                 routeTaskId: t.id,
+                ...clearMisEntregasFields,
                 statusHistory: arrayUnion({ status: 'Recibido en Bodega', at: now, userId: actor.userId, userName: `${actorName} (cajón)` }),
               });
             });
@@ -447,7 +651,63 @@ export async function submitRouteTasks(
       }
 
       if (action === 'no_entregar') {
-        // Igual que la relación de camión: la TF queda en Novedad de Entrega para decidir en "Novedades".
+        const messenger =
+          isMessengerDriver({ displayName: actorName }) ||
+          tasks.some((x) => isMessengerDriver({ displayName: x.t.driverName }));
+        const touchedLines = new Set<string>();
+
+        if (messenger) {
+          // Mensajero: no entrega → Cajón (nunca Novedad / Validado Supervisor / Entregado en Ruta).
+          tasks.forEach(({ ref, t }) => {
+            if (t.kind !== 'libre') {
+              (t.transferIds || []).forEach((id) => {
+                const s = lineById.get(id);
+                if (!s) return;
+                const d = s.data()!;
+                if (d.storeReceivedAt || !DELIVERABLE.includes(d.status)) return;
+                const pid = platformDocId(d.numeroTF, d.bodegaDestino);
+                cajonPlatformIds.add(pid);
+                touchedLines.add(id);
+                tx.update(s.ref, {
+                  status: 'Recibido en Bodega',
+                  ubicacion: CAJON_POINT,
+                  ubicacionAt: now,
+                  reprogramada: true,
+                  cajonAt: now,
+                  cajonByName: actorName,
+                  cajonRouteTaskId: t.id,
+                  routeTaskId: t.id,
+                  novedadEntregaMotivo: reason,
+                  ...clearMisEntregasFields,
+                  statusHistory: arrayUnion({
+                    status: 'Recibido en Bodega',
+                    at: now,
+                    userId: actor.userId,
+                    userName: `${actorName} (cajón · no entregada)`,
+                  }),
+                });
+              });
+            }
+            tx.update(ref, clean({
+              status: 'entregada',
+              leftInCajon: true,
+              deliveredAt: now,
+              deliveredById: actor.userId,
+              deliveredByName: actorName,
+              failReason: reason,
+              failNotes: String(input.notes || '').trim() || undefined,
+              failPhotos: photos.length ? photos : undefined,
+              failGps: gps,
+              deliveryNotes: String(input.notes || '').trim() || undefined,
+              tfMarkedDelivered: false,
+              lastSubmissionId: submissionId,
+              ...closeKeys,
+            }));
+          });
+          return { success: true };
+        }
+
+        // Conductor de camión: igual que la relación — Novedad de Entrega para decidir en "Novedades".
         tasks.forEach(({ t }) => {
           if (t.kind === 'libre' || t.deliverType !== 'tienda') return;
           const store = t.deliverStoreCode ? match(t.deliverStoreCode) : match(t.deliverPoint);
@@ -473,6 +733,7 @@ export async function submitRouteTasks(
             publishLines.set(pid, line);
             podMeta.placa = t.placa;
             if (!podMeta.taskIds.includes(t.id)) podMeta.taskIds.push(t.id);
+            touchedLines.add(id);
             tx.update(s.ref, {
               status: 'Novedad de Entrega',
               novedadEntregaAt: now,
@@ -483,8 +744,20 @@ export async function submitRouteTasks(
               podManifestDocId: deleteField(),
               podStopId: deleteField(),
               reprogramada: false,
+              ...clearMisEntregasFields,
               statusHistory: arrayUnion({ status: 'Novedad de Entrega', at: now, userId: actor.userId, userName: actorName }),
             });
+          });
+        });
+
+        // Líneas con flag Mis entregas que no entraron a novedad (p.ej. destino bodega).
+        tasks.forEach(({ t }) => {
+          (t.transferIds || []).forEach((id) => {
+            if (touchedLines.has(id)) return;
+            const s = lineById.get(id);
+            if (!s?.data()?.misEntregasTaskOpen) return;
+            touchedLines.add(id);
+            tx.update(s.ref, { ...clearMisEntregasFields });
           });
         });
       }
@@ -599,6 +872,7 @@ export async function submitRouteTasks(
               entregadoTiendaByName: actorName,
               reprogramada: false,
               routeTaskId: t.id,
+              ...clearMisEntregasFields,
               statusHistory: arrayUnion({ status: 'Entregado en Tienda', at: now, userId: actor.userId, userName: actorName }),
             });
           });
@@ -672,8 +946,26 @@ export async function cancelRouteTasks(input: { taskIds: string[]; actor: Transf
       cancelled = 0;
       const snaps = await Promise.all(input.taskIds.map((id) => tx.get(doc(firestore, TASKS, id))));
       const now = Timestamp.now();
+      const lineIds = Array.from(
+        new Set(
+          snaps
+            .filter((s) => {
+              const d = s.data();
+              return s.exists() && !!d && ['por_recoger', 'por_entregar'].includes(d.status);
+            })
+            .flatMap((s) => (s.data()?.transferIds as string[] | undefined) || [])
+        )
+      );
+      const lineSnaps = await Promise.all(lineIds.map((id) => tx.get(doc(firestore, 'transfers', id))));
+      lineSnaps.forEach((ls) => {
+        const d = ls.data();
+        if (ls.exists() && d?.misEntregasTaskOpen) {
+          tx.update(ls.ref, { ...clearMisEntregasFields });
+        }
+      });
       snaps.forEach((s) => {
-        if (!s.exists() || !['por_recoger', 'por_entregar'].includes(s.data().status)) return;
+        const d = s.data();
+        if (!s.exists() || !d || !['por_recoger', 'por_entregar'].includes(d.status)) return;
         cancelled++;
         tx.update(s.ref, {
           status: 'cancelada',

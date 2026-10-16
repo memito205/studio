@@ -1749,7 +1749,8 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     }, [filteredTransfers, transferIdToPlacaMap, filters.status, toast]);
 
     const supervisorValidationTransfers = useMemo(() => {
-        const filtered = operationalTransfers.filter(t => t.status === 'Recolectado en Ruta');
+        // Excluye líneas con tarea abierta en Mis entregas (el conductor aún debe entregar o dejar en cajón).
+        const filtered = operationalTransfers.filter(t => t.status === 'Recolectado en Ruta' && !t.misEntregasTaskOpen);
         return filtered.filter(t => 
             (filters.numeroTF ? t.numeroTF.toLowerCase().includes(filters.numeroTF.toLowerCase()) : true) &&
             (filters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(filters.bodegaOrigen.toLowerCase()) : true) &&
@@ -3230,7 +3231,18 @@ const CollectionTabView: React.FC<{
             photos
         );
         if (result.success) {
-            toast({ title: 'Éxito', description: `${uniqueSelectedTfCount} transferencias marcadas como recolectadas.` });
+            const r = result.routing;
+            const parts = [
+                r?.onRouteTasks ? `${r.onRouteTasks} a Mis entregas (ruta)` : '',
+                r?.cajonTasks ? `${r.cajonTasks} a cajón` : '',
+                r?.supervisorLines ? `${r.supervisorLines} para supervisor` : '',
+            ].filter(Boolean);
+            toast({
+                title: 'Recolección registrada',
+                description:
+                    `${uniqueSelectedTfCount} transferencia(s) recolectadas.` +
+                    (parts.length ? ` Enrutado: ${parts.join(' · ')}.` : ''),
+            });
             fetchTransfers(); // Refresh local list
             onRefresh(); // Refresh parent if needed
             setSelectedTransfers(new Set());

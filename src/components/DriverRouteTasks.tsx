@@ -396,6 +396,95 @@ const RouteTaskForm: React.FC<{
   );
 };
 
+const renderGroupCards = (
+  groups: Group[],
+  queuedTaskIds: Set<string>,
+  onOpenForm: (form: { group: Group; action: RouteTaskAction } | null) => void,
+  opts?: { showStopNumbers?: boolean; freeCollection?: boolean }
+) =>
+  groups.map((g, i) => (
+    <Card key={g.key} className={cn(g.locked && 'border-dashed bg-muted/30', opts?.freeCollection && 'border-amber-200')}>
+      {opts?.showStopNumbers !== false && (i === 0 || groups[i - 1].stop !== g.stop) && (
+        <p className="px-6 pt-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Parada {g.stop}</p>
+      )}
+      <CardHeader className="pb-2">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <CardTitle className="text-base">{g.point}</CardTitle>
+            <CardDescription>
+              {g.tasks.length} envío(s) · {g.tasks.reduce((n, t) => n + (t.unidades || 0), 0)} und · placa {g.tasks[0].placa}
+            </CardDescription>
+          </div>
+          <Badge
+            className={
+              g.locked
+                ? 'bg-gray-400 text-white'
+                : opts?.freeCollection
+                  ? 'bg-amber-600 text-white'
+                  : g.kind === 'recoger'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-emerald-600 text-white'
+            }
+          >
+            {opts?.freeCollection
+              ? isCajonPoint(g.point)
+                ? 'Recogida → cajón'
+                : 'Recogida de hoy'
+              : g.kind === 'recoger'
+                ? 'Recoger'
+                : isCajonPoint(g.point)
+                  ? 'Dejar en cajón'
+                  : g.deliverType === 'bodega'
+                    ? 'Dejar en bodega'
+                    : 'Entregar'}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <p className="text-xs text-muted-foreground">
+          {g.tasks
+            .map((t) =>
+              `${routeTaskLabel(t)}${g.kind === 'recoger' ? ` → ${t.deliverPoint}` : ''}${
+                g.locked ? (queuedTaskIds.has(t.id) ? ' (recogida enviándose)' : ` (recoger primero en ${t.pickupPoint || 'origen'})`) : ''
+              }`
+            )
+            .join(' · ')}
+        </p>
+        {g.locked ? (
+          <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
+            Se habilita cuando se registre la recogida y se actualice la lista.
+          </p>
+        ) : (
+          <div className="grid grid-cols-2 gap-2">
+            {g.kind === 'entregar' && isCajonPoint(g.point) ? (
+              <Button onClick={() => onOpenForm({ group: g, action: 'cajon' })}>
+                <Archive className="mr-2 h-4 w-4" /> Dejar en cajón
+              </Button>
+            ) : (
+              <Button onClick={() => onOpenForm({ group: g, action: g.kind === 'recoger' ? 'recoger' : 'entregar' })}>
+                <PackageCheck className="mr-2 h-4 w-4" /> {g.kind === 'recoger' ? 'Recoger' : 'Entregar'}
+              </Button>
+            )}
+            {!(g.kind === 'entregar' && isCajonPoint(g.point)) && (
+              <Button
+                variant="outline"
+                className="text-red-700"
+                onClick={() => onOpenForm({ group: g, action: g.kind === 'recoger' ? 'no_recoger' : 'no_entregar' })}
+              >
+                <PackageX className="mr-2 h-4 w-4" /> {g.kind === 'recoger' ? 'No recogida' : 'No entregada'}
+              </Button>
+            )}
+            {g.kind === 'entregar' && g.deliverType === 'tienda' && !isCajonPoint(g.point) && (
+              <Button variant="secondary" className="col-span-2" onClick={() => onOpenForm({ group: g, action: 'cajon' })}>
+                <Archive className="mr-2 h-4 w-4" /> No se pudo entregar: dejar en cajón
+              </Button>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  ));
+
 /** Lista de recolecciones/entregas asignadas al conductor (sin sondeo: carga al abrir y al actualizar). */
 export const DriverRouteTasksSection: React.FC<{
   tasks: DriverRouteTask[];
@@ -404,7 +493,10 @@ export const DriverRouteTasksSection: React.FC<{
   onReload: () => void;
   onOpenForm: (form: { group: Group; action: RouteTaskAction } | null) => void;
 }> = ({ tasks, loading, queuedTaskIds, onReload, onOpenForm }) => {
-  const groups = useMemo(() => groupRouteTasks(tasks, queuedTaskIds), [tasks, queuedTaskIds]);
+  const freeTasks = useMemo(() => tasks.filter((t) => t.source === 'recoleccion_libre'), [tasks]);
+  const planTasks = useMemo(() => tasks.filter((t) => t.source !== 'recoleccion_libre'), [tasks]);
+  const freeGroups = useMemo(() => groupRouteTasks(freeTasks, queuedTaskIds), [freeTasks, queuedTaskIds]);
+  const planGroups = useMemo(() => groupRouteTasks(planTasks, queuedTaskIds), [planTasks, queuedTaskIds]);
   const pendingSend = tasks.filter((t) => queuedTaskIds.has(t.id)).length;
 
   return (
@@ -418,65 +510,30 @@ export const DriverRouteTasksSection: React.FC<{
       {pendingSend > 0 && <p className="text-xs text-amber-700">{pendingSend} TF registrada(s) en el celular, enviándose.</p>}
       {loading && tasks.length === 0 ? (
         <div className="py-4 text-center"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></div>
-      ) : groups.length === 0 ? (
+      ) : freeGroups.length === 0 && planGroups.length === 0 ? (
         <p className="text-sm text-muted-foreground">No tiene recolecciones ni entregas pendientes.</p>
       ) : (
-        groups.map((g, i) => (
-          <Card key={g.key} className={cn(g.locked && 'border-dashed bg-muted/30')}>
-            {(i === 0 || groups[i - 1].stop !== g.stop) && (
-              <p className="px-6 pt-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Parada {g.stop}</p>
-            )}
-            <CardHeader className="pb-2">
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <CardTitle className="text-base">{g.point}</CardTitle>
-                  <CardDescription>
-                    {g.tasks.length} envío(s) · {g.tasks.reduce((n, t) => n + (t.unidades || 0), 0)} und · placa {g.tasks[0].placa}
-                  </CardDescription>
-                </div>
-                <Badge className={g.locked ? 'bg-gray-400 text-white' : g.kind === 'recoger' ? 'bg-blue-600 text-white' : 'bg-emerald-600 text-white'}>
-                  {g.kind === 'recoger' ? 'Recoger' : isCajonPoint(g.point) ? 'Dejar en cajón' : g.deliverType === 'bodega' ? 'Dejar en bodega' : 'Entregar'}
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-2">
+        <>
+          {freeGroups.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">Recogidas de hoy</p>
               <p className="text-xs text-muted-foreground">
-                {g.tasks
-                  .map((t) =>
-                    `${routeTaskLabel(t)}${g.kind === 'recoger' ? ` → ${t.deliverPoint}` : ''}${
-                      g.locked ? (queuedTaskIds.has(t.id) ? ' (recogida enviándose)' : ` (recoger primero en ${t.pickupPoint || 'origen'})`) : ''
-                    }`
-                  )
-                  .join(' · ')}
+                Mercancía que recogió en ruta y debe entregar en destino o dejar en el cajón.
               </p>
-              {g.locked ? (
-                <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
-                  Se habilita cuando se registre la recogida y se actualice la lista.
+              {renderGroupCards(freeGroups, queuedTaskIds, onOpenForm, { showStopNumbers: false, freeCollection: true })}
+            </div>
+          )}
+          {planGroups.length > 0 && (
+            <div className="space-y-2">
+              {freeGroups.length > 0 && (
+                <p className="pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Asignadas / planificador
                 </p>
-              ) : (
-              <div className="grid grid-cols-2 gap-2">
-                {g.kind === 'entregar' && isCajonPoint(g.point) ? (
-                  <Button onClick={() => onOpenForm({ group: g, action: 'cajon' })}>
-                    <Archive className="mr-2 h-4 w-4" /> Dejar en cajón
-                  </Button>
-                ) : (
-                  <Button onClick={() => onOpenForm({ group: g, action: g.kind === 'recoger' ? 'recoger' : 'entregar' })}>
-                    <PackageCheck className="mr-2 h-4 w-4" /> {g.kind === 'recoger' ? 'Recoger' : 'Entregar'}
-                  </Button>
-                )}
-                <Button variant="outline" className="text-red-700" onClick={() => onOpenForm({ group: g, action: g.kind === 'recoger' ? 'no_recoger' : 'no_entregar' })}>
-                  <PackageX className="mr-2 h-4 w-4" /> {g.kind === 'recoger' ? 'No recogida' : 'No entregada'}
-                </Button>
-                {g.kind === 'entregar' && g.deliverType === 'tienda' && !isCajonPoint(g.point) && (
-                  <Button variant="secondary" className="col-span-2" onClick={() => onOpenForm({ group: g, action: 'cajon' })}>
-                    <Archive className="mr-2 h-4 w-4" /> No se pudo entregar: dejar en cajón
-                  </Button>
-                )}
-              </div>
               )}
-            </CardContent>
-          </Card>
-        ))
+              {renderGroupCards(planGroups, queuedTaskIds, onOpenForm)}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

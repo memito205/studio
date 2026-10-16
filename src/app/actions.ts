@@ -5315,6 +5315,23 @@ export async function updateTransferStatus(
             return { success: false, error: 'ID(s) de transferencia no proporcionado(s).' };
         }
 
+        // Bloqueo: líneas con tarea abierta en Mis entregas no pasan por Validar Bodega / Entregado en Ruta.
+        if (status === 'Validado Supervisor' || status === 'Entregado en Ruta') {
+            for (let i = 0; i < ids.length; i += 30) {
+                const snap = await getDocs(
+                    query(collection(firestore, 'transfers'), where(documentId(), 'in', ids.slice(i, i + 30)))
+                );
+                const blocked = snap.docs.find((d) => d.data().misEntregasTaskOpen === true);
+                if (blocked) {
+                    const tf = String(blocked.data().numeroTF || blocked.id);
+                    return {
+                        success: false,
+                        error: `La TF ${tf} está en Mis entregas del conductor. Espere a que la entregue o la deje en cajón.`,
+                    };
+                }
+            }
+        }
+
         const batch = writeBatch(firestore);
         
         const updates: Record<string, unknown> = { status };
@@ -7167,7 +7184,11 @@ export async function createCollectionLog(
     userId: string,
     userDisplayName?: string,
     photos?: Array<{ path: string; url: string }>
-): Promise<{ success: boolean; error?: string; }> {
+): Promise<{
+    success: boolean;
+    error?: string;
+    routing?: { onRouteTasks?: number; cajonTasks?: number; supervisorLines?: number };
+}> {
     const normalizedPlaca = String(placa || '').trim().toUpperCase();
     if (!photos?.length) {
         return { success: false, error: 'Tome la foto de la mercancía recolectada.' };
@@ -7200,12 +7221,13 @@ export async function createCollectionLog(
             return acc;
         }, {} as Record<string, number>);
 
+        const actorName = (userDisplayName || '').trim() || userId;
         const newLogData = {
             createdAt: Timestamp.now(),
             placa: normalizedPlaca,
             transferIds,
             recolectadoPor: userId,
-            recolectadoPorNombre: (userDisplayName || '').trim() || userId,
+            recolectadoPorNombre: actorName,
             photos: photos.map((p) => ({ path: p.path, url: p.url })),
             summary: {
                 totalTransfers: transferIds.length,
@@ -7214,7 +7236,6 @@ export async function createCollectionLog(
         };
         batch.set(newLogRef, newLogData);
 
-        const actorName = (userDisplayName || '').trim() || userId;
         const collectedAt = Timestamp.now();
         transferIds.forEach(id => {
             const transferRef = doc(transfersCollection, id);
@@ -7233,7 +7254,28 @@ export async function createCollectionLog(
         });
 
         await batch.commit();
-        return { success: true };
+
+        // Parte el lote: on-route → Mis entregas; mensajero off-route → cajón; resto → supervisor.
+        const { routeCollectedTransfersAfterFreeCollection } = await import('@/app/routeTaskActions');
+        const routing = await routeCollectedTransfersAfterFreeCollection({
+            transferIds,
+            driverId: userId,
+            driverName: actorName,
+            placa: normalizedPlaca,
+            collectionLogId: newLogRef.id,
+            actor: { userId, displayName: actorName },
+        });
+        if (!routing.success) {
+            console.error('createCollectionLog routing:', routing.error);
+        }
+        return {
+            success: true,
+            routing: {
+                onRouteTasks: routing.onRouteTasks || 0,
+                cajonTasks: routing.cajonTasks || 0,
+                supervisorLines: routing.supervisorLines || 0,
+            },
+        };
     } catch (error: any) {
         console.error("Error creating collection log:", error);
         return { success: false, error: `No se pudo registrar la recolección: ${error.message}` };
