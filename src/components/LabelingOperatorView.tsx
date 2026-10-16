@@ -815,7 +815,10 @@ export const LabelingOperatorView: React.FC<LabelingOperatorViewProps> = ({
           isExternalPortal,
           providedPin,
           externalVendor?.operatorName,
-          useSessionPinSkip ? { skipPinValidation: true } : undefined
+          {
+            ...(useSessionPinSkip ? { skipPinValidation: true } : {}),
+            ...(!isExternalPortal && user?.uid ? { actingOperatorId: user.uid } : {}),
+          }
         );
         if (result.success) {
           if (result.operation) {

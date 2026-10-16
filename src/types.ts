@@ -2430,6 +2430,18 @@ export interface LabelingPackUnit {
   locationName?: string;
   confirmed?: boolean;
   confirmedAt?: string;
+  /** Quién confirmó (multi-asignación). Ausente en tareas legacy de 1 persona. */
+  confirmedByOperatorId?: string;
+  confirmedByExternalOperatorName?: string;
+}
+
+/** Reloj individual en multi-asignación (clave = UID interno o nombre externo). */
+export interface LabelingAssigneeSession {
+  status: 'idle' | 'active' | 'paused';
+  startedAt?: string;
+  lastStartedAt?: string;
+  pausedAt?: string;
+  accumulatedMs?: number;
 }
 
 export interface LabelingOperation {
@@ -2441,10 +2453,21 @@ export interface LabelingOperation {
   sizes: { [size: string]: number }; // e.g., { "S": 50, "M": 100 }
   totalUnits: number; // Total units for this specific task
   status: LabelingOperationStatus;
-  assignedOperatorId: string; // Single operator per task (Internal)
+  /**
+   * Operario interno principal (compat). Con multi, es el primero de assignedOperatorIds.
+   * 1 sola persona = solo este campo (comportamiento histórico).
+   */
+  assignedOperatorId: string;
+  /** Multi interno (≥2). Si length===1 no se escribe; se usa el escalar. */
+  assignedOperatorIds?: string[];
   assignedExternalVendorId?: string; // New: Link to an external company
-  assignedExternalOperatorName?: string; // New: Specific operator assigned (optional)
+  /** Nombre externo principal (compat). Con multi, el primero de assignedExternalOperatorNames. */
+  assignedExternalOperatorName?: string;
+  /** Multi externo mismo proveedor (≥2). Si length===1 no se escribe. */
+  assignedExternalOperatorNames?: string[];
   isExternal?: boolean; // New: Flag to distinguish between internal and external
+  /** Sesiones/reloj por persona (solo multi). Clave = UID o nombre externo. */
+  assigneeSessions?: Record<string, LabelingAssigneeSession>;
   standard_units_per_hour?: number;
   createdAt: string;
   updatedAt: string;

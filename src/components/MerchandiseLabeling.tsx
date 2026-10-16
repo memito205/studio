@@ -31,12 +31,12 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import type { LabelingOperation, LabelingOperationStatus, LabelingActivityLog, AppUser, ReceptionExpectedItem, OperationPulse, ExternalVendor } from '@/types';
-import { loadLabelingOperations, updateLabelingOperation, unassignLabelingOperation, getExpectedItemsForLabeling, getAllUserProfiles, getLabelingActivityLog, logLabelingActivity, finishLabelingTaskSession, getExternalVendors, correctLabelingTaskQuantity, purgeAllLabelingOperations, deleteSelectedLabelingOperations } from '@/app/reception/actions';
+import { loadLabelingOperations, updateLabelingOperation, unassignLabelingOperation, reassignLabelingAssignees, getExpectedItemsForLabeling, getAllUserProfiles, getLabelingActivityLog, logLabelingActivity, finishLabelingTaskSession, getExternalVendors, correctLabelingTaskQuantity, purgeAllLabelingOperations, deleteSelectedLabelingOperations } from '@/app/reception/actions';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { FinishWorkDialog } from './FinishWorkDialog';
 import { getUserGoals, getProductivitySettings, getPulsesByDate } from '@/app/actions';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
-import { AssignOperatorsDialog } from './AssignOperatorsDialog';
+import { AssignOperatorsDialog, type LabelingAssigneeAssignPayload } from './AssignOperatorsDialog';
 import { SetLabelingStandardDialog } from './SetLabelingStandardDialog';
 import { CorrectLabelingQuantityDialog } from './CorrectLabelingQuantityDialog';
 import * as XLSX from 'xlsx';
@@ -46,6 +46,7 @@ import { useAuth } from '@/hooks/use-auth-context';
 import LabelingOperatorView from './LabelingOperatorView';
 import { LabelingActivityLogDialog } from './LabelingActivityLogDialog'; // Importar el nuevo diálogo
 import { computeLabelingProductivity } from '@/lib/labelingProductivity';
+import { getExternalAssigneeNames, getInternalAssigneeIds, isAssignedToInternal } from '@/lib/labelingAssignees';
 
 
 interface MerchandiseLabelingProps {
@@ -217,9 +218,13 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ operations, productivit
                     
                     if (op.isExternal) {
                         const vendorName = op.assignedExternalVendorId ? vendorMap.get(op.assignedExternalVendorId) : 'Ext';
-                        displayOperator = `[EXT] ${vendorName}${op.assignedExternalOperatorName ? ` - ${op.assignedExternalOperatorName}` : ''}`;
-                    } else if (op.assignedOperatorId) {
-                        displayOperator = userMap.get(op.assignedOperatorId) || 'Interno';
+                        const names = getExternalAssigneeNames(op);
+                        displayOperator = `[EXT] ${vendorName}${names.length ? ` - ${names.join(', ')}` : ''}`;
+                    } else {
+                        const ids = getInternalAssigneeIds(op);
+                        if (ids.length) {
+                          displayOperator = ids.map((id) => userMap.get(id) || id).join(', ');
+                        }
                     }
                     return (
                         <TableRow key={op.id} data-state={selectedIds.has(op.id) ? 'selected' : undefined}>
@@ -620,16 +625,18 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
     }
   };
   
-  const handleAssignOperator = async (operatorIds: string[]) => {
+  const handleAssignOperator = async (payload: LabelingAssigneeAssignPayload) => {
     if (!selectedOperation) return;
     setIsSubmitting(true);
-    const operatorId = operatorIds[0] || ''; 
-    const result = await updateLabelingOperation(selectedOperation.id, { 
-      assignedOperatorId: operatorId,
-      status: operatorId && selectedOperation.status === 'Pendiente' ? 'Asignada' : selectedOperation.status
-    });
+    const result = await reassignLabelingAssignees(selectedOperation.id, payload);
     if (result.success) {
-      toast({ title: 'Éxito', description: 'Operario asignado correctamente.' });
+      const n = payload.isExternal
+        ? (payload.assignedExternalOperatorNames?.length || 1)
+        : (payload.assignedOperatorIds?.length || 1);
+      toast({
+        title: 'Éxito',
+        description: n > 1 ? `${n} operarios asignados (mismo lado).` : 'Operario asignado correctamente.',
+      });
       fetchOperationsAndProductivity();
     } else {
       toast({ variant: 'destructive', title: 'Error', description: result.error });
@@ -807,7 +814,9 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
   
   const userOperations = useMemo(() => {
     if (!user) return [];
-    return operations.filter(op => op.assignedOperatorId === user.uid && op.status !== 'Completada');
+    return operations.filter(
+      (op) => isAssignedToInternal(op, user.uid) && op.status !== 'Completada'
+    );
   }, [operations, user]);
 
   return (
@@ -819,7 +828,13 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
         isLoading={isSubmitting || loadingVendors}
         operators={allUsers}
         externalVendors={externalVendors}
-        initialAssignedIds={selectedOperation?.assignedOperatorId ? [selectedOperation.assignedOperatorId] : []}
+        initialAssignedIds={
+          selectedOperation ? getInternalAssigneeIds(selectedOperation) : []
+        }
+        initialExternalNames={
+          selectedOperation ? getExternalAssigneeNames(selectedOperation) : []
+        }
+        initialExternalVendorId={selectedOperation?.assignedExternalVendorId || ''}
         isSingleTaskReassign={true}
       />
       <SetLabelingStandardDialog
@@ -1066,9 +1081,15 @@ export const MerchandiseLabeling: React.FC<MerchandiseLabelingProps> = ({ onRetu
                           let opName = 'Ninguno';
                           if (op.isExternal) {
                               const vendorName = externalVendors.find(v => v.id === op.assignedExternalVendorId)?.name || 'Ext';
-                              opName = `[EXT] ${vendorName}${op.assignedExternalOperatorName ? ` - ${op.assignedExternalOperatorName}` : ''}`;
-                          } else if (op.assignedOperatorId) {
-                              opName = allUsers.find(u => u.uid === op.assignedOperatorId)?.displayName || 'Interno';
+                              const names = getExternalAssigneeNames(op);
+                              opName = `[EXT] ${vendorName}${names.length ? ` - ${names.join(', ')}` : ''}`;
+                          } else {
+                              const ids = getInternalAssigneeIds(op);
+                              if (ids.length) {
+                                opName = ids
+                                  .map((id) => allUsers.find((u) => u.uid === id)?.displayName || id)
+                                  .join(', ');
+                              }
                           }
                           const matchOp = opName.toLowerCase().includes(searchOp.toLowerCase());
                           

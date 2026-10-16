@@ -2307,10 +2307,44 @@ export async function getUserGoals(userId: string): Promise<{ success: boolean; 
     }
 }
 
+async function normalizeLabelingAssigneeFields<T extends Partial<LabelingOperation>>(taskData: T): Promise<T | { error: string }> {
+  const { buildAssigneeWriteFields, getExternalAssigneeNames, getInternalAssigneeIds } = await import(
+    '@/lib/labelingAssignees'
+  );
+  const isExternal = taskData.isExternal === true || !!taskData.assignedExternalVendorId;
+  if (isExternal) {
+    const names =
+      getExternalAssigneeNames(taskData as LabelingOperation).length > 0
+        ? getExternalAssigneeNames(taskData as LabelingOperation)
+        : [String(taskData.assignedExternalOperatorName || '').trim()].filter(Boolean);
+    const built = buildAssigneeWriteFields({
+      isExternal: true,
+      externalVendorId: taskData.assignedExternalVendorId,
+      externalNames: names,
+    });
+    if (!built.ok) return { error: built.error };
+    return { ...taskData, ...built.fields };
+  }
+  if (taskData.assignedOperatorId || (taskData.assignedOperatorIds && taskData.assignedOperatorIds.length)) {
+    const ids =
+      getInternalAssigneeIds(taskData as LabelingOperation).length > 0
+        ? getInternalAssigneeIds(taskData as LabelingOperation)
+        : [String(taskData.assignedOperatorId || '').trim()].filter(Boolean);
+    const built = buildAssigneeWriteFields({ isExternal: false, internalIds: ids });
+    if (!built.ok) return { error: built.error };
+    return { ...taskData, ...built.fields };
+  }
+  return taskData;
+}
+
 export async function createLabelingTask(taskData: Omit<LabelingOperation, 'id' | 'createdAt' | 'updatedAt' | 'status'>): Promise<{ success: boolean; error?: string, id?: string; trackingMode?: LabelingOperation['trackingMode'] }> {
   try {
     const { stripUndefinedDeep } = await import('@/lib/labelingPackPlan');
-    const enriched = await enrichLabelingTaskWithPackPlan(taskData);
+    const normalized = await normalizeLabelingAssigneeFields(taskData);
+    if ('error' in normalized && normalized.error) {
+      return { success: false, error: normalized.error };
+    }
+    const enriched = await enrichLabelingTaskWithPackPlan(normalized as typeof taskData);
     const newTask: Omit<LabelingOperation, 'id'> = {
       ...enriched,
       status: (enriched.assignedOperatorId || enriched.assignedExternalVendorId) ? 'Asignada' : 'Pendiente',
@@ -2350,27 +2384,32 @@ export async function bulkCreateLabelingTasks(
         let packUnitsCount = 0;
         const enrichedTasks: Omit<LabelingOperation, 'id'>[] = [];
         for (const taskData of tasks) {
+          const normalized = await normalizeLabelingAssigneeFields(taskData);
+          if ('error' in normalized && normalized.error) {
+            return { success: false, error: normalized.error };
+          }
+          const baseTask = normalized as typeof taskData;
           let enriched: Omit<LabelingOperation, 'id' | 'createdAt' | 'updatedAt' | 'status'> &
             Partial<Pick<LabelingOperation, 'trackingMode' | 'labelingPackPlan' | 'packPlanLoadedAt' | 'completedUnitsLive'>>;
           if (packByRef) {
-            const refKey = normalizeReceptionReference(taskData.reference);
+            const refKey = normalizeReceptionReference(baseTask.reference);
             const plan = packByRef.get(refKey) || [];
             if (plan.length > 0) {
               const planQty = plan.reduce((s, p) => s + (Number(p.qty) || 0), 0);
               packUnitsCount += 1;
               enriched = {
-                ...taskData,
-                totalUnits: planQty > 0 ? planQty : taskData.totalUnits,
+                ...baseTask,
+                totalUnits: planQty > 0 ? planQty : baseTask.totalUnits,
                 trackingMode: 'pack_units',
                 labelingPackPlan: plan,
                 packPlanLoadedAt: new Date().toISOString(),
                 completedUnitsLive: 0,
               };
             } else {
-              enriched = { ...taskData, trackingMode: 'legacy_finish' };
+              enriched = { ...baseTask, trackingMode: 'legacy_finish' };
             }
           } else {
-            enriched = await enrichLabelingTaskWithPackPlan(taskData);
+            enriched = await enrichLabelingTaskWithPackPlan(baseTask);
             if (enriched.trackingMode === 'pack_units') packUnitsCount += 1;
           }
           enrichedTasks.push({
@@ -2787,6 +2826,84 @@ export async function updateLabelingOperation(operationId: string, updates: Part
 }
 
 /**
+ * Reasignación admin: un solo lado (interno multi O externo multi), limpia el otro.
+ * Usa deleteField en servidor (no serializar FieldValue desde el cliente).
+ */
+export async function reassignLabelingAssignees(
+  operationId: string,
+  payload: {
+    isExternal: boolean;
+    assignedOperatorId: string;
+    assignedOperatorIds?: string[];
+    assignedExternalVendorId?: string;
+    assignedExternalOperatorName?: string;
+    assignedExternalOperatorNames?: string[];
+  }
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!operationId) return { success: false, error: 'Tarea inválida.' };
+    const opRef = doc(firestore, 'labelingOperations', operationId);
+    const snap = await getDoc(opRef);
+    if (!snap.exists()) return { success: false, error: 'La tarea de etiquetado no existe.' };
+    const op = { id: snap.id, ...convertTimestampsToDates(snap.data()) } as LabelingOperation;
+    if (op.status === 'Completada' || op.status === 'En Progreso') {
+      return {
+        success: false,
+        error: `No se puede reasignar en estado ${op.status}.`,
+      };
+    }
+
+    const { buildAssigneeWriteFields } = await import('@/lib/labelingAssignees');
+    const built = buildAssigneeWriteFields(
+      payload.isExternal
+        ? {
+            isExternal: true,
+            externalVendorId: payload.assignedExternalVendorId,
+            externalNames: payload.assignedExternalOperatorNames?.length
+              ? payload.assignedExternalOperatorNames
+              : [payload.assignedExternalOperatorName || ''].filter(Boolean),
+          }
+        : {
+            isExternal: false,
+            internalIds: payload.assignedOperatorIds?.length
+              ? payload.assignedOperatorIds
+              : [payload.assignedOperatorId].filter(Boolean),
+          }
+    );
+    if (!built.ok) return { success: false, error: built.error };
+
+    const f = built.fields;
+    const nextStatus =
+      op.status === 'Pendiente' || op.status === 'Asignada' || op.status === 'Pausada'
+        ? 'Asignada'
+        : op.status;
+
+    // No usar stripUndefinedDeep aquí: borraría/rompería FieldValue.delete().
+    await updateDoc(opRef, {
+      status: nextStatus,
+      assignedOperatorId: f.assignedOperatorId || '',
+      isExternal: !!f.isExternal,
+      assignedExternalVendorId: f.isExternal ? f.assignedExternalVendorId || '' : deleteField(),
+      assignedExternalOperatorName: f.isExternal
+        ? f.assignedExternalOperatorName || ''
+        : deleteField(),
+      assignedExternalOperatorNames:
+        f.isExternal && f.assignedExternalOperatorNames?.length
+          ? f.assignedExternalOperatorNames
+          : deleteField(),
+      assignedOperatorIds:
+        !f.isExternal && f.assignedOperatorIds?.length ? f.assignedOperatorIds : deleteField(),
+      assigneeSessions: deleteField(),
+      updatedAt: new Date().toISOString(),
+    });
+    return { success: true };
+  } catch (error: any) {
+    console.error('reassignLabelingAssignees:', error);
+    return { success: false, error: error?.message || 'No se pudo reasignar.' };
+  }
+}
+
+/**
  * Quita operario/proveedor y deja la tarea en Pendiente (asignación errónea).
  * Bloquea En Progreso / Completada y Pausada con avance (cajas o und LIVE).
  */
@@ -2803,7 +2920,9 @@ export async function unassignLabelingOperation(
     const op = { id: snap.id, ...convertTimestampsToDates(snap.data()) } as LabelingOperation;
     const hasAssignee = Boolean(
       (op.assignedOperatorId && String(op.assignedOperatorId).trim()) ||
-        (op.assignedExternalVendorId && String(op.assignedExternalVendorId).trim())
+        (op.assignedExternalVendorId && String(op.assignedExternalVendorId).trim()) ||
+        (Array.isArray(op.assignedOperatorIds) && op.assignedOperatorIds.length > 0) ||
+        (Array.isArray(op.assignedExternalOperatorNames) && op.assignedExternalOperatorNames.length > 0)
     );
     if (!hasAssignee) {
       return { success: false, error: 'La tarea no tiene operario asignado.' };
@@ -2840,6 +2959,9 @@ export async function unassignLabelingOperation(
       isExternal: false,
       assignedExternalVendorId: deleteField(),
       assignedExternalOperatorName: deleteField(),
+      assignedOperatorIds: deleteField(),
+      assignedExternalOperatorNames: deleteField(),
+      assigneeSessions: deleteField(),
       updatedAt: new Date().toISOString(),
     });
 
@@ -3222,24 +3344,62 @@ export async function logLabelingActivity(
             isExternal: !!isExternal,
             ...(externalOperatorName && { externalOperatorName }),
         };
+
+    const operationDocRef = doc(firestore, 'labelingOperations', operationId);
+    const opSnap = await getDoc(operationDocRef);
+    if (!opSnap.exists()) {
+      return { success: false, error: 'La tarea de etiquetado no fue encontrada.' };
+    }
+    const opData = { id: opSnap.id, ...convertTimestampsToDates(opSnap.data()) } as LabelingOperation;
+    const {
+      isMultiAssignee,
+      isAssignedToExternal,
+      isAssignedToInternal,
+      applyAssigneeSessionEvent,
+      sessionKeyForExternal,
+      sessionKeyForInternal,
+    } = await import('@/lib/labelingAssignees');
+
+    if (isExternal && externalOperatorName && !isAssignedToExternal(opData, externalOperatorName)) {
+      return { success: false, error: 'Este operario no está asignado a la tarea.' };
+    }
+    if (!isExternal && operatorId && operatorId !== 'system' && !isAssignedToInternal(opData, operatorId)) {
+      // Admin a veces pasa UID distinto; solo exigir en multi.
+      if (isMultiAssignee(opData)) {
+        return { success: false, error: 'Este operario no está asignado a la tarea.' };
+      }
+    }
+
+    const multi = isMultiAssignee(opData);
+    const sessionKey = isExternal
+      ? sessionKeyForExternal(externalOperatorName || '')
+      : sessionKeyForInternal(operatorId);
     
     let newStatus: LabelingOperationStatus;
-    switch(type) {
-      case 'START':
-        newStatus = 'En Progreso';
-        break;
-      case 'PAUSE':
-        newStatus = 'Pausada';
-        break;
-      case 'RESUME':
-        newStatus = 'En Progreso';
-        break;
-      case 'FINISH':
-        newStatus = 'Completada';
-        break;
-      default:
-        const opDoc = await getDoc(doc(firestore, 'labelingOperations', operationId));
-        newStatus = opDoc.data()?.status || 'Pendiente';
+    let sessionsUpdate: Record<string, import('@/types').LabelingAssigneeSession> | undefined;
+    const nowIso = logEntry.timestamp;
+
+    if (multi && (type === 'START' || type === 'PAUSE' || type === 'RESUME') && sessionKey) {
+      const applied = applyAssigneeSessionEvent(opData.assigneeSessions, sessionKey, type, nowIso);
+      sessionsUpdate = applied.sessions;
+      newStatus = applied.taskStatus;
+    } else {
+      switch(type) {
+        case 'START':
+          newStatus = 'En Progreso';
+          break;
+        case 'PAUSE':
+          newStatus = 'Pausada';
+          break;
+        case 'RESUME':
+          newStatus = 'En Progreso';
+          break;
+        case 'FINISH':
+          newStatus = 'Completada';
+          break;
+        default:
+          newStatus = opData.status || 'Pendiente';
+      }
     }
 
     const batch = writeBatch(firestore);
@@ -3248,8 +3408,16 @@ export async function logLabelingActivity(
     const newLogDocRef = doc(logCollectionRef);
     batch.set(newLogDocRef, convertDatesToTimestamps(logEntry));
 
-    const operationDocRef = doc(firestore, 'labelingOperations', operationId);
-    batch.update(operationDocRef, { status: newStatus, updatedAt: Timestamp.now() });
+    batch.update(
+      operationDocRef,
+      convertDatesToTimestamps(
+        stripUndefinedDeep({
+          status: newStatus,
+          updatedAt: Timestamp.now(),
+          ...(sessionsUpdate ? { assigneeSessions: sessionsUpdate } : {}),
+        })
+      )
+    );
 
     await batch.commit();
     return { success: true };
@@ -3421,8 +3589,11 @@ export async function finishLabelingTaskSession(
           totalUnits: pendingUnits,
           status: 'Pendiente' as const,
           assignedOperatorId: '',
+          assignedOperatorIds: undefined,
           assignedExternalVendorId: undefined,
           assignedExternalOperatorName: undefined,
+          assignedExternalOperatorNames: undefined,
+          assigneeSessions: undefined,
           isExternal: false,
           standard_units_per_hour: operationData.standard_units_per_hour,
           parentTaskId: operationId,
@@ -3446,6 +3617,12 @@ export async function finishLabelingTaskSession(
             completedUnits: 0,
             status: 'Pendiente',
             assignedOperatorId: '',
+            assignedOperatorIds: undefined,
+            assignedExternalVendorId: undefined,
+            assignedExternalOperatorName: undefined,
+            assignedExternalOperatorNames: undefined,
+            assigneeSessions: undefined,
+            isExternal: false,
             parentTaskId: operationId,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
@@ -3481,7 +3658,7 @@ export async function confirmLabelingPackUnit(
   isExternal: boolean = false,
   providedPin?: string,
   externalOperatorName?: string,
-  opts?: { skipPinValidation?: boolean }
+  opts?: { skipPinValidation?: boolean; actingOperatorId?: string }
 ): Promise<{
   success: boolean;
   error?: string;
@@ -3505,6 +3682,7 @@ export async function confirmLabelingPackUnit(
       typeof packingUnitIdOrLookup === 'string'
         ? { packingUnitId: packingUnitIdOrLookup }
         : packingUnitIdOrLookup || {};
+    const actingOperatorId = String(opts?.actingOperatorId || '').trim();
 
     // PIN solo si no viene de sesión ya validada (portal externo).
     if (isExternal && !opts?.skipPinValidation) {
@@ -3519,6 +3697,10 @@ export async function confirmLabelingPackUnit(
       const vendorId = opPreData.assignedExternalVendorId;
       if (!vendorId) {
         return { success: false, error: 'La tarea no tiene proveedor externo.' };
+      }
+      const { isAssignedToExternal } = await import('@/lib/labelingAssignees');
+      if (externalOperatorName && !isAssignedToExternal(opPreData, externalOperatorName)) {
+        return { success: false, error: 'Este operario no está asignado a la tarea.' };
       }
       const vendorSnap = await getDoc(doc(firestore, 'externalVendors', vendorId));
       if (!vendorSnap.exists()) {
@@ -3549,10 +3731,51 @@ export async function confirmLabelingPackUnit(
         ...convertTimestampsToDates(operationDoc.data()),
       } as LabelingOperation;
 
+      const {
+        isMultiAssignee,
+        isAssignedToExternal,
+        isAssignedToInternal,
+        getAssigneeSession,
+        sessionKeyForExternal,
+        sessionKeyForInternal,
+      } = await import('@/lib/labelingAssignees');
+      const multi = isMultiAssignee(operationData);
+
       if (operationData.trackingMode !== 'pack_units') {
         throw new Error('Esta tarea no usa seguimiento por cajas (modo legado).');
       }
-      if (operationData.status !== 'En Progreso') {
+
+      // 1 persona: igual que hoy (Pausada bloquea a todos).
+      // Multi: tarea En Progreso; solo bloquea si ESA persona está pausada.
+      if (multi) {
+        if (operationData.status === 'Pausada') {
+          throw new Error('Todos los asignados están en pausa. Reanude su reloj antes de confirmar cajas.');
+        }
+        if (operationData.status !== 'En Progreso') {
+          throw new Error(`Solo se confirman cajas en En Progreso. Estado: ${operationData.status}.`);
+        }
+        if (isExternal) {
+          if (!externalOperatorName || !isAssignedToExternal(operationData, externalOperatorName)) {
+            throw new Error('Este operario no está asignado a la tarea.');
+          }
+          const extSession = getAssigneeSession(
+            operationData,
+            sessionKeyForExternal(externalOperatorName)
+          );
+          if (extSession?.status === 'paused') {
+            throw new Error('Reanude su reloj antes de confirmar cajas.');
+          }
+        } else {
+          const uid = actingOperatorId || operationData.assignedOperatorId;
+          if (!uid || !isAssignedToInternal(operationData, uid)) {
+            throw new Error('Este operario no está asignado a la tarea.');
+          }
+          const intSession = getAssigneeSession(operationData, sessionKeyForInternal(uid));
+          if (intSession?.status === 'paused') {
+            throw new Error('Reanude su reloj antes de confirmar cajas.');
+          }
+        }
+      } else if (operationData.status !== 'En Progreso') {
         throw new Error(
           operationData.status === 'Pausada'
             ? 'Reanude la tarea antes de confirmar cajas.'
@@ -3583,10 +3806,19 @@ export async function confirmLabelingPackUnit(
         throw new Error(`La caja #${unit.unitNumber} ya fue confirmada.`);
       }
       const nowIso = new Date().toISOString();
+      const confirmedByInternal =
+        !isExternal
+          ? actingOperatorId || operationData.assignedOperatorId || undefined
+          : undefined;
       plan[idx] = stripUndefinedDeep({
         ...unit,
         confirmed: true,
         confirmedAt: nowIso,
+        ...(isExternal && externalOperatorName
+          ? { confirmedByExternalOperatorName: externalOperatorName }
+          : confirmedByInternal
+            ? { confirmedByOperatorId: confirmedByInternal }
+            : {}),
       });
 
       completedUnitsLive = plan
@@ -3596,7 +3828,7 @@ export async function confirmLabelingPackUnit(
 
       const operatorId = isExternal
         ? operationData.assignedExternalVendorId!
-        : operationData.assignedOperatorId || 'system';
+        : confirmedByInternal || operationData.assignedOperatorId || 'system';
 
       const logCollectionRef = collection(firestore, 'labelingOperations', operationId, 'activityLog');
       const newLogDocRef = doc(logCollectionRef);
@@ -3880,9 +4112,8 @@ export async function getLabelingOperationsForExternal(vendorId: string, operato
                     }) as LabelingOperation
             );
             if (operatorName) {
-                operations = operations.filter(
-                    (op) => op.assignedExternalOperatorName === operatorName
-                );
+                const { isAssignedToExternal } = await import('@/lib/labelingAssignees');
+                operations = operations.filter((op) => isAssignedToExternal(op, operatorName));
             }
         } catch (indexErr) {
             // Fallback si falta índice compuesto: vendor + filtro en cliente (sin Completada).
@@ -3902,7 +4133,8 @@ export async function getLabelingOperationsForExternal(vendorId: string, operato
                 )
                 .filter((op) => op.status !== 'Completada');
             if (operatorName) {
-                operations = operations.filter((op) => op.assignedExternalOperatorName === operatorName);
+                const { isAssignedToExternal } = await import('@/lib/labelingAssignees');
+                operations = operations.filter((op) => isAssignedToExternal(op, operatorName));
             }
         }
 
@@ -3994,6 +4226,10 @@ export async function getLabelingHistoricalData(dateRange?: { from: Date; to?: D
         const countedFinishKeys = new Set(
             [...latestFinishByOp.values()].map((l) => countedFinishKey(l))
         );
+        // Tareas con UNIT_COMPLETE: acreditar por caja (multi / pack_units), no por FINISH total.
+        const opsWithUnitComplete = new Set(
+            logs.filter((l) => l.type === 'UNIT_COMPLETE').map((l) => l.labelingOperationId)
+        );
 
         const logsByOperator = new Map<string, LabelingActivityLog[]>();
         logs.forEach((log) => {
@@ -4038,8 +4274,20 @@ export async function getLabelingHistoricalData(dateRange?: { from: Date; to?: D
                     lastStart = null;
                 }
 
-                // Solo el FINISH canónico por tarea dentro del rango.
-                if (log.type === 'FINISH' && inRange(ts) && countedFinishKeys.has(countedFinishKey(log))) {
+                // Preferir crédito por caja cuando la tarea tiene UNIT_COMPLETE (evita doble conteo con FINISH).
+                if (log.type === 'UNIT_COMPLETE' && inRange(ts)) {
+                    const unitsFromBox = Number(log.qty) || Number(log.completedUnits) || 0;
+                    if (unitsFromBox > 0) {
+                        opUnits += unitsFromBox;
+                        const hour = ts.getHours().toString().padStart(2, '0') + ':00';
+                        hourlyMap.set(hour, (hourlyMap.get(hour) || 0) + unitsFromBox);
+                    }
+                } else if (
+                    log.type === 'FINISH' &&
+                    inRange(ts) &&
+                    countedFinishKeys.has(countedFinishKey(log)) &&
+                    !opsWithUnitComplete.has(log.labelingOperationId)
+                ) {
                     let unitsFromLog = Number(log.completedUnits) || 0;
                     if (unitsFromLog <= 0) {
                         const opForUnits = filteredOps.find((o) => o.id === log.labelingOperationId);
