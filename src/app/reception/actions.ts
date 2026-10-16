@@ -1140,8 +1140,13 @@ export async function updateNovelty(noveltyId: string, updates: Partial<Omit<Ite
   }
 }
 
-export async function createPackingUnit(receptionId: string, userId: string): Promise<{ success: boolean; error?: string; newUnit?: PackingUnit }> {
+export async function createPackingUnit(
+  receptionId: string,
+  userId: string,
+  options?: { isSampleBox?: boolean }
+): Promise<{ success: boolean; error?: string; newUnit?: PackingUnit }> {
   let newUnitData: PackingUnit | null = null;
+  const isSampleBox = options?.isSampleBox === true;
   try {
       const receptionRef = doc(firestore, 'receptionOperations', receptionId);
       const unitsCollectionRef = collection(firestore, 'packingUnits');
@@ -1178,6 +1183,7 @@ export async function createPackingUnit(receptionId: string, userId: string): Pr
               createdAt: new Date().toISOString(),
               createdBy: userId,
               items: {},
+              ...(isSampleBox ? { isSampleBox: true } : {}),
           };
 
           transaction.set(newUnitRef, convertDatesToTimestamps(newUnit));
@@ -1233,6 +1239,11 @@ export async function recordPackUnitDetailOnClose(
     const unit = { firestoreId: unitSnap.id, ...convertTimestampsToDates(unitSnap.data()) } as PackingUnit;
     const receptionId = unit.reception_id;
     if (!receptionId) return { success: false, error: 'La unidad no tiene recepción asociada.' };
+
+    // Cajas de muestras: no entran al packUnitsById / plan de etiquetado (flujo mercancía intacto).
+    if (unit.isSampleBox === true) {
+      return { success: true, refsUpdated: 0 };
+    }
 
     const itemsSnap = await getDocs(
       query(collection(firestore, 'scannedItems'), where('packing_unit_id', '==', packingUnitFirestoreId))
@@ -1368,7 +1379,7 @@ export async function rebuildReceptionPackSummaries(receptionId: string): Promis
 
     const unitMetaById = new Map<
       string,
-      { unitNumber: number; status: 'open' | 'closed'; closedAt?: string }
+      { unitNumber: number; status: 'open' | 'closed'; closedAt?: string; isSampleBox?: boolean }
     >();
     unitsSnap.forEach((d) => {
       const u = convertTimestampsToDates(d.data()) as PackingUnit;
@@ -1376,6 +1387,7 @@ export async function rebuildReceptionPackSummaries(receptionId: string): Promis
         unitNumber: Number(u.id) || 0,
         status: u.status === 'closed' ? 'closed' : 'open',
         closedAt: u.closed_at || undefined,
+        isSampleBox: u.isSampleBox === true,
       });
     });
 
@@ -1874,6 +1886,36 @@ export async function addScannedItem(itemData: Omit<ScannedItem, 'id' | 'quantit
     try {
         const itemsRef = collection(firestore, 'scannedItems');
         const receptionRef = doc(firestore, 'receptionOperations', itemData.reception_id);
+        const packingUnitId = String(itemData.packing_unit_id || '').trim();
+        const newRef = normalizeReceptionReference(itemData.reference);
+        let isSampleBox = false;
+
+        // Refuerzo server: 1 caja = 1 referencia, salvo isSampleBox (cajas de muestras).
+        if (packingUnitId) {
+            const unitSnap = await getDoc(doc(firestore, 'packingUnits', packingUnitId));
+            if (!unitSnap.exists()) {
+                return { success: false, error: 'La unidad de empaque no existe.' };
+            }
+            isSampleBox = unitSnap.data()?.isSampleBox === true;
+            if (!isSampleBox) {
+                const existingSnap = await getDocs(
+                    query(
+                        collection(firestore, 'scannedItems'),
+                        where('packing_unit_id', '==', packingUnitId),
+                        limit(5)
+                    )
+                );
+                if (!existingSnap.empty) {
+                    const expectedRef = normalizeReceptionReference(existingSnap.docs[0].data()?.reference);
+                    if (expectedRef && newRef && expectedRef !== newRef) {
+                        return {
+                            success: false,
+                            error: `Esta caja es para la referencia ${expectedRef}. No puedes empacar ${newRef}. Active “Caja de muestras” (admin/supervisor) solo si es una caja de muestras.`,
+                        };
+                    }
+                }
+            }
+        }
 
         await runTransaction(firestore, async (transaction) => {
             const receptionDoc = await transaction.get(receptionRef);
@@ -1881,16 +1923,6 @@ export async function addScannedItem(itemData: Omit<ScannedItem, 'id' | 'quantit
                 throw new Error("La operación de recepción no existe.");
             }
 
-            const q = query(itemsRef, 
-                where("reception_id", "==", itemData.reception_id),
-                where("packing_unit_id", "==", itemData.packing_unit_id),
-                where("barcode", "==", itemData.barcode),
-                where("user_id", "==", itemData.user_id),
-                limit(1)
-            );
-
-            // Can't run query inside transaction, so we assume we either create or update based on a prior check if needed
-            // For simplicity and performance, we'll often create new docs, or have a more complex structure.
             // Here, we just add a new doc and update the reception's total.
             const newItemRef = doc(itemsRef);
             const newItem: Omit<ScannedItem, 'id'> = {
@@ -1904,7 +1936,8 @@ export async function addScannedItem(itemData: Omit<ScannedItem, 'id' | 'quantit
             transaction.update(receptionRef, { totalScannedQuantity: increment(1) });
             
             // --- PATRON CONTADOR: Firebase Optimization ---
-            const safeRefId = normalizeReceptionReference(itemData.reference);
+            // Muestras: cuentan en totalScanned (inventario) pero no en packingUnits[] del plan mercancía.
+            const safeRefId = newRef;
             const statsRef = doc(firestore, 'receptionOperations', itemData.reception_id, 'referenceStats', safeRefId);
             transaction.set(
                 statsRef,
@@ -1913,7 +1946,9 @@ export async function addScannedItem(itemData: Omit<ScannedItem, 'id' | 'quantit
                     reception_id: itemData.reception_id,
                     last_scanned_at: newItem.scanned_at,
                     totalScanned: increment(1),
-                    packingUnits: arrayUnion(itemData.packing_unit_id),
+                    ...(isSampleBox || !itemData.packing_unit_id
+                        ? {}
+                        : { packingUnits: arrayUnion(itemData.packing_unit_id) }),
                 },
                 { merge: true }
             );

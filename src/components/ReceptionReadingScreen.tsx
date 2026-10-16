@@ -344,27 +344,59 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
     if (!user) return null;
     return packingUnits.find(u => u.status === 'open' && u.createdBy === user.uid) || null;
   }, [packingUnits, user]);
-  
+
+  /** Solo admin/supervisor: permite mezclar refs en la caja abierta (muestras). Default OFF. */
+  const [sampleBoxMode, setSampleBoxMode] = useState(false);
+  const canUseSampleBox = role === 'admin' || role === 'supervisor';
+
   const createNewPackingUnitForUser = useCallback(async (): Promise<PackingUnit | null> => {
     if (!user) {
         toast({ variant: 'destructive', title: 'Error', description: 'Usuario no autenticado.' });
         return null;
     }
-    const result = await createPackingUnit(operationId, user.uid);
+    const asSample = canUseSampleBox && sampleBoxMode;
+    const result = await createPackingUnit(operationId, user.uid, asSample ? { isSampleBox: true } : undefined);
     if(result.success && result.newUnit) {
-        toast({ title: 'Éxito', description: `Nueva unidad de empaque #${result.newUnit.id} creada.` });
+        toast({
+          title: 'Éxito',
+          description: asSample
+            ? `Nueva caja de muestras #${result.newUnit.id} creada (puede mezclar referencias).`
+            : `Nueva unidad de empaque #${result.newUnit.id} creada.`,
+        });
         return result.newUnit;
     } else {
         toast({ variant: 'destructive', title: 'Error Crítico', description: `No se pudo crear la unidad de empaque: ${result.error}` });
         return null;
     }
-  }, [operationId, user, toast]);
+  }, [operationId, user, toast, canUseSampleBox, sampleBoxMode]);
 
   const handleCreateNewUnit = async () => {
     setIsSubmitting(true);
     await createNewPackingUnitForUser();
     setIsSubmitting(false);
   }
+
+  const handleSampleBoxModeChange = async (enabled: boolean) => {
+    if (!canUseSampleBox) return;
+    // No quitar el flag de una caja ya marcada: se apaga al cerrarla (evita romper mezcla a medias).
+    if (!enabled && activePackingUnit?.isSampleBox) {
+      toast({
+        title: 'Caja de muestras activa',
+        description: 'El modo se apaga al cerrar esta caja. No se puede desmarcar a medias.',
+      });
+      return;
+    }
+    setSampleBoxMode(enabled);
+    if (enabled && activePackingUnit && !activePackingUnit.isSampleBox) {
+      const res = await updatePackingUnit(activePackingUnit.firestoreId, { isSampleBox: true });
+      if (!res.success) {
+        setSampleBoxMode(false);
+        toast({ variant: 'destructive', title: 'No se pudo marcar como muestras', description: res.error });
+      } else {
+        toast({ title: 'Caja de muestras', description: `Unidad #${activePackingUnit.id}: ya puede mezclar referencias.` });
+      }
+    }
+  };
 
   const handleItemScanned = async (product: ProductDatabaseItem): Promise<{ accepted: boolean }> => {
     if (!user || !operation) return { accepted: false };
@@ -377,7 +409,18 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
     const productSize = rawSize ? normalizeReceptionSize(rawSize) : '';
     const productName = (product.item || product.name || '').trim();
 
-    if (unitToUse) {
+    // Si el toggle está ON y la caja abierta aún no tiene el flag, persistirlo antes de validar.
+    if (canUseSampleBox && sampleBoxMode && unitToUse && !unitToUse.isSampleBox) {
+      const mark = await updatePackingUnit(unitToUse.firestoreId, { isSampleBox: true });
+      if (mark.success) {
+        unitToUse = { ...unitToUse, isSampleBox: true };
+      }
+    }
+
+    // Solo se salta si la caja ya es muestras (flag persistido). Toggle local solo no basta.
+    const allowMixedRefs = unitToUse?.isSampleBox === true;
+
+    if (unitToUse && !allowMixedRefs) {
         const itemsInActiveUnit = userScannedItems.filter(item => item.packing_unit_id === unitToUse?.firestoreId);
         if (itemsInActiveUnit.length > 0) {
             const expectedReference = normalizeReceptionReference(itemsInActiveUnit[0].reference);
@@ -545,8 +588,10 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
     const result = await updatePackingUnit(activePackingUnit.firestoreId, updates);
     
     if (result.success) {
+      // Tras cerrar, el modo muestras no queda “pegado” a la siguiente caja.
+      setSampleBoxMode(false);
       toast({ title: 'Unidad de empaque cerrada', description: `La unidad ${activePackingUnit.id} ha sido cerrada. El próximo ítem creará una nueva.` });
-      // Resumen aditivo para etiquetado (no bloquea el cierre si falla).
+      // Resumen aditivo para etiquetado (no bloquea el cierre si falla). Cajas muestras: no-op en plan.
       void recordPackUnitDetailOnClose(activePackingUnit.firestoreId).catch((err) => {
         console.warn('recordPackUnitDetailOnClose:', err);
       });
@@ -813,6 +858,9 @@ export const ReceptionReadingScreen: React.FC<ReceptionReadingScreenProps> = ({ 
             referenceLocationMap={referenceLocationMap}
             totalItemsInActiveUnit={totalItemsInActiveUnit}
             productDB={productDB}
+            sampleBoxMode={sampleBoxMode}
+            onSampleBoxModeChange={canUseSampleBox ? handleSampleBoxModeChange : undefined}
+            showSampleBoxToggle={canUseSampleBox}
           />
          <ReceptionSummary 
             operation={operation}

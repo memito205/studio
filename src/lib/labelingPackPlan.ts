@@ -152,11 +152,14 @@ type UnitMeta = {
   unitNumber: number;
   status: 'open' | 'closed';
   closedAt?: string;
+  /** Cajas de muestras: se excluyen del plan de etiquetado. */
+  isSampleBox?: boolean;
 };
 
 /**
  * Agrega escaneos por referencia + caja para armar packUnitsById.
  * No escribe a Firestore; solo estructura de datos.
+ * Omite unidades con isSampleBox (no deben ir a etiquetado de mercancía).
  */
 export function aggregatePackUnitsByReference(
   scannedItems: Array<Pick<ScannedItem, 'reference' | 'packing_unit_id' | 'quantity' | 'location_id'>>,
@@ -174,6 +177,7 @@ export function aggregatePackUnitsByReference(
   for (const item of scannedItems) {
     const unitId = String(item.packing_unit_id || '').trim();
     if (!unitId) continue;
+    if (unitMetaById.get(unitId)?.isSampleBox === true) continue;
     const ref = normalizeReceptionReference(item.reference);
     const qty = Number(item.quantity) || 1;
     if (!byRef.has(ref)) byRef.set(ref, new Map());

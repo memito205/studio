@@ -13,6 +13,8 @@ import { Search, Loader2 } from 'lucide-react';
 import type { PackingUnit, ProductDatabaseItem, PackingScanResult, ReceptionExpectedItem } from '@/types';
 import { UnexpectedItemDialog } from './UnexpectedItemDialog';
 import { normalizeReceptionReference, normalizeReceptionSize, receptionRefSizeKey } from '@/lib/receptionReference';
+import { Switch } from '@/components/ui/switch';
+import { Badge } from '@/components/ui/badge';
 
 
 interface ReceptionScanInputProps {
@@ -28,6 +30,10 @@ interface ReceptionScanInputProps {
   totalItemsInActiveUnit: number; // Propiedad añadida para recibir el conteo correcto
   /** Catálogo ya cargado en cliente: evita lookupBarcode en el beep típico. */
   productDB?: ProductDatabaseItem[];
+  /** Admin/supervisor: modo caja de muestras (mezcla de refs). */
+  sampleBoxMode?: boolean;
+  onSampleBoxModeChange?: (enabled: boolean) => void;
+  showSampleBoxToggle?: boolean;
 }
 
 export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
@@ -42,6 +48,9 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
   referenceLocationMap,
   totalItemsInActiveUnit, // Usar esta propiedad
   productDB = [],
+  sampleBoxMode = false,
+  onSampleBoxModeChange,
+  showSampleBoxToggle = false,
 }) => {
   const [barcodeInput, setBarcodeInput] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -224,12 +233,17 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
             </Button>
         </form>
         
-        <div className="w-full max-w-sm text-center space-y-1 h-24 flex flex-col items-center justify-center">
+        <div className="w-full max-w-sm text-center space-y-2 min-h-24 flex flex-col items-center justify-center">
             {activePackingUnit ? (
                 <>
                     <p className="text-lg">Unidad de Empaque Activa: 
                         <span className="text-primary text-3xl font-bold"> {activePackingUnit.id} </span>
                     </p>
+                    {(activePackingUnit.isSampleBox || sampleBoxMode) && (
+                      <Badge variant="outline" className="border-amber-500 text-amber-800 bg-amber-50">
+                        MUESTRAS · puede mezclar referencias
+                      </Badge>
+                    )}
                     <p className="text-7xl font-bold text-primary leading-none">
                         {totalItemsInActiveUnit}
                         <span className="text-2xl font-normal text-muted-foreground ml-2">items</span>
@@ -237,6 +251,22 @@ export const ReceptionScanInput: React.FC<ReceptionScanInputProps> = ({
                 </>
             ) : (
                 <p className="text-muted-foreground italic">No hay unidad activa. El próximo escaneo creará una.</p>
+            )}
+            {showSampleBoxToggle && onSampleBoxModeChange && (
+              <div className="flex items-center justify-center gap-2 pt-1 rounded-md border border-dashed border-amber-300 bg-amber-50/60 px-3 py-2 w-full">
+                <Switch
+                  id="sample-box-toggle"
+                  checked={!!activePackingUnit?.isSampleBox || sampleBoxMode}
+                  onCheckedChange={(v) => onSampleBoxModeChange(!!v)}
+                  disabled={isOperationPaused}
+                />
+                <Label htmlFor="sample-box-toggle" className="text-xs text-left cursor-pointer leading-snug">
+                  Caja de muestras
+                  <span className="block text-[10px] text-muted-foreground font-normal">
+                    Solo admin/supervisor. Permite varias referencias en esta caja. No va a etiquetado.
+                  </span>
+                </Label>
+              </div>
             )}
         </div>
 

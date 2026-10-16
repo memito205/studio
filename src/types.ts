@@ -1288,6 +1288,11 @@ export interface PackingUnit {
     createdByName?: string | null;
     destination?: string;
     reception_id?: string; // Add this if units can be linked to receptions
+    /**
+     * Caja de muestras (admin/supervisor): permite mezclar referencias.
+     * Ausente/false = flujo normal (1 caja = 1 referencia). No entra al plan de etiquetado.
+     */
+    isSampleBox?: boolean;
     /** Snapshot al cerrar: suma de escaneos de la caja (para Tallado / reportes). */
     closedQty?: number;
     closedRefs?: string[];
