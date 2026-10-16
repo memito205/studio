@@ -1327,8 +1327,8 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                 toast({
                     title: 'Código alterno quitado',
                     description: `${res.cleared || 0} línea(s)${label ? ` · ${label}` : ''}${
-                        res.skipped ? ` · ${res.skipped} ya sin código` : ''
-                    }.`,
+                        res.unlinkedReceipts ? ` · ${res.unlinkedReceipts} enlace(s) de registro deshecho(s)` : ''
+                    }${res.skipped ? ` · ${res.skipped} ya sin código` : ''}.`,
                 });
                 onTransfersChanged(ids);
                 onRefresh();
@@ -2374,8 +2374,9 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                             <AlertDialogTitle>¿Quitar código alterno de la selección?</AlertDialogTitle>
                                             <AlertDialogDescription>
                                                 Se borrará el texto de código alterno en {bulkStatusSelectionCount.lineCount} línea(s)
-                                                ({bulkStatusSelectionCount.tfCount} TF). Use esto cuando una recolección en carro dejó un
-                                                texto erróneo que puede coincidir con un código real.
+                                                ({bulkStatusSelectionCount.tfCount} TF) y se deshará el enlace en el registro de códigos
+                                                alternos (vuelve a pendiente). Use esto cuando una recolección en carro dejó un texto
+                                                erróneo.
                                             </AlertDialogDescription>
                                         </AlertDialogHeader>
                                         <AlertDialogFooter>

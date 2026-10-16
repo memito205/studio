@@ -5353,22 +5353,28 @@ export async function updateTransferStatus(
 }
 
 /**
- * Admin: quita `codigoAlterno` (y `altCodeReceiptId`) de líneas de transferencia.
- * Útil cuando una recolección en carro dejó un texto erróneo que luego hace match falso
- * con un código alterno real.
+ * Admin: quita `codigoAlterno` / `altCodeReceiptId` de las líneas Y deshace el enlace en
+ * `altCodeReceipts` (vuelve a pendiente). Sin eso el registro seguía “enlazado” a la TF errónea
+ * y el match por código alterno seguía mal.
  */
 export async function clearTransferAltCodes(
     transferIds: string[],
     actor?: TransferActor
-): Promise<{ success: boolean; cleared?: number; skipped?: number; error?: string }> {
+): Promise<{ success: boolean; cleared?: number; skipped?: number; unlinkedReceipts?: number; error?: string }> {
     try {
         const ids = Array.from(new Set((transferIds || []).map((id) => String(id || '').trim()).filter(Boolean)));
         if (ids.length === 0) return { success: false, error: 'No hay líneas seleccionadas.' };
         if (ids.length > 500) return { success: false, error: 'Máximo 500 líneas por operación.' };
 
+        const idSet = new Set(ids);
+        const receiptIds = new Set<string>();
+        const previousAlts = new Set<string>();
         let cleared = 0;
         let skipped = 0;
         const CHUNK = 400;
+        const now = Timestamp.now();
+        const actorName = (actor?.displayName || '').trim() || actor?.userId || null;
+
         for (let i = 0; i < ids.length; i += CHUNK) {
             const chunk = ids.slice(i, i + CHUNK);
             const snaps = await getDocs(query(collection(firestore, 'transfers'), where(documentId(), 'in', chunk)));
@@ -5381,12 +5387,15 @@ export async function clearTransferAltCodes(
                     skipped += 1;
                     return;
                 }
+                if (receiptId) receiptIds.add(receiptId);
+                const norm = normalizeAltCode(alt);
+                if (norm) previousAlts.add(norm);
                 batch.update(d.ref, {
                     codigoAlterno: deleteField(),
                     altCodeReceiptId: deleteField(),
-                    altCodeClearedAt: Timestamp.now(),
+                    altCodeClearedAt: now,
                     altCodeClearedBy: actor?.userId || null,
-                    altCodeClearedByName: (actor?.displayName || '').trim() || actor?.userId || null,
+                    altCodeClearedByName: actorName,
                     altCodeClearedPrevious: alt || null,
                 });
                 writes += 1;
@@ -5394,7 +5403,71 @@ export async function clearTransferAltCodes(
             });
             if (writes > 0) await batch.commit();
         }
-        return { success: true, cleared, skipped };
+
+        // Recibos enlazados por id o por el mismo código (texto) que se borró.
+        const altList = Array.from(previousAlts);
+        for (let i = 0; i < altList.length; i += 30) {
+            const snap = await getDocs(
+                query(collection(firestore, ALT_CODE_RECEIPTS), where('codigoAlterno', 'in', altList.slice(i, i + 30)))
+            );
+            snap.docs.forEach((d) => {
+                if (d.data().status === 'void') return;
+                receiptIds.add(d.id);
+            });
+        }
+
+        let unlinkedReceipts = 0;
+        const receiptIdList = Array.from(receiptIds);
+        for (let i = 0; i < receiptIdList.length; i += 30) {
+            const chunk = receiptIdList.slice(i, i + 30);
+            const batch = writeBatch(firestore);
+            let writes = 0;
+            for (const rid of chunk) {
+                const ref = doc(firestore, ALT_CODE_RECEIPTS, rid);
+                const snap = await getDoc(ref);
+                if (!snap.exists()) continue;
+                const data = snap.data();
+                if (data.status === 'void') continue;
+                const linked: string[] = Array.isArray(data.linkedTransferIds)
+                    ? data.linkedTransferIds.map(String)
+                    : [];
+                const code = normalizeAltCode(data.codigoAlterno);
+                const touchesById = linked.some((lid) => idSet.has(lid));
+                const touchesByCode = !!(code && previousAlts.has(code) && data.status === 'linked');
+                if (!touchesById && !touchesByCode) continue;
+
+                const remaining = linked.filter((lid) => !idSet.has(lid));
+                if (remaining.length === 0) {
+                    // Sin líneas: vuelve a pendiente para poder enlazarlo bien después.
+                    batch.update(ref, {
+                        status: 'pending',
+                        linkedTransferIds: deleteField(),
+                        linkedNumeroTF: deleteField(),
+                        linkedDestino: deleteField(),
+                        linkedAt: deleteField(),
+                        linkNote: deleteField(),
+                        unlinkedAt: now,
+                        unlinkedByName: actorName,
+                        unlinkedReason: 'admin_clear_transfer_alt',
+                    });
+                } else {
+                    batch.update(ref, {
+                        linkedTransferIds: remaining,
+                        linkedNumeroTF: deleteField(),
+                        linkedDestino: deleteField(),
+                        linkNote: 'Enlace parcial: se quitaron TF con código alterno erróneo',
+                        unlinkedAt: now,
+                        unlinkedByName: actorName,
+                        unlinkedReason: 'admin_clear_transfer_alt_partial',
+                    });
+                }
+                writes += 1;
+                unlinkedReceipts += 1;
+            }
+            if (writes > 0) await batch.commit();
+        }
+
+        return { success: true, cleared, skipped, unlinkedReceipts };
     } catch (error: any) {
         console.error('clearTransferAltCodes:', error);
         return { success: false, error: error?.message || 'No se pudo quitar el código alterno.' };
