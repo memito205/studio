@@ -6670,11 +6670,13 @@ export async function createDeliveryManifest(
             transaction.set(manifestDocRef, convertDatesToTimestamps(withoutUndefined(manifestToSave)));
             transaction.set(counterRef, { count: newCount }, { merge: true }); // Use set with merge instead of update
 
-            // Update status of all included transfers
+            // Update status of all included transfers (guarda vínculo al manifiesto para trazabilidad).
             const now = new Date();
             const enviadoUpdates: Record<string, unknown> = {
                 status: 'Enviado a Destino',
                 enviadoAt: now,
+                podManifestDocId: manifestDocRef.id,
+                manifestId: newCount,
             };
             applyTransferStatusActor(enviadoUpdates, 'Enviado a Destino', actor);
             for (const transferId of manifestData.transferIds) {
@@ -6858,6 +6860,34 @@ export async function getTransfersByIds(transferIds: string[]): Promise<{ succes
 }
 
 /** Carga la transferencia actualizada desde Firestore y fusiona historial de todas sus líneas. */
+/** Resuelve el # de manifiesto de unas líneas TF (campo, doc de relación, o array-contains histórico). */
+async function resolveTransferManifestId(lines: TransferEntry[]): Promise<number | undefined> {
+    const fromField = lines.map((l) => Number(l.manifestId || 0)).find((n) => n > 0);
+    if (fromField) return fromField;
+
+    const docId = lines.map((l) => String(l.podManifestDocId || '').trim()).find(Boolean);
+    if (docId) {
+        const snap = await getDoc(doc(firestore, 'deliveryManifests', docId));
+        const n = Number(snap.data()?.manifestId || 0);
+        if (n > 0) return n;
+    }
+
+    // Histórico: relaciones que incluyen alguna línea (1 igualdad; máx. unas pocas lecturas).
+    const ids = Array.from(new Set(lines.map((l) => l.id).filter(Boolean))).slice(0, 5);
+    let best = 0;
+    for (const id of ids) {
+        const snap = await getDocs(
+            query(collection(firestore, 'deliveryManifests'), where('transferIds', 'array-contains', id), limit(3))
+        );
+        snap.docs.forEach((d) => {
+            const n = Number(d.data()?.manifestId || 0);
+            if (n > best) best = n;
+        });
+        if (best > 0) break;
+    }
+    return best > 0 ? best : undefined;
+}
+
 export async function getTransferTraceability(
     transferIds: string[]
 ): Promise<{ success: boolean; data?: TransferEntry | null; error?: string }> {
@@ -6900,10 +6930,13 @@ export async function getTransferTraceability(
         }
         mergedHistory.sort((a, b) => a.at.getTime() - b.at.getTime());
 
+        const manifestId = await resolveTransferManifestId(lines);
+
         return {
             success: true,
             data: {
                 ...primary,
+                ...(manifestId ? { manifestId } : {}),
                 statusHistory: mergedHistory.length > 0 ? mergedHistory : primary.statusHistory,
             },
         };

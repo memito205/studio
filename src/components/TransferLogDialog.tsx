@@ -58,6 +58,12 @@ function getTransferLineIds(transfer: TransferEntry): string[] {
   return grouped.allIds?.length ? grouped.allIds : [transfer.id];
 }
 
+function enviadoDestinoLabel(manifestId?: number): string {
+  return manifestId && manifestId > 0
+    ? `Enviado a Destino (Manifiesto #${manifestId}).`
+    : 'Enviado a Destino (Manifiesto).';
+}
+
 function buildLogEvents(
   transfer: TransferEntry,
   usersMap?: Map<string, string>,
@@ -65,13 +71,18 @@ function buildLogEvents(
 ): LogEvent[] {
   const events: LogEvent[] = [];
   const lineIds = getTransferLineIds(transfer);
+  const manifestId = Number(transfer.manifestId || 0) || undefined;
 
   if (transfer.statusHistory && transfer.statusHistory.length > 0) {
     for (const entry of transfer.statusHistory) {
       const at = entry.at instanceof Date ? entry.at : new Date(entry.at as unknown as string);
+      const description =
+        entry.status === 'Enviado a Destino'
+          ? enviadoDestinoLabel(manifestId)
+          : STATUS_EVENT_LABELS[entry.status] || entry.status;
       events.push({
         date: at,
-        description: STATUS_EVENT_LABELS[entry.status] || entry.status,
+        description,
         userName:
           entry.userName?.trim() ||
           resolveUserLabel(undefined, entry.userId, usersMap),
@@ -134,7 +145,7 @@ function buildLogEvents(
   if (transfer.enviadoAt) {
     events.push({
       date: new Date(transfer.enviadoAt),
-      description: 'Enviado a Destino (Manifiesto).',
+      description: enviadoDestinoLabel(manifestId),
       userName: resolveUserLabel(transfer.enviadoByName, transfer.enviadoBy, usersMap),
     });
   }
@@ -229,6 +240,12 @@ export const TransferLogDialog: React.FC<TransferLogDialogProps> = ({
           <DialogTitle>Historial de Transferencia</DialogTitle>
           <DialogDescription>
             Trazabilidad completa para el TF: <span className="font-mono font-bold">{transfer.numeroTF}</span>
+            {resolvedTransfer?.manifestId ? (
+              <>
+                {' · '}
+                Manifiesto <span className="font-mono font-bold">#{resolvedTransfer.manifestId}</span>
+              </>
+            ) : null}
           </DialogDescription>
         </DialogHeader>
         <div className="py-4">

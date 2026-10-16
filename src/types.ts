@@ -519,6 +519,8 @@ export interface TransferEntry {
   /** Relación (doc id) y parada con la que se entregó / reportó novedad. */
   podManifestDocId?: string;
   podStopId?: string;
+  /** Número consecutivo de la relación de entrega (Manifiesto #N). */
+  manifestId?: number;
   manualStatusChangeJustification?: string;
   storageOrder?: string;
   /** Ubicación física en bodega (maestro de ubicaciones). */
