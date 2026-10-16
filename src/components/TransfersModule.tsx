@@ -5,7 +5,7 @@
 import React, { useState, useMemo, ChangeEvent, useRef, useCallback, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, UploadCloud, Truck, FileSignature, Search, Download, Trash2, Plus, File, Package, X, Check, Save, History, Eye, Printer, PackageCheck, Loader2, ScanLine, CircleDot, FileDown, MoreHorizontal, ChevronsUpDown, Database, RefreshCw, ListOrdered, FileSearch, FileSpreadsheet, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, UploadCloud, Truck, FileSignature, Search, Download, Trash2, Plus, File, Package, X, Check, Save, History, Eye, Printer, PackageCheck, Loader2, ScanLine, CircleDot, FileDown, MoreHorizontal, ChevronsUpDown, Database, RefreshCw, ListOrdered, FileSearch, FileSpreadsheet, AlertCircle, CheckCircle2, Eraser } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/card';
 import { Input } from './ui/input';
 import { useToast } from '@/hooks/use-toast';
@@ -14,7 +14,7 @@ import { serverActionErrorText } from '@/lib/serverActionError';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { TransferEntry, TransferStatus, DeliveryManifest, DeliveryManifestDraft, UserRole, CollectionLog, AppUser, RouteEntry, TransferActor } from '@/types';
-import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, findMixedStatusTransfers, getTransfersInTransitForCollection, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders, repairSingleTransferStorageOrder, reindexTransferStorageOrdersByDestination, getOpenDeliveryManifestDrafts, upsertDeliveryManifestDraft, closeDeliveryManifestDraft, discardDeliveryManifestDraft, receiveTransfersInWarehouse, getWarehouseLocationConfig, loadOperatorMappings } from '@/app/actions';
+import { saveTransfers, loadAllTransfers, deleteTransfer, updateTransferStatus, createDeliveryManifest, getDeliveryManifests, getTransfersByIds, createManualTransfer, createCollectionLog, getCollectionLogs, migrateLegacyTransferStatus, batchUpdateTransferStatus, clearTransferAltCodes, getTransfersByStatus, getTransfersByQuery, getTransfersByDateRange, findMixedStatusTransfers, getTransfersInTransitForCollection, syncAnalysisRecords, loadAnalysisRecords, healInconsistentTransfers, getNextStorageOrders, healTransferStorageOrders, repairSingleTransferStorageOrder, reindexTransferStorageOrdersByDestination, getOpenDeliveryManifestDrafts, upsertDeliveryManifestDraft, closeDeliveryManifestDraft, discardDeliveryManifestDraft, receiveTransfersInWarehouse, getWarehouseLocationConfig, loadOperatorMappings } from '@/app/actions';
 import type { WarehouseLocationConfig } from '@/types';
 import { EMPTY_WAREHOUSE_LOCATION_CONFIG, suggestLocationsForDestino, suggestLocationsForDestinos, weekdayShortEs } from '@/lib/warehouseLocations';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect';
@@ -1308,9 +1308,38 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     const [repairingTransferId, setRepairingTransferId] = useState<string | null>(null);
     const [transfersToPrint, setTransfersToPrint] = useState<GroupedTransfer[]>([]);
     const [isBulkPrintReceiving, setIsBulkPrintReceiving] = useState(false);
+    const [isClearingAltCodes, setIsClearingAltCodes] = useState(false);
 
     const [isLogOpen, setIsLogOpen] = useState(false);
     const [selectedTransferForLog, setSelectedTransferForLog] = useState<TransferEntry | null>(null);
+
+    /** Admin: borra codigoAlterno erróneo (p. ej. texto dejado por recolección en carro). */
+    const handleClearAltCodes = useCallback(
+        async (ids: string[], label?: string) => {
+            if (role !== 'admin' || ids.length === 0) return;
+            setIsClearingAltCodes(true);
+            try {
+                const res = await clearTransferAltCodes(ids, actor);
+                if (!res.success) {
+                    toast({ variant: 'destructive', title: 'No se pudo quitar', description: res.error });
+                    return;
+                }
+                toast({
+                    title: 'Código alterno quitado',
+                    description: `${res.cleared || 0} línea(s)${label ? ` · ${label}` : ''}${
+                        res.skipped ? ` · ${res.skipped} ya sin código` : ''
+                    }.`,
+                });
+                onTransfersChanged(ids);
+                onRefresh();
+            } catch (e) {
+                toast({ variant: 'destructive', title: 'Error', description: serverActionErrorText(e) });
+            } finally {
+                setIsClearingAltCodes(false);
+            }
+        },
+        [role, actor, toast, onTransfersChanged, onRefresh]
+    );
 
     const handleViewLog = (transfer: TransferEntry) => {
         setSelectedTransferForLog(transfer);
@@ -2328,6 +2357,40 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                     Cambiar estado seleccionadas
                                 </Button>
                                 )}
+                                {isBulkStatusAdmin && (
+                                <AlertDialog>
+                                    <AlertDialogTrigger asChild>
+                                        <Button size="sm" variant="outline" disabled={isClearingAltCodes}>
+                                            {isClearingAltCodes ? (
+                                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                            ) : (
+                                                <Eraser className="mr-2 h-4 w-4" />
+                                            )}
+                                            Quitar cód. alterno
+                                        </Button>
+                                    </AlertDialogTrigger>
+                                    <AlertDialogContent>
+                                        <AlertDialogHeader>
+                                            <AlertDialogTitle>¿Quitar código alterno de la selección?</AlertDialogTitle>
+                                            <AlertDialogDescription>
+                                                Se borrará el texto de código alterno en {bulkStatusSelectionCount.lineCount} línea(s)
+                                                ({bulkStatusSelectionCount.tfCount} TF). Use esto cuando una recolección en carro dejó un
+                                                texto erróneo que puede coincidir con un código real.
+                                            </AlertDialogDescription>
+                                        </AlertDialogHeader>
+                                        <AlertDialogFooter>
+                                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                            <AlertDialogAction
+                                                onClick={() =>
+                                                    void handleClearAltCodes(Array.from(selectedForBulkStatus), 'selección')
+                                                }
+                                            >
+                                                Quitar códigos
+                                            </AlertDialogAction>
+                                        </AlertDialogFooter>
+                                    </AlertDialogContent>
+                                </AlertDialog>
+                                )}
                                 <Button size="sm" variant="ghost" onClick={() => setSelectedForBulkStatus(new Set())}>
                                     Limpiar
                                 </Button>
@@ -2488,6 +2551,24 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                                                     )}
                                                                     Reparar Orden FIFO de esta TF
                                                                 </DropdownMenuItem>
+                                                                {String(t.codigoAlterno || '').trim() ? (
+                                                                    <DropdownMenuItem
+                                                                        onSelect={() =>
+                                                                            void handleClearAltCodes(
+                                                                                t.allIds,
+                                                                                `TF ${t.numeroTF} (era “${t.codigoAlterno}”)`
+                                                                            )
+                                                                        }
+                                                                        disabled={isClearingAltCodes}
+                                                                    >
+                                                                        {isClearingAltCodes ? (
+                                                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                                        ) : (
+                                                                            <Eraser className="mr-2 h-4 w-4" />
+                                                                        )}
+                                                                        Quitar código alterno
+                                                                    </DropdownMenuItem>
+                                                                ) : null}
                                                                 <DropdownMenuSeparator />
                                                                 <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
                                                                     <AlertDialog>

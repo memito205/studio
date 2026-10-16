@@ -5352,6 +5352,55 @@ export async function updateTransferStatus(
     }
 }
 
+/**
+ * Admin: quita `codigoAlterno` (y `altCodeReceiptId`) de líneas de transferencia.
+ * Útil cuando una recolección en carro dejó un texto erróneo que luego hace match falso
+ * con un código alterno real.
+ */
+export async function clearTransferAltCodes(
+    transferIds: string[],
+    actor?: TransferActor
+): Promise<{ success: boolean; cleared?: number; skipped?: number; error?: string }> {
+    try {
+        const ids = Array.from(new Set((transferIds || []).map((id) => String(id || '').trim()).filter(Boolean)));
+        if (ids.length === 0) return { success: false, error: 'No hay líneas seleccionadas.' };
+        if (ids.length > 500) return { success: false, error: 'Máximo 500 líneas por operación.' };
+
+        let cleared = 0;
+        let skipped = 0;
+        const CHUNK = 400;
+        for (let i = 0; i < ids.length; i += CHUNK) {
+            const chunk = ids.slice(i, i + CHUNK);
+            const snaps = await getDocs(query(collection(firestore, 'transfers'), where(documentId(), 'in', chunk)));
+            const batch = writeBatch(firestore);
+            let writes = 0;
+            snaps.docs.forEach((d) => {
+                const alt = String(d.data().codigoAlterno || '').trim();
+                const receiptId = String(d.data().altCodeReceiptId || '').trim();
+                if (!alt && !receiptId) {
+                    skipped += 1;
+                    return;
+                }
+                batch.update(d.ref, {
+                    codigoAlterno: deleteField(),
+                    altCodeReceiptId: deleteField(),
+                    altCodeClearedAt: Timestamp.now(),
+                    altCodeClearedBy: actor?.userId || null,
+                    altCodeClearedByName: (actor?.displayName || '').trim() || actor?.userId || null,
+                    altCodeClearedPrevious: alt || null,
+                });
+                writes += 1;
+                cleared += 1;
+            });
+            if (writes > 0) await batch.commit();
+        }
+        return { success: true, cleared, skipped };
+    } catch (error: any) {
+        console.error('clearTransferAltCodes:', error);
+        return { success: false, error: error?.message || 'No se pudo quitar el código alterno.' };
+    }
+}
+
 export async function batchUpdateTransferStatus(
     transferIds: string[],
     status: TransferStatus,
