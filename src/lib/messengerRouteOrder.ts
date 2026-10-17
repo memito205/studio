@@ -85,6 +85,26 @@ export function norteRank(point: unknown): number {
   return 1000 + pointPriority(key);
 }
 
+/**
+ * Clave estable para agrupar paradas (B1 ≡ BR 01 ≡ BR1).
+ * Si no hay clave Norte, usa el nombre normalizado.
+ */
+export function stopGroupKey(point: unknown): string {
+  const key = toNorteKey(point);
+  if (key) return key;
+  return norm(point) || 'SIN PUNTO';
+}
+
+/** Etiqueta visible al unir alias: prefiere "BR 01" sobre "B1". */
+export function preferredStopLabel(labels: string[]): string {
+  const clean = labels.map((l) => String(l || '').trim()).filter(Boolean);
+  if (!clean.length) return 'Sin punto';
+  const br = clean.find((l) => /^BR\s*\d/i.test(l));
+  if (br) return br.toUpperCase().replace(/\s+/g, ' ');
+  const byLen = [...clean].sort((a, b) => b.length - a.length || a.localeCompare(b));
+  return byLen[0];
+}
+
 export type OrderedRouteTask = DriverRouteTask & { order: number; deliverOrder: number };
 
 /**

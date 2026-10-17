@@ -7,7 +7,12 @@ import { useToast } from '@/hooks/use-toast';
 import type { RouteTaskAction } from '@/app/routeTaskActions';
 import { compressImage, enqueueDelivery, type QueuedPhoto, type QueuedRouteSubmission } from '@/lib/podQueue';
 import { MAX_DELIVERY_PHOTOS, NOT_DELIVERED_REASONS, PHOTO_CATEGORIES, routeTaskLabel } from '@/lib/pod';
-import { computeMessengerDayOrders, pointPriority } from '@/lib/messengerRouteOrder';
+import {
+  computeMessengerDayOrders,
+  pointPriority,
+  preferredStopLabel,
+  stopGroupKey,
+} from '@/lib/messengerRouteOrder';
 import type { DeliveryPhotoCategory, DriverRouteTask, TransferActor } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -77,16 +82,27 @@ export const deliverOrderOf = (t: DriverRouteTask) => t.deliverOrder ?? (t.picku
  * Las entregas bloqueadas NO mueven el orden de paradas (evita que CAJÓN/tiendas salten a mitad de ruta).
  */
 export function groupRouteTasks(tasks: DriverRouteTask[], queuedTaskIds: Set<string> = new Set()): Group[] {
-  // Órdenes en memoria: CAJÓN → TRASLADOS → GARANTÍAS → tiendas (aunque Firestore aún no esté reordenado).
+  // Órdenes en memoria + misma tienda aunque diga B1 / BR 01.
   const orderedList = computeMessengerDayOrders(tasks);
   const byId = new Map(orderedList.map((t) => [t.id, t]));
+  const labelsByStop = new Map<string, string[]>();
 
   const map = new Map<string, Group>();
-  const add = (key: string, base: Omit<Group, 'key' | 'tasks' | 'sortOrder' | 'stop'>, t: DriverRouteTask, ord: number) => {
+  const add = (
+    key: string,
+    base: Omit<Group, 'key' | 'tasks' | 'sortOrder' | 'stop'>,
+    t: DriverRouteTask,
+    ord: number,
+    rawPoint: string
+  ) => {
     const g = map.get(key) || { key, ...base, tasks: [], sortOrder: ord, stop: 0 };
     g.tasks.push(t);
     g.sortOrder = Math.min(g.sortOrder, ord);
     map.set(key, g);
+    const sk = stopGroupKey(rawPoint);
+    const labs = labelsByStop.get(sk) || [];
+    labs.push(rawPoint);
+    labelsByStop.set(sk, labs);
   };
   tasks.forEach((orig) => {
     const t = byId.get(orig.id) || orig;
@@ -94,44 +110,62 @@ export function groupRouteTasks(tasks: DriverRouteTask[], queuedTaskIds: Set<str
     if (t.status === 'por_recoger') {
       if (!queued) {
         const point = t.pickupPoint || t.bodegaOrigen || 'Sin punto';
-        add(`recoger|${point}`, { point, kind: 'recoger', deliverType: t.deliverType }, t, t.order ?? NO_ORDER);
+        const sk = stopGroupKey(point);
+        add(`recoger|${sk}`, { point, kind: 'recoger', deliverType: t.deliverType }, t, t.order ?? NO_ORDER, point);
       }
-      // Bloqueada: usa deliverOrder real (posición Norte), no empuja la parada al final.
+      const del = t.deliverPoint || 'Sin punto';
+      const skDel = stopGroupKey(del);
       add(
-        `pendiente|${t.deliverPoint}|${t.deliverType}`,
-        { point: t.deliverPoint, kind: 'entregar', deliverType: t.deliverType, locked: true },
+        `pendiente|${skDel}|${t.deliverType}`,
+        { point: del, kind: 'entregar', deliverType: t.deliverType, locked: true },
         t,
-        deliverOrderOf(t)
+        deliverOrderOf(t),
+        del
       );
     } else if (!queued) {
-      add(`entregar|${t.deliverPoint}|${t.deliverType}`, { point: t.deliverPoint, kind: 'entregar', deliverType: t.deliverType }, t, deliverOrderOf(t));
+      const del = t.deliverPoint || 'Sin punto';
+      const skDel = stopGroupKey(del);
+      add(
+        `entregar|${skDel}|${t.deliverType}`,
+        { point: del, kind: 'entregar', deliverType: t.deliverType },
+        t,
+        deliverOrderOf(t),
+        del
+      );
     }
+  });
+  // Unifica etiqueta visible (BR 01 gana sobre B1).
+  map.forEach((g) => {
+    const sk = stopGroupKey(g.point);
+    g.point = preferredStopLabel(labelsByStop.get(sk) || [g.point]);
   });
   const groups = Array.from(map.values());
   const pointOrder = new Map<string, number>();
   groups.forEach((g) => {
-    // Recogidas definen la parada; si solo hay entregas (aunque bloqueadas), usan su orden Norte.
-    if (g.locked && groups.some((o) => o.point === g.point && !o.locked)) return;
+    const sk = stopGroupKey(g.point);
+    if (g.locked && groups.some((o) => stopGroupKey(o.point) === sk && !o.locked)) return;
     const base = g.sortOrder + pointPriority(g.point) * 0.001;
-    pointOrder.set(g.point, Math.min(pointOrder.get(g.point) ?? NO_ORDER, base));
+    pointOrder.set(sk, Math.min(pointOrder.get(sk) ?? NO_ORDER, base));
   });
   groups.forEach((g) => {
-    if (!pointOrder.has(g.point)) pointOrder.set(g.point, g.sortOrder + pointPriority(g.point) * 0.001);
+    const sk = stopGroupKey(g.point);
+    if (!pointOrder.has(sk)) pointOrder.set(sk, g.sortOrder + pointPriority(g.point) * 0.001);
   });
   const rank = (g: Group) => (g.kind === 'recoger' ? 0 : g.locked ? 2 : 1);
   groups.sort(
     (a, b) =>
-      pointOrder.get(a.point)! - pointOrder.get(b.point)! ||
+      pointOrder.get(stopGroupKey(a.point))! - pointOrder.get(stopGroupKey(b.point))! ||
       rank(a) - rank(b) ||
       a.sortOrder - b.sortOrder ||
       a.point.localeCompare(b.point)
   );
   let stop = 0;
-  let lastPoint = '';
+  let lastKey = '';
   groups.forEach((g) => {
-    if (g.point !== lastPoint) {
+    const sk = stopGroupKey(g.point);
+    if (sk !== lastKey) {
       stop++;
-      lastPoint = g.point;
+      lastKey = sk;
     }
     g.stop = stop;
   });

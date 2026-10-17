@@ -14,7 +14,7 @@ import {
 } from '@/app/routeTaskActions';
 import { ROUTE_TASK_STATUS } from '@/components/RouteTasksAssignView';
 import { downloadMessengerRouteExcel } from '@/lib/messengerRouteExcel';
-import { computeMessengerDayOrders } from '@/lib/messengerRouteOrder';
+import { computeMessengerDayOrders, preferredStopLabel, stopGroupKey } from '@/lib/messengerRouteOrder';
 import type { DriverRouteTask, DriverRouteTaskPhoto, DriverRouteTaskStatus, TransferActor } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -89,22 +89,30 @@ function buildDriverRoutes(tasks: DriverRouteTask[]): DriverRoute[] {
         });
       });
       const pointOrder = new Map<string, number>();
+      const labelsByKey = new Map<string, string[]>();
       lines.forEach((l) => {
-        // Si el punto ya tiene recogida/entrega libre, esa manda; si solo hay bloqueadas, igual usan orden Norte.
-        if (l.locked && lines.some((o) => o.point === l.point && !o.locked)) return;
-        pointOrder.set(l.point, Math.min(pointOrder.get(l.point) ?? 9999, l.order));
+        const sk = stopGroupKey(l.point);
+        const labs = labelsByKey.get(sk) || [];
+        labs.push(l.point);
+        labelsByKey.set(sk, labs);
+        if (l.locked && lines.some((o) => stopGroupKey(o.point) === sk && !o.locked)) return;
+        pointOrder.set(sk, Math.min(pointOrder.get(sk) ?? 9999, l.order));
       });
       lines.forEach((l) => {
-        if (!pointOrder.has(l.point)) pointOrder.set(l.point, l.order);
+        const sk = stopGroupKey(l.point);
+        if (!pointOrder.has(sk)) pointOrder.set(sk, l.order);
       });
       const points = Array.from(pointOrder.keys()).sort((a, b) => pointOrder.get(a)! - pointOrder.get(b)! || a.localeCompare(b));
-      const stops = points.map((point, i) => ({
-        n: i + 1,
-        point,
-        lines: lines
-          .filter((l) => l.point === point)
-          .sort((a, b) => a.order - b.order || (a.kind === 'recoger' ? -1 : 1)),
-      }));
+      const stops = points.map((sk, i) => {
+        const point = preferredStopLabel(labelsByKey.get(sk) || [sk]);
+        return {
+          n: i + 1,
+          point,
+          lines: lines
+            .filter((l) => stopGroupKey(l.point) === sk)
+            .sort((a, b) => a.order - b.order || (a.kind === 'recoger' ? -1 : 1)),
+        };
+      });
       const times = list
         .flatMap((t) => [t.pickedAt, t.deliveredAt, t.failedAt])
         .filter(Boolean)
