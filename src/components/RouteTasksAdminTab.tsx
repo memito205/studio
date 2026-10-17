@@ -278,16 +278,40 @@ export function RouteTasksAdminTab() {
 
   /** Misma estructura que el Excel del planificador (FECHA, NUMERO TF, Atributo, Valor, ORDEN, FIRMA). */
   const exportMessengerRouteExcel = (driverFilter?: { driverId: string; driverName: string; day: string }) => {
-    const list = driverFilter
-      ? (tasks || []).filter((t) => t.driverId === driverFilter.driverId && t.day === driverFilter.day)
+    // Sin filtro explícito: usa el mensajero seleccionado en “Avance”. No mezcla los 3.
+    const effective =
+      driverFilter ||
+      (selectedRoute
+        ? { driverId: selectedRoute.driverId, driverName: selectedRoute.driverName, day: selectedRoute.day }
+        : undefined);
+
+    if (!effective) {
+      const driversInView = new Set(visible.map((t) => t.driverId)).size;
+      if (driversInView > 1) {
+        toast({
+          variant: 'destructive',
+          title: 'Elija un mensajero',
+          description: `Hay ${driversInView} mensajeros en la consulta (${visible.length} envíos). Pulse su tarjeta en “Avance por mensajero” y luego Excel ruta mensajero. Cada envío genera fila RECOGER + ENTREGAR.`,
+        });
+        return;
+      }
+    }
+
+    const list = effective
+      ? (tasks || []).filter((t) => t.driverId === effective.driverId && t.day === effective.day)
       : visible;
     const res = downloadMessengerRouteExcel(list, {
-      fileName: driverFilter
-        ? `RUTA_DEL_MENSAJERO_${driverFilter.day}_${driverFilter.driverName.replace(/\s+/g, '_')}.xlsx`
+      fileName: effective
+        ? `RUTA_DEL_MENSAJERO_${effective.day}_${effective.driverName.replace(/\s+/g, '_')}.xlsx`
         : `RUTA_DEL_MENSAJERO_${from === to ? from : `${from}_${to}`}.xlsx`,
     });
     if (!res.ok) toast({ variant: 'destructive', title: 'Excel ruta mensajero', description: res.error });
-    else toast({ title: 'Excel ruta mensajero', description: `${res.rows} fila(s) exportadas (incluye plan, cajón, manuales y libres).` });
+    else {
+      toast({
+        title: `Excel · ${effective?.driverName || 'ruta'}`,
+        description: `${res.taskCount} envío(s) → ${res.rows} fila(s) (RECOGER + ENTREGAR, como el Excel del planificador).`,
+      });
+    }
   };
 
   return (

@@ -244,7 +244,12 @@ export const RouteTasksAssignView: React.FC = () => {
         : `RUTA_DEL_MENSAJERO_${day}.xlsx`,
     });
     if (!res.ok) toast({ variant: 'destructive', title: 'Excel', description: res.error });
-    else toast({ title: 'Excel ruta mensajero', description: `${res.rows} fila(s) · misma estructura FECHA / NUMERO TF / Atributo / Valor / ORDEN / FIRMA.` });
+    else {
+      toast({
+        title: 'Excel ruta mensajero',
+        description: `${res.taskCount} envío(s) → ${res.rows} fila(s) (RECOGER + ENTREGAR).`,
+      });
+    }
   };
 
   return (

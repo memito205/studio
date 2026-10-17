@@ -1749,8 +1749,24 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     }, [filteredTransfers, transferIdToPlacaMap, filters.status, toast]);
 
     const supervisorValidationTransfers = useMemo(() => {
+        // Si la TF|destino ya tiene alguna línea en bodega (o más adelante), no debe seguir en Validar Supervisor.
+        const pastBodega = new Set(
+            operationalTransfers
+                .filter((t) =>
+                    t.status === 'Recibido en Bodega' ||
+                    t.status === 'Validado Supervisor' ||
+                    t.status === 'Enviado a Destino' ||
+                    t.status === 'Entregado en Ruta' ||
+                    t.status === 'Entregado en Tienda'
+                )
+                .map((t) => `${String(t.numeroTF || '').trim()}|${String(t.bodegaDestino || '').trim().toUpperCase()}`)
+        );
         // Excluye líneas con tarea abierta en Mis entregas (el conductor aún debe entregar o dejar en cajón).
-        const filtered = operationalTransfers.filter(t => t.status === 'Recolectado en Ruta' && !t.misEntregasTaskOpen);
+        const filtered = operationalTransfers.filter((t) => {
+            if (t.status !== 'Recolectado en Ruta' || t.misEntregasTaskOpen) return false;
+            const key = `${String(t.numeroTF || '').trim()}|${String(t.bodegaDestino || '').trim().toUpperCase()}`;
+            return !pastBodega.has(key);
+        });
         return filtered.filter(t => 
             (filters.numeroTF ? t.numeroTF.toLowerCase().includes(filters.numeroTF.toLowerCase()) : true) &&
             (filters.bodegaOrigen ? t.bodegaOrigen.toLowerCase().includes(filters.bodegaOrigen.toLowerCase()) : true) &&

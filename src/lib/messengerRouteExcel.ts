@@ -111,18 +111,23 @@ export function buildMessengerRouteExcelRows(tasks: DriverRouteTask[]): Messenge
 export function downloadMessengerRouteExcel(
   tasks: DriverRouteTask[],
   opts?: { fileName?: string; sheetName?: string }
-): { ok: boolean; rows: number; error?: string } {
+): { ok: boolean; rows: number; taskCount: number; drivers: number; error?: string } {
+  const active = tasks.filter((t) => t.status !== 'cancelada' && !t.reassignedTo);
+  const taskCount = active.length;
+  const drivers = new Set(active.map((t) => t.driverId).filter(Boolean)).size;
   const data = buildMessengerRouteExcelRows(tasks);
-  if (data.length === 0) return { ok: false, rows: 0, error: 'No hay tareas para exportar.' };
+  if (data.length === 0) return { ok: false, rows: 0, taskCount: 0, drivers: 0, error: 'No hay tareas para exportar.' };
   try {
     const worksheet = XLSX.utils.json_to_sheet(data);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, opts?.sheetName || 'Ruta Mensajero');
-    const day = tasks[0]?.day || formatMessengerRouteDate('').split('/').reverse().join('-');
+    const day = active[0]?.day || tasks[0]?.day || formatMessengerRouteDate('').split('/').reverse().join('-');
     const safeDay = /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : day.replace(/\//g, '-');
-    XLSX.writeFile(workbook, opts?.fileName || `RUTA_DEL_MENSAJERO_${safeDay}.xlsx`);
-    return { ok: true, rows: data.length };
+    const driverPart =
+      drivers === 1 ? `_${String(active[0]?.driverName || 'mensajero').replace(/\s+/g, '_')}` : drivers > 1 ? `_${drivers}mensajeros` : '';
+    XLSX.writeFile(workbook, opts?.fileName || `RUTA_DEL_MENSAJERO_${safeDay}${driverPart}.xlsx`);
+    return { ok: true, rows: data.length, taskCount, drivers };
   } catch (e: any) {
-    return { ok: false, rows: 0, error: e?.message || 'No se pudo generar el Excel.' };
+    return { ok: false, rows: 0, taskCount: 0, drivers: 0, error: e?.message || 'No se pudo generar el Excel.' };
   }
 }
