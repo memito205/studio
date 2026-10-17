@@ -450,6 +450,12 @@ const renderGroupCards = (
             )
             .join(' · ')}
         </p>
+        {g.tasks.some((t) => t.lastRejection) && (
+          <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-950">
+            Rechazada: {g.tasks.find((t) => t.lastRejection)?.lastRejection?.note}
+            {' — registre de nuevo.'}
+          </p>
+        )}
         {g.locked ? (
           <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
             Se habilita cuando se registre la recogida y se actualice la lista.
@@ -485,6 +491,12 @@ const renderGroupCards = (
     </Card>
   ));
 
+const fmtDayLabel = (day: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return day;
+  const [y, m, d] = day.split('-');
+  return `${d}/${m}/${y}`;
+};
+
 /** Lista de recolecciones/entregas asignadas al conductor (sin sondeo: carga al abrir y al actualizar). */
 export const DriverRouteTasksSection: React.FC<{
   tasks: DriverRouteTask[];
@@ -493,10 +505,16 @@ export const DriverRouteTasksSection: React.FC<{
   onReload: () => void;
   onOpenForm: (form: { group: Group; action: RouteTaskAction } | null) => void;
 }> = ({ tasks, loading, queuedTaskIds, onReload, onOpenForm }) => {
-  const freeTasks = useMemo(() => tasks.filter((t) => t.source === 'recoleccion_libre'), [tasks]);
-  const planTasks = useMemo(() => tasks.filter((t) => t.source !== 'recoleccion_libre'), [tasks]);
-  const freeGroups = useMemo(() => groupRouteTasks(freeTasks, queuedTaskIds), [freeTasks, queuedTaskIds]);
-  const planGroups = useMemo(() => groupRouteTasks(planTasks, queuedTaskIds), [planTasks, queuedTaskIds]);
+  const today = useMemo(() => format(new Date(), 'yyyy-MM-dd'), []);
+  const days = useMemo(
+    () => Array.from(new Set(tasks.map((t) => t.day).filter(Boolean))).sort(),
+    [tasks]
+  );
+  const priorDays = useMemo(() => days.filter((d) => d < today), [days, today]);
+  const rejectedOpen = useMemo(
+    () => tasks.filter((t) => t.lastRejection && (t.status === 'por_entregar' || t.status === 'por_recoger')),
+    [tasks]
+  );
   const pendingSend = tasks.filter((t) => queuedTaskIds.has(t.id)).length;
 
   return (
@@ -508,32 +526,68 @@ export const DriverRouteTasksSection: React.FC<{
         </Button>
       </div>
       {pendingSend > 0 && <p className="text-xs text-amber-700">{pendingSend} TF registrada(s) en el celular, enviándose.</p>}
+      {priorDays.length > 0 && (
+        <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900">
+          <p className="font-semibold">Debe cerrar la ruta del día anterior</p>
+          <p className="text-xs mt-1">
+            Tiene pendientes del {priorDays.map(fmtDayLabel).join(', ')}. Ciérrelas bien antes de que le monten una ruta nueva.
+          </p>
+        </div>
+      )}
+      {rejectedOpen.length > 0 && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+          <p className="font-semibold">Entrega(s) rechazada(s): registre de nuevo</p>
+          <ul className="mt-1 list-disc pl-4 text-xs">
+            {rejectedOpen.slice(0, 5).map((t) => (
+              <li key={t.id}>
+                {routeTaskLabel(t)} · {t.lastRejection?.note}
+                {t.lastRejection?.byName ? ` (${t.lastRejection.byName})` : ''}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {loading && tasks.length === 0 ? (
         <div className="py-4 text-center"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></div>
-      ) : freeGroups.length === 0 && planGroups.length === 0 ? (
+      ) : days.length === 0 ? (
         <p className="text-sm text-muted-foreground">No tiene recolecciones ni entregas pendientes.</p>
       ) : (
-        <>
-          {freeGroups.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">Recogidas de hoy</p>
-              <p className="text-xs text-muted-foreground">
-                Mercancía que recogió en ruta y debe entregar en destino o dejar en el cajón.
+        days.map((day) => {
+          const dayTasks = tasks.filter((t) => t.day === day);
+          const freeTasks = dayTasks.filter((t) => t.source === 'recoleccion_libre');
+          const planTasks = dayTasks.filter((t) => t.source !== 'recoleccion_libre');
+          const freeGroups = groupRouteTasks(freeTasks, queuedTaskIds);
+          const planGroups = groupRouteTasks(planTasks, queuedTaskIds);
+          const isPrior = day < today;
+          return (
+            <div key={day} className={cn('space-y-2', isPrior && 'rounded-md border border-red-200 p-2')}>
+              <p
+                className={cn(
+                  'text-xs font-semibold uppercase tracking-wide',
+                  isPrior ? 'text-red-800' : 'text-muted-foreground'
+                )}
+              >
+                {isPrior ? `Pendientes · ${fmtDayLabel(day)} (cerrar primero)` : `Ruta · ${fmtDayLabel(day)}`}
               </p>
-              {renderGroupCards(freeGroups, queuedTaskIds, onOpenForm, { showStopNumbers: false, freeCollection: true })}
-            </div>
-          )}
-          {planGroups.length > 0 && (
-            <div className="space-y-2">
               {freeGroups.length > 0 && (
-                <p className="pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Asignadas / planificador
-                </p>
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">Recogidas</p>
+                  {renderGroupCards(freeGroups, queuedTaskIds, onOpenForm, { showStopNumbers: false, freeCollection: true })}
+                </div>
               )}
-              {renderGroupCards(planGroups, queuedTaskIds, onOpenForm)}
+              {planGroups.length > 0 && (
+                <div className="space-y-2">
+                  {freeGroups.length > 0 && (
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Asignadas / planificador
+                    </p>
+                  )}
+                  {renderGroupCards(planGroups, queuedTaskIds, onOpenForm)}
+                </div>
+              )}
             </div>
-          )}
-        </>
+          );
+        })
       )}
     </div>
   );

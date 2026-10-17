@@ -3,6 +3,7 @@
 import {
   arrayUnion,
   collection,
+  deleteDoc,
   deleteField,
   doc,
   documentId,
@@ -149,6 +150,16 @@ export async function createRouteTasks(input: {
   const actorName = actorNameOf(actor);
 
   try {
+    // Obliga a cerrar rutas de días anteriores antes de montar una nueva.
+    const prior = await getDriverOpenPriorDayTasks(input.driverId, input.day);
+    if (prior.days.length > 0) {
+      const detail = prior.days.map((d) => `${d} (${prior.countByDay[d]} pendiente(s))`).join(', ');
+      return {
+        success: false,
+        error: `El mensajero tiene ruta sin cerrar de día(s) anterior(es): ${detail}. Debe cerrarla (o rechazar/corregir entregas) antes de montar la del ${input.day}.`,
+      };
+    }
+
     let { stores, match } = await loadStores();
     if (input.source === 'planificador') {
       const created = await ensureNonStorePoints(
@@ -292,6 +303,24 @@ export async function getMyRouteTasks(driverId: string): Promise<{ data?: Driver
   } catch (error: any) {
     return { error: error.message || 'No se pudieron cargar las tareas.' };
   }
+}
+
+/** Tareas abiertas con `day` estrictamente anterior a `beforeDay` (bloqueo de ruta nueva). */
+export async function getDriverOpenPriorDayTasks(
+  driverId: string,
+  beforeDay: string
+): Promise<{ days: string[]; countByDay: Record<string, number>; total: number }> {
+  const countByDay: Record<string, number> = {};
+  if (!driverId || !/^\d{4}-\d{2}-\d{2}$/.test(beforeDay)) return { days: [], countByDay, total: 0 };
+  const snap = await getDocs(query(collection(firestore, TASKS), where('driverOpen', '==', `${driverId}|open`)));
+  snap.docs.forEach((d) => {
+    const day = String(d.data().day || '');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(day) && day < beforeDay) {
+      countByDay[day] = (countByDay[day] || 0) + 1;
+    }
+  });
+  const days = Object.keys(countByDay).sort();
+  return { days, countByDay, total: days.reduce((n, d) => n + countByDay[d], 0) };
 }
 
 /**
@@ -606,7 +635,7 @@ export async function submitRouteTasks(
         ? { lat: input.gps.lat, lng: input.gps.lng, accuracyM: input.gps.accuracyM, at: Timestamp.fromDate(new Date(input.gps.at)) }
         : null;
       const photos = input.photos.map((p) => clean({ path: p.path, url: p.url, category: p.category }));
-      const closeKeys = { driverOpen: deleteField(), openKey: deleteField() };
+      const closeKeys = { driverOpen: deleteField(), openKey: deleteField(), lastRejection: deleteField() };
 
       if (action === 'cajon') {
         if (photos.length === 0) throw new Error('Tome la foto de la mercancía en el cajón.');
@@ -934,6 +963,200 @@ export async function submitRouteTasks(
   } catch (error: any) {
     console.error('submitRouteTasks:', error);
     return { success: false, error: error.message || 'No se pudo registrar.' };
+  }
+}
+
+/**
+ * Rechaza una entrega/novedad de ruta del mensajero: la tarea vuelve abierta para que la registre de nuevo.
+ * Igual espíritu que rejectDeliveryStop en relaciones.
+ */
+export async function rejectRouteTaskDelivery(input: {
+  taskIds: string[];
+  note: string;
+  actor: TransferActor;
+}): Promise<{ success: boolean; rejected?: number; error?: string }> {
+  const { actor } = input;
+  if (!actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  const note = String(input.note || '').trim();
+  if (!note) return { success: false, error: 'Escriba el motivo del rechazo para el mensajero.' };
+  const ids = Array.from(new Set((input.taskIds || []).filter(Boolean)));
+  if (!ids.length) return { success: false, error: 'No hay tareas seleccionadas.' };
+  const actorName = actorNameOf(actor);
+
+  try {
+    const platformIds = new Set<string>();
+    const cajonPlatformIds = new Set<string>();
+    let rejected = 0;
+
+    await runTransaction(firestore, async (tx) => {
+      rejected = 0;
+      platformIds.clear();
+      cajonPlatformIds.clear();
+      const snaps = await Promise.all(ids.map((id) => tx.get(doc(firestore, TASKS, id))));
+      const tasks = snaps.filter((s) => s.exists()).map((s) => ({ ref: s.ref, t: toTask(s.id, s.data()!), raw: s.data()! }));
+      const reopenable = tasks.filter((x) => ['entregada', 'no_entregada', 'no_recogida'].includes(x.t.status));
+      if (reopenable.length === 0) throw new Error('Ninguna tarea tiene entrega/novedad para rechazar.');
+
+      const lineIds = Array.from(new Set(reopenable.flatMap((x) => x.t.transferIds || [])));
+      const lineSnaps = await Promise.all(lineIds.map((id) => tx.get(doc(firestore, 'transfers', id))));
+      const lineById = new Map(lineSnaps.filter((s) => s.exists()).map((s) => [s.id, s]));
+      const now = Timestamp.now();
+
+      reopenable.forEach(({ ref, t, raw }) => {
+        const rejection = { at: now, byId: actor.userId, byName: actorName, note };
+        const reopenStatus: DriverRouteTask['status'] =
+          t.status === 'no_recogida' ? 'por_recoger' : 'por_entregar';
+
+        (t.transferIds || []).forEach((id) => {
+          const s = lineById.get(id);
+          if (!s) return;
+          const d = s.data()!;
+          const pid = platformDocId(d.numeroTF, d.bodegaDestino);
+          const fromThisTask =
+            d.routeTaskId === t.id ||
+            d.cajonRouteTaskId === t.id ||
+            d.novedadRouteTaskId === t.id;
+          if (!fromThisTask) return;
+
+          if (d.status === 'Entregado en Tienda' || d.status === 'Novedad de Entrega') {
+            platformIds.add(pid);
+            tx.update(s.ref, {
+              status: 'Recolectado en Ruta',
+              entregadoTiendaAt: deleteField(),
+              entregadoTiendaBy: deleteField(),
+              entregadoTiendaByName: deleteField(),
+              novedadEntregaAt: deleteField(),
+              novedadEntregaBy: deleteField(),
+              novedadEntregaByName: deleteField(),
+              novedadEntregaMotivo: deleteField(),
+              misEntregasTaskOpen: true,
+              misEntregasSource: t.source === 'recoleccion_libre' ? 'recoleccion_libre' : deleteField(),
+              misEntregasAt: now,
+              statusHistory: arrayUnion({
+                status: 'Recolectado en Ruta',
+                at: now,
+                userId: actor.userId,
+                userName: `${actorName} (rechazo prueba ruta)`,
+              }),
+            });
+          } else if (d.status === 'Recibido en Bodega' && normPoint(d.ubicacion) === CAJON_POINT) {
+            cajonPlatformIds.add(pid);
+            tx.update(s.ref, {
+              status: 'Recolectado en Ruta',
+              ubicacion: deleteField(),
+              ubicacionAt: deleteField(),
+              cajonAt: deleteField(),
+              cajonByName: deleteField(),
+              cajonRouteTaskId: deleteField(),
+              reprogramada: deleteField(),
+              misEntregasTaskOpen: true,
+              misEntregasSource: t.source === 'recoleccion_libre' ? 'recoleccion_libre' : deleteField(),
+              misEntregasAt: now,
+              statusHistory: arrayUnion({
+                status: 'Recolectado en Ruta',
+                at: now,
+                userId: actor.userId,
+                userName: `${actorName} (rechazo cajón ruta)`,
+              }),
+            });
+          }
+        });
+
+        tx.update(
+          ref,
+          clean({
+            status: reopenStatus,
+            lastRejection: rejection,
+            rejections: arrayUnion({
+              ...rejection,
+              previous: clean({
+                status: t.status,
+                deliveredAt: raw.deliveredAt ?? null,
+                receivedByName: raw.receivedByName ?? null,
+                deliveryPhotos: raw.deliveryPhotos || [],
+                failReason: raw.failReason ?? null,
+                leftInCajon: !!raw.leftInCajon,
+              }),
+            }),
+            driverOpen: `${t.driverId}|open`,
+            openKey: t.kind === 'libre' ? deleteField() : t.numeroTF,
+            deliveredAt: deleteField(),
+            deliveredById: deleteField(),
+            deliveredByName: deleteField(),
+            deliveryPhotos: deleteField(),
+            deliveryGps: deleteField(),
+            deliveryNotes: deleteField(),
+            receivedByName: deleteField(),
+            distanceM: deleteField(),
+            tfMarkedDelivered: deleteField(),
+            leftInCajon: deleteField(),
+            failedAt: deleteField(),
+            failedById: deleteField(),
+            failedByName: deleteField(),
+            failReason: deleteField(),
+            failNotes: deleteField(),
+            failPhotos: deleteField(),
+            failGps: deleteField(),
+            lastSubmissionId: deleteField(),
+            ...(reopenStatus === 'por_recoger'
+              ? {
+                  pickedAt: deleteField(),
+                  pickedById: deleteField(),
+                  pickedByName: deleteField(),
+                  pickupPhotos: deleteField(),
+                  pickupGps: deleteField(),
+                }
+              : {}),
+          })
+        );
+        rejected++;
+      });
+    });
+
+    // Revertir estado plataforma de entregas publicadas por estas tareas (kind ruta).
+    for (const pid of platformIds) {
+      const ref = doc(firestore, 'tf_platform_status', pid);
+      const snap = await getDoc(ref).catch(() => null);
+      if (!snap?.exists()) continue;
+      const r = snap.data() as any;
+      const routeIds: string[] = Array.isArray(r.pod?.routeTaskIds) ? r.pod.routeTaskIds.map(String) : [];
+      if (r.podSource === 'app' && r.pod?.kind === 'ruta' && ids.some((id) => routeIds.includes(id))) {
+        const prev = r.podPrev;
+        if (!prev && r.podCreated) {
+          await deleteDoc(ref).catch(() => undefined);
+        } else {
+          await updateDoc(ref, {
+            estadoPlataforma: prev?.estadoPlataforma ?? 'EN RUTA HOY',
+            evidenceLinks: prev?.evidenceLinks ?? r.quickEvidenceLinks ?? [],
+            podSource: deleteField(),
+            pod: deleteField(),
+            podPrev: deleteField(),
+            podCreated: deleteField(),
+            updatedAt: Timestamp.now(),
+          }).catch(() => undefined);
+        }
+      }
+    }
+    for (const pid of cajonPlatformIds) {
+      const ref = doc(firestore, 'tf_platform_status', pid);
+      const snap = await getDoc(ref).catch(() => null);
+      if (!snap?.exists()) continue;
+      const r = snap.data() as any;
+      if (normPoint(r.ubicacionActual) === CAJON_POINT) {
+        await updateDoc(ref, {
+          ubicacionActual: deleteField(),
+          cajonAt: deleteField(),
+          cajonByName: deleteField(),
+          estadoPlataforma: r.estadoPlataforma === 'EN BODEGA' ? 'EN RUTA HOY' : r.estadoPlataforma,
+          updatedAt: Timestamp.now(),
+        }).catch(() => undefined);
+      }
+    }
+
+    return { success: true, rejected };
+  } catch (error: any) {
+    console.error('rejectRouteTaskDelivery:', error);
+    return { success: false, error: error.message || 'No se pudo rechazar la entrega.' };
   }
 }
 

@@ -3,12 +3,13 @@
 import React, { useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
-import { Download, Loader2, Search } from 'lucide-react';
+import { Download, Loader2, Search, Undo2 } from 'lucide-react';
+import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
-import { getRouteTasksByRange } from '@/app/routeTaskActions';
+import { getRouteTasksByRange, rejectRouteTaskDelivery } from '@/app/routeTaskActions';
 import { ROUTE_TASK_STATUS } from '@/components/RouteTasksAssignView';
 import { deliverOrderOf } from '@/components/DriverRouteTasks';
-import type { DriverRouteTask, DriverRouteTaskPhoto, DriverRouteTaskStatus } from '@/types';
+import type { DriverRouteTask, DriverRouteTaskPhoto, DriverRouteTaskStatus, TransferActor } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -131,14 +132,22 @@ function lineText(l: StopLine): string {
   return `Por entregar ${what}`;
 }
 
+const REJECTABLE: DriverRouteTaskStatus[] = ['entregada', 'no_entregada', 'no_recogida'];
+
 /** Recolecciones de ruta por día: 1 consulta por día (sin carga automática). */
 export function RouteTasksAdminTab() {
   const { toast } = useToast();
+  const { user, userName } = useAuth();
+  const actor: TransferActor | undefined = useMemo(
+    () => (user?.uid ? { userId: user.uid, displayName: (userName || user.displayName || user.email || '').trim() || user.uid } : undefined),
+    [user, userName]
+  );
   const [from, setFrom] = useState(() => format(new Date(), 'yyyy-MM-dd'));
   const [to, setTo] = useState(() => format(new Date(), 'yyyy-MM-dd'));
   const [text, setText] = useState('');
   const [tasks, setTasks] = useState<DriverRouteTask[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [filter, setFilter] = useState<DriverRouteTaskStatus | 'todas'>('todas');
   const [routeSel, setRouteSel] = useState<string | null>(null);
   const day = from === to ? from : `${from}_a_${to}`;
@@ -150,6 +159,33 @@ export function RouteTasksAdminTab() {
     if (res.error) toast({ variant: 'destructive', title: 'Error', description: res.error });
     setTasks(res.data || []);
     setRouteSel(null);
+  };
+
+  const rejectTask = async (t: DriverRouteTask) => {
+    if (!actor) {
+      toast({ variant: 'destructive', title: 'Sesión', description: 'Inicie sesión para rechazar.' });
+      return;
+    }
+    const note = window.prompt(
+      `Motivo del rechazo para ${t.driverName} (TF ${t.kind === 'libre' ? t.description || t.numeroTF : t.numeroTF}).\nEl mensajero deberá registrar de nuevo esta entrega.`
+    );
+    if (note === null) return;
+    if (!String(note).trim()) {
+      toast({ variant: 'destructive', title: 'Motivo obligatorio', description: 'Escriba el motivo del rechazo.' });
+      return;
+    }
+    setRejectingId(t.id);
+    const res = await rejectRouteTaskDelivery({ taskIds: [t.id], note: String(note).trim(), actor });
+    setRejectingId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'No se pudo rechazar', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Entrega rechazada',
+      description: 'Volvió a Mis entregas del mensajero para que la cierre bien. No podrá montar ruta de un día nuevo mientras tenga esta pendiente.',
+    });
+    void load();
   };
 
   const kpi = useMemo(() => {
@@ -205,7 +241,9 @@ export function RouteTasksAdminTab() {
     <Card>
       <CardHeader>
         <CardTitle>Recolecciones de ruta</CardTitle>
-        <CardDescription>Tareas asignadas desde Transferencias o el planificador: recogidas con foto, no recogidas y entregas.</CardDescription>
+        <CardDescription>
+          Progreso y fotos del mensajero. Use Rechazar si la prueba de entrega quedó mal: vuelve a Mis entregas y no podrá montar ruta de un día nuevo mientras tenga pendientes de días anteriores.
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-end gap-2">
@@ -337,11 +375,12 @@ export function RouteTasksAdminTab() {
                     <TableHead>Recogida</TableHead>
                     <TableHead>Entrega</TableHead>
                     <TableHead>Motivo / detalle</TableHead>
+                    <TableHead className="text-right">Acciones</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {visible.length === 0 ? (
-                    <TableRow><TableCell colSpan={8} className="h-16 text-center text-muted-foreground">Sin tareas.</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={9} className="h-16 text-center text-muted-foreground">Sin tareas.</TableCell></TableRow>
                   ) : (
                     visible.map((t) => (
                       <TableRow key={t.id}>
@@ -370,7 +409,31 @@ export function RouteTasksAdminTab() {
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {t.failReason ? `${t.failReason}${t.failedByName ? ` (${t.failedByName})` : ''}` : t.notes || ''}
+                          {t.lastRejection && (
+                            <span className="mt-1 block text-red-700">
+                              Rechazada: {t.lastRejection.note}
+                              {t.lastRejection.byName ? ` (${t.lastRejection.byName})` : ''}
+                            </span>
+                          )}
                           {t.reassignedTo && <span className="block">Reasignada</span>}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {REJECTABLE.includes(t.status) && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="text-red-700"
+                              disabled={rejectingId === t.id || !actor}
+                              onClick={() => void rejectTask(t)}
+                            >
+                              {rejectingId === t.id ? (
+                                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Undo2 className="mr-1 h-3.5 w-3.5" />
+                              )}
+                              Rechazar
+                            </Button>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))

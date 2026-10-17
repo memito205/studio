@@ -748,6 +748,20 @@ export interface DriverRouteTask {
     failedAt?: Date;
     failedByName?: string;
     failReason?: string;
+    /** Último rechazo del admin; el mensajero debe registrar de nuevo. */
+    lastRejection?: DeliveryStopRejection;
+    rejections?: Array<
+      DeliveryStopRejection & {
+        previous?: {
+          status?: DriverRouteTaskStatus;
+          deliveredAt?: Date | null;
+          receivedByName?: string | null;
+          deliveryPhotos?: DriverRouteTaskPhoto[];
+          failReason?: string | null;
+          leftInCajon?: boolean;
+        };
+      }
+    >;
     reassignedFrom?: string;
     reassignedTo?: string;
 }
