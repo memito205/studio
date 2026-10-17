@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import type { DriverRouteTask } from '@/types';
+import { computeMessengerDayOrders } from '@/lib/messengerRouteOrder';
 
 /** Misma estructura que exportNorteMessengerRoute (Rutas → Excel mensajero). */
 export type MessengerRouteExcelRow = {
@@ -10,8 +11,6 @@ export type MessengerRouteExcelRow = {
   ORDEN: number;
   FIRMA: string;
 };
-
-const isCajonPoint = (v: unknown) => /CAJ[OÓ]N/i.test(String(v || ''));
 
 /** Fecha de día `yyyy-MM-dd` → `dd/MM/yyyy`. */
 export function formatMessengerRouteDate(day: string): string {
@@ -32,68 +31,49 @@ function tfLabel(t: DriverRouteTask): string {
 
 /**
  * Arma filas RECOGER/ENTREGAR como el Excel del mensajero.
- * CAJON NORTE (recogida) va primero; ORDEN se renumera 1..n.
+ * Orden por mensajero/día: CAJÓN → TRASLADOS → GARANTÍAS → tiendas (juntas) → CAJÓN dejar.
  */
 export function buildMessengerRouteExcelRows(tasks: DriverRouteTask[]): MessengerRouteExcelRow[] {
-  type Action = { sort: number; day: string; tf: string; atributo: 'RECOGER' | 'ENTREGAR'; valor: string };
-  const actions: Action[] = [];
-
+  type Action = { visit: number; day: string; tf: string; atributo: 'RECOGER' | 'ENTREGAR'; valor: string };
+  const byKey = new Map<string, DriverRouteTask[]>();
   tasks
     .filter((t) => t.status !== 'cancelada' && !t.reassignedTo)
     .forEach((t) => {
-      const tf = tfLabel(t);
-      if (!tf) return;
-      const day = t.day || '';
-      const pickup = String(t.pickupPoint || '').trim();
-      const deliver = String(t.deliverPoint || '').trim();
-      const baseOrder = typeof t.order === 'number' ? t.order : isCajonPoint(pickup) ? 1 : 9999;
-      const deliverOrd =
-        typeof t.deliverOrder === 'number' ? t.deliverOrder : pickup ? baseOrder + 5000 : baseOrder;
-
-      if (pickup) {
-        // Cajón: sort muy bajo para quedar al inicio aunque order venga mal.
-        const sort = isCajonPoint(pickup) ? baseOrder : baseOrder + 10;
-        actions.push({ sort, day, tf, atributo: 'RECOGER', valor: pickup });
-      }
-      if (deliver) {
-        actions.push({
-          sort: isCajonPoint(pickup) ? deliverOrd + 10 : deliverOrd + 10,
-          day,
-          tf,
-          atributo: 'ENTREGAR',
-          valor: deliver,
-        });
-      }
+      const key = `${t.day || ''}|${t.driverId || ''}`;
+      const list = byKey.get(key) || [];
+      list.push(t);
+      byKey.set(key, list);
     });
 
-  actions.sort(
-    (a, b) =>
-      a.day.localeCompare(b.day) ||
-      a.sort - b.sort ||
-      (a.atributo === 'RECOGER' ? 0 : 1) - (b.atributo === 'RECOGER' ? 0 : 1) ||
-      a.tf.localeCompare(b.tf, undefined, { numeric: true })
-  );
-
-  // Dentro del mismo día: RECOGER en CAJON primero, luego resto por sort, ORDEN correlativo.
-  const byDay = new Map<string, Action[]>();
-  actions.forEach((a) => {
-    const list = byDay.get(a.day) || [];
-    list.push(a);
-    byDay.set(a.day, list);
-  });
-
   const rows: MessengerRouteExcelRow[] = [];
-  Array.from(byDay.keys())
+  Array.from(byKey.keys())
     .sort()
-    .forEach((day) => {
-      const list = byDay.get(day) || [];
-      list.sort((a, b) => {
-        const aCajon = a.atributo === 'RECOGER' && isCajonPoint(a.valor) ? 0 : 1;
-        const bCajon = b.atributo === 'RECOGER' && isCajonPoint(b.valor) ? 0 : 1;
-        return aCajon - bCajon || a.sort - b.sort || a.atributo.localeCompare(b.atributo) || a.tf.localeCompare(b.tf, undefined, { numeric: true });
+    .forEach((key) => {
+      const list = byKey.get(key) || [];
+      const ordered = computeMessengerDayOrders(list);
+      const actions: Action[] = [];
+      ordered.forEach((t) => {
+        const tf = tfLabel(t);
+        if (!tf) return;
+        const day = t.day || '';
+        const pickup = String(t.pickupPoint || '').trim();
+        const deliver = String(t.deliverPoint || '').trim();
+        if (pickup) {
+          actions.push({ visit: t.order, day, tf, atributo: 'RECOGER', valor: pickup });
+        }
+        if (deliver) {
+          actions.push({ visit: t.deliverOrder, day, tf, atributo: 'ENTREGAR', valor: deliver });
+        }
       });
-      const fecha = formatMessengerRouteDate(day);
-      list.forEach((a, i) => {
+      actions.sort(
+        (a, b) =>
+          a.visit - b.visit ||
+          (a.atributo === 'RECOGER' ? 0 : 1) - (b.atributo === 'RECOGER' ? 0 : 1) ||
+          a.valor.localeCompare(b.valor) ||
+          a.tf.localeCompare(b.tf, undefined, { numeric: true })
+      );
+      const fecha = formatMessengerRouteDate(list[0]?.day || '');
+      actions.forEach((a, i) => {
         rows.push({
           FECHA: fecha,
           'NUMERO TF': a.tf,

@@ -7,6 +7,7 @@ import { useToast } from '@/hooks/use-toast';
 import type { RouteTaskAction } from '@/app/routeTaskActions';
 import { compressImage, enqueueDelivery, type QueuedPhoto, type QueuedRouteSubmission } from '@/lib/podQueue';
 import { MAX_DELIVERY_PHOTOS, NOT_DELIVERED_REASONS, PHOTO_CATEGORIES, routeTaskLabel } from '@/lib/pod';
+import { computeMessengerDayOrders, pointPriority } from '@/lib/messengerRouteOrder';
 import type { DeliveryPhotoCategory, DriverRouteTask, TransferActor } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -72,8 +73,14 @@ export const deliverOrderOf = (t: DriverRouteTask) => t.deliverOrder ?? (t.picku
  * Paradas en el orden del planificador: en cada punto, lo que se recoge y lo que se entrega.
  * La entrega de una TF aún sin recoger se muestra bloqueada en su punto de entrega.
  * `queuedTaskIds`: registros guardados en el celular que aún se están enviando.
+ *
+ * Las entregas bloqueadas NO mueven el orden de paradas (evita que CAJÓN/tiendas salten a mitad de ruta).
  */
 export function groupRouteTasks(tasks: DriverRouteTask[], queuedTaskIds: Set<string> = new Set()): Group[] {
+  // Órdenes en memoria: CAJÓN → TRASLADOS → GARANTÍAS → tiendas (aunque Firestore aún no esté reordenado).
+  const orderedList = computeMessengerDayOrders(tasks);
+  const byId = new Map(orderedList.map((t) => [t.id, t]));
+
   const map = new Map<string, Group>();
   const add = (key: string, base: Omit<Group, 'key' | 'tasks' | 'sortOrder' | 'stop'>, t: DriverRouteTask, ord: number) => {
     const g = map.get(key) || { key, ...base, tasks: [], sortOrder: ord, stop: 0 };
@@ -81,18 +88,20 @@ export function groupRouteTasks(tasks: DriverRouteTask[], queuedTaskIds: Set<str
     g.sortOrder = Math.min(g.sortOrder, ord);
     map.set(key, g);
   };
-  tasks.forEach((t) => {
+  tasks.forEach((orig) => {
+    const t = byId.get(orig.id) || orig;
     const queued = queuedTaskIds.has(t.id);
     if (t.status === 'por_recoger') {
       if (!queued) {
         const point = t.pickupPoint || t.bodegaOrigen || 'Sin punto';
         add(`recoger|${point}`, { point, kind: 'recoger', deliverType: t.deliverType }, t, t.order ?? NO_ORDER);
       }
+      // Bloqueada: no aporta al orden de parada (sortOrder alto).
       add(
         `pendiente|${t.deliverPoint}|${t.deliverType}`,
         { point: t.deliverPoint, kind: 'entregar', deliverType: t.deliverType, locked: true },
         t,
-        deliverOrderOf(t)
+        NO_ORDER + (deliverOrderOf(t) || 0)
       );
     } else if (!queued) {
       add(`entregar|${t.deliverPoint}|${t.deliverType}`, { point: t.deliverPoint, kind: 'entregar', deliverType: t.deliverType }, t, deliverOrderOf(t));
@@ -100,15 +109,22 @@ export function groupRouteTasks(tasks: DriverRouteTask[], queuedTaskIds: Set<str
   });
   const groups = Array.from(map.values());
   const pointOrder = new Map<string, number>();
-  groups.forEach((g) => pointOrder.set(g.point, Math.min(pointOrder.get(g.point) ?? NO_ORDER, g.sortOrder)));
+  groups.forEach((g) => {
+    if (g.locked) return; // no desplazar la ruta
+    const base = g.sortOrder + pointPriority(g.point) * 0.001;
+    pointOrder.set(g.point, Math.min(pointOrder.get(g.point) ?? NO_ORDER, base));
+  });
+  // Puntos que solo tienen entregas bloqueadas: al final
+  groups.forEach((g) => {
+    if (!pointOrder.has(g.point)) pointOrder.set(g.point, NO_ORDER + pointPriority(g.point));
+  });
   const rank = (g: Group) => (g.kind === 'recoger' ? 0 : g.locked ? 2 : 1);
   groups.sort(
     (a, b) =>
       pointOrder.get(a.point)! - pointOrder.get(b.point)! ||
-      (pointOrder.get(a.point)! === NO_ORDER ? rank(a) - rank(b) : 0) ||
-      a.point.localeCompare(b.point) ||
+      rank(a) - rank(b) ||
       a.sortOrder - b.sortOrder ||
-      rank(a) - rank(b)
+      a.point.localeCompare(b.point)
   );
   let stop = 0;
   let lastPoint = '';

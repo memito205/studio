@@ -3,13 +3,18 @@
 import React, { useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
-import { CheckCircle2, Download, Loader2, Search, Undo2 } from 'lucide-react';
+import { CheckCircle2, Download, ListOrdered, Loader2, Search, Undo2 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
-import { getRouteTasksByRange, markRouteTasksRevalidated, rejectRouteTaskDelivery } from '@/app/routeTaskActions';
+import {
+  getRouteTasksByRange,
+  markRouteTasksRevalidated,
+  rejectRouteTaskDelivery,
+  reorderMessengerDayRoute,
+} from '@/app/routeTaskActions';
 import { ROUTE_TASK_STATUS } from '@/components/RouteTasksAssignView';
-import { deliverOrderOf } from '@/components/DriverRouteTasks';
 import { downloadMessengerRouteExcel } from '@/lib/messengerRouteExcel';
+import { computeMessengerDayOrders } from '@/lib/messengerRouteOrder';
 import type { DriverRouteTask, DriverRouteTaskPhoto, DriverRouteTaskStatus, TransferActor } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -52,37 +57,45 @@ type DriverRoute = {
 
 const routeKey = (t: DriverRouteTask) => `${t.day}|${t.driverId}`;
 
-/** Avance por mensajero y día, con sus paradas en el orden del planificador (sin lecturas extra). */
+/** Avance por mensajero y día; paradas con prioridad CAJÓN → TRASLADOS → GARANTÍAS → tiendas. */
 function buildDriverRoutes(tasks: DriverRouteTask[]): DriverRoute[] {
   const byKey = new Map<string, DriverRouteTask[]>();
   tasks
-    .filter((t) => t.status !== 'cancelada')
+    .filter((t) => t.status !== 'cancelada' && !t.reassignedTo)
     .forEach((t) => byKey.set(routeKey(t), [...(byKey.get(routeKey(t)) || []), t]));
   return Array.from(byKey.entries())
-    .map(([key, list]) => {
-      const lines: Array<StopLine & { point: string }> = [];
+    .map(([key, rawList]) => {
+      const list = computeMessengerDayOrders(rawList);
+      const lines: Array<StopLine & { point: string; locked?: boolean }> = [];
       list.forEach((t) => {
         if (t.pickupPoint) {
           lines.push({
             task: t,
             kind: 'recoger',
             point: t.pickupPoint,
-            order: t.order ?? 9999,
+            order: t.order,
             state: t.pickedAt ? 'hecho' : t.status === 'no_recogida' ? 'novedad' : 'pendiente',
           });
         }
         if (t.status === 'no_recogida') return;
+        const locked = t.status === 'por_recoger';
         lines.push({
           task: t,
           kind: 'entregar',
           point: t.deliverPoint,
-          order: deliverOrderOf(t),
-          state:
-            t.status === 'entregada' ? 'hecho' : t.status === 'no_entregada' ? 'novedad' : t.status === 'por_recoger' ? 'bloqueada' : 'pendiente',
+          order: t.deliverOrder,
+          locked,
+          state: t.status === 'entregada' ? 'hecho' : t.status === 'no_entregada' ? 'novedad' : locked ? 'bloqueada' : 'pendiente',
         });
       });
       const pointOrder = new Map<string, number>();
-      lines.forEach((l) => pointOrder.set(l.point, Math.min(pointOrder.get(l.point) ?? 9999, l.order)));
+      lines.forEach((l) => {
+        if (l.locked) return;
+        pointOrder.set(l.point, Math.min(pointOrder.get(l.point) ?? 9999, l.order));
+      });
+      lines.forEach((l) => {
+        if (!pointOrder.has(l.point)) pointOrder.set(l.point, 9000 + l.order);
+      });
       const points = Array.from(pointOrder.keys()).sort((a, b) => pointOrder.get(a)! - pointOrder.get(b)! || a.localeCompare(b));
       const stops = points.map((point, i) => ({
         n: i + 1,
@@ -153,6 +166,7 @@ export function RouteTasksAdminTab() {
   const [loading, setLoading] = useState(false);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [markingId, setMarkingId] = useState<string | null>(null);
+  const [reorderingKey, setReorderingKey] = useState<string | null>(null);
   const [filter, setFilter] = useState<DriverRouteTaskStatus | 'todas' | 'por_revalidar'>('todas');
   const [routeSel, setRouteSel] = useState<string | null>(null);
   const day = from === to ? from : `${from}_a_${to}`;
@@ -203,6 +217,34 @@ export function RouteTasksAdminTab() {
       return;
     }
     toast({ title: 'Revisada', description: 'Ya no aparece en “Por revalidar”.' });
+    void load();
+  };
+
+  const reorderSelectedRoute = async (r: { key: string; driverId: string; driverName: string; day: string }) => {
+    if (!actor) {
+      toast({ variant: 'destructive', title: 'Sesión', description: 'Inicie sesión para reordenar.' });
+      return;
+    }
+    if (
+      !window.confirm(
+        `¿Reordenar la ruta de ${r.driverName} (${r.day})?\nOrden: CAJÓN NORTE → TRASLADOS → GARANTÍAS → tiendas (misma tienda junta).`
+      )
+    ) {
+      return;
+    }
+    setReorderingKey(r.key);
+    const res = await reorderMessengerDayRoute({ driverId: r.driverId, day: r.day, actor });
+    setReorderingKey(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'No se pudo reordenar', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Ruta reordenada',
+      description: res.updated
+        ? `${res.updated} envío(s) actualizados. Excel y paradas usan el nuevo orden.`
+        : 'El orden ya estaba correcto.',
+    });
     void load();
   };
 
@@ -414,19 +456,34 @@ export function RouteTasksAdminTab() {
                         Ruta de {selectedRoute.driverName} · {selectedRoute.day}
                         <span className="ml-2 text-xs font-normal text-muted-foreground">La tabla de abajo quedó filtrada a este mensajero.</span>
                       </p>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() =>
-                          exportMessengerRouteExcel({
-                            driverId: selectedRoute.driverId,
-                            driverName: selectedRoute.driverName,
-                            day: selectedRoute.day,
-                          })
-                        }
-                      >
-                        <Download className="mr-1 h-3.5 w-3.5" /> Excel ruta mensajero
-                      </Button>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={reorderingKey === selectedRoute.key}
+                          onClick={() => void reorderSelectedRoute(selectedRoute)}
+                        >
+                          {reorderingKey === selectedRoute.key ? (
+                            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <ListOrdered className="mr-1 h-3.5 w-3.5" />
+                          )}
+                          Reordenar ruta
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() =>
+                            exportMessengerRouteExcel({
+                              driverId: selectedRoute.driverId,
+                              driverName: selectedRoute.driverName,
+                              day: selectedRoute.day,
+                            })
+                          }
+                        >
+                          <Download className="mr-1 h-3.5 w-3.5" /> Excel ruta mensajero
+                        </Button>
+                      </div>
                     </div>
                     {selectedRoute.stops.map((s) => (
                       <div key={s.point} className="rounded border p-2">

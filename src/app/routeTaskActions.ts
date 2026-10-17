@@ -21,6 +21,7 @@ import {
 import { firestore } from '@/services/firebase';
 import { buildStoreMatcher } from '@/lib/deliveryStores';
 import { getDeliveryStoresCached, invalidateDeliveryStoresCache } from '@/lib/deliveryStoresCache';
+import { computeMessengerDayOrders } from '@/lib/messengerRouteOrder';
 import { publishPodToPlatform, type PlatformLine } from '@/app/podActions';
 import type { DeliveryStore, DriverRouteTask, DriverRouteTaskPhoto, TransferActor, TransferStatus } from '@/types';
 
@@ -161,36 +162,13 @@ export async function createRouteTasks(input: {
       };
     }
 
-    // Recogidas en CAJON NORTE = primera parada (order 1); empuja el resto del día.
-    const incomingCajon = tasks.some((t) => isCajonPickupPoint(t.pickupPoint));
-    if (incomingCajon) {
-      const openSnap = await getDocs(
-        query(collection(firestore, TASKS), where('driverOpen', '==', `${input.driverId}|open`))
-      );
-      const sameDay = openSnap.docs.filter((d) => String(d.data().day || '') === input.day);
-      const alreadyCajonFirst = sameDay.some(
-        (d) => isCajonPickupPoint(d.data().pickupPoint) && (Number(d.data().order) || 9999) <= 1
-      );
-      if (!alreadyCajonFirst && sameDay.length > 0) {
-        const bump = writeBatch(firestore);
-        sameDay.forEach((d) => {
-          if (isCajonPickupPoint(d.data().pickupPoint)) return;
-          const ord = Number(d.data().order);
-          const dOrd = Number(d.data().deliverOrder);
-          bump.update(d.ref, {
-            order: (Number.isFinite(ord) ? ord : 10) + 1,
-            ...(Number.isFinite(dOrd) ? { deliverOrder: dOrd + 1 } : {}),
-          });
-        });
-        await bump.commit();
+    // Órdenes finales: reorderMessengerDayRoute al cerrar (CAJÓN → TRASLADOS → GARANTÍAS → tiendas).
+    tasks.forEach((t) => {
+      if (isCajonPickupPoint(t.pickupPoint)) {
+        t.order = t.order ?? 1;
+        if (t.deliverOrder == null) t.deliverOrder = 50;
       }
-      tasks.forEach((t) => {
-        if (isCajonPickupPoint(t.pickupPoint)) {
-          t.order = 1;
-          if (t.deliverOrder == null) t.deliverOrder = 50;
-        }
-      });
-    }
+    });
 
     let { stores, match } = await loadStores();
     if (input.source === 'planificador') {
@@ -315,11 +293,61 @@ export async function createRouteTasks(input: {
       );
       created++;
     }
-    if (created > 0) for (const b of batches) await b.commit();
+    if (created > 0) {
+      for (const b of batches) await b.commit();
+      // Unifica prioridad y evita manuales/tiendas fragmentadas al final.
+      const re = await reorderMessengerDayRoute({ driverId: input.driverId, day: input.day, actor });
+      if (!re.success) console.warn('createRouteTasks: reorder falló', re.error);
+    }
     return { success: true, created, skipped };
   } catch (error: any) {
     console.error('createRouteTasks:', error);
     return { success: false, error: error.message || 'No se pudieron crear las tareas.' };
+  }
+}
+
+/**
+ * Reescribe order/deliverOrder del día del mensajero:
+ * CAJÓN (recogida) → TRASLADOS → GARANTÍAS → tiendas (misma tienda junta) → CAJÓN (dejar).
+ * Lecturas: 1 query por `day` (igual que el tablero) y filtro en memoria por mensajero.
+ */
+export async function reorderMessengerDayRoute(input: {
+  driverId: string;
+  day: string;
+  actor?: TransferActor;
+}): Promise<{ success: boolean; updated?: number; error?: string }> {
+  if (!input.driverId) return { success: false, error: 'Mensajero requerido.' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.day)) return { success: false, error: 'Día inválido.' };
+  try {
+    const snap = await getDocs(query(collection(firestore, TASKS), where('day', '==', input.day)));
+    const mine = snap.docs.filter((d) => String(d.data().driverId || '') === input.driverId);
+    const tasks = mine
+      .map((d) => toTask(d.id, d.data()))
+      .filter((t) => t.status !== 'cancelada' && !t.reassignedTo);
+    if (!tasks.length) return { success: true, updated: 0 };
+
+    const ordered = computeMessengerDayOrders(tasks);
+    const byId = new Map(ordered.map((t) => [t.id, t]));
+    const batches = [writeBatch(firestore)];
+    let updated = 0;
+    let ops = 0;
+    for (const d of mine) {
+      const o = byId.get(d.id);
+      if (!o) continue;
+      const cur = d.data();
+      const sameOrder = Number(cur.order) === o.order;
+      const sameDeliver = Number(cur.deliverOrder) === o.deliverOrder;
+      if (sameOrder && sameDeliver) continue;
+      if (ops > 0 && ops % 450 === 0) batches.push(writeBatch(firestore));
+      batches[batches.length - 1].update(d.ref, { order: o.order, deliverOrder: o.deliverOrder });
+      ops++;
+      updated++;
+    }
+    if (updated > 0) for (const b of batches) await b.commit();
+    return { success: true, updated };
+  } catch (error: any) {
+    console.error('reorderMessengerDayRoute:', error);
+    return { success: false, error: error.message || 'No se pudo reordenar la ruta.' };
   }
 }
 
