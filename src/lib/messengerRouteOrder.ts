@@ -2,7 +2,39 @@ import type { DriverRouteTask } from '@/types';
 
 const norm = (v: unknown) => String(v || '').trim().toUpperCase().replace(/\s+/g, ' ');
 
-/** Prioridad de puntos especiales (menor = más temprano). */
+/**
+ * Misma secuencia que el planificador (RutasModule `standardNorteRoute`).
+ * Códigos B1…B22 / MOLINOS; en app suelen verse como BR 01, MOL, etc.
+ */
+export const STANDARD_NORTE_ROUTE = [
+  'TRASLADOS',
+  'BODEGA PIONEROS',
+  'PIONEROS',
+  'GARANTIAS',
+  'TRYNO',
+  'B5',
+  'B2',
+  'B4',
+  'SISTEMAS',
+  'OFICINA',
+  'RECEPCION',
+  'B12',
+  'MOLINOS',
+  'B1',
+  'B11',
+  'B22',
+  'B15',
+  'B9',
+  'B18',
+  'B13',
+  'B19 OUTLET',
+  'B19',
+  'B20',
+] as const;
+
+const NORTE_INDEX = new Map<string, number>(STANDARD_NORTE_ROUTE.map((p, i) => [p, i]));
+
+/** Prioridad residual para puntos fuera del estándar (menor = más temprano). */
 export function pointPriority(point: unknown): number {
   const p = norm(point);
   if (/CAJ[OÓ]N/.test(p)) return 0;
@@ -18,17 +50,49 @@ export function isCajonPoint(point: unknown): boolean {
   return /CAJ[OÓ]N/i.test(String(point || ''));
 }
 
+/**
+ * Normaliza nombres de la app al código del planificador Norte.
+ * Ej: "BR 12" → B12, "MOL" → MOLINOS, "B2 JUNIN" → B2, "GARANTÍAS" → GARANTIAS.
+ */
+export function toNorteKey(point: unknown): string {
+  const p = norm(point);
+  if (!p) return '';
+  if (isCajonPoint(p)) return 'CAJON NORTE';
+  if (p === 'GARANTÍAS' || p === 'GARANTIAS') return 'GARANTIAS';
+  if (p === 'MOL' || p === 'MOLINO' || p === 'MOLINOS') return 'MOLINOS';
+  if (p === 'RECEPCIÓN') return 'RECEPCION';
+  if (p === 'TRASLADO') return 'TRASLADOS';
+  if (p === 'B19 OUTLET' || p === 'B19-OUTLET' || p === 'OUTLET B19') return 'B19 OUTLET';
+
+  const br = p.match(/^BR?\s*0*(\d+)\b/);
+  if (br) return `B${Number(br[1])}`;
+
+  const bName = p.match(/^B\s*0*(\d+)\b/);
+  if (bName) {
+    const key = `B${Number(bName[1])}`;
+    if (NORTE_INDEX.has(key)) return key;
+  }
+
+  return p;
+}
+
+/** Índice en la ruta Norte (0…n). Fuera de lista → 1000+. */
+export function norteRank(point: unknown): number {
+  const key = toNorteKey(point);
+  if (!key || key === 'CAJON NORTE') return 9990;
+  const idx = NORTE_INDEX.get(key);
+  if (idx !== undefined) return idx;
+  return 1000 + pointPriority(key);
+}
+
 export type OrderedRouteTask = DriverRouteTask & { order: number; deliverOrder: number };
 
 /**
- * Recalcula `order` (recogida) y `deliverOrder` (entrega) para un día del mensajero.
- *
- * Visitas:
- * 1) CAJON NORTE (solo recogidas del cajón)
- * 2) TRASLADOS
- * 3) GARANTIAS
- * 4) resto de puntos (tiendas), agrupados; misma tienda junta
- * 5) CAJON NORTE al final si hay entregas a cajón (dejar mercancía)
+ * Recalcula order/deliverOrder como el planificador Norte:
+ * 1) CAJON NORTE primero si hay recogidas en cajón
+ * 2) Secuencia estándar Norte (TRASLADOS → Pioneros → Garantías → tiendas…)
+ * 3) Puntos extra (p. ej. BODEGA ECOMMERCE) después del estándar
+ * 4) CAJON NORTE al cierre si hay entregas a cajón (dejar)
  */
 export function computeMessengerDayOrders(tasks: DriverRouteTask[]): OrderedRouteTask[] {
   const active = tasks.filter((t) => t.status !== 'cancelada' && !t.reassignedTo);
@@ -36,60 +100,56 @@ export function computeMessengerDayOrders(tasks: DriverRouteTask[]): OrderedRout
 
   const hasCajonPickup = active.some((t) => t.pickupPoint && isCajonPoint(t.pickupPoint));
   const hasCajonDeliver = active.some((t) => isCajonPoint(t.deliverPoint));
-  const hasTraslados = active.some(
-    (t) => norm(t.pickupPoint) === 'TRASLADOS' || norm(t.deliverPoint) === 'TRASLADOS'
-  );
-  const hasGarantias = active.some((t) => {
-    const a = norm(t.pickupPoint);
-    const b = norm(t.deliverPoint);
-    return a === 'GARANTIAS' || a === 'GARANTÍAS' || b === 'GARANTIAS' || b === 'GARANTÍAS';
-  });
 
-  const otherPoints = new Map<string, number>();
+  type Meta = { hint: number };
+  const points = new Map<string, Meta>();
+
+  const touch = (raw: unknown, hint: number) => {
+    if (!raw) return;
+    const key = toNorteKey(raw);
+    if (!key || key === 'CAJON NORTE') return;
+    const prev = points.get(key);
+    if (!prev) points.set(key, { hint });
+    else prev.hint = Math.min(prev.hint, hint);
+  };
+
   active.forEach((t) => {
-    [t.pickupPoint, t.deliverPoint].forEach((raw) => {
-      if (!raw) return;
-      const p = norm(raw);
-      if (!p || isCajonPoint(p) || p === 'TRASLADOS' || p === 'GARANTIAS' || p === 'GARANTÍAS') return;
-      const prev = otherPoints.get(p);
-      const hint = typeof t.order === 'number' ? t.order : typeof t.deliverOrder === 'number' ? t.deliverOrder : 9999;
-      otherPoints.set(p, prev === undefined ? hint : Math.min(prev, hint));
-    });
+    const ord = typeof t.order === 'number' ? t.order : 9999;
+    const dOrd = typeof t.deliverOrder === 'number' ? t.deliverOrder : 9999;
+    touch(t.pickupPoint, ord);
+    touch(t.deliverPoint, Math.min(dOrd, t.pickupPoint ? 9999 : ord));
   });
 
-  const visit: string[] = [];
-  if (hasCajonPickup) visit.push('CAJON NORTE');
-  if (hasTraslados) visit.push('TRASLADOS');
-  if (hasGarantias) visit.push('GARANTIAS');
-  Array.from(otherPoints.entries())
-    .sort((a, b) => pointPriority(a[0]) - pointPriority(b[0]) || a[1] - b[1] || a[0].localeCompare(b[0]))
-    .forEach(([p]) => visit.push(p));
-  // Entregas a cajón al final (dejar lo que no se pudo entregar), si no quedó solo como 1ª parada de recogida.
+  const visitKeys: string[] = [];
+  if (hasCajonPickup) visitKeys.push('CAJON NORTE');
+
+  STANDARD_NORTE_ROUTE.forEach((key) => {
+    if (points.has(key)) visitKeys.push(key);
+  });
+
+  Array.from(points.entries())
+    .filter(([key]) => !NORTE_INDEX.has(key))
+    .sort((a, b) => a[1].hint - b[1].hint || a[0].localeCompare(b[0]))
+    .forEach(([key]) => visitKeys.push(key));
+
   if (hasCajonDeliver) {
-    const last = visit[visit.length - 1];
-    if (last !== 'CAJON NORTE' || !hasCajonPickup) {
-      if (visit[visit.length - 1] !== 'CAJON NORTE') visit.push('CAJON NORTE');
-    } else if (hasCajonPickup && hasCajonDeliver) {
-      // Ya está al inicio por recogida: añadir segunda visita al final para dejar.
-      visit.push('CAJON NORTE#END');
-    }
+    if (hasCajonPickup) visitKeys.push('CAJON NORTE#END');
+    else if (!visitKeys.includes('CAJON NORTE')) visitKeys.push('CAJON NORTE');
   }
 
   const visitIndex = (point: string, kind: 'pickup' | 'deliver'): number => {
-    const p = norm(point);
-    if (kind === 'deliver' && isCajonPoint(p)) {
-      const end = visit.indexOf('CAJON NORTE#END');
+    const key = toNorteKey(point);
+    if (kind === 'deliver' && key === 'CAJON NORTE') {
+      const end = visitKeys.indexOf('CAJON NORTE#END');
       if (end >= 0) return end;
-      // Solo cajón como entrega (sin recogida previa en lista): última aparición
-      const idx = visit.lastIndexOf('CAJON NORTE');
-      return idx >= 0 ? idx : visit.length + 50;
+      return visitKeys.lastIndexOf('CAJON NORTE');
     }
-    if (kind === 'pickup' && isCajonPoint(p)) {
-      const idx = visit.indexOf('CAJON NORTE');
+    if (kind === 'pickup' && key === 'CAJON NORTE') {
+      const idx = visitKeys.indexOf('CAJON NORTE');
       return idx >= 0 ? idx : 0;
     }
-    const idx = visit.findIndex((v) => v === p || norm(v) === p);
-    return idx >= 0 ? idx : 1000 + pointPriority(p);
+    const idx = visitKeys.indexOf(key);
+    return idx >= 0 ? idx : 1000 + norteRank(point);
   };
 
   return active.map((t) => {
@@ -97,7 +157,6 @@ export function computeMessengerDayOrders(tasks: DriverRouteTask[]): OrderedRout
     const deliver = norm(t.deliverPoint);
     const order = pickup ? visitIndex(pickup, 'pickup') + 1 : undefined;
     let deliverOrder = deliver ? visitIndex(deliver, 'deliver') + 1 : undefined;
-    // Garantiza entrega después de recogida cuando ambos existen.
     if (order != null && deliverOrder != null && deliverOrder <= order) {
       deliverOrder = order + 1;
     }
@@ -112,10 +171,13 @@ export function computeMessengerDayOrders(tasks: DriverRouteTask[]): OrderedRout
 /** Índice de visita de un punto para UI (sin #END). */
 export function stopVisitRank(point: string, tasks: DriverRouteTask[]): number {
   const ordered = computeMessengerDayOrders(tasks);
-  const sample = ordered.find(
-    (t) => norm(t.pickupPoint) === norm(point) || (norm(t.deliverPoint) === norm(point) && !isCajonPoint(point))
-  );
-  if (sample && norm(sample.pickupPoint) === norm(point)) return sample.order;
-  const asDeliver = ordered.find((t) => norm(t.deliverPoint) === norm(point));
+  const key = toNorteKey(point);
+  if (key === 'CAJON NORTE') {
+    const sample = ordered.find((t) => t.pickupPoint && isCajonPoint(t.pickupPoint));
+    if (sample) return sample.order;
+  }
+  const asPick = ordered.find((t) => toNorteKey(t.pickupPoint) === key);
+  if (asPick) return asPick.order;
+  const asDeliver = ordered.find((t) => toNorteKey(t.deliverPoint) === key);
   return asDeliver?.deliverOrder ?? 9999;
 }

@@ -90,11 +90,12 @@ function buildDriverRoutes(tasks: DriverRouteTask[]): DriverRoute[] {
       });
       const pointOrder = new Map<string, number>();
       lines.forEach((l) => {
-        if (l.locked) return;
+        // Si el punto ya tiene recogida/entrega libre, esa manda; si solo hay bloqueadas, igual usan orden Norte.
+        if (l.locked && lines.some((o) => o.point === l.point && !o.locked)) return;
         pointOrder.set(l.point, Math.min(pointOrder.get(l.point) ?? 9999, l.order));
       });
       lines.forEach((l) => {
-        if (!pointOrder.has(l.point)) pointOrder.set(l.point, 9000 + l.order);
+        if (!pointOrder.has(l.point)) pointOrder.set(l.point, l.order);
       });
       const points = Array.from(pointOrder.keys()).sort((a, b) => pointOrder.get(a)! - pointOrder.get(b)! || a.localeCompare(b));
       const stops = points.map((point, i) => ({
@@ -227,7 +228,7 @@ export function RouteTasksAdminTab() {
     }
     if (
       !window.confirm(
-        `¿Reordenar la ruta de ${r.driverName} (${r.day})?\nOrden: CAJÓN NORTE → TRASLADOS → GARANTÍAS → tiendas (misma tienda junta).`
+        `¿Reordenar la ruta de ${r.driverName} (${r.day})?\nUsa la secuencia del planificador Norte: CAJÓN (si hay recogida) → TRASLADOS → BODEGA PIONEROS → GARANTÍAS → B5…B12 → MOL → resto.`
       )
     ) {
       return;

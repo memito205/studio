@@ -162,7 +162,7 @@ export async function createRouteTasks(input: {
       };
     }
 
-    // Órdenes finales: reorderMessengerDayRoute al cerrar (CAJÓN → TRASLADOS → GARANTÍAS → tiendas).
+    // Órdenes finales: reorderMessengerDayRoute (secuencia planificador Norte + CAJÓN al inicio si aplica).
     tasks.forEach((t) => {
       if (isCajonPickupPoint(t.pickupPoint)) {
         t.order = t.order ?? 1;
@@ -307,9 +307,9 @@ export async function createRouteTasks(input: {
 }
 
 /**
- * Reescribe order/deliverOrder del día del mensajero:
- * CAJÓN (recogida) → TRASLADOS → GARANTÍAS → tiendas (misma tienda junta) → CAJÓN (dejar).
- * Lecturas: 1 query por `day` (igual que el tablero) y filtro en memoria por mensajero.
+ * Reescribe order/deliverOrder del día del mensajero con la secuencia del planificador Norte
+ * (CAJÓN si hay recogida → TRASLADOS → Pioneros → Garantías → B5…B20 → extras → CAJÓN dejar).
+ * Lecturas: 1 query por `day` y filtro en memoria por mensajero.
  */
 export async function reorderMessengerDayRoute(input: {
   driverId: string;

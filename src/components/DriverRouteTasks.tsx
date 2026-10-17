@@ -96,12 +96,12 @@ export function groupRouteTasks(tasks: DriverRouteTask[], queuedTaskIds: Set<str
         const point = t.pickupPoint || t.bodegaOrigen || 'Sin punto';
         add(`recoger|${point}`, { point, kind: 'recoger', deliverType: t.deliverType }, t, t.order ?? NO_ORDER);
       }
-      // Bloqueada: no aporta al orden de parada (sortOrder alto).
+      // Bloqueada: usa deliverOrder real (posición Norte), no empuja la parada al final.
       add(
         `pendiente|${t.deliverPoint}|${t.deliverType}`,
         { point: t.deliverPoint, kind: 'entregar', deliverType: t.deliverType, locked: true },
         t,
-        NO_ORDER + (deliverOrderOf(t) || 0)
+        deliverOrderOf(t)
       );
     } else if (!queued) {
       add(`entregar|${t.deliverPoint}|${t.deliverType}`, { point: t.deliverPoint, kind: 'entregar', deliverType: t.deliverType }, t, deliverOrderOf(t));
@@ -110,13 +110,13 @@ export function groupRouteTasks(tasks: DriverRouteTask[], queuedTaskIds: Set<str
   const groups = Array.from(map.values());
   const pointOrder = new Map<string, number>();
   groups.forEach((g) => {
-    if (g.locked) return; // no desplazar la ruta
+    // Recogidas definen la parada; si solo hay entregas (aunque bloqueadas), usan su orden Norte.
+    if (g.locked && groups.some((o) => o.point === g.point && !o.locked)) return;
     const base = g.sortOrder + pointPriority(g.point) * 0.001;
     pointOrder.set(g.point, Math.min(pointOrder.get(g.point) ?? NO_ORDER, base));
   });
-  // Puntos que solo tienen entregas bloqueadas: al final
   groups.forEach((g) => {
-    if (!pointOrder.has(g.point)) pointOrder.set(g.point, NO_ORDER + pointPriority(g.point));
+    if (!pointOrder.has(g.point)) pointOrder.set(g.point, g.sortOrder + pointPriority(g.point) * 0.001);
   });
   const rank = (g: Group) => (g.kind === 'recoger' ? 0 : g.locked ? 2 : 1);
   groups.sort(
