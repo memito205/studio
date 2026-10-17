@@ -2,12 +2,13 @@
 
 import React, { useCallback, useMemo, useState } from 'react';
 import { format } from 'date-fns';
-import { Ban, Loader2, RefreshCw, Search, Send, Shuffle } from 'lucide-react';
+import { Ban, Download, Loader2, RefreshCw, Search, Send, Shuffle } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import { getTransfersByStatus } from '@/app/actions';
 import { getDeliveryStores } from '@/app/deliveryActions';
 import { cancelRouteTasks, createRouteTasks, getRouteTasksByDay, getTransfersInCajon, reassignRouteTasks } from '@/app/routeTaskActions';
+import { downloadMessengerRouteExcel } from '@/lib/messengerRouteExcel';
 import { DriverUserSelect, type DriverValue } from '@/components/DriverUserSelect';
 import type { DeliveryStore, DriverRouteTask, DriverRouteTaskStatus, TransferActor, TransferEntry } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -181,11 +182,12 @@ export const RouteTasksAssignView: React.FC = () => {
     const chosen = groups.filter((g) => selected.has(g.key));
     setSaving(true);
     const res = await createRouteTasks({
-      tasks: chosen.map((g) => ({
+      tasks: chosen.map((g, i) => ({
         numeroTF: g.numeroTF,
         transferIds: g.ids,
         pickupPoint: linesSource === 'cajon' ? 'CAJON NORTE' : g.bodegaOrigen,
         deliverPoint: deliverTo === 'bodega' ? 'BODEGA' : deliverTo === 'destino' ? g.bodegaDestino : otherStore,
+        ...(linesSource === 'cajon' ? { order: 1, deliverOrder: 50 + i } : {}),
       })),
       driverId: driver.driverUserId!,
       driverName: driver.driver,
@@ -201,7 +203,9 @@ export const RouteTasksAssignView: React.FC = () => {
     }
     toast({
       title: `${res.created} TF asignadas a ${driver.driver}`,
-      description: res.skipped?.length ? `Omitidas: ${res.skipped.map((s) => `TF ${s.numeroTF} (${s.reason})`).join(', ')}` : undefined,
+      description:
+        (linesSource === 'cajon' ? 'CAJON NORTE queda como primera parada. ' : '') +
+        (res.skipped?.length ? `Omitidas: ${res.skipped.map((s) => `TF ${s.numeroTF} (${s.reason})`).join(', ')}` : 'Use “Excel ruta mensajero” en tareas del día para ver el archivo.'),
     });
     const skippedTfs = new Set((res.skipped || []).map((s) => s.numeroTF));
     const assignedIds = new Set(chosen.filter((g) => !skippedTfs.has(g.numeroTF)).flatMap((g) => g.ids));
@@ -231,6 +235,17 @@ export const RouteTasksAssignView: React.FC = () => {
     (dayTasks || []).forEach((t) => c[t.status]++);
     return c;
   }, [dayTasks]);
+
+  const exportDayMessengerExcel = (onlyDriverId?: string) => {
+    const list = (dayTasks || []).filter((t) => !onlyDriverId || t.driverId === onlyDriverId);
+    const res = downloadMessengerRouteExcel(list, {
+      fileName: onlyDriverId
+        ? `RUTA_DEL_MENSAJERO_${day}_${(list[0]?.driverName || 'mensajero').replace(/\s+/g, '_')}.xlsx`
+        : `RUTA_DEL_MENSAJERO_${day}.xlsx`,
+    });
+    if (!res.ok) toast({ variant: 'destructive', title: 'Excel', description: res.error });
+    else toast({ title: 'Excel ruta mensajero', description: `${res.rows} fila(s) · misma estructura FECHA / NUMERO TF / Atributo / Valor / ORDEN / FIRMA.` });
+  };
 
   return (
     <div className="space-y-6">
@@ -417,10 +432,15 @@ export const RouteTasksAssignView: React.FC = () => {
                 elegidos arriba. Sirve también si se asignó al conductor equivocado: salen de su app y le aparecen al nuevo.
               </CardDescription>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button variant="outline" onClick={() => void loadDay(day)} disabled={loadingDay}>
                 <RefreshCw className={`mr-2 h-4 w-4 ${loadingDay ? 'animate-spin' : ''}`} /> {dayTasks ? 'Actualizar' : 'Ver tareas'}
               </Button>
+              {dayTasks && dayTasks.length > 0 && (
+                <Button variant="secondary" onClick={() => exportDayMessengerExcel(driver.driverUserId || undefined)}>
+                  <Download className="mr-2 h-4 w-4" /> Excel ruta mensajero
+                </Button>
+              )}
               <Button variant="outline" onClick={() => void handleReassign()} disabled={taskSel.size === 0 || !driverReady}>
                 <Shuffle className="mr-2 h-4 w-4" /> Reasignar ({taskSel.size})
               </Button>

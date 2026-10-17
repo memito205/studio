@@ -34,6 +34,7 @@ const NOVEDAD_FROM: TransferStatus[] = ['Recolectado en Ruta', 'En Tránsito', '
 /** Cajón externo donde el mensajero deja lo que no pudo entregar. */
 const CAJON_POINT = 'CAJON NORTE';
 const isInCajon = (d: DocumentData) => d.status === 'Recibido en Bodega' && normPoint(d.ubicacion) === CAJON_POINT;
+const isCajonPickupPoint = (v: unknown) => /CAJ[OÓ]N/i.test(normPoint(v));
 
 const platformTf = (v: unknown) => {
   const digits = String(v || '').replace(/\D/g, '');
@@ -158,6 +159,37 @@ export async function createRouteTasks(input: {
         success: false,
         error: `El mensajero tiene ruta sin cerrar de día(s) anterior(es): ${detail}. Debe cerrarla (o rechazar/corregir entregas) antes de montar la del ${input.day}.`,
       };
+    }
+
+    // Recogidas en CAJON NORTE = primera parada (order 1); empuja el resto del día.
+    const incomingCajon = tasks.some((t) => isCajonPickupPoint(t.pickupPoint));
+    if (incomingCajon) {
+      const openSnap = await getDocs(
+        query(collection(firestore, TASKS), where('driverOpen', '==', `${input.driverId}|open`))
+      );
+      const sameDay = openSnap.docs.filter((d) => String(d.data().day || '') === input.day);
+      const alreadyCajonFirst = sameDay.some(
+        (d) => isCajonPickupPoint(d.data().pickupPoint) && (Number(d.data().order) || 9999) <= 1
+      );
+      if (!alreadyCajonFirst && sameDay.length > 0) {
+        const bump = writeBatch(firestore);
+        sameDay.forEach((d) => {
+          if (isCajonPickupPoint(d.data().pickupPoint)) return;
+          const ord = Number(d.data().order);
+          const dOrd = Number(d.data().deliverOrder);
+          bump.update(d.ref, {
+            order: (Number.isFinite(ord) ? ord : 10) + 1,
+            ...(Number.isFinite(dOrd) ? { deliverOrder: dOrd + 1 } : {}),
+          });
+        });
+        await bump.commit();
+      }
+      tasks.forEach((t) => {
+        if (isCajonPickupPoint(t.pickupPoint)) {
+          t.order = 1;
+          if (t.deliverOrder == null) t.deliverOrder = 50;
+        }
+      });
     }
 
     let { stores, match } = await loadStores();

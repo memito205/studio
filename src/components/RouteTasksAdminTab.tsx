@@ -9,6 +9,7 @@ import { useToast } from '@/hooks/use-toast';
 import { getRouteTasksByRange, markRouteTasksRevalidated, rejectRouteTaskDelivery } from '@/app/routeTaskActions';
 import { ROUTE_TASK_STATUS } from '@/components/RouteTasksAssignView';
 import { deliverOrderOf } from '@/components/DriverRouteTasks';
+import { downloadMessengerRouteExcel } from '@/lib/messengerRouteExcel';
 import type { DriverRouteTask, DriverRouteTaskPhoto, DriverRouteTaskStatus, TransferActor } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -35,6 +36,7 @@ const Photos: React.FC<{ list?: DriverRouteTaskPhoto[] }> = ({ list }) =>
 type StopLine = { task: DriverRouteTask; kind: 'recoger' | 'entregar'; state: 'hecho' | 'novedad' | 'pendiente' | 'bloqueada'; order: number };
 type DriverRoute = {
   key: string;
+  driverId: string;
   driverName: string;
   placa: string;
   day: string;
@@ -95,6 +97,7 @@ function buildDriverRoutes(tasks: DriverRouteTask[]): DriverRoute[] {
         .map((d) => new Date(d as Date).getTime());
       return {
         key,
+        driverId: list[0].driverId,
         driverName: list[0].driverName,
         placa: list[0].placa,
         day: list[0].day,
@@ -273,6 +276,20 @@ export function RouteTasksAdminTab() {
     XLSX.writeFile(wb, `Recolecciones_ruta_${day}.xlsx`);
   };
 
+  /** Misma estructura que el Excel del planificador (FECHA, NUMERO TF, Atributo, Valor, ORDEN, FIRMA). */
+  const exportMessengerRouteExcel = (driverFilter?: { driverId: string; driverName: string; day: string }) => {
+    const list = driverFilter
+      ? (tasks || []).filter((t) => t.driverId === driverFilter.driverId && t.day === driverFilter.day)
+      : visible;
+    const res = downloadMessengerRouteExcel(list, {
+      fileName: driverFilter
+        ? `RUTA_DEL_MENSAJERO_${driverFilter.day}_${driverFilter.driverName.replace(/\s+/g, '_')}.xlsx`
+        : `RUTA_DEL_MENSAJERO_${from === to ? from : `${from}_${to}`}.xlsx`,
+    });
+    if (!res.ok) toast({ variant: 'destructive', title: 'Excel ruta mensajero', description: res.error });
+    else toast({ title: 'Excel ruta mensajero', description: `${res.rows} fila(s) exportadas (incluye plan, cajón, manuales y libres).` });
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -297,9 +314,14 @@ export function RouteTasksAdminTab() {
             />
           )}
           {tasks && tasks.length > 0 && (
-            <Button variant="outline" onClick={exportXlsx}>
-              <Download className="mr-2 h-4 w-4" /> Excel
-            </Button>
+            <>
+              <Button variant="secondary" onClick={() => exportMessengerRouteExcel()}>
+                <Download className="mr-2 h-4 w-4" /> Excel ruta mensajero
+              </Button>
+              <Button variant="outline" onClick={exportXlsx}>
+                <Download className="mr-2 h-4 w-4" /> Excel detalle
+              </Button>
+            </>
           )}
         </div>
         {tasks && (
@@ -363,10 +385,25 @@ export function RouteTasksAdminTab() {
                 </div>
                 {selectedRoute && (
                   <div className="space-y-2 rounded-md border p-3">
-                    <p className="text-sm font-semibold">
-                      Ruta de {selectedRoute.driverName} · {selectedRoute.day}
-                      <span className="ml-2 text-xs font-normal text-muted-foreground">La tabla de abajo quedó filtrada a este mensajero.</span>
-                    </p>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-semibold">
+                        Ruta de {selectedRoute.driverName} · {selectedRoute.day}
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">La tabla de abajo quedó filtrada a este mensajero.</span>
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() =>
+                          exportMessengerRouteExcel({
+                            driverId: selectedRoute.driverId,
+                            driverName: selectedRoute.driverName,
+                            day: selectedRoute.day,
+                          })
+                        }
+                      >
+                        <Download className="mr-1 h-3.5 w-3.5" /> Excel ruta mensajero
+                      </Button>
+                    </div>
                     {selectedRoute.stops.map((s) => (
                       <div key={s.point} className="rounded border p-2">
                         <p className="text-xs font-semibold uppercase text-muted-foreground">
