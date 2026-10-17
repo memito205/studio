@@ -3,10 +3,10 @@
 import React, { useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
-import { Download, Loader2, Search, Undo2 } from 'lucide-react';
+import { CheckCircle2, Download, Loader2, Search, Undo2 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
-import { getRouteTasksByRange, rejectRouteTaskDelivery } from '@/app/routeTaskActions';
+import { getRouteTasksByRange, markRouteTasksRevalidated, rejectRouteTaskDelivery } from '@/app/routeTaskActions';
 import { ROUTE_TASK_STATUS } from '@/components/RouteTasksAssignView';
 import { deliverOrderOf } from '@/components/DriverRouteTasks';
 import type { DriverRouteTask, DriverRouteTaskPhoto, DriverRouteTaskStatus, TransferActor } from '@/types';
@@ -15,6 +15,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { cn } from '@/lib/utils';
 
 const fmt = (d?: Date) => (d ? format(new Date(d), 'dd/MM HH:mm') : '');
 
@@ -148,7 +149,8 @@ export function RouteTasksAdminTab() {
   const [tasks, setTasks] = useState<DriverRouteTask[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<DriverRouteTaskStatus | 'todas'>('todas');
+  const [markingId, setMarkingId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<DriverRouteTaskStatus | 'todas' | 'por_revalidar'>('todas');
   const [routeSel, setRouteSel] = useState<string | null>(null);
   const day = from === to ? from : `${from}_a_${to}`;
 
@@ -188,13 +190,43 @@ export function RouteTasksAdminTab() {
     void load();
   };
 
+  const markReviewed = async (t: DriverRouteTask) => {
+    if (!actor) return;
+    setMarkingId(t.id);
+    const res = await markRouteTasksRevalidated({ taskIds: [t.id], actor });
+    setMarkingId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'No se pudo marcar', description: res.error });
+      return;
+    }
+    toast({ title: 'Revisada', description: 'Ya no aparece en “Por revalidar”.' });
+    void load();
+  };
+
+  const markAllPendingReviewed = async () => {
+    if (!actor) return;
+    const ids = (tasks || []).filter((t) => t.pendingRevalidation).map((t) => t.id);
+    if (!ids.length) return;
+    if (!window.confirm(`¿Marcar ${ids.length} prueba(s) reenviada(s) como revisadas?`)) return;
+    setMarkingId('all');
+    const res = await markRouteTasksRevalidated({ taskIds: ids, actor });
+    setMarkingId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'No se pudo marcar', description: res.error });
+      return;
+    }
+    toast({ title: 'Revisadas', description: `${res.updated || 0} prueba(s) marcadas.` });
+    void load();
+  };
+
   const kpi = useMemo(() => {
     const c: Record<DriverRouteTaskStatus, number> = { por_recoger: 0, por_entregar: 0, entregada: 0, no_recogida: 0, no_entregada: 0, cancelada: 0 };
     (tasks || []).forEach((t) => c[t.status]++);
     const assigned = (tasks || []).filter((t) => t.status !== 'cancelada').length;
     const picked = (tasks || []).filter((t) => !!t.pickedAt).length;
     const withPickup = (tasks || []).filter((t) => !!t.pickupPoint && t.status !== 'cancelada').length;
-    return { c, assigned, picked, withPickup };
+    const pendingRevalidation = (tasks || []).filter((t) => t.pendingRevalidation).length;
+    return { c, assigned, picked, withPickup, pendingRevalidation };
   }, [tasks]);
 
   const routes = useMemo(() => buildDriverRoutes(tasks || []), [tasks]);
@@ -204,7 +236,8 @@ export function RouteTasksAdminTab() {
   const visible = (tasks || []).filter(
     (t) =>
       (!routeSel || routeKey(t) === routeSel) &&
-      (filter === 'todas' || t.status === filter) &&
+      (filter === 'todas' ||
+        (filter === 'por_revalidar' ? !!t.pendingRevalidation : t.status === filter)) &&
       (!needle ||
         [t.numeroTF, t.description, t.refText, t.pickupPoint, t.deliverPoint, t.driverName, t.placa, t.receivedByName, t.notes]
           .some((v) => String(v || '').toUpperCase().includes(needle)))
@@ -227,6 +260,9 @@ export function RouteTasksAdminTab() {
       'Recibió': t.receivedByName || '',
       'TF marcada entregada': t.tfMarkedDelivered ? 'Sí' : '',
       'Dejada en cajón': t.leftInCajon ? 'Sí' : '',
+      'Por revalidar': t.pendingRevalidation ? 'Sí' : '',
+      'Reenviada tras rechazo': fmt(t.resentAfterRejectionAt),
+      'Motivo rechazo': t.lastRejection?.note || '',
       'Distancia (m)': t.distanceM ?? '',
       Motivo: t.failReason || '',
       Unidades: t.unidades,
@@ -242,7 +278,7 @@ export function RouteTasksAdminTab() {
       <CardHeader>
         <CardTitle>Recolecciones de ruta</CardTitle>
         <CardDescription>
-          Progreso y fotos del mensajero. Use Rechazar si la prueba de entrega quedó mal: vuelve a Mis entregas y no podrá montar ruta de un día nuevo mientras tenga pendientes de días anteriores.
+          Rechazar → el mensajero reenvía → aparece en <strong>Por revalidar</strong> para revisar solo esas. Mientras tenga día anterior abierto no se monta ruta nueva.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -350,8 +386,18 @@ export function RouteTasksAdminTab() {
                 )}
               </div>
             )}
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Badge variant={filter === 'todas' ? 'default' : 'outline'} className="cursor-pointer" onClick={() => setFilter('todas')}>Todas ({tasks.length})</Badge>
+              <Badge
+                variant="outline"
+                className={cn(
+                  'cursor-pointer',
+                  filter === 'por_revalidar' ? 'bg-violet-600 text-white' : 'border-violet-400 text-violet-800'
+                )}
+                onClick={() => setFilter('por_revalidar')}
+              >
+                Por revalidar ({kpi.pendingRevalidation})
+              </Badge>
               {(Object.keys(ROUTE_TASK_STATUS) as DriverRouteTaskStatus[]).map((s) => (
                 <Badge
                   key={s}
@@ -362,7 +408,24 @@ export function RouteTasksAdminTab() {
                   {ROUTE_TASK_STATUS[s].label} ({kpi.c[s]})
                 </Badge>
               ))}
+              {kpi.pendingRevalidation > 0 && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="ml-auto"
+                  disabled={markingId === 'all' || !actor}
+                  onClick={() => void markAllPendingReviewed()}
+                >
+                  {markingId === 'all' ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="mr-1 h-3.5 w-3.5" />}
+                  Marcar todas revisadas
+                </Button>
+              )}
             </div>
+            {filter === 'por_revalidar' && (
+              <p className="text-xs text-violet-800">
+                Solo pruebas que el mensajero envió de nuevo después de un rechazo. Revise fotos y marque “Revisada”.
+              </p>
+            )}
             <div className="max-h-[60vh] overflow-auto rounded-md border">
               <Table>
                 <TableHeader>
@@ -383,13 +446,16 @@ export function RouteTasksAdminTab() {
                     <TableRow><TableCell colSpan={9} className="h-16 text-center text-muted-foreground">Sin tareas.</TableCell></TableRow>
                   ) : (
                     visible.map((t) => (
-                      <TableRow key={t.id}>
+                      <TableRow key={t.id} className={cn(t.pendingRevalidation && 'bg-violet-50')}>
                         <TableCell className="font-medium">
                           {t.kind === 'libre' ? t.description : t.numeroTF}
                           <span className="block text-xs text-muted-foreground">
                             {t.kind === 'libre' ? `Sin TF · ${t.numeroTF}` : `${t.unidades} und`}
                             {from !== to ? ` · ${t.day}` : ''}
                           </span>
+                          {t.pendingRevalidation && (
+                            <Badge className="mt-1 bg-violet-600 text-white">Reenviada · por validar</Badge>
+                          )}
                         </TableCell>
                         <TableCell>{t.driverName}<span className="block text-xs text-muted-foreground">{t.placa}</span></TableCell>
                         <TableCell>{t.pickupPoint || '—'}</TableCell>
@@ -401,6 +467,9 @@ export function RouteTasksAdminTab() {
                         </TableCell>
                         <TableCell className="text-xs">
                           {fmt(t.deliveredAt)}
+                          {t.resentAfterRejectionAt && (
+                            <span className="block font-medium text-violet-800">Reenviada {fmt(t.resentAfterRejectionAt)}</span>
+                          )}
                           {t.receivedByName && <span className="block">Recibió: {t.receivedByName}</span>}
                           {typeof t.distanceM === 'number' && <span className="block text-muted-foreground">a {t.distanceM} m</span>}
                           {t.tfMarkedDelivered && <span className="block text-green-700">TF entregada en plataforma</span>}
@@ -411,18 +480,40 @@ export function RouteTasksAdminTab() {
                           {t.failReason ? `${t.failReason}${t.failedByName ? ` (${t.failedByName})` : ''}` : t.notes || ''}
                           {t.lastRejection && (
                             <span className="mt-1 block text-red-700">
-                              Rechazada: {t.lastRejection.note}
+                              Rechazo previo: {t.lastRejection.note}
                               {t.lastRejection.byName ? ` (${t.lastRejection.byName})` : ''}
+                            </span>
+                          )}
+                          {t.revalidatedAt && (
+                            <span className="mt-1 block text-green-700">
+                              Revisada {fmt(t.revalidatedAt)}
+                              {t.revalidatedByName ? ` · ${t.revalidatedByName}` : ''}
                             </span>
                           )}
                           {t.reassignedTo && <span className="block">Reasignada</span>}
                         </TableCell>
-                        <TableCell className="text-right">
+                        <TableCell className="space-y-1 text-right">
+                          {t.pendingRevalidation && (
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              className="w-full"
+                              disabled={markingId === t.id || !actor}
+                              onClick={() => void markReviewed(t)}
+                            >
+                              {markingId === t.id ? (
+                                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                              )}
+                              Revisada
+                            </Button>
+                          )}
                           {REJECTABLE.includes(t.status) && (
                             <Button
                               size="sm"
                               variant="outline"
-                              className="text-red-700"
+                              className="w-full text-red-700"
                               disabled={rejectingId === t.id || !actor}
                               onClick={() => void rejectTask(t)}
                             >

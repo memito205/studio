@@ -635,11 +635,18 @@ export async function submitRouteTasks(
         ? { lat: input.gps.lat, lng: input.gps.lng, accuracyM: input.gps.accuracyM, at: Timestamp.fromDate(new Date(input.gps.at)) }
         : null;
       const photos = input.photos.map((p) => clean({ path: p.path, url: p.url, category: p.category }));
-      const closeKeys = { driverOpen: deleteField(), openKey: deleteField(), lastRejection: deleteField() };
+      const closeKeys = { driverOpen: deleteField(), openKey: deleteField() };
+      /** Si venía de un rechazo, al reenviar queda marcada para que el admin la revise. */
+      const revalidationOnClose = (t: DriverRouteTask, raw: DocumentData) => {
+        const hadRejection = !!t.lastRejection || (Array.isArray(raw.rejections) && raw.rejections.length > 0);
+        return hadRejection
+          ? { pendingRevalidation: true, resentAfterRejectionAt: now, revalidatedAt: deleteField(), revalidatedByName: deleteField() }
+          : {};
+      };
 
       if (action === 'cajon') {
         if (photos.length === 0) throw new Error('Tome la foto de la mercancía en el cajón.');
-        tasks.forEach(({ ref, t }) => {
+        tasks.forEach(({ ref, t, raw }) => {
           if (t.kind !== 'libre') {
             (t.transferIds || []).forEach((id) => {
               const s = lineById.get(id);
@@ -673,6 +680,7 @@ export async function submitRouteTasks(
             deliveryNotes: String(input.notes || '').trim() || undefined,
             tfMarkedDelivered: false,
             lastSubmissionId: submissionId,
+            ...revalidationOnClose(t, raw),
             ...closeKeys,
           }));
         });
@@ -687,7 +695,7 @@ export async function submitRouteTasks(
 
         if (messenger) {
           // Mensajero: no entrega → Cajón (nunca Novedad / Validado Supervisor / Entregado en Ruta).
-          tasks.forEach(({ ref, t }) => {
+          tasks.forEach(({ ref, t, raw }) => {
             if (t.kind !== 'libre') {
               (t.transferIds || []).forEach((id) => {
                 const s = lineById.get(id);
@@ -730,6 +738,7 @@ export async function submitRouteTasks(
               deliveryNotes: String(input.notes || '').trim() || undefined,
               tfMarkedDelivered: false,
               lastSubmissionId: submissionId,
+              ...revalidationOnClose(t, raw),
               ...closeKeys,
             }));
           });
@@ -792,7 +801,7 @@ export async function submitRouteTasks(
       }
 
       if (action === 'no_recoger' || action === 'no_entregar') {
-        tasks.forEach(({ ref }) =>
+        tasks.forEach(({ ref, t, raw }) =>
           tx.update(ref, clean({
             status: action === 'no_recoger' ? 'no_recogida' : 'no_entregada',
             failedAt: now,
@@ -803,6 +812,7 @@ export async function submitRouteTasks(
             failPhotos: photos.length ? photos : undefined,
             failGps: gps,
             lastSubmissionId: submissionId,
+            ...revalidationOnClose(t, raw),
             ...closeKeys,
           }))
         );
@@ -860,7 +870,7 @@ export async function submitRouteTasks(
       }
 
       // entregar
-      tasks.forEach(({ ref, t }) => {
+      tasks.forEach(({ ref, t, raw }) => {
         const store = t.deliverStoreCode ? match(t.deliverStoreCode) : match(t.deliverPoint);
         const distanceM =
           gps && store && typeof store.latitud === 'number' && typeof store.longitud === 'number'
@@ -921,6 +931,7 @@ export async function submitRouteTasks(
           distanceM,
           tfMarkedDelivered: marked,
           lastSubmissionId: submissionId,
+          ...revalidationOnClose(t, raw),
           ...closeKeys,
         }));
       });
@@ -1098,6 +1109,10 @@ export async function rejectRouteTaskDelivery(input: {
             failPhotos: deleteField(),
             failGps: deleteField(),
             lastSubmissionId: deleteField(),
+            pendingRevalidation: deleteField(),
+            resentAfterRejectionAt: deleteField(),
+            revalidatedAt: deleteField(),
+            revalidatedByName: deleteField(),
             ...(reopenStatus === 'por_recoger'
               ? {
                   pickedAt: deleteField(),
@@ -1157,6 +1172,42 @@ export async function rejectRouteTaskDelivery(input: {
   } catch (error: any) {
     console.error('rejectRouteTaskDelivery:', error);
     return { success: false, error: error.message || 'No se pudo rechazar la entrega.' };
+  }
+}
+
+/** Marca como revisadas las pruebas reenviadas tras un rechazo (quita del filtro Por revalidar). */
+export async function markRouteTasksRevalidated(input: {
+  taskIds: string[];
+  actor: TransferActor;
+}): Promise<{ success: boolean; updated?: number; error?: string }> {
+  const { actor } = input;
+  if (!actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  const ids = Array.from(new Set((input.taskIds || []).filter(Boolean)));
+  if (!ids.length) return { success: false, error: 'No hay tareas seleccionadas.' };
+  try {
+    const now = Timestamp.now();
+    const actorName = actorNameOf(actor);
+    let updated = 0;
+    for (let i = 0; i < ids.length; i += 400) {
+      const batch = writeBatch(firestore);
+      const chunk = ids.slice(i, i + 400);
+      const snaps = await Promise.all(chunk.map((id) => getDoc(doc(firestore, TASKS, id))));
+      let batchCount = 0;
+      snaps.forEach((s) => {
+        if (!s.exists() || !s.data()?.pendingRevalidation) return;
+        batchCount++;
+        updated++;
+        batch.update(s.ref, {
+          pendingRevalidation: deleteField(),
+          revalidatedAt: now,
+          revalidatedByName: actorName,
+        });
+      });
+      if (batchCount > 0) await batch.commit();
+    }
+    return { success: true, updated };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'No se pudieron marcar como revisadas.' };
   }
 }
 

@@ -762,6 +762,14 @@ export interface DriverRouteTask {
         };
       }
     >;
+    /**
+     * Tras un rechazo, el mensajero volvió a enviar la prueba: el admin debe revisarla.
+     * Filtro "Por revalidar" en Recolecciones de ruta.
+     */
+    pendingRevalidation?: boolean;
+    resentAfterRejectionAt?: Date;
+    revalidatedAt?: Date;
+    revalidatedByName?: string;
     reassignedFrom?: string;
     reassignedTo?: string;
 }
