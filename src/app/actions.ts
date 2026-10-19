@@ -1021,6 +1021,160 @@ export async function updateOrderStatus(
     }
 }
 
+/** Estados en los que se puede eliminar o dar por cumplido (limpia packedItems/sesión/etiquetas). */
+const WHOLESALE_PURGEABLE_STATUSES: ReadonlySet<OrderStatus> = new Set(['Pte Empaque', 'En Empaque', 'Empacado']);
+
+const cleanForHistory = (data: Record<string, unknown>) => {
+  const out: Record<string, unknown> = {};
+  Object.entries(data).forEach(([k, v]) => {
+    if (v !== undefined) out[k] = v;
+  });
+  return out;
+};
+
+function wholesaleFechaToIso(raw: unknown): string {
+  if (!raw) return '';
+  if (raw instanceof Timestamp) return raw.toDate().toISOString();
+  if (typeof (raw as { toDate?: () => Date }).toDate === 'function') {
+    try {
+      return (raw as { toDate: () => Date }).toDate().toISOString();
+    } catch {
+      /* fall through */
+    }
+  }
+  if (typeof raw === 'string') return raw;
+  return String(raw);
+}
+
+async function deleteQueryInBatches(
+  q: ReturnType<typeof query>,
+  chunkSize = 400
+): Promise<number> {
+  let deleted = 0;
+  // Repite mientras queden docs (lotes de 400 escrituras).
+  for (;;) {
+    const snap = await getDocs(q);
+    if (snap.empty) break;
+    for (let i = 0; i < snap.docs.length; i += chunkSize) {
+      const batch = writeBatch(firestore);
+      const chunk = snap.docs.slice(i, i + chunkSize);
+      chunk.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+      deleted += chunk.length;
+    }
+    if (snap.docs.length < 500) break;
+  }
+  return deleted;
+}
+
+/**
+ * Elimina o da por cumplido un pedido (solo hasta Empacado).
+ * Borra packedItems, packingSessions, etiquetas VXM y snapshots de reportes.
+ * Deja una línea en `wholesaleOrderHistory`.
+ */
+export async function purgeWholesaleOrder(input: {
+  orderId: string;
+  action: 'eliminado' | 'cumplido';
+  actor: { userId: string; displayName?: string };
+  note?: string;
+}): Promise<{
+  success: boolean;
+  deleted?: { packedItems: number; labels: number; snapshots: number };
+  error?: string;
+}> {
+  const orderId = String(input.orderId || '').trim();
+  if (!orderId) return { success: false, error: 'Pedido inválido.' };
+  if (!input.actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  if (input.action !== 'eliminado' && input.action !== 'cumplido') {
+    return { success: false, error: 'Acción inválida.' };
+  }
+
+  try {
+    const orderRef = doc(firestore, 'wholesaleOrders', orderId);
+    const orderSnap = await getDoc(orderRef);
+    if (!orderSnap.exists()) return { success: false, error: 'El pedido ya no existe.' };
+    const order = orderSnap.data() as WholesaleOrder & { fecha?: unknown };
+    const status = (order.status || 'Pte Empaque') as OrderStatus;
+    if (!WHOLESALE_PURGEABLE_STATUSES.has(status)) {
+      return {
+        success: false,
+        error: `Solo se puede ${input.action === 'cumplido' ? 'dar por cumplido' : 'eliminar'} hasta Empacado (ahora: ${status}).`,
+      };
+    }
+
+    const packedQ = query(collection(firestore, 'packedItems'), where('orderId', '==', orderId), limit(500));
+    const labelsQ = query(collection(firestore, 'preprintedLabels'), where('orderId', '==', orderId), limit(500));
+    const packedItems = await deleteQueryInBatches(packedQ);
+    const labels = await deleteQueryInBatches(labelsQ);
+
+    const { wholesaleReportSnapshotDocId, WHOLESALE_REPORT_SNAPSHOTS_COL } = await import(
+      '@/lib/wholesaleReportSnapshots'
+    );
+    const snapIds = (['pedidoVsLeido', 'boxAudit', 'cargueProgress'] as const).map((t) =>
+      wholesaleReportSnapshotDocId(orderId, t)
+    );
+    let snapshots = 0;
+    const snapBatch = writeBatch(firestore);
+    for (const sid of snapIds) {
+      const sref = doc(firestore, WHOLESALE_REPORT_SNAPSHOTS_COL, sid);
+      const s = await getDoc(sref);
+      if (s.exists()) {
+        snapBatch.delete(sref);
+        snapshots++;
+      }
+    }
+    if (snapshots > 0) await snapBatch.commit();
+
+    const sessionRef = doc(firestore, 'packingSessions', orderId);
+    const sessionSnap = await getDoc(sessionRef);
+    if (sessionSnap.exists()) await deleteDoc(sessionRef);
+
+    // Historial mínimo (1 doc) antes de borrar el pedido.
+    const historyRef = doc(collection(firestore, 'wholesaleOrderHistory'));
+    await setDoc(historyRef, cleanForHistory({
+      orderId,
+      action: input.action,
+      previousStatus: status,
+      cliente: order.cliente || '',
+      fechaPedido: wholesaleFechaToIso(order.fecha),
+      cantidadTotal: Number(order.cantidadTotal || 0),
+      packedUnits: Number(order.packingData?.packedUnits || 0),
+      at: Timestamp.now(),
+      byId: input.actor.userId,
+      byName: (input.actor.displayName || '').trim() || input.actor.userId,
+      note: String(input.note || '').trim() || undefined,
+    }));
+
+    await deleteDoc(orderRef);
+
+    return { success: true, deleted: { packedItems, labels, snapshots } };
+  } catch (error: any) {
+    console.error('purgeWholesaleOrder:', error);
+    return { success: false, error: error?.message || 'No se pudo limpiar el pedido.' };
+  }
+}
+
+/** Últimas limpiezas de pedidos (eliminar / cumplido). 1 query con limit. */
+export async function listWholesaleOrderHistory(limitN = 80): Promise<{
+  data?: import('@/types').WholesaleOrderHistoryEntry[];
+  error?: string;
+}> {
+  try {
+    const n = Math.min(Math.max(limitN, 1), 200);
+    const snap = await getDocs(
+      query(collection(firestore, 'wholesaleOrderHistory'), orderBy('at', 'desc'), limit(n))
+    );
+    const data = snap.docs.map((d) => {
+      const raw = convertTimestampsToDates({ id: d.id, ...d.data() }) as import('@/types').WholesaleOrderHistoryEntry;
+      return raw;
+    });
+    return { data };
+  } catch (error: any) {
+    console.error('listWholesaleOrderHistory:', error);
+    return { error: error?.message || 'No se pudo cargar el historial.' };
+  }
+}
+
 export type SyncWholesalePackingOpts = {
   /** Fuerza releer todos los packedItems (auditoría / corrección). */
   forceFullRecount?: boolean;

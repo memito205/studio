@@ -5,15 +5,15 @@ import React, { useEffect, useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { UploadCloud, Loader2, PackageCheck, ArrowLeft, Database, Boxes, BarChart2, Printer, Send, Lock, Compass, Download, FileSearch, RotateCcw, Truck, RefreshCw } from 'lucide-react';
+import { UploadCloud, Loader2, PackageCheck, ArrowLeft, Database, Boxes, BarChart2, Printer, Send, Lock, Compass, Download, FileSearch, RotateCcw, Truck, RefreshCw, Trash2, CheckCircle2, History } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { WholesaleOrder, WholesaleOrderDetail, OrderStatus, ProductDatabaseItem, PackingSession, PreprintedLabel, PackedItem, OperationPulse } from '@/types';
-import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, generateAndSaveLabels, addSingleLabel, loadAllPackingSessions, backfillWholesalePackingData, getPackedItemsForDate, getUserPulsesForDay, getGlobalPulsesForDay, loadOperatorMappings } from '@/app/actions';
+import { WholesaleOrder, WholesaleOrderDetail, OrderStatus, ProductDatabaseItem, PackingSession, PreprintedLabel, PackedItem, OperationPulse, WholesaleOrderHistoryEntry } from '@/types';
+import { processAndSaveWholesaleFile, saveProductDatabaseItems, updateOrderStatus, generateAndSaveLabels, addSingleLabel, loadAllPackingSessions, backfillWholesalePackingData, getPackedItemsForDate, getUserPulsesForDay, getGlobalPulsesForDay, loadOperatorMappings, purgeWholesaleOrder, listWholesaleOrderHistory } from '@/app/actions';
 import {
   getOrBuildBoxAuditReport,
   getOrBuildCargueProgressReport,
@@ -65,8 +65,9 @@ const OrderTable: React.FC<{
   onDownloadCargueReport: (order: WholesaleOrder, opts?: { forceRegenerate?: boolean }) => void;
   onRegeneratePackingSnapshots: (order: WholesaleOrder) => void;
   onRegenerateCargueSnapshot: (order: WholesaleOrder) => void;
+  onPurgeOrder: (order: WholesaleOrder, action: 'eliminado' | 'cumplido') => void;
   role: string | null;
-}> = ({ orders, sessions, allPackedItems, selectedOrders, onOrderSelect, onStartPacking, onOpenPrintDialog, onForceCloseOrder, onOpenAuditDialog, onDownloadComparisonReport, onDownloadBoxAuditReport, onForceDispatchOrder, onOpenCargueProgress, onDownloadCargueReport, onRegeneratePackingSnapshots, onRegenerateCargueSnapshot, role }) => {
+}> = ({ orders, sessions, allPackedItems, selectedOrders, onOrderSelect, onStartPacking, onOpenPrintDialog, onForceCloseOrder, onOpenAuditDialog, onDownloadComparisonReport, onDownloadBoxAuditReport, onForceDispatchOrder, onOpenCargueProgress, onDownloadCargueReport, onRegeneratePackingSnapshots, onRegenerateCargueSnapshot, onPurgeOrder, role }) => {
     
   if (orders.length === 0) {
     return <p className="text-muted-foreground text-center py-8">No hay pedidos en esta etapa.</p>;
@@ -138,6 +139,61 @@ const OrderTable: React.FC<{
                            </div>
                         </TableCell>
                         <TableCell className="text-center space-x-2">
+                             {(role === 'admin' || role === 'supervisor') &&
+                              (order.status === 'Pte Empaque' || order.status === 'En Empaque' || order.status === 'Empacado') && (
+                                <>
+                                  <AlertDialog>
+                                    <AlertDialogTrigger asChild>
+                                      <Button size="sm" variant="destructive" className="mr-2">
+                                        <Trash2 className="mr-2 h-4 w-4" />
+                                        Eliminar
+                                      </Button>
+                                    </AlertDialogTrigger>
+                                    <AlertDialogContent>
+                                      <AlertDialogHeader>
+                                        <AlertDialogTitle>¿Eliminar pedido {order.id}?</AlertDialogTitle>
+                                        <AlertDialogDescription>
+                                          Se borrarán lecturas, etiquetas y sesión de empaque. Solo quedará una línea en el historial con la fecha. Esta acción no se puede deshacer.
+                                        </AlertDialogDescription>
+                                      </AlertDialogHeader>
+                                      <AlertDialogFooter>
+                                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                        <AlertDialogAction
+                                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                          onClick={() => onPurgeOrder(order, 'eliminado')}
+                                        >
+                                          Sí, eliminar
+                                        </AlertDialogAction>
+                                      </AlertDialogFooter>
+                                    </AlertDialogContent>
+                                  </AlertDialog>
+                                  <AlertDialog>
+                                    <AlertDialogTrigger asChild>
+                                      <Button size="sm" variant="outline" className="mr-2 border-emerald-300 text-emerald-800 hover:bg-emerald-50">
+                                        <CheckCircle2 className="mr-2 h-4 w-4" />
+                                        Dar por cumplido
+                                      </Button>
+                                    </AlertDialogTrigger>
+                                    <AlertDialogContent>
+                                      <AlertDialogHeader>
+                                        <AlertDialogTitle>¿Dar por cumplido {order.id}?</AlertDialogTitle>
+                                        <AlertDialogDescription>
+                                          Se limpia todo el detalle del pedido en la base de datos (igual que eliminar) y queda solo el registro en historial como cumplido.
+                                        </AlertDialogDescription>
+                                      </AlertDialogHeader>
+                                      <AlertDialogFooter>
+                                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                        <AlertDialogAction
+                                          className="bg-emerald-600 hover:bg-emerald-700"
+                                          onClick={() => onPurgeOrder(order, 'cumplido')}
+                                        >
+                                          Sí, cumplido
+                                        </AlertDialogAction>
+                                      </AlertDialogFooter>
+                                    </AlertDialogContent>
+                                  </AlertDialog>
+                                </>
+                              )}
                              {order.status === 'En Empaque' && (role === 'admin' || role === 'supervisor') && (
                                 <AlertDialog>
                                     <AlertDialogTrigger asChild>
@@ -291,8 +347,11 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
   const [orderForCargue, setOrderForCargue] = useState<WholesaleOrder | null>(null);
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [isProductivityDialogOpen, setIsProductivityDialogOpen] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [historyRows, setHistoryRows] = useState<WholesaleOrderHistoryEntry[]>([]);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
 
-  const { role } = useAuth();
+  const { role, user, userName } = useAuth();
   const { toast } = useToast();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   
@@ -502,6 +561,51 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
     }
   };
 
+  const handlePurgeOrder = async (order: WholesaleOrder, action: 'eliminado' | 'cumplido') => {
+    if (!user?.uid) {
+      toast({ variant: 'destructive', title: 'Sesión', description: 'Debes iniciar sesión para esta acción.' });
+      return;
+    }
+    setIsProcessing(true);
+    try {
+      const result = await purgeWholesaleOrder({
+        orderId: order.id,
+        action,
+        actor: { userId: user.uid, displayName: userName || user.email || undefined },
+      });
+      if (!result.success) {
+        toast({ variant: 'destructive', title: 'Error', description: result.error || 'No se pudo completar.' });
+        return;
+      }
+      const d = result.deleted;
+      toast({
+        title: action === 'cumplido' ? 'Pedido dado por cumplido' : 'Pedido eliminado',
+        description: `${order.id}: se limpió el detalle${d ? ` (${d.packedItems} lecturas, ${d.labels} etiquetas)` : ''}. Queda en historial.`,
+      });
+      fetchOrders();
+    } catch (error: any) {
+      toast({ variant: 'destructive', title: 'Error', description: error?.message || 'No se pudo limpiar el pedido.' });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleOpenHistory = async () => {
+    setIsHistoryOpen(true);
+    setIsHistoryLoading(true);
+    try {
+      const res = await listWholesaleOrderHistory(80);
+      if (res.error) {
+        toast({ variant: 'destructive', title: 'Historial', description: res.error });
+        setHistoryRows([]);
+      } else {
+        setHistoryRows(res.data || []);
+      }
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  };
+
   const handleForceDispatch = async (order: WholesaleOrder) => {
     setIsProcessing(true);
     try {
@@ -692,6 +796,59 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
             initialPackedItems={[]}
         />
       )}
+      <Dialog open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Historial de limpiezas</DialogTitle>
+            <DialogDescription>
+              Pedidos eliminados o dados por cumplido (solo queda esta línea; el detalle ya no está en la base).
+            </DialogDescription>
+          </DialogHeader>
+          {isHistoryLoading ? (
+            <div className="flex justify-center py-10">
+              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            </div>
+          ) : historyRows.length === 0 ? (
+            <p className="text-muted-foreground text-center py-8">Sin registros aún.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Fecha</TableHead>
+                  <TableHead>Pedido</TableHead>
+                  <TableHead>Acción</TableHead>
+                  <TableHead>Cliente</TableHead>
+                  <TableHead>Estado previo</TableHead>
+                  <TableHead>Por</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {historyRows.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell>
+                      {row.at
+                        ? new Date(row.at).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' })
+                        : '—'}
+                    </TableCell>
+                    <TableCell className="font-medium">{row.orderId}</TableCell>
+                    <TableCell>
+                      <Badge variant={row.action === 'eliminado' ? 'destructive' : 'success'}>
+                        {row.action === 'eliminado' ? 'Eliminado' : 'Cumplido'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>{row.cliente || '—'}</TableCell>
+                    <TableCell>{row.previousStatus || '—'}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{row.byName || '—'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsHistoryOpen(false)}>Cerrar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <div className="flex justify-between items-center flex-wrap gap-4">
           <div className="flex-1">
               <h1 className="text-2xl font-bold">Módulo de Ventas por Mayor</h1>
@@ -716,6 +873,10 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
                     <Button onClick={() => setIsProductivityDialogOpen(true)} variant="outline" className="bg-primary/5 border-primary/20 hover:bg-primary/10">
                         <BarChart2 className="mr-2 h-4 w-4" />
                         Reporte de Productividad
+                    </Button>
+                    <Button onClick={() => void handleOpenHistory()} variant="outline">
+                        <History className="mr-2 h-4 w-4" />
+                        Historial limpiezas
                     </Button>
                     <Button onClick={onNavigateToDispatchDashboard} className="bg-amber-600 hover:bg-amber-700 text-white">
                         <Truck className="mr-2 h-4 w-4" />
@@ -758,22 +919,22 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
                 <TabsTrigger value="Cancelado">Cancelado ({ordersByStatus['Cancelado']?.length || 0})</TabsTrigger>
               </TabsList>
               <TabsContent value="Pte Empaque" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Pte Empaque'] || []} sessions={new Map()} allPackedItems={[]} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} role={role} />
+                  <OrderTable orders={ordersByStatus['Pte Empaque'] || []} sessions={new Map()} allPackedItems={[]} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} onPurgeOrder={handlePurgeOrder} role={role} />
               </TabsContent>
               <TabsContent value="En Empaque" className="mt-4">
-                  <OrderTable orders={ordersByStatus['En Empaque'] || []} sessions={new Map()} allPackedItems={[]} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} role={role} />
+                  <OrderTable orders={ordersByStatus['En Empaque'] || []} sessions={new Map()} allPackedItems={[]} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} onPurgeOrder={handlePurgeOrder} role={role} />
               </TabsContent>
               <TabsContent value="Empacado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Empacado'] || []} sessions={new Map()} allPackedItems={[]} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} role={role} />
+                  <OrderTable orders={ordersByStatus['Empacado'] || []} sessions={new Map()} allPackedItems={[]} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} onPurgeOrder={handlePurgeOrder} role={role} />
               </TabsContent>
               <TabsContent value="En Cargue" className="mt-4">
-                  <OrderTable orders={ordersByStatus['En Cargue'] || []} sessions={new Map()} allPackedItems={[]} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} role={role} />
+                  <OrderTable orders={ordersByStatus['En Cargue'] || []} sessions={new Map()} allPackedItems={[]} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} onPurgeOrder={handlePurgeOrder} role={role} />
               </TabsContent>
               <TabsContent value="Despachado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Despachado'] || []} sessions={new Map()} allPackedItems={[]} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} role={role} />
+                  <OrderTable orders={ordersByStatus['Despachado'] || []} sessions={new Map()} allPackedItems={[]} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} onPurgeOrder={handlePurgeOrder} role={role} />
               </TabsContent>
                <TabsContent value="Cancelado" className="mt-4">
-                  <OrderTable orders={ordersByStatus['Cancelado'] || []} sessions={new Map()} allPackedItems={[]} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} role={role} />
+                  <OrderTable orders={ordersByStatus['Cancelado'] || []} sessions={new Map()} allPackedItems={[]} selectedOrders={selectedOrders} onOrderSelect={handleOrderSelect} onStartPacking={onStartPacking} onOpenPrintDialog={handleOpenPrintDialog} onForceCloseOrder={handleForceClose} onOpenAuditDialog={handleOpenAuditDialog} onDownloadComparisonReport={handleDownloadComparisonReport} onDownloadBoxAuditReport={handleDownloadBoxAuditReport} onForceDispatchOrder={handleForceDispatch} onOpenCargueProgress={handleOpenCargueProgress} onDownloadCargueReport={handleDownloadCargueReport} onRegeneratePackingSnapshots={handleRegeneratePackingSnapshots} onRegenerateCargueSnapshot={handleRegenerateCargueSnapshot} onPurgeOrder={handlePurgeOrder} role={role} />
               </TabsContent>
             </Tabs>
           )}

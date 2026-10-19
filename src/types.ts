@@ -872,6 +872,23 @@ export interface WarehouseLocationConfig {
 export type OrderStatus = 'Pte Empaque' | 'En Empaque' | 'Empacado' | 'En Cargue' | 'Despachado' | 'Cancelado';
 export type ProductCategory = 'CALZADO' | 'ROPA' | 'ACCESORIOS' | 'NO CLASIFICADO';
 
+/** Historial corto tras eliminar / dar por cumplido un pedido mayorista (se borra el detalle). */
+export type WholesaleOrderHistoryAction = 'eliminado' | 'cumplido';
+export interface WholesaleOrderHistoryEntry {
+  id: string;
+  orderId: string;
+  action: WholesaleOrderHistoryAction;
+  previousStatus: OrderStatus | string;
+  cliente?: string;
+  fechaPedido?: string;
+  cantidadTotal?: number;
+  packedUnits?: number;
+  at: Date;
+  byId?: string;
+  byName?: string;
+  note?: string;
+}
+
 export interface RemisionEntry {
   orden: string;
   unidadDeEmpaque: string;
