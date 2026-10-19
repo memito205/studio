@@ -7343,18 +7343,148 @@ export async function getTransferTraceability(
 
         const manifestId = await resolveTransferManifestId(lines);
 
+        // Unifica handoff (camión) desde cualquier línea que lo tenga.
+        const withHandoff = lines.find((l) => l.handoffAt || (l.handoffPhotos && l.handoffPhotos.length > 0)) || primary;
+
         return {
             success: true,
             data: {
                 ...primary,
                 ...(manifestId ? { manifestId } : {}),
                 statusHistory: mergedHistory.length > 0 ? mergedHistory : primary.statusHistory,
+                handoffAt: withHandoff.handoffAt || primary.handoffAt,
+                handoffBy: withHandoff.handoffBy || primary.handoffBy,
+                handoffByName: withHandoff.handoffByName || primary.handoffByName,
+                handoffReceivedByName: withHandoff.handoffReceivedByName || primary.handoffReceivedByName,
+                handoffManifestDocId: withHandoff.handoffManifestDocId || primary.handoffManifestDocId,
+                handoffStopId: withHandoff.handoffStopId || primary.handoffStopId,
+                handoffPhotos: withHandoff.handoffPhotos || primary.handoffPhotos,
+                lastMileMessengerUserId: withHandoff.lastMileMessengerUserId || primary.lastMileMessengerUserId,
             },
         };
     } catch (error: any) {
         console.error('Error loading transfer traceability:', error);
         return { success: false, error: error.message };
     }
+}
+
+/** Pruebas unificadas: handoff camión→mensajero + remisión en tienda (ruta mensajero o parada POD). */
+export type TransferDeliveryProofLeg = {
+  kind: 'handoff' | 'tienda';
+  at?: Date | null;
+  byName?: string | null;
+  receivedByName?: string | null;
+  photos: Array<{ url: string; category?: string }>;
+  label: string;
+  detail?: string;
+};
+
+export async function getTransferDeliveryProofs(
+  transferIds: string[]
+): Promise<{ success: boolean; data?: TransferDeliveryProofLeg[]; error?: string }> {
+  try {
+    const ids = Array.from(new Set((transferIds || []).map(String).filter(Boolean)));
+    if (ids.length === 0) return { success: false, error: 'Sin líneas.' };
+
+    const linesRes = await getTransfersByIds(ids);
+    if (!linesRes.success || !linesRes.data?.length) {
+      return { success: false, error: linesRes.error || 'TF no encontrada.' };
+    }
+    const lines = linesRes.data;
+    const legs: TransferDeliveryProofLeg[] = [];
+
+    const handoffLine = lines.find((l) => l.handoffAt || (l.handoffPhotos && l.handoffPhotos.length > 0));
+    if (handoffLine) {
+      legs.push({
+        kind: 'handoff',
+        at: handoffLine.handoffAt || null,
+        byName: handoffLine.handoffByName || null,
+        receivedByName: handoffLine.handoffReceivedByName || null,
+        photos: (handoffLine.handoffPhotos || [])
+          .map((p) => ({ url: String(p.url || ''), category: p.category }))
+          .filter((p) => p.url),
+        label: '1. Intercambio camión → mensajero',
+        detail: handoffLine.manifestId
+          ? `Relación #${handoffLine.manifestId}`
+          : handoffLine.handoffManifestDocId
+            ? 'Relación de handoff'
+            : undefined,
+      });
+    }
+
+    // Remisión en tienda: tareas de ruta del mensajero que incluyan alguna línea.
+    const storePhotos: Array<{ url: string; category?: string }> = [];
+    let storeAt: Date | null = null;
+    let storeBy: string | null = null;
+    let storeReceived: string | null = null;
+    let storeDetail: string | undefined;
+    for (const id of ids.slice(0, 10)) {
+      const snap = await getDocs(
+        query(collection(firestore, 'routeTasks'), where('transferIds', 'array-contains', id), limit(8))
+      );
+      snap.docs.forEach((d) => {
+        const t = convertTimestampsToDates(d.data()) as any;
+        if (!['entregada', 'no_entregada'].includes(String(t.status || ''))) return;
+        if (t.leftInCajon || t.leftInBodega) return;
+        const photos = Array.isArray(t.deliveryPhotos) ? t.deliveryPhotos : [];
+        photos.forEach((p: any) => {
+          const url = String(p?.url || '');
+          if (url && !storePhotos.some((x) => x.url === url)) {
+            storePhotos.push({ url, category: p.category });
+          }
+        });
+        const at = t.deliveredAt instanceof Date ? t.deliveredAt : t.deliveredAt ? new Date(t.deliveredAt) : null;
+        if (at && (!storeAt || at > storeAt)) {
+          storeAt = at;
+          storeBy = t.deliveredByName || null;
+          storeReceived = t.receivedByName || null;
+          storeDetail = t.deliverPoint ? `Destino ${t.deliverPoint}` : undefined;
+        }
+      });
+    }
+
+    // Fallback: parada POD de tienda (relación sin última milla).
+    if (storePhotos.length === 0) {
+      const podId = lines.map((l) => String(l.podManifestDocId || '').trim()).find(Boolean);
+      const stopId = lines.map((l) => String(l.podStopId || '').trim()).find(Boolean);
+      if (podId && stopId) {
+        const stopSnap = await getDoc(doc(firestore, 'deliveryManifests', podId, 'stops', stopId));
+        if (stopSnap.exists()) {
+          const s = convertTimestampsToDates(stopSnap.data()) as any;
+          if (s.stopKind !== 'handoff_mensajero') {
+            (Array.isArray(s.photos) ? s.photos : []).forEach((p: any) => {
+              const url = String(p?.url || '');
+              if (url && !storePhotos.some((x) => x.url === url)) {
+                storePhotos.push({ url, category: p.category });
+              }
+            });
+            storeAt = s.completedAt instanceof Date ? s.completedAt : s.completedAt ? new Date(s.completedAt) : storeAt;
+            storeBy = s.completedByName || storeBy;
+            storeReceived = s.receivedByName || storeReceived;
+            storeDetail = s.storeName || s.destino || storeDetail;
+          }
+        }
+      }
+    }
+
+    const storeLine = lines.find((l) => l.entregadoTiendaAt || l.novedadEntregaAt);
+    if (storePhotos.length > 0 || storeLine?.entregadoTiendaAt || storeLine?.novedadEntregaAt) {
+      legs.push({
+        kind: 'tienda',
+        at: storeAt || storeLine?.entregadoTiendaAt || storeLine?.novedadEntregaAt || null,
+        byName: storeBy || storeLine?.entregadoTiendaByName || storeLine?.novedadEntregaByName || null,
+        receivedByName: storeReceived || null,
+        photos: storePhotos,
+        label: handoffLine ? '2. Entrega en tienda (remisión)' : 'Entrega en tienda (remisión)',
+        detail: storeDetail,
+      });
+    }
+
+    return { success: true, data: legs };
+  } catch (error: any) {
+    console.error('getTransferDeliveryProofs:', error);
+    return { success: false, error: error?.message || 'No se pudieron cargar las pruebas.' };
+  }
 }
 
 

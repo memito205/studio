@@ -33,6 +33,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { exportToXlsx } from '@/services/export';
 import { Checkbox } from './ui/checkbox';
+import { Switch } from './ui/switch';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { Label } from './ui/label';
@@ -2103,23 +2104,20 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                 <Label htmlFor="assistants">Auxiliares</Label>
                 <Input id="assistants" value={manifestDetails.assistants} onChange={(e) => setManifestDetails(prev => ({...prev, assistants: e.target.value}))} />
               </div>
-              <div className="rounded-md border p-3 space-y-3">
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <Checkbox
-                    checked={lastMileEnabled}
-                    onCheckedChange={(c) => setLastMileEnabled(!!c)}
-                    className="mt-0.5"
-                  />
-                  <span>
-                    <span className="font-medium text-sm">Última milla por mensajero</span>
-                    <span className="block text-xs text-muted-foreground mt-0.5">
-                      El camión solo registra entrega al mensajero (foto + nombre). El mensajero entrega en tienda con remisión.
-                      En su ruta/Excel: 1º camión, 2º Cajón Norte, luego tiendas. Bloqueado hasta el handoff.
-                    </span>
-                  </span>
-                </label>
+              <div className="rounded-md border-2 border-amber-400 bg-amber-50 p-3 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="font-medium text-sm text-amber-950">Última milla por mensajero</p>
+                    <p className="text-xs text-amber-900/80 mt-0.5">
+                      {lastMileEnabled
+                        ? `Mensajero: ${lastMileMessengerName || '—'} · ${lastMileDay} · ${lastMilePlaca || 'sin placa'}`
+                        : 'Desactivado. Puede activarlo arriba en la pestaña antes de abrir este diálogo.'}
+                    </p>
+                  </div>
+                  <Switch checked={lastMileEnabled} onCheckedChange={setLastMileEnabled} />
+                </div>
                 {lastMileEnabled && (
-                  <div className="space-y-3 pl-6">
+                  <div className="space-y-3">
                     <div className="space-y-2">
                       <Label>Mensajero (app)</Label>
                       <DriverUserSelect
@@ -2915,9 +2913,57 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                         </Card>
                        </div>
 
+                       <div className="mb-4 rounded-lg border-2 border-amber-400 bg-amber-50 p-4 space-y-3">
+                         <div className="flex items-start justify-between gap-3">
+                           <div className="space-y-1">
+                             <p className="font-semibold text-amber-950">Última milla por mensajero</p>
+                             <p className="text-xs text-amber-900/80">
+                               Actívelo si el camión solo entrega al mensajero. El camión registra handoff (foto);
+                               el mensajero entrega en tienda con remisión. Orden en su ruta/Excel: camión → Cajón Norte → tiendas.
+                             </p>
+                           </div>
+                           <div className="flex items-center gap-2 shrink-0">
+                             <Label htmlFor="last-mile-switch" className="text-sm font-medium text-amber-950">
+                               {lastMileEnabled ? 'Sí' : 'No'}
+                             </Label>
+                             <Switch
+                               id="last-mile-switch"
+                               checked={lastMileEnabled}
+                               onCheckedChange={setLastMileEnabled}
+                             />
+                           </div>
+                         </div>
+                         {lastMileEnabled && (
+                           <div className="grid gap-3 md:grid-cols-3 pt-1 border-t border-amber-200">
+                             <div className="space-y-1 md:col-span-1">
+                               <Label className="text-xs">Mensajero (app)</Label>
+                               <DriverUserSelect
+                                 id="last-mile-messenger-main"
+                                 value={{ driverUserId: lastMileMessengerUserId, driver: lastMileMessengerName }}
+                                 onChange={(v) => {
+                                   setLastMileMessengerUserId(v.driverUserId);
+                                   setLastMileMessengerName(v.driver);
+                                 }}
+                               />
+                             </div>
+                             <div className="space-y-1">
+                               <Label htmlFor="last-mile-day-main" className="text-xs">Día ruta mensajero</Label>
+                               <Input id="last-mile-day-main" type="date" value={lastMileDay} onChange={(e) => setLastMileDay(e.target.value)} />
+                             </div>
+                             <div className="space-y-1">
+                               <Label htmlFor="last-mile-placa-main" className="text-xs">Placa mensajero</Label>
+                               <Input id="last-mile-placa-main" value={lastMilePlaca} onChange={(e) => setLastMilePlaca(e.target.value)} placeholder="ABC123" />
+                             </div>
+                           </div>
+                         )}
+                       </div>
+
                        <div className="flex justify-end mb-4">
                            <Button onClick={() => setIsCreateManifestOpen(true)} disabled={selectedForManifest.size === 0}>
-                               <FileSignature className="mr-2 h-4 w-4" /> Crear Manifiesto con {manifestSummary.totalTFs} TF(s)
+                               <FileSignature className="mr-2 h-4 w-4" />
+                               {lastMileEnabled
+                                 ? `Crear handoff + ruta mensajero (${manifestSummary.totalTFs} TF)`
+                                 : `Crear Manifiesto con ${manifestSummary.totalTFs} TF(s)`}
                            </Button>
                        </div>
                        <div className="border rounded-md max-h-[60vh] overflow-auto">

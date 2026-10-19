@@ -521,6 +521,16 @@ export interface TransferEntry {
   podStopId?: string;
   /** Número consecutivo de la relación de entrega (Manifiesto #N). */
   manifestId?: number;
+  /** Última milla: handoff camión → mensajero (prueba de intercambio). */
+  lastMileMessengerUserId?: string;
+  lastMilePendingHandoff?: boolean;
+  handoffAt?: Date;
+  handoffBy?: string;
+  handoffByName?: string;
+  handoffReceivedByName?: string;
+  handoffManifestDocId?: string;
+  handoffStopId?: string;
+  handoffPhotos?: Array<{ path?: string; url: string; category?: string; uploadedAt?: Date }>;
   manualStatusChangeJustification?: string;
   storageOrder?: string;
   /** Ubicación física en bodega (maestro de ubicaciones). */
