@@ -745,6 +745,8 @@ export interface DriverRouteTask {
     tfMarkedDelivered?: boolean;
     /** La dejó en el cajón (no en la tienda): la TF queda Recibido en Bodega · CAJON NORTE. */
     leftInCajon?: boolean;
+    /** Camión: la devolvió a bodega; la TF queda Recolectado en Ruta para Validar Supervisor. */
+    leftInBodega?: boolean;
     failedAt?: Date;
     failedByName?: string;
     failReason?: string;

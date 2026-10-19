@@ -622,8 +622,11 @@ const clearMisEntregasFields = {
   misEntregasAt: deleteField(),
 };
 
-/** `cajon` = dejó la mercancía en el cajón: la TF queda Recibido en Bodega · CAJON NORTE para asignarla otro día. */
-export type RouteTaskAction = 'recoger' | 'no_recoger' | 'entregar' | 'no_entregar' | 'cajon';
+/**
+ * `cajon` = mensajero dejó en CAJON NORTE (Recibido en Bodega).
+ * `bodega` = camión devolvió a bodega → Recolectado en Ruta para Validar Supervisor.
+ */
+export type RouteTaskAction = 'recoger' | 'no_recoger' | 'entregar' | 'no_entregar' | 'cajon' | 'bodega';
 
 export type SubmitRouteTasksInput = {
   action: RouteTaskAction;
@@ -650,6 +653,8 @@ export async function submitRouteTasks(
   const reason = String(input.reason || '').trim();
   if ((action === 'no_recoger' || action === 'no_entregar') && !reason) return { success: false, error: 'Indique el motivo.' };
   if (action === 'recoger' && input.photos.length === 0) return { success: false, error: 'Tome la foto de lo que recoge.' };
+  if (action === 'cajon' && input.photos.length === 0) return { success: false, error: 'Tome la foto de la mercancía en el cajón.' };
+  if (action === 'bodega' && input.photos.length === 0) return { success: false, error: 'Tome la foto de la mercancía en bodega.' };
   const actorName = actorNameOf(actor);
 
   try {
@@ -657,8 +662,10 @@ export async function submitRouteTasks(
       action === 'entregar' || action === 'no_entregar'
         ? await loadStores()
         : { match: (_: unknown) => undefined as DeliveryStore | undefined };
-    const { isMessengerDriver } =
-      action === 'no_entregar' ? await import('@/lib/collectionRouting') : { isMessengerDriver: () => false };
+    const needsMessengerCheck = action === 'no_entregar' || action === 'cajon' || action === 'bodega';
+    const { isMessengerDriver } = needsMessengerCheck
+      ? await import('@/lib/collectionRouting')
+      : { isMessengerDriver: () => false };
     const publishLines = new Map<string, PlatformLine>();
     const podMeta: { distanceM?: number; placa?: string; taskIds: string[] } = { taskIds: [] };
     const cajonPlatformIds = new Set<string>();
@@ -680,6 +687,9 @@ export async function submitRouteTasks(
       if (tasks.some((x) => x.t.driverId !== actor.userId)) {
         return { success: false, conflict: true, error: 'Estas tareas están asignadas a otro conductor.' };
       }
+      const messengerRoute =
+        isMessengerDriver({ displayName: actorName }) ||
+        tasks.some((x) => isMessengerDriver({ displayName: x.t.driverName }));
       const toStore = action === 'entregar' && tasks.some((x) => x.t.kind !== 'libre' && x.t.deliverType === 'tienda');
       const libreDelivery = action === 'entregar' && tasks.some((x) => x.t.kind === 'libre');
       if (toStore && !input.photos.some((p) => p.category === 'remision')) throw new Error('Falta la foto de la remisión firmada.');
@@ -705,6 +715,7 @@ export async function submitRouteTasks(
       };
 
       if (action === 'cajon') {
+        if (!messengerRoute) throw new Error('En rutas de camión use “Dejar en bodega” (no cajón).');
         if (photos.length === 0) throw new Error('Tome la foto de la mercancía en el cajón.');
         tasks.forEach(({ ref, t, raw }) => {
           if (t.kind !== 'libre') {
@@ -732,6 +743,68 @@ export async function submitRouteTasks(
           tx.update(ref, clean({
             status: 'entregada',
             leftInCajon: true,
+            deliveredAt: now,
+            deliveredById: actor.userId,
+            deliveredByName: actorName,
+            deliveryPhotos: photos,
+            deliveryGps: gps,
+            deliveryNotes: String(input.notes || '').trim() || undefined,
+            tfMarkedDelivered: false,
+            lastSubmissionId: submissionId,
+            ...revalidationOnClose(t, raw),
+            ...closeKeys,
+          }));
+        });
+        return { success: true };
+      }
+
+      if (action === 'bodega') {
+        if (messengerRoute) throw new Error('El mensajero debe usar “Dejar en cajón”, no bodega.');
+        if (photos.length === 0) throw new Error('Tome la foto de la mercancía en bodega.');
+        // Camión: cierra Mis entregas y deja la TF en Recolectado en Ruta → aparece en Validar Supervisor.
+        tasks.forEach(({ ref, t, raw }) => {
+          if (t.kind !== 'libre') {
+            (t.transferIds || []).forEach((id) => {
+              const s = lineById.get(id);
+              if (!s) return;
+              const d = s.data()!;
+              if (d.storeReceivedAt) return;
+              const canReturn =
+                DELIVERABLE.includes(d.status) ||
+                d.status === 'Recolectado en Ruta' ||
+                d.status === 'Novedad de Entrega';
+              if (!canReturn) return;
+              tx.update(s.ref, {
+                status: 'Recolectado en Ruta',
+                ubicacion: deleteField(),
+                ubicacionAt: deleteField(),
+                reprogramada: true,
+                leftInBodegaAt: now,
+                leftInBodegaByName: actorName,
+                leftInBodegaRouteTaskId: t.id,
+                routeTaskId: t.id,
+                cajonAt: deleteField(),
+                cajonByName: deleteField(),
+                cajonRouteTaskId: deleteField(),
+                novedadEntregaMotivo: deleteField(),
+                novedadEntregaAt: deleteField(),
+                novedadEntregaBy: deleteField(),
+                novedadEntregaByName: deleteField(),
+                novedadRouteTaskId: deleteField(),
+                ...clearMisEntregasFields,
+                statusHistory: arrayUnion({
+                  status: 'Recolectado en Ruta',
+                  at: now,
+                  userId: actor.userId,
+                  userName: `${actorName} (dejar en bodega)`,
+                }),
+              });
+            });
+          }
+          tx.update(ref, clean({
+            status: 'entregada',
+            leftInBodega: true,
+            leftInCajon: false,
             deliveredAt: now,
             deliveredById: actor.userId,
             deliveredByName: actorName,
@@ -1147,6 +1220,7 @@ export async function rejectRouteTaskDelivery(input: {
                 deliveryPhotos: raw.deliveryPhotos || [],
                 failReason: raw.failReason ?? null,
                 leftInCajon: !!raw.leftInCajon,
+                leftInBodega: !!raw.leftInBodega,
               }),
             }),
             driverOpen: `${t.driverId}|open`,
@@ -1161,6 +1235,7 @@ export async function rejectRouteTaskDelivery(input: {
             distanceM: deleteField(),
             tfMarkedDelivered: deleteField(),
             leftInCajon: deleteField(),
+            leftInBodega: deleteField(),
             failedAt: deleteField(),
             failedById: deleteField(),
             failedByName: deleteField(),

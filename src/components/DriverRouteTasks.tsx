@@ -7,6 +7,7 @@ import { useToast } from '@/hooks/use-toast';
 import type { RouteTaskAction } from '@/app/routeTaskActions';
 import { compressImage, enqueueDelivery, type QueuedPhoto, type QueuedRouteSubmission } from '@/lib/podQueue';
 import { MAX_DELIVERY_PHOTOS, NOT_DELIVERED_REASONS, PHOTO_CATEGORIES, routeTaskLabel } from '@/lib/pod';
+import { isMessengerDriver } from '@/lib/collectionRouting';
 import {
   computeMessengerDayOrders,
   pointPriority,
@@ -200,6 +201,8 @@ const RouteTaskForm: React.FC<{
     ? [{ id: 'mercancia' as DeliveryPhotoCategory, label: 'Mercancía recogida', required: true }]
     : action === 'cajon'
     ? [{ id: 'mercancia' as DeliveryPhotoCategory, label: 'Mercancía en el cajón', required: true }]
+    : action === 'bodega'
+    ? [{ id: 'mercancia' as DeliveryPhotoCategory, label: 'Mercancía en bodega', required: true }]
     : action === 'entregar'
       ? PHOTO_CATEGORIES.map((c) => ({ ...c, required: toStore && c.required }))
       : [{ id: 'otra' as DeliveryPhotoCategory, label: 'Evidencia (opcional)', required: false }];
@@ -247,6 +250,7 @@ const RouteTaskForm: React.FC<{
   if (failing && !reason) problems.push('Indique el motivo.');
   if (action === 'recoger' && photos.length === 0) problems.push('Tome la foto de lo que recoge.');
   if (action === 'cajon' && photos.length === 0) problems.push('Tome la foto de la mercancía en el cajón.');
+  if (action === 'bodega' && photos.length === 0) problems.push('Tome la foto de la mercancía en bodega.');
   if (toStore && !photos.some((p) => p.category === 'remision')) problems.push('Tome la foto de la remisión firmada.');
   if (libreDelivery && photos.length === 0) problems.push('Tome la foto de la entrega.');
   if ((toStore || libreDelivery) && !receivedBy.trim()) problems.push('Escriba el nombre de quien recibe.');
@@ -257,10 +261,16 @@ const RouteTaskForm: React.FC<{
     try {
       const chosen = group.tasks.filter((t) => selected.has(t.id));
       const submissionId = newId();
+      const actionLabel =
+        action === 'cajon'
+          ? 'Dejar en cajón'
+          : action === 'bodega'
+            ? 'Dejar en bodega'
+            : `${failing ? 'No ' : ''}${action.includes('recoger') ? 'recoger' : 'entregar'}`;
       const record: QueuedRouteSubmission = {
         kind: 'route',
         submissionId,
-        label: `${action === 'cajon' ? 'Dejar en cajón' : `${failing ? 'No ' : ''}${action.includes('recoger') ? 'recoger' : 'entregar'}`} · ${group.point} (${chosen.length} TF)`,
+        label: `${actionLabel} · ${group.point} (${chosen.length} TF)`,
         storeKey: (chosen[0].deliverStoreCode || group.point || 'RUTA').replace(/[\/\s]+/g, '-'),
         monthKey: format(new Date(), 'yyyy-MM'),
         input: {
@@ -290,6 +300,7 @@ const RouteTaskForm: React.FC<{
     entregar: group.deliverType === 'bodega' ? 'Dejar en bodega' : 'Entregar en tienda',
     no_entregar: 'No entregada',
     cajon: 'Dejar en cajón',
+    bodega: 'Dejar en bodega',
   }[action];
 
   return (
@@ -531,9 +542,15 @@ const renderGroupCards = (
               </Button>
             )}
             {g.kind === 'entregar' && g.deliverType === 'tienda' && !isCajonPoint(g.point) && (
-              <Button variant="secondary" className="col-span-2" onClick={() => onOpenForm({ group: g, action: 'cajon' })}>
-                <Archive className="mr-2 h-4 w-4" /> No se pudo entregar: dejar en cajón
-              </Button>
+              isMessengerDriver({ displayName: g.tasks[0]?.driverName }) ? (
+                <Button variant="secondary" className="col-span-2" onClick={() => onOpenForm({ group: g, action: 'cajon' })}>
+                  <Archive className="mr-2 h-4 w-4" /> No se pudo entregar: dejar en cajón
+                </Button>
+              ) : (
+                <Button variant="secondary" className="col-span-2" onClick={() => onOpenForm({ group: g, action: 'bodega' })}>
+                  <Archive className="mr-2 h-4 w-4" /> No se pudo entregar: dejar en bodega
+                </Button>
+              )
             )}
           </div>
         )}

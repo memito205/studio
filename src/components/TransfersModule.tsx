@@ -1761,7 +1761,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                 )
                 .map((t) => `${String(t.numeroTF || '').trim()}|${String(t.bodegaDestino || '').trim().toUpperCase()}`)
         );
-        // Excluye líneas con tarea abierta en Mis entregas (el conductor aún debe entregar o dejar en cajón).
+        // Excluye líneas con tarea abierta en Mis entregas (entregar, cajón mensajero o dejar en bodega camión).
         const filtered = operationalTransfers.filter((t) => {
             if (t.status !== 'Recolectado en Ruta' || t.misEntregasTaskOpen) return false;
             const key = `${String(t.numeroTF || '').trim()}|${String(t.bodegaDestino || '').trim().toUpperCase()}`;
