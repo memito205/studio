@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -16,6 +16,7 @@ import {
     markLabelAsUsed, 
     updateOrderStatus, 
     addPackedItem, 
+    getPackedItemsForOrder,
     deletePackedItem, 
     updatePackedItem, 
     createPackingUnit, 
@@ -275,6 +276,13 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     const [assignLabelInput, setAssignLabelInput] = useState('');
     const [isAssigningLabel, setIsAssigningLabel] = useState(false);
     
+    // Refresco puntual del pedido abierto (no el tablero completo). El listener también mantiene la lista.
+    const fetchPackedItems = useCallback(async () => {
+        if (!packingOrder?.order?.id) return;
+        const result = await getPackedItemsForOrder(packingOrder.order.id);
+        if (result.data) setAllPackedItems(result.data);
+    }, [packingOrder?.order?.id]);
+
     // 1. Sincronización Real-time de la Sesión
     useEffect(() => {
         if (!packingOrder?.order?.id) return;
@@ -288,7 +296,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         return () => unsubscribe();
     }, [packingOrder?.order?.id]);
 
-    // 2. Ítems empacados en vivo (solo este pedido). Evita getPackedItemsForOrder duplicado en servidor.
+    // 2. Ítems empacados en vivo (solo este pedido).
     useEffect(() => {
         if (!packingOrder?.order?.id) return;
         const q = query(
