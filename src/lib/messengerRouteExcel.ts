@@ -96,20 +96,35 @@ export function buildMessengerRouteExcelRows(tasks: DriverRouteTask[]): Messenge
         const pickOrd = typeof t.order === 'number' ? t.order : 9999;
         const delOrd = typeof t.deliverOrder === 'number' ? t.deliverOrder : pickOrd + 5000;
 
+        const dKey = deliver && !isCajonPoint(deliver) ? stopGroupKey(deliver) : '';
+        const dIdx = dKey ? stopIndex.get(dKey) : undefined;
+        const pIdx = pickup ? stopIndex.get(stopGroupKey(pickup)) : undefined;
+        // Recogida después de haber pasado por el destino → no volver; entrega lógica = cajón.
+        const pickupAfterDestination =
+          !!pickup &&
+          !!deliver &&
+          !isCajonPoint(deliver) &&
+          pIdx !== undefined &&
+          dIdx !== undefined &&
+          pIdx > dIdx;
+
         if (pickup) {
+          // Si esa TF no alcanza el destino hoy, al recoger ya ve para qué tienda era.
+          const pickValor =
+            pickupAfterDestination && deliver ? `${pickup} (→ ${deliver})` : pickup;
           actions.push({
             visit: pickOrd,
             day,
             tf,
             atributo: 'RECOGER',
-            valor: pickup,
+            valor: pickValor,
             stopKey: stopGroupKey(pickup),
           });
         }
 
         if (!deliver) return;
 
-        // Ya es cajón / bodega especial: no reescribir.
+        // Ya es cajón / bodega especial: conservar destino si venía en notas no aplica; mostrar cajón.
         if (isCajonPoint(deliver) || toNorteKey(deliver) === 'BODEGA') {
           actions.push({
             visit: delOrd,
@@ -122,21 +137,14 @@ export function buildMessengerRouteExcelRows(tasks: DriverRouteTask[]): Messenge
           return;
         }
 
-        const dKey = stopGroupKey(deliver);
-        const dIdx = stopIndex.get(dKey);
-        const pIdx = pickup ? stopIndex.get(stopGroupKey(pickup)) : undefined;
-
-        // Recogida después de haber pasado por el destino → no volver; Excel = CAJON NORTE al final.
-        const pickupAfterDestination =
-          pIdx !== undefined && dIdx !== undefined && pIdx > dIdx;
-
         if (pickupAfterDestination) {
+          // Cajón + almacén destino original (para que al imprimir sepa para dónde era).
           actions.push({
             visit: CAJON_END_VISIT + delOrd,
             day,
             tf,
             atributo: 'ENTREGAR',
-            valor: CAJON_LABEL,
+            valor: `${CAJON_LABEL} (→ ${deliver})`,
             stopKey: 'CAJON NORTE',
           });
           return;
