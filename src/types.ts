@@ -533,7 +533,7 @@ export interface TransferEntry {
   altCodeReceiptId?: string;
   recolectadoBy?: string;
   recolectadoByName?: string;
-  /** Tarea abierta en Mis entregas (bloqueo Validar Bodega / Entregado en Ruta). */
+  /** Tarea abierta en Mis entregas: bloquea cualquier cambio manual de estado hasta legalizar. */
   misEntregasTaskOpen?: boolean;
   misEntregasSource?: 'recoleccion_libre';
   misEntregasAt?: Date;

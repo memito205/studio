@@ -28,6 +28,7 @@ import {
     type BulkTransferStatusPreviewItem,
 } from '@/app/actions';
 import { findCaseInsensitiveKey, parseTransferStatusValue } from '@/lib/transferRouteKey';
+import { isTransferLockedInRoute } from '@/lib/transferRouteLock';
 
 const ALL_STATUSES: TransferStatus[] = [
     'En Tránsito',
@@ -125,7 +126,7 @@ export const TransferBulkStatusChangeDialog: React.FC<TransferBulkStatusChangeDi
         if (!newStatus || selectedTransferIds.length === 0) return [];
         const idSet = new Set(selectedTransferIds);
         return transfers
-            .filter((t) => idSet.has(t.id))
+            .filter((t) => idSet.has(t.id) && !isTransferLockedInRoute(t))
             .map((t) => ({
                 transferId: t.id,
                 numeroTF: t.numeroTF,
@@ -138,6 +139,11 @@ export const TransferBulkStatusChangeDialog: React.FC<TransferBulkStatusChangeDi
                 cantidad: t.cantidad,
             }));
     }, [transfers, selectedTransferIds, newStatus]);
+
+    const lockedInRouteCount = useMemo(() => {
+        const idSet = new Set(selectedTransferIds);
+        return transfers.filter((t) => idSet.has(t.id) && isTransferLockedInRoute(t)).length;
+    }, [transfers, selectedTransferIds]);
 
     const activePreview = tab === 'selection' ? selectionPreview : filePreview?.matched ?? [];
 
@@ -220,10 +226,13 @@ export const TransferBulkStatusChangeDialog: React.FC<TransferBulkStatusChangeDi
                 });
                 return;
             }
-            updates = filePreview.matched.map((item) => ({
-                transferId: item.transferId,
-                newStatus: item.newStatus,
-            }));
+            // Enviado a Destino / Mis entregas: el servidor rechaza; aquí excluimos Enviado a Destino del preview.
+            updates = filePreview.matched
+                .filter((item) => item.currentStatus !== 'Enviado a Destino')
+                .map((item) => ({
+                    transferId: item.transferId,
+                    newStatus: item.newStatus,
+                }));
         }
 
         const toApply = updates.filter((u) => {
@@ -312,6 +321,12 @@ export const TransferBulkStatusChangeDialog: React.FC<TransferBulkStatusChangeDi
                                         />
                                     </div>
                                 </div>
+                                {lockedInRouteCount > 0 && (
+                                    <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                                        {lockedInRouteCount} línea(s) en ruta / Mis entregas se excluyen: no se puede cambiar el estado
+                                        hasta legalizar (entrega, no entrega, cajón o bodega).
+                                    </p>
+                                )}
                                 {selectionPreview.length > 0 && (
                                     <PreviewTable items={selectionPreview} unchangedCount={unchangedCount} />
                                 )}

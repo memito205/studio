@@ -49,6 +49,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { buildTransferLabelsPdf, labelDayDate, openPdfForPrint, type TransferLabelData } from '@/lib/labelPdf';
 import { cn } from '@/lib/utils';
+import { isTransferLockedInRoute, transferLockedInRouteMessage } from '@/lib/transferRouteLock';
 import { CollectionLogDetailsDialog } from './CollectionLogDetailsDialog';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from './ui/collapsible';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -417,6 +418,8 @@ const StatusChangeDialog: React.FC<{
 
     if (!transfer) return null;
 
+    const lockedInRoute = isTransferLockedInRoute(transfer);
+
     return (
         <AlertDialog open={isOpen} onOpenChange={onOpenChange}>
             <AlertDialogContent>
@@ -426,10 +429,15 @@ const StatusChangeDialog: React.FC<{
                         TF: <span className="font-mono font-bold">{transfer.numeroTF}</span> | Destino: {transfer.bodegaDestino}
                     </AlertDialogDescription>
                 </AlertDialogHeader>
+                {lockedInRoute && (
+                    <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                        {transferLockedInRouteMessage(transfer)}
+                    </p>
+                )}
                 <div className="space-y-4 py-4">
                     <div className="space-y-2">
                         <Label htmlFor="new-status">Nuevo Estado</Label>
-                        <Select value={newStatus} onValueChange={(val) => setNewStatus(val as TransferStatus)}>
+                        <Select value={newStatus} onValueChange={(val) => setNewStatus(val as TransferStatus)} disabled={lockedInRoute}>
                             <SelectTrigger id="new-status"><SelectValue /></SelectTrigger>
                             <SelectContent>
                                 <SelectItem value="En Tránsito">En Tránsito</SelectItem>
@@ -450,7 +458,7 @@ const StatusChangeDialog: React.FC<{
                 </div>
                 <AlertDialogFooter>
                     <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                    <AlertDialogAction onClick={handleConfirm} disabled={isSaving || !newStatus || !justification}>
+                    <AlertDialogAction onClick={handleConfirm} disabled={isSaving || lockedInRoute || !newStatus || !justification}>
                         {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}
                         Confirmar Cambio
                     </AlertDialogAction>
@@ -1461,9 +1469,13 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
 
     const handleManualStatusUpdate = async (newStatus: TransferStatus, justification: string) => {
         if (!statusChangeState.transfer) return;
+        const transfer = statusChangeState.transfer as GroupedTransfer | TransferEntry;
+        if (isTransferLockedInRoute(transfer)) {
+            toast({ variant: 'destructive', title: 'En ruta', description: transferLockedInRouteMessage(transfer) });
+            return;
+        }
         setIsUpdatingStatus(true);
         try {
-            const transfer = statusChangeState.transfer as GroupedTransfer | TransferEntry;
             const ids = 'allIds' in transfer ? transfer.allIds : [transfer.id];
             const result = await updateTransferStatus(ids, newStatus, justification, actor);
             if (result.success) {
@@ -1483,6 +1495,10 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     /** Alinea todas las líneas del grupo al estado mostrado (máximo), corrigiendo residuales que confunden al Gestor de Despachos. */
     const handleAlignGroupLineStatuses = async (group: GroupedTransfer) => {
         if (!group.allIds?.length || !group.hasMixedStatus) return;
+        if (isTransferLockedInRoute(group)) {
+            toast({ variant: 'destructive', title: 'En ruta', description: transferLockedInRouteMessage(group) });
+            return;
+        }
         const statusesLabel = (group.lineStatuses || []).join(', ');
         const confirmMsg = `Esta ruta (TF ${group.numeroTF}: ${group.bodegaOrigen} → ${group.bodegaDestino}) tiene líneas con estados distintos (${statusesLabel}).\n\nSe alinearán ${group.allIds.length} línea(s) al estado "${group.status}" (el que se muestra en la tabla).\n\n¿Continuar?`;
         if (!confirm(confirmMsg)) return;
@@ -2590,8 +2606,15 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                                         {role === 'admin' && (
                                                             <>
                                                                 <DropdownMenuSeparator />
-                                                                <DropdownMenuItem onSelect={() => setStatusChangeState({ isOpen: true, transfer: t })}>
+                                                                <DropdownMenuItem
+                                                                    disabled={isTransferLockedInRoute(t)}
+                                                                    title={isTransferLockedInRoute(t) ? transferLockedInRouteMessage(t) : undefined}
+                                                                    onSelect={() => setStatusChangeState({ isOpen: true, transfer: t })}
+                                                                >
                                                                     Cambiar Estado Manualmente
+                                                                    {isTransferLockedInRoute(t) && (
+                                                                        <span className="ml-2 text-[10px] text-red-600">(en ruta)</span>
+                                                                    )}
                                                                 </DropdownMenuItem>
                                                                 {t.hasMixedStatus && (
                                                                     <DropdownMenuItem

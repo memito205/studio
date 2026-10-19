@@ -5528,6 +5528,23 @@ async function getAlreadyReceivedTransferIds(ids: string[]): Promise<Set<string>
     return received;
 }
 
+async function findTransferLockedInRouteError(ids: string[]): Promise<string | null> {
+    const { isTransferLockedInRoute, transferLockedInRouteMessage } = await import('@/lib/transferRouteLock');
+    const unique = Array.from(new Set(ids.filter(Boolean)));
+    for (let i = 0; i < unique.length; i += 30) {
+        const snap = await getDocs(
+            query(collection(firestore, 'transfers'), where(documentId(), 'in', unique.slice(i, i + 30)))
+        );
+        for (const d of snap.docs) {
+            const data = d.data();
+            if (isTransferLockedInRoute(data)) {
+                return transferLockedInRouteMessage({ ...data, id: d.id });
+            }
+        }
+    }
+    return null;
+}
+
 export async function updateTransferStatus(
     transferId: string | string[],
     status: TransferStatus,
@@ -5540,21 +5557,11 @@ export async function updateTransferStatus(
             return { success: false, error: 'ID(s) de transferencia no proporcionado(s).' };
         }
 
-        // Bloqueo: líneas con tarea abierta en Mis entregas no pasan por Validar Bodega / Entregado en Ruta.
-        if (status === 'Validado Supervisor' || status === 'Entregado en Ruta') {
-            for (let i = 0; i < ids.length; i += 30) {
-                const snap = await getDocs(
-                    query(collection(firestore, 'transfers'), where(documentId(), 'in', ids.slice(i, i + 30)))
-                );
-                const blocked = snap.docs.find((d) => d.data().misEntregasTaskOpen === true);
-                if (blocked) {
-                    const tf = String(blocked.data().numeroTF || blocked.id);
-                    return {
-                        success: false,
-                        error: `La TF ${tf} está en Mis entregas del conductor. Espere a que la entregue o la deje en cajón.`,
-                    };
-                }
-            }
+        // Bloqueo total: en ruta / Mis entregas sin legalizar no admite cambio manual de estado
+        // (evita devolver a Recibido en Bodega y meter la misma TF en otra relación).
+        const lockedError = await findTransferLockedInRouteError(ids);
+        if (lockedError) {
+            return { success: false, error: lockedError };
         }
 
         const batch = writeBatch(firestore);
@@ -5769,8 +5776,12 @@ export async function batchUpdateTransferStatus(
     if (!transferIds || transferIds.length === 0) {
         return { success: true }; // Nothing to do
     }
-    const batch = writeBatch(firestore);
     try {
+        const lockedError = await findTransferLockedInRouteError(transferIds);
+        if (lockedError) {
+            return { success: false, error: lockedError };
+        }
+        const batch = writeBatch(firestore);
         const alreadyReceived =
             status === 'Recibido en Bodega' ? await getAlreadyReceivedTransferIds(transferIds) : new Set<string>();
         transferIds.forEach(id => {
@@ -5802,6 +5813,10 @@ export async function receiveTransfersInWarehouse(
     );
     if (entries.length === 0) return { success: true, count: 0 };
     try {
+        const lockedError = await findTransferLockedInRouteError(entries.map((e) => e.id));
+        if (lockedError) {
+            return { success: false, error: lockedError };
+        }
         const now = Timestamp.now();
         const alreadyReceived = await getAlreadyReceivedTransferIds(entries.map((e) => e.id));
         const CHUNK = 450;
@@ -6879,6 +6894,39 @@ export async function createDeliveryManifest(
     const manifestsCollection = collection(firestore, 'deliveryManifests');
     
     try {
+        const transferIds = Array.from(new Set((manifestData.transferIds || []).filter(Boolean)));
+        if (transferIds.length === 0) {
+            return { success: false, error: 'No hay transferencias para la relación.' };
+        }
+
+        const { isTransferLockedInRoute, transferLockedInRouteMessage } = await import('@/lib/transferRouteLock');
+        const MANIFEST_ELIGIBLE: TransferStatus[] = ['Recibido en Bodega', 'Validado Supervisor'];
+        for (let i = 0; i < transferIds.length; i += 30) {
+            const chunk = transferIds.slice(i, i + 30);
+            const snap = await getDocs(
+                query(collection(firestore, 'transfers'), where(documentId(), 'in', chunk))
+            );
+            const found = new Set(snap.docs.map((d) => d.id));
+            for (const id of chunk) {
+                if (!found.has(id)) {
+                    return { success: false, error: `La transferencia ${id} ya no existe.` };
+                }
+            }
+            for (const d of snap.docs) {
+                const data = d.data();
+                if (isTransferLockedInRoute(data)) {
+                    return { success: false, error: transferLockedInRouteMessage({ ...data, id: d.id }) };
+                }
+                if (!MANIFEST_ELIGIBLE.includes(data.status as TransferStatus)) {
+                    const tf = String(data.numeroTF || d.id);
+                    return {
+                        success: false,
+                        error: `La TF ${tf} está en "${data.status}" y no se puede incluir en una relación (solo Recibido en Bodega o Validado Supervisor).`,
+                    };
+                }
+            }
+        }
+
         const manifestDocRef = doc(manifestsCollection); // Generate a new ID for the manifest
 
         await runTransaction(firestore, async (transaction) => {
@@ -6889,7 +6937,8 @@ export async function createDeliveryManifest(
                 id: manifestDocRef.id,
                 manifestId: newCount,
                 createdAt: new Date(),
-                ...manifestData
+                ...manifestData,
+                transferIds,
             };
             
             transaction.set(manifestDocRef, convertDatesToTimestamps(withoutUndefined(manifestToSave)));
@@ -6904,7 +6953,7 @@ export async function createDeliveryManifest(
                 manifestId: newCount,
             };
             applyTransferStatusActor(enviadoUpdates, 'Enviado a Destino', actor);
-            for (const transferId of manifestData.transferIds) {
+            for (const transferId of transferIds) {
                 const transferRef = doc(firestore, 'transfers', transferId);
                 transaction.update(transferRef, enviadoUpdates);
             }
