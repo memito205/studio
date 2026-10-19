@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import type { DriverRouteTask } from '@/types';
+import { isCajonPoint, stopGroupKey, toNorteKey } from '@/lib/messengerRouteOrder';
 
 /** Misma estructura que exportNorteMessengerRoute (Rutas → Excel mensajero). */
 export type MessengerRouteExcelRow = {
@@ -28,12 +29,27 @@ function tfLabel(t: DriverRouteTask): string {
   return String(t.numeroTF || '').trim();
 }
 
+const CAJON_LABEL = 'CAJON NORTE';
+/** Visit sort muy alto: entregas inválidas (ya pasamos el destino) van al final como cajón. */
+const CAJON_END_VISIT = 900_000;
+
 /**
  * Arma filas RECOGER/ENTREGAR como el Excel del mensajero.
- * Usa order/deliverOrder ya guardados (Reordenar Norte u orden pegado).
+ *
+ * Igual que el planificador Norte: si la recogida es en una parada posterior a la del
+ * destino, no se vuelve a esa tienda — la ENTREGAR sale como CAJON NORTE al final.
+ * (La decisión real de dejar en cajón la toma el mensajero en la app; el Excel solo
+ * muestra el orden lógico para no confundir.)
  */
 export function buildMessengerRouteExcelRows(tasks: DriverRouteTask[]): MessengerRouteExcelRow[] {
-  type Action = { visit: number; day: string; tf: string; atributo: 'RECOGER' | 'ENTREGAR'; valor: string };
+  type Action = {
+    visit: number;
+    day: string;
+    tf: string;
+    atributo: 'RECOGER' | 'ENTREGAR';
+    valor: string;
+    stopKey: string;
+  };
   const byKey = new Map<string, DriverRouteTask[]>();
   tasks
     .filter((t) => t.status !== 'cancelada' && !t.reassignedTo)
@@ -49,6 +65,27 @@ export function buildMessengerRouteExcelRows(tasks: DriverRouteTask[]): Messenge
     .sort()
     .forEach((key) => {
       const list = byKey.get(key) || [];
+
+      // Primera aparición de cada parada en la ruta (order / deliverOrder guardados).
+      const stopFirstVisit = new Map<string, number>();
+      const touchStop = (point: string, visit: number) => {
+        if (!point || isCajonPoint(point)) return;
+        const sk = stopGroupKey(point);
+        const prev = stopFirstVisit.get(sk);
+        if (prev === undefined || visit < prev) stopFirstVisit.set(sk, visit);
+      };
+      list.forEach((t) => {
+        const pickOrd = typeof t.order === 'number' ? t.order : 9999;
+        const delOrd = typeof t.deliverOrder === 'number' ? t.deliverOrder : pickOrd + 5000;
+        if (t.pickupPoint) touchStop(String(t.pickupPoint), pickOrd);
+        if (t.deliverPoint) touchStop(String(t.deliverPoint), delOrd);
+      });
+
+      const stopSequence = Array.from(stopFirstVisit.entries())
+        .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+        .map(([sk]) => sk);
+      const stopIndex = new Map(stopSequence.map((sk, i) => [sk, i]));
+
       const actions: Action[] = [];
       list.forEach((t) => {
         const tf = tfLabel(t);
@@ -58,13 +95,63 @@ export function buildMessengerRouteExcelRows(tasks: DriverRouteTask[]): Messenge
         const deliver = String(t.deliverPoint || '').trim();
         const pickOrd = typeof t.order === 'number' ? t.order : 9999;
         const delOrd = typeof t.deliverOrder === 'number' ? t.deliverOrder : pickOrd + 5000;
+
         if (pickup) {
-          actions.push({ visit: pickOrd, day, tf, atributo: 'RECOGER', valor: pickup });
+          actions.push({
+            visit: pickOrd,
+            day,
+            tf,
+            atributo: 'RECOGER',
+            valor: pickup,
+            stopKey: stopGroupKey(pickup),
+          });
         }
-        if (deliver) {
-          actions.push({ visit: delOrd, day, tf, atributo: 'ENTREGAR', valor: deliver });
+
+        if (!deliver) return;
+
+        // Ya es cajón / bodega especial: no reescribir.
+        if (isCajonPoint(deliver) || toNorteKey(deliver) === 'BODEGA') {
+          actions.push({
+            visit: delOrd,
+            day,
+            tf,
+            atributo: 'ENTREGAR',
+            valor: isCajonPoint(deliver) ? CAJON_LABEL : deliver,
+            stopKey: 'CAJON NORTE',
+          });
+          return;
         }
+
+        const dKey = stopGroupKey(deliver);
+        const dIdx = stopIndex.get(dKey);
+        const pIdx = pickup ? stopIndex.get(stopGroupKey(pickup)) : undefined;
+
+        // Recogida después de haber pasado por el destino → no volver; Excel = CAJON NORTE al final.
+        const pickupAfterDestination =
+          pIdx !== undefined && dIdx !== undefined && pIdx > dIdx;
+
+        if (pickupAfterDestination) {
+          actions.push({
+            visit: CAJON_END_VISIT + delOrd,
+            day,
+            tf,
+            atributo: 'ENTREGAR',
+            valor: CAJON_LABEL,
+            stopKey: 'CAJON NORTE',
+          });
+          return;
+        }
+
+        actions.push({
+          visit: delOrd,
+          day,
+          tf,
+          atributo: 'ENTREGAR',
+          valor: deliver,
+          stopKey: dKey,
+        });
       });
+
       actions.sort(
         (a, b) =>
           a.visit - b.visit ||
