@@ -1021,54 +1021,115 @@ export async function updateOrderStatus(
     }
 }
 
+export type SyncWholesalePackingOpts = {
+  /** Fuerza releer todos los packedItems (auditoría / corrección). */
+  forceFullRecount?: boolean;
+  /** Delta de unidades (+1 al escanear, −qty al borrar). Evita releer la colección. */
+  packedDelta?: number;
+  /** Delta de cajas (p. ej. +1 al cerrar caja nueva). */
+  boxCountDelta?: number;
+};
+
 /**
- * Recalcula Empacado/En Empaque desde packedItems.
- * Empacado solo si packedTotal === orderTotal (exacto), salvo packingForceClosed.
- * No toca En Cargue / Despachado / Cancelado.
+ * Recalcula Empacado/En Empaque y mantiene `packingData` en el pedido.
+ * Camino barato: usa packingData + delta (1–2 lecturas).
+ * Camino completo: solo si no hay packingData o forceFullRecount.
+ * No toca En Cargue / Despachado / Cancelado (salvo actualizar packingData si faltaba).
  */
-export async function syncWholesaleOrderPackingStatus(orderId: string): Promise<{ success: boolean; status?: OrderStatus; error?: string }> {
+export async function syncWholesaleOrderPackingStatus(
+  orderId: string,
+  opts?: SyncWholesalePackingOpts
+): Promise<{ success: boolean; status?: OrderStatus; error?: string }> {
     try {
-        const { computeWholesalePackingTotals, resolveWholesaleOrderStatus, hasUnlabeledWholesaleUnits } = await import('@/lib/wholesalePacking');
+        const {
+          computeWholesalePackingTotals,
+          resolveWholesaleOrderStatus,
+          hasUnlabeledWholesaleUnits,
+          getCanonicalOrderTotal,
+        } = await import('@/lib/wholesalePacking');
         const orderRef = doc(firestore, "wholesaleOrders", orderId);
         const orderSnap = await getDoc(orderRef);
         if (!orderSnap.exists()) return { success: false, error: 'Order not found' };
 
         const orderData = orderSnap.data();
         const currentStatus = (orderData.status || 'Pte Empaque') as OrderStatus;
-        if (currentStatus === 'En Cargue' || currentStatus === 'Despachado' || currentStatus === 'Cancelado') {
-            return { success: true, status: currentStatus };
-        }
+        const terminal = currentStatus === 'En Cargue' || currentStatus === 'Despachado' || currentStatus === 'Cancelado';
+        const orderTotal = getCanonicalOrderTotal({
+          details: orderData.details || [],
+          cantidadTotal: orderData.cantidadTotal || 0,
+        });
+        const prevPacking = orderData.packingData as WholesaleOrder['packingData'] | undefined;
+        const hasSaved = prevPacking && typeof prevPacking.packedUnits === 'number';
+        // Con packingData: nunca releer packedItems salvo forceFullRecount.
+        const useCheap = !opts?.forceFullRecount && !!hasSaved;
 
-        const packedQ = query(collection(firestore, "packedItems"), where("orderId", "==", orderId));
-        const packedSnap = await getDocs(packedQ);
-        const packedItems = packedSnap.docs.map(d => ({
-            packingUnitId: d.data().packingUnitId || '',
-            quantity: Number(d.data().quantity ?? 1),
-        }));
-        const totals = computeWholesalePackingTotals(
-            { details: orderData.details || [], cantidadTotal: orderData.cantidadTotal || 0 },
-            packedItems
-        );
+        let packedTotal: number;
+        let boxCount: number;
+        let allUnitsLabeled = true;
 
         const sessionSnap = await getDoc(doc(firestore, 'packingSessions', orderId));
         const sessionData = sessionSnap.exists() ? (sessionSnap.data() as PackingSession) : null;
-        const allUnitsLabeled = !hasUnlabeledWholesaleUnits(sessionData, packedItems as any);
+
+        if (useCheap) {
+          const delta = typeof opts?.packedDelta === 'number' ? opts.packedDelta : 0;
+          packedTotal = Math.max(0, Number(prevPacking!.packedUnits || 0) + delta);
+          boxCount = Math.max(0, Number(prevPacking!.boxCount || 0) + Number(opts?.boxCountDelta || 0));
+          // Sin releer packedItems: cajas cerradas deben tener VXM; cajas abiertas sin etiqueta bloquean Empacado.
+          const units = sessionData?.units || [];
+          allUnitsLabeled = !units.some((u) => {
+            const labeled = !!String(u.labelBarcode || '').trim();
+            if (labeled) return false;
+            if (u.status === 'closed') return true;
+            // Unidad abierta sin etiqueta: solo bloquea si el pedido ya está completo (evita Empacado prematuro).
+            return u.status === 'open' && orderTotal > 0 && packedTotal === orderTotal;
+          });
+        } else {
+          const packedQ = query(collection(firestore, "packedItems"), where("orderId", "==", orderId));
+          const packedSnap = await getDocs(packedQ);
+          const packedItems = packedSnap.docs.map((d) => ({
+            packingUnitId: d.data().packingUnitId || '',
+            quantity: Number(d.data().quantity ?? 1),
+          }));
+          const totals = computeWholesalePackingTotals(
+            { details: orderData.details || [], cantidadTotal: orderData.cantidadTotal || 0 },
+            packedItems
+          );
+          packedTotal = totals.packedTotal;
+          boxCount = new Set(packedItems.map((it) => it.packingUnitId).filter(Boolean)).size;
+          allUnitsLabeled = !hasUnlabeledWholesaleUnits(sessionData, packedItems as any);
+        }
+
+        const packingData = {
+          packedUnits: packedTotal,
+          totalUnits: orderTotal,
+          boxCount,
+        };
+
+        if (terminal) {
+          // Pedidos cerrados: solo asegura resumen para tableros (sin cambiar status).
+          if (!hasSaved || opts?.forceFullRecount) {
+            await updateDoc(orderRef, { packingData });
+          }
+          return { success: true, status: currentStatus };
+        }
 
         const nextStatus = resolveWholesaleOrderStatus({
             currentStatus,
-            orderTotal: totals.orderTotal,
-            packedTotal: totals.packedTotal,
+            orderTotal,
+            packedTotal,
             packingForceClosed: !!orderData.packingForceClosed,
             allUnitsLabeled,
         });
 
-        if (nextStatus !== currentStatus) {
-            await updateDoc(orderRef, { status: nextStatus });
-            if (nextStatus === 'Empacado') {
-                void import('@/app/wholesaleReportActions')
-                    .then((m) => m.captureWholesaleReportSnapshotsForStatus(orderId, nextStatus))
-                    .catch((err) => console.warn('wholesale report snapshot capture skipped:', err));
-            }
+        const statusChanged = nextStatus !== currentStatus;
+        await updateDoc(orderRef, {
+          packingData,
+          ...(statusChanged ? { status: nextStatus } : {}),
+        });
+        if (statusChanged && nextStatus === 'Empacado') {
+            void import('@/app/wholesaleReportActions')
+                .then((m) => m.captureWholesaleReportSnapshotsForStatus(orderId, nextStatus))
+                .catch((err) => console.warn('wholesale report snapshot capture skipped:', err));
         }
         return { success: true, status: nextStatus };
     } catch (error: any) {
@@ -1430,9 +1491,9 @@ export async function addPackedItem(itemData: Omit<PackedItem, 'id' | 'scannedAt
         };
         await setDoc(itemRef, convertDatesToTimestamps(newItem));
 
-        // Recalcular Empacado / En Empaque desde packedItems (igualdad exacta).
+        // Actualiza packingData con +1 (sin releer toda la colección).
         try {
-            await syncWholesaleOrderPackingStatus(itemData.orderId);
+            await syncWholesaleOrderPackingStatus(itemData.orderId, { packedDelta: 1 });
         } catch (statusError) {
             console.error("Error updating order status during addPackedItem:", statusError);
         }
@@ -1632,7 +1693,8 @@ export async function assignLabelToWholesalePackingUnit(
             });
         });
 
-        await syncWholesaleOrderPackingStatus(orderId);
+        // Etiqueta puede desbloquear Empacado: recount ligero con packingData (sin packedDelta → full solo si falta).
+        await syncWholesaleOrderPackingStatus(orderId, { packedDelta: 0 });
         return { success: true, labelId: normalizedLabelId };
     } catch (error: any) {
         console.error('Error in assignLabelToWholesalePackingUnit:', error);
@@ -1762,10 +1824,15 @@ export async function updatePackedItem(itemId: string, updates: Partial<PackedIt
     try {
         const itemRef = doc(firestore, "packedItems", itemId);
         const snap = await getDoc(itemRef);
+        const prevQty = snap.exists() ? Number(snap.data().quantity ?? 1) : 1;
         await updateDoc(itemRef, updates);
         const orderId = snap.exists() ? snap.data().orderId : updates.orderId;
         if (orderId) {
-            await syncWholesaleOrderPackingStatus(String(orderId));
+            const nextQty = updates.quantity != null ? Number(updates.quantity) : prevQty;
+            const delta = nextQty - prevQty;
+            if (delta !== 0) {
+                await syncWholesaleOrderPackingStatus(String(orderId), { packedDelta: delta });
+            }
         }
         return { success: true };
     } catch (error: any) {
@@ -1778,9 +1845,10 @@ export async function deletePackedItem(itemId: string): Promise<{ success: boole
         const itemRef = doc(firestore, "packedItems", itemId);
         const snap = await getDoc(itemRef);
         const orderId = snap.exists() ? snap.data().orderId : null;
+        const qty = snap.exists() ? Number(snap.data().quantity ?? 1) : 1;
         await deleteDoc(itemRef);
         if (orderId) {
-            await syncWholesaleOrderPackingStatus(String(orderId));
+            await syncWholesaleOrderPackingStatus(String(orderId), { packedDelta: -qty });
         }
         return { success: true };
     } catch (error: any) {
@@ -1791,18 +1859,21 @@ export async function deletePackedItem(itemId: string): Promise<{ success: boole
 export async function bulkDeletePackedItems(itemIds: string[]): Promise<{ success: boolean, error?: string }> {
     if (!itemIds || itemIds.length === 0) return { success: true };
     try {
-        const orderIds = new Set<string>();
+        const deltaByOrder = new Map<string, number>();
         for (const id of itemIds) {
             const snap = await getDoc(doc(firestore, "packedItems", id));
-            if (snap.exists() && snap.data().orderId) orderIds.add(String(snap.data().orderId));
+            if (!snap.exists() || !snap.data().orderId) continue;
+            const oid = String(snap.data().orderId);
+            const qty = Number(snap.data().quantity ?? 1);
+            deltaByOrder.set(oid, (deltaByOrder.get(oid) || 0) - qty);
         }
         const batch = writeBatch(firestore);
         itemIds.forEach(id => {
             batch.delete(doc(firestore, "packedItems", id));
         });
         await batch.commit();
-        for (const orderId of orderIds) {
-            await syncWholesaleOrderPackingStatus(orderId);
+        for (const [orderId, packedDelta] of deltaByOrder) {
+            await syncWholesaleOrderPackingStatus(orderId, { packedDelta });
         }
         return { success: true };
     } catch (error: any) {

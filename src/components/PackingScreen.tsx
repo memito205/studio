@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -16,7 +16,6 @@ import {
     markLabelAsUsed, 
     updateOrderStatus, 
     addPackedItem, 
-    getPackedItemsForOrder, 
     deletePackedItem, 
     updatePackedItem, 
     createPackingUnit, 
@@ -276,13 +275,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     const [assignLabelInput, setAssignLabelInput] = useState('');
     const [isAssigningLabel, setIsAssigningLabel] = useState(false);
     
-    const fetchPackedItems = useCallback(async () => {
-        const result = await getPackedItemsForOrder(packingOrder.order.id);
-        if(result.data){
-            setAllPackedItems(result.data);
-        }
-    }, [packingOrder.order.id]);
-
     // 1. Sincronización Real-time de la Sesión
     useEffect(() => {
         if (!packingOrder?.order?.id) return;
@@ -296,7 +288,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         return () => unsubscribe();
     }, [packingOrder?.order?.id]);
 
-    // 2. Sincronización Real-time de Ítems Empacados
+    // 2. Ítems empacados en vivo (solo este pedido). Evita getPackedItemsForOrder duplicado en servidor.
     useEffect(() => {
         if (!packingOrder?.order?.id) return;
         const q = query(
@@ -312,13 +304,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         });
         return () => unsubscribe();
     }, [packingOrder?.order?.id]);
-
-    // Remover el guardado automático de la sesión completa
-    // (Ya no se necesita porque cada cambio es atómico en el servidor)
-
-    useEffect(() => {
-        fetchPackedItems();
-    }, [fetchPackedItems]);
 
 
     // useEffect para guardar la sesión - ELIMINADO para evitar conflictos de concurrencia

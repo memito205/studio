@@ -4,7 +4,6 @@ import { format } from 'date-fns';
 import {
   getGlobalPulsesForDay,
   getPackedItemsForDate,
-  getPackedItemsForOrders,
   getPackingSettings,
   getUserPulsesForUserDay,
   loadAllPackingSessions,
@@ -12,7 +11,7 @@ import {
   loadOperatorMappings,
   loadWholesaleOrders,
 } from '@/app/actions';
-import { DEFAULT_PACKING_PRODUCTIVITY_GOAL } from '@/types';
+import { DEFAULT_PACKING_PRODUCTIVITY_GOAL, type WholesaleOrder } from '@/types';
 import { computeWholesalePackingTotals } from '@/lib/wholesalePacking';
 import { listTalladoDashboard } from '@/app/talladoMercanciaActions';
 import {
@@ -1019,22 +1018,20 @@ async function buildVentasMayor(
         : DEFAULT_PACKING_PRODUCTIVITY_GOAL;
     area.extras = [{ label: 'Meta U/H', value: String(packingGoal) }];
 
-    // Pedidos En Empaque (progreso live), independiente de productividad del día.
+    // Pedidos En Empaque: progreso desde packingData (sin releer packedItems).
     const packingInProgress = (ordersRes.data || []).filter((o) => o.status === 'En Empaque');
     if (packingInProgress.length > 0) {
-      const packedRes = await getPackedItemsForOrders(packingInProgress.map((o) => o.id));
-      const packedByOrder = new Map<string, PackedItem[]>();
-      for (const item of packedRes.data || []) {
-        const oid = String(item.orderId || '').trim();
-        if (!oid) continue;
-        const list = packedByOrder.get(oid) || [];
-        list.push(item);
-        packedByOrder.set(oid, list);
+      const missingIds = packingInProgress.filter((o) => !o.packingData).map((o) => o.id);
+      let filled: Record<string, NonNullable<WholesaleOrder['packingData']>> = {};
+      if (missingIds.length) {
+        const { backfillWholesalePackingData } = await import('@/app/actions');
+        const bf = await backfillWholesalePackingData(missingIds);
+        filled = bf.data || {};
       }
       const packingOrders: BodegaTvPackingOrderSummary[] = packingInProgress.map((order) => {
-        const totals = computeWholesalePackingTotals(order, packedByOrder.get(order.id) || []);
-        const packedUnits = totals.packedTotal;
-        const totalUnits = totals.orderTotal;
+        const saved = order.packingData || filled[order.id];
+        const packedUnits = saved?.packedUnits ?? 0;
+        const totalUnits = saved?.totalUnits ?? computeWholesalePackingTotals(order, []).orderTotal;
         const remainingUnits = Math.max(0, totalUnits - packedUnits);
         const progressPct =
           totalUnits > 0 ? Math.min(999, (packedUnits / totalUnits) * 100) : packedUnits > 0 ? 100 : 0;
