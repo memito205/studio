@@ -195,6 +195,11 @@ const FueraDeBaseBadge: React.FC<{ t: TransferEntry }> = ({ t }) =>
     ) : null;
 
 const MIXED_STATUS_FILTER = '__mixed__';
+/** Recibido en Bodega marcadas fuera del Excel ERP (posiblemente ya entregadas). */
+const FUERA_DE_BASE_FILTER = '__fuera_de_base__';
+
+const isTransferFueraDeBase = (t: TransferEntry) =>
+    t.status === 'Recibido en Bodega' && !!t.fueraDeBaseAt;
 
 const buildFilteredTransfersExportFileName = (statusFilter: string) => {
     const statusSlug =
@@ -202,7 +207,9 @@ const buildFilteredTransfersExportFileName = (statusFilter: string) => {
             ? 'todos'
             : statusFilter === MIXED_STATUS_FILTER
               ? 'estados_mixtos'
-              : statusFilter.replace(/\s+/g, '_');
+              : statusFilter === FUERA_DE_BASE_FILTER
+                ? 'no_estan_en_base'
+                : statusFilter.replace(/\s+/g, '_');
     return `Transferencias_${statusSlug}_${format(new Date(), 'yyyy-MM-dd_HHmm')}`;
 };
 
@@ -1246,7 +1253,7 @@ interface AdminViewProps {
     filters: TransferSearchFilters;
     setFilters: React.Dispatch<React.SetStateAction<TransferSearchFilters>>;
     onRefresh: () => void;
-    onSearch: () => void;
+    onSearch: (override?: Partial<TransferSearchFilters>) => void;
     role: UserRole;
     users: AppUser[];
     isUploading: boolean;
@@ -1714,8 +1721,17 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         if (filters.status === MIXED_STATUS_FILTER) {
             return filterToMixedStatusLines(base, transferIdToPlacaMap);
         }
+        if (filters.status === FUERA_DE_BASE_FILTER) {
+            return base.filter(isTransferFueraDeBase);
+        }
         return base.filter((t) => t.status === filters.status);
     }, [transfers, filters, transferIdToPlacaMap]);
+
+    /** Conteo rápido desde el pool operativo (sin lecturas extra). */
+    const fueraDeBaseQuickCount = useMemo(
+        () => operationalTransfers.filter(isTransferFueraDeBase).length,
+        [operationalTransfers]
+    );
 
     const groupedFilteredTransfers = useMemo(
         () => groupTransfersByTF(filteredTransfers, transferIdToPlacaMap),
@@ -2282,6 +2298,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                 <SelectContent>
                                     <SelectItem value="all">Todos</SelectItem>
                                     <SelectItem value={MIXED_STATUS_FILTER}>Estados mixtos</SelectItem>
+                                    <SelectItem value={FUERA_DE_BASE_FILTER}>No están en base</SelectItem>
                                     <SelectItem value="En Tránsito">En Tránsito</SelectItem>
                                     <SelectItem value="Recolectado en Ruta">Recolectado en Ruta</SelectItem>
                                     <SelectItem value="Entregado en Ruta">Entregado en Ruta</SelectItem>
@@ -2303,7 +2320,32 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                 <Input type="date" value={filters.endDate} onChange={e => setFilters(prev => ({...prev, endDate: e.target.value}))} />
                             </div>
                         </div>
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 flex-wrap">
+                            <Button
+                                type="button"
+                                variant={filters.status === FUERA_DE_BASE_FILTER ? 'default' : 'outline'}
+                                className={cn(
+                                    filters.status === FUERA_DE_BASE_FILTER
+                                        ? 'bg-red-600 hover:bg-red-700 text-white'
+                                        : 'border-red-300 text-red-700 hover:bg-red-50'
+                                )}
+                                disabled={isLoading}
+                                title="Recibido en Bodega que ya no vienen en el Excel del ERP"
+                                onClick={() => {
+                                    if (filters.status === FUERA_DE_BASE_FILTER) {
+                                        setFilters((prev) => ({ ...prev, status: 'all' }));
+                                        return;
+                                    }
+                                    setFilters((prev) => ({ ...prev, status: FUERA_DE_BASE_FILTER }));
+                                    onSearch({ status: FUERA_DE_BASE_FILTER });
+                                }}
+                            >
+                                <AlertCircle className="mr-2 h-4 w-4" />
+                                No están en base
+                                {fueraDeBaseQuickCount > 0 && (
+                                    <span className="ml-2 rounded-full bg-white/20 px-2 text-xs">{fueraDeBaseQuickCount}</span>
+                                )}
+                            </Button>
                             <Button onClick={onSearch} disabled={isLoading} className="flex-1">
                                 {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Search className="mr-2 h-4 w-4"/>}
                                 Buscar {filteredTransfers.length > 0 && <span className="ml-2 bg-primary-foreground text-primary px-2 rounded-full text-xs">{filteredTransfers.length}</span>}
@@ -2319,7 +2361,9 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                                 ? `Mostrando ${groupedFilteredTransfers.length} TFs únicas (${filteredTransfers.length} líneas halladas)${
                                       filters.status === MIXED_STATUS_FILTER
                                           ? ` · filtro estados mixtos`
-                                          : ''
+                                          : filters.status === FUERA_DE_BASE_FILTER
+                                            ? ` · no están en base`
+                                            : ''
                                   }`
                                 : 'No hay resultados'}
                         </span>
@@ -3630,9 +3674,11 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
         if (operationalStaleRef.current || tooOld) void fetchData();
     }, [fetchData]);
 
-    const handleSearch = useCallback(async () => {
-        const { numeroTF, codigoAlterno, bodegaOrigen, bodegaDestino, status, startDate, endDate } = filters;
+    const handleSearch = useCallback(async (override?: Partial<TransferSearchFilters>) => {
+        const merged = { ...filters, ...override };
+        const { numeroTF, codigoAlterno, bodegaOrigen, bodegaDestino, status, startDate, endDate } = merged;
         const isMixedFilter = status === MIXED_STATUS_FILTER;
+        const isFueraDeBaseFilter = status === FUERA_DE_BASE_FILTER;
 
         if (!numeroTF && !codigoAlterno && !bodegaOrigen && !bodegaDestino && status === 'all' && !startDate && !endDate) {
             toast({ title: "Filtros vacíos", description: "Por favor ingrese al menos un criterio de búsqueda (TF, Código alterno, Origen, Destino, Estado o Fecha)." });
@@ -3642,7 +3688,14 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
         setIsLoading(true);
         let result: { data?: TransferEntry[]; error?: string; mixedGroupCount?: number };
         try {
-            if (isMixedFilter && !numeroTF && !bodegaOrigen && !bodegaDestino) {
+            if (isFueraDeBaseFilter && !numeroTF && !codigoAlterno && !bodegaOrigen && !bodegaDestino && !startDate && !endDate) {
+                // Mismas lecturas que "Recibido en Bodega"; se filtra en cliente por fueraDeBaseAt.
+                const received = await getTransfersByStatus('Recibido en Bodega', 10000);
+                result = {
+                    data: (received.data || []).filter(isTransferFueraDeBase),
+                    error: received.error,
+                };
+            } else if (isMixedFilter && !numeroTF && !bodegaOrigen && !bodegaDestino) {
                 // Escaneo dedicado: solo TF con estados mixtos (por defecto desde mar-2026).
                 result = await findMixedStatusTransfers({
                     startDate: startDate ? new Date(startDate) : undefined,
@@ -3671,14 +3724,25 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
         if (result.error) {
             toast({ variant: 'destructive', title: 'Error en búsqueda', description: result.error });
         } else {
-            const sorted = (result.data || []).sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
+            let sorted = (result.data || []).sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
+            // Si se combinó con otros criterios, aplicar marca fuera de base en cliente.
+            if (isFueraDeBaseFilter) {
+                sorted = sorted.filter(isTransferFueraDeBase);
+            }
             setSearchResults(sorted);
             if (sorted.length === 0) {
                 toast({
                     title: 'Sin resultados',
-                    description: isMixedFilter
-                        ? 'No hay transferencias con estados mixtos en ese alcance.'
-                        : 'No se encontraron transferencias con esos criterios.',
+                    description: isFueraDeBaseFilter
+                        ? 'No hay transferencias marcadas como “no están en base”.'
+                        : isMixedFilter
+                          ? 'No hay transferencias con estados mixtos en ese alcance.'
+                          : 'No se encontraron transferencias con esos criterios.',
+                });
+            } else if (isFueraDeBaseFilter) {
+                toast({
+                    title: 'No están en base',
+                    description: `${sorted.length} línea(s) en Recibido en Bodega que ya no vienen en el Excel del ERP.`,
                 });
             } else if (isMixedFilter && result.mixedGroupCount != null) {
                 toast({
