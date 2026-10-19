@@ -8,12 +8,7 @@ import type { RouteTaskAction } from '@/app/routeTaskActions';
 import { compressImage, enqueueDelivery, type QueuedPhoto, type QueuedRouteSubmission } from '@/lib/podQueue';
 import { MAX_DELIVERY_PHOTOS, NOT_DELIVERED_REASONS, PHOTO_CATEGORIES, routeTaskLabel } from '@/lib/pod';
 import { isMessengerDriver } from '@/lib/collectionRouting';
-import {
-  computeMessengerDayOrders,
-  pointPriority,
-  preferredStopLabel,
-  stopGroupKey,
-} from '@/lib/messengerRouteOrder';
+import { pointPriority, preferredStopLabel, stopGroupKey } from '@/lib/messengerRouteOrder';
 import type { DeliveryPhotoCategory, DriverRouteTask, TransferActor } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -83,9 +78,7 @@ export const deliverOrderOf = (t: DriverRouteTask) => t.deliverOrder ?? (t.picku
  * Las entregas bloqueadas NO mueven el orden de paradas (evita que CAJÓN/tiendas salten a mitad de ruta).
  */
 export function groupRouteTasks(tasks: DriverRouteTask[], queuedTaskIds: Set<string> = new Set()): Group[] {
-  // Órdenes en memoria + misma tienda aunque diga B1 / BR 01.
-  const orderedList = computeMessengerDayOrders(tasks);
-  const byId = new Map(orderedList.map((t) => [t.id, t]));
+  // Respeta order/deliverOrder guardados (Reordenar Norte u orden pegado). Unifica B1 / BR 01.
   const labelsByStop = new Map<string, string[]>();
 
   const map = new Map<string, Group>();
@@ -105,8 +98,7 @@ export function groupRouteTasks(tasks: DriverRouteTask[], queuedTaskIds: Set<str
     labs.push(rawPoint);
     labelsByStop.set(sk, labs);
   };
-  tasks.forEach((orig) => {
-    const t = byId.get(orig.id) || orig;
+  tasks.forEach((t) => {
     const queued = queuedTaskIds.has(t.id);
     if (t.status === 'por_recoger') {
       if (!queued) {

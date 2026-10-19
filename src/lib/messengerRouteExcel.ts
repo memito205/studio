@@ -1,6 +1,5 @@
 import * as XLSX from 'xlsx';
 import type { DriverRouteTask } from '@/types';
-import { computeMessengerDayOrders } from '@/lib/messengerRouteOrder';
 
 /** Misma estructura que exportNorteMessengerRoute (Rutas → Excel mensajero). */
 export type MessengerRouteExcelRow = {
@@ -31,7 +30,7 @@ function tfLabel(t: DriverRouteTask): string {
 
 /**
  * Arma filas RECOGER/ENTREGAR como el Excel del mensajero.
- * Orden por mensajero/día: CAJÓN → TRASLADOS → GARANTÍAS → tiendas (juntas) → CAJÓN dejar.
+ * Usa order/deliverOrder ya guardados (Reordenar Norte u orden pegado).
  */
 export function buildMessengerRouteExcelRows(tasks: DriverRouteTask[]): MessengerRouteExcelRow[] {
   type Action = { visit: number; day: string; tf: string; atributo: 'RECOGER' | 'ENTREGAR'; valor: string };
@@ -50,19 +49,20 @@ export function buildMessengerRouteExcelRows(tasks: DriverRouteTask[]): Messenge
     .sort()
     .forEach((key) => {
       const list = byKey.get(key) || [];
-      const ordered = computeMessengerDayOrders(list);
       const actions: Action[] = [];
-      ordered.forEach((t) => {
+      list.forEach((t) => {
         const tf = tfLabel(t);
         if (!tf) return;
         const day = t.day || '';
         const pickup = String(t.pickupPoint || '').trim();
         const deliver = String(t.deliverPoint || '').trim();
+        const pickOrd = typeof t.order === 'number' ? t.order : 9999;
+        const delOrd = typeof t.deliverOrder === 'number' ? t.deliverOrder : pickOrd + 5000;
         if (pickup) {
-          actions.push({ visit: t.order, day, tf, atributo: 'RECOGER', valor: pickup });
+          actions.push({ visit: pickOrd, day, tf, atributo: 'RECOGER', valor: pickup });
         }
         if (deliver) {
-          actions.push({ visit: t.deliverOrder, day, tf, atributo: 'ENTREGAR', valor: deliver });
+          actions.push({ visit: delOrd, day, tf, atributo: 'ENTREGAR', valor: deliver });
         }
       });
       actions.sort(

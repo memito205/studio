@@ -107,14 +107,28 @@ export function preferredStopLabel(labels: string[]): string {
 
 export type OrderedRouteTask = DriverRouteTask & { order: number; deliverOrder: number };
 
+/** Parsea texto del planificador: `B12, MOLINOS, B1` o saltos de línea. */
+export function parseRouteOrderText(text: string): string[] {
+  return String(text || '')
+    .split(/[,;\n\r\t]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+export type ComputeMessengerDayOrdersOpts = {
+  /** Orden pegado (como en el planificador). Los puntos de la ruta que no vengan van al final. */
+  customVisitOrder?: string[];
+};
+
 /**
- * Recalcula order/deliverOrder como el planificador Norte:
- * 1) CAJON NORTE primero si hay recogidas en cajón
- * 2) Secuencia estándar Norte (TRASLADOS → Pioneros → Garantías → tiendas…)
- * 3) Puntos extra (p. ej. BODEGA ECOMMERCE) después del estándar
- * 4) CAJON NORTE al cierre si hay entregas a cajón (dejar)
+ * Recalcula order/deliverOrder.
+ * Sin custom: secuencia planificador Norte.
+ * Con custom: el texto pegado manda (CAJÓN recogida sigue primero si no lo incluyeron).
  */
-export function computeMessengerDayOrders(tasks: DriverRouteTask[]): OrderedRouteTask[] {
+export function computeMessengerDayOrders(
+  tasks: DriverRouteTask[],
+  opts?: ComputeMessengerDayOrdersOpts
+): OrderedRouteTask[] {
   const active = tasks.filter((t) => t.status !== 'cancelada' && !t.reassignedTo);
   if (!active.length) return [];
 
@@ -140,21 +154,49 @@ export function computeMessengerDayOrders(tasks: DriverRouteTask[]): OrderedRout
     touch(t.deliverPoint, Math.min(dOrd, t.pickupPoint ? 9999 : ord));
   });
 
-  const visitKeys: string[] = [];
-  if (hasCajonPickup) visitKeys.push('CAJON NORTE');
-
-  STANDARD_NORTE_ROUTE.forEach((key) => {
-    if (points.has(key)) visitKeys.push(key);
+  const customKeys = (opts?.customVisitOrder || [])
+    .map((p) => toNorteKey(p))
+    .filter((k) => k && k !== 'CAJON NORTE#END');
+  const customUnique: string[] = [];
+  customKeys.forEach((k) => {
+    if (!customUnique.includes(k)) customUnique.push(k);
   });
+  const useCustom = customUnique.length > 0;
 
-  Array.from(points.entries())
-    .filter(([key]) => !NORTE_INDEX.has(key))
-    .sort((a, b) => a[1].hint - b[1].hint || a[0].localeCompare(b[0]))
-    .forEach(([key]) => visitKeys.push(key));
+  const visitKeys: string[] = [];
+  const pushVisit = (key: string) => {
+    if (!key || visitKeys.includes(key)) return;
+    visitKeys.push(key);
+  };
+
+  if (hasCajonPickup && !(useCustom && customUnique.includes('CAJON NORTE'))) {
+    pushVisit('CAJON NORTE');
+  }
+
+  if (useCustom) {
+    customUnique.forEach((key) => {
+      if (key === 'CAJON NORTE') {
+        if (hasCajonPickup || hasCajonDeliver) pushVisit('CAJON NORTE');
+        return;
+      }
+      if (points.has(key)) pushVisit(key);
+    });
+    Array.from(points.entries())
+      .sort((a, b) => a[1].hint - b[1].hint || a[0].localeCompare(b[0]))
+      .forEach(([key]) => pushVisit(key));
+  } else {
+    STANDARD_NORTE_ROUTE.forEach((key) => {
+      if (points.has(key)) pushVisit(key);
+    });
+    Array.from(points.entries())
+      .filter(([key]) => !NORTE_INDEX.has(key))
+      .sort((a, b) => a[1].hint - b[1].hint || a[0].localeCompare(b[0]))
+      .forEach(([key]) => pushVisit(key));
+  }
 
   if (hasCajonDeliver) {
-    if (hasCajonPickup) visitKeys.push('CAJON NORTE#END');
-    else if (!visitKeys.includes('CAJON NORTE')) visitKeys.push('CAJON NORTE');
+    if (hasCajonPickup) pushVisit('CAJON NORTE#END');
+    else pushVisit('CAJON NORTE');
   }
 
   const visitIndex = (point: string, kind: 'pickup' | 'deliver'): number => {

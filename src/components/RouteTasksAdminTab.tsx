@@ -3,7 +3,7 @@
 import React, { useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
-import { CheckCircle2, Download, ListOrdered, Loader2, Search, Undo2 } from 'lucide-react';
+import { CheckCircle2, ClipboardPaste, Download, ListOrdered, Loader2, Search, Undo2 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -13,14 +13,24 @@ import {
   reorderMessengerDayRoute,
 } from '@/app/routeTaskActions';
 import { ROUTE_TASK_STATUS } from '@/components/RouteTasksAssignView';
+import { deliverOrderOf } from '@/components/DriverRouteTasks';
 import { downloadMessengerRouteExcel } from '@/lib/messengerRouteExcel';
-import { computeMessengerDayOrders, preferredStopLabel, stopGroupKey } from '@/lib/messengerRouteOrder';
+import { parseRouteOrderText, preferredStopLabel, stopGroupKey } from '@/lib/messengerRouteOrder';
 import type { DriverRouteTask, DriverRouteTaskPhoto, DriverRouteTaskStatus, TransferActor } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 
 const fmt = (d?: Date) => (d ? format(new Date(d), 'dd/MM HH:mm') : '');
@@ -57,15 +67,14 @@ type DriverRoute = {
 
 const routeKey = (t: DriverRouteTask) => `${t.day}|${t.driverId}`;
 
-/** Avance por mensajero y día; paradas con prioridad CAJÓN → TRASLADOS → GARANTÍAS → tiendas. */
+/** Avance por mensajero y día; respeta order guardado (Norte o pegado). */
 function buildDriverRoutes(tasks: DriverRouteTask[]): DriverRoute[] {
   const byKey = new Map<string, DriverRouteTask[]>();
   tasks
     .filter((t) => t.status !== 'cancelada' && !t.reassignedTo)
     .forEach((t) => byKey.set(routeKey(t), [...(byKey.get(routeKey(t)) || []), t]));
   return Array.from(byKey.entries())
-    .map(([key, rawList]) => {
-      const list = computeMessengerDayOrders(rawList);
+    .map(([key, list]) => {
       const lines: Array<StopLine & { point: string; locked?: boolean }> = [];
       list.forEach((t) => {
         if (t.pickupPoint) {
@@ -73,7 +82,7 @@ function buildDriverRoutes(tasks: DriverRouteTask[]): DriverRoute[] {
             task: t,
             kind: 'recoger',
             point: t.pickupPoint,
-            order: t.order,
+            order: t.order ?? 9999,
             state: t.pickedAt ? 'hecho' : t.status === 'no_recogida' ? 'novedad' : 'pendiente',
           });
         }
@@ -83,7 +92,7 @@ function buildDriverRoutes(tasks: DriverRouteTask[]): DriverRoute[] {
           task: t,
           kind: 'entregar',
           point: t.deliverPoint,
-          order: t.deliverOrder,
+          order: deliverOrderOf(t),
           locked,
           state: t.status === 'entregada' ? 'hecho' : t.status === 'no_entregada' ? 'novedad' : locked ? 'bloqueada' : 'pendiente',
         });
@@ -177,6 +186,8 @@ export function RouteTasksAdminTab() {
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [markingId, setMarkingId] = useState<string | null>(null);
   const [reorderingKey, setReorderingKey] = useState<string | null>(null);
+  const [customOrderOpen, setCustomOrderOpen] = useState(false);
+  const [customOrderText, setCustomOrderText] = useState('');
   const [filter, setFilter] = useState<DriverRouteTaskStatus | 'todas' | 'por_revalidar'>('todas');
   const [routeSel, setRouteSel] = useState<string | null>(null);
   const day = from === to ? from : `${from}_a_${to}`;
@@ -254,6 +265,44 @@ export function RouteTasksAdminTab() {
       description: res.updated
         ? `${res.updated} envío(s) actualizados. Excel y paradas usan el nuevo orden.`
         : 'El orden ya estaba correcto.',
+    });
+    void load();
+  };
+
+  const openCustomOrder = (r: { key: string; driverId: string; driverName: string; day: string; stops: Array<{ point: string }> }) => {
+    const stopNames = r.stops.map((s) => s.point).filter(Boolean);
+    setCustomOrderText(stopNames.join(', '));
+    setCustomOrderOpen(true);
+  };
+
+  const applyCustomOrder = async () => {
+    if (!actor || !selectedRoute) {
+      toast({ variant: 'destructive', title: 'Sesión', description: 'Inicie sesión para aplicar el orden.' });
+      return;
+    }
+    const customOrder = parseRouteOrderText(customOrderText);
+    if (!customOrder.length) {
+      toast({ variant: 'destructive', title: 'Orden vacío', description: 'Escriba paradas separadas por coma, ej. B12, MOLINOS, B1' });
+      return;
+    }
+    setReorderingKey(selectedRoute.key);
+    const res = await reorderMessengerDayRoute({
+      driverId: selectedRoute.driverId,
+      day: selectedRoute.day,
+      actor,
+      customOrder,
+    });
+    setReorderingKey(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'No se pudo aplicar el orden', description: res.error });
+      return;
+    }
+    setCustomOrderOpen(false);
+    toast({
+      title: 'Orden personalizado aplicado',
+      description: res.updated
+        ? `${res.updated} envío(s) actualizados con el texto pegado. Lo que no estaba en la lista quedó al final.`
+        : 'El orden ya coincidía con el texto.',
     });
     void load();
   };
@@ -368,6 +417,7 @@ export function RouteTasksAdminTab() {
   };
 
   return (
+    <>
     <Card>
       <CardHeader>
         <CardTitle>Recolecciones de ruta</CardTitle>
@@ -480,6 +530,15 @@ export function RouteTasksAdminTab() {
                             <ListOrdered className="mr-1 h-3.5 w-3.5" />
                           )}
                           Reordenar ruta
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={reorderingKey === selectedRoute.key}
+                          onClick={() => openCustomOrder(selectedRoute)}
+                        >
+                          <ClipboardPaste className="mr-1 h-3.5 w-3.5" />
+                          Orden personalizado
                         </Button>
                         <Button
                           size="sm"
@@ -668,5 +727,38 @@ export function RouteTasksAdminTab() {
         )}
       </CardContent>
     </Card>
+
+    <Dialog open={customOrderOpen} onOpenChange={setCustomOrderOpen}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Orden personalizado</DialogTitle>
+          <DialogDescription>
+            Igual que en el planificador: pegue paradas separadas por coma. Se aplican primero las del texto; las que
+            falten en la lista quedan al final.
+            {selectedRoute ? ` · ${selectedRoute.driverName} · ${selectedRoute.day}` : ''}
+          </DialogDescription>
+        </DialogHeader>
+        <Textarea
+          className="min-h-[140px] font-mono text-sm"
+          value={customOrderText}
+          onChange={(e) => setCustomOrderText(e.target.value)}
+          placeholder="TRASLADOS, BODEGA PIONEROS, GARANTIAS, B12, MOLINOS, B1..."
+          autoFocus
+        />
+        <p className="text-xs text-muted-foreground">
+          Acepta B12 o BR 12, MOL o MOLINOS. Si hay recogidas en cajón y no lo pone, CAJÓN NORTE sigue de primero.
+        </p>
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button variant="outline" onClick={() => setCustomOrderOpen(false)} disabled={!!reorderingKey}>
+            Cancelar
+          </Button>
+          <Button onClick={() => void applyCustomOrder()} disabled={!!reorderingKey || !customOrderText.trim()}>
+            {reorderingKey ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ClipboardPaste className="mr-2 h-4 w-4" />}
+            Aplicar orden
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

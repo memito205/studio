@@ -307,14 +307,17 @@ export async function createRouteTasks(input: {
 }
 
 /**
- * Reescribe order/deliverOrder del día del mensajero con la secuencia del planificador Norte
- * (CAJÓN si hay recogida → TRASLADOS → Pioneros → Garantías → B5…B20 → extras → CAJÓN dejar).
+ * Reescribe order/deliverOrder del día del mensajero.
+ * Sin `customOrder`: secuencia planificador Norte.
+ * Con `customOrder` (texto tipo "B12, MOL, B1"): mismo criterio que Importar orden del planificador.
  * Lecturas: 1 query por `day` y filtro en memoria por mensajero.
  */
 export async function reorderMessengerDayRoute(input: {
   driverId: string;
   day: string;
   actor?: TransferActor;
+  /** Paradas en el orden deseado (ya parseadas). */
+  customOrder?: string[];
 }): Promise<{ success: boolean; updated?: number; error?: string }> {
   if (!input.driverId) return { success: false, error: 'Mensajero requerido.' };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.day)) return { success: false, error: 'Día inválido.' };
@@ -326,7 +329,8 @@ export async function reorderMessengerDayRoute(input: {
       .filter((t) => t.status !== 'cancelada' && !t.reassignedTo);
     if (!tasks.length) return { success: true, updated: 0 };
 
-    const ordered = computeMessengerDayOrders(tasks);
+    const custom = (input.customOrder || []).map((s) => String(s || '').trim()).filter(Boolean);
+    const ordered = computeMessengerDayOrders(tasks, custom.length ? { customVisitOrder: custom } : undefined);
     const byId = new Map(ordered.map((t) => [t.id, t]));
     const batches = [writeBatch(firestore)];
     let updated = 0;
