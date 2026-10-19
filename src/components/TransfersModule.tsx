@@ -1853,7 +1853,21 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     
     const handleCreateManifest = async () => {
         if (!manifestDetails.resource || !manifestDetails.driver) {
-            toast({ variant: 'destructive', title: 'Datos incompletos', description: 'Placa y conductor son obligatorios.'});
+            toast({
+              variant: 'destructive',
+              title: 'Datos incompletos',
+              description: lastMileEnabled
+                ? 'Tramo camión: indique placa y conductor del camión (caja ámbar o este diálogo).'
+                : 'Placa y conductor son obligatorios.',
+            });
+            return;
+        }
+        if (!manifestDriverUserId) {
+            toast({
+              variant: 'destructive',
+              title: 'Conductor sin app',
+              description: 'Elija el conductor con usuario de la app (así le aparece la relación en Mis entregas).',
+            });
             return;
         }
         if (selectedForManifest.size === 0) {
@@ -1871,6 +1885,14 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             }
             if (lastMilePlaca.trim().length < 3) {
                 toast({ variant: 'destructive', title: 'Última milla', description: 'Placa del mensajero (mín. 3 caracteres).' });
+                return;
+            }
+            if (manifestDriverUserId === lastMileMessengerUserId) {
+                toast({
+                  variant: 'destructive',
+                  title: 'Última milla',
+                  description: 'El conductor del camión y el mensajero deben ser personas distintas.',
+                });
                 return;
             }
         }
@@ -2085,12 +2107,15 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
+              <p className="text-xs font-semibold uppercase text-muted-foreground">
+                {lastMileEnabled ? 'Tramo 1 · Camión (handoff)' : 'Datos de la relación'}
+              </p>
               <div className="space-y-2">
                 <Label htmlFor="resource">Recurso / Placa (camión)</Label>
                 <Input id="resource" value={manifestDetails.resource} onChange={(e) => setManifestDetails(prev => ({...prev, resource: e.target.value}))} />
               </div>
                <div className="space-y-2">
-                <Label htmlFor="driver">Conductor (camión)</Label>
+                <Label htmlFor="driver">Conductor camión (app)</Label>
                 <DriverUserSelect
                     id="driver"
                     value={{ driverUserId: manifestDriverUserId, driver: manifestDetails.driver }}
@@ -2918,8 +2943,8 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                            <div className="space-y-1">
                              <p className="font-semibold text-amber-950">Última milla por mensajero</p>
                              <p className="text-xs text-amber-900/80">
-                               Actívelo si el camión solo entrega al mensajero. El camión registra handoff (foto);
-                               el mensajero entrega en tienda con remisión. Orden en su ruta/Excel: camión → Cajón Norte → tiendas.
+                               Dos tramos: <b>1) Camión</b> (lleva y hace handoff con foto) → <b>2) Mensajero</b> (entrega en tienda con remisión).
+                               Ordén en ruta/Excel del mensajero: camión → Cajón Norte → tiendas.
                              </p>
                            </div>
                            <div className="flex items-center gap-2 shrink-0">
@@ -2934,25 +2959,62 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                            </div>
                          </div>
                          {lastMileEnabled && (
-                           <div className="grid gap-3 md:grid-cols-3 pt-1 border-t border-amber-200">
-                             <div className="space-y-1 md:col-span-1">
-                               <Label className="text-xs">Mensajero (app)</Label>
-                               <DriverUserSelect
-                                 id="last-mile-messenger-main"
-                                 value={{ driverUserId: lastMileMessengerUserId, driver: lastMileMessengerName }}
-                                 onChange={(v) => {
-                                   setLastMileMessengerUserId(v.driverUserId);
-                                   setLastMileMessengerName(v.driver);
-                                 }}
-                               />
+                           <div className="space-y-3 pt-1 border-t border-amber-200">
+                             <div className="rounded-md border border-amber-300 bg-white/70 p-3 space-y-2">
+                               <p className="text-xs font-semibold uppercase tracking-wide text-amber-950">
+                                 Tramo 1 · Camión (quién lleva y entrega al mensajero)
+                               </p>
+                               <div className="grid gap-3 md:grid-cols-2">
+                                 <div className="space-y-1">
+                                   <Label htmlFor="truck-placa-main" className="text-xs">Placa camión *</Label>
+                                   <Input
+                                     id="truck-placa-main"
+                                     value={manifestDetails.resource}
+                                     onChange={(e) => setManifestDetails((prev) => ({ ...prev, resource: e.target.value }))}
+                                     placeholder="ESR736"
+                                   />
+                                 </div>
+                                 <div className="space-y-1">
+                                   <Label className="text-xs">Conductor camión (app) *</Label>
+                                   <DriverUserSelect
+                                     id="truck-driver-main"
+                                     value={{ driverUserId: manifestDriverUserId, driver: manifestDetails.driver }}
+                                     onChange={(v) => {
+                                       setManifestDriverUserId(v.driverUserId);
+                                       setManifestDetails((prev) => ({ ...prev, driver: v.driver }));
+                                     }}
+                                   />
+                                 </div>
+                               </div>
+                               <p className="text-[11px] text-amber-900/70">
+                                 Esa relación le aparece en Mis entregas del conductor del camión como parada “Handoff → mensajero”.
+                               </p>
                              </div>
-                             <div className="space-y-1">
-                               <Label htmlFor="last-mile-day-main" className="text-xs">Día ruta mensajero</Label>
-                               <Input id="last-mile-day-main" type="date" value={lastMileDay} onChange={(e) => setLastMileDay(e.target.value)} />
-                             </div>
-                             <div className="space-y-1">
-                               <Label htmlFor="last-mile-placa-main" className="text-xs">Placa mensajero</Label>
-                               <Input id="last-mile-placa-main" value={lastMilePlaca} onChange={(e) => setLastMilePlaca(e.target.value)} placeholder="ABC123" />
+                             <div className="rounded-md border border-amber-300 bg-white/70 p-3 space-y-2">
+                               <p className="text-xs font-semibold uppercase tracking-wide text-amber-950">
+                                 Tramo 2 · Mensajero (quién entrega en tienda)
+                               </p>
+                               <div className="grid gap-3 md:grid-cols-3">
+                                 <div className="space-y-1 md:col-span-1">
+                                   <Label className="text-xs">Mensajero (app) *</Label>
+                                   <DriverUserSelect
+                                     id="last-mile-messenger-main"
+                                     value={{ driverUserId: lastMileMessengerUserId, driver: lastMileMessengerName }}
+                                     onChange={(v) => {
+                                       setLastMileMessengerUserId(v.driverUserId);
+                                       setLastMileMessengerName(v.driver);
+                                     }}
+                                   />
+                                 </div>
+                                 <div className="space-y-1">
+                                   <Label htmlFor="last-mile-day-main" className="text-xs">Día ruta mensajero *</Label>
+                                   <Input id="last-mile-day-main" type="date" value={lastMileDay} onChange={(e) => setLastMileDay(e.target.value)} />
+                                 </div>
+                                 <div className="space-y-1">
+                                   <Label htmlFor="last-mile-placa-main" className="text-xs">Placa mensajero *</Label>
+                                   <Input id="last-mile-placa-main" value={lastMilePlaca} onChange={(e) => setLastMilePlaca(e.target.value)} placeholder="ABC123" />
+                                 </div>
+                               </div>
                              </div>
                            </div>
                          )}
