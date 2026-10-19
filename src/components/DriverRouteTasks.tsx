@@ -509,9 +509,22 @@ const renderGroupCards = (
             {' — registre de nuevo.'}
           </p>
         )}
+        {g.tasks.some((t) => t.waitingForHandoff) && (
+          <p className="rounded-md border border-orange-300 bg-orange-50 p-2 text-xs text-orange-950">
+            Esperando handoff del camión
+            {g.tasks.find((t) => t.handoffManifestNumber)
+              ? ` (relación #${g.tasks.find((t) => t.handoffManifestNumber)?.handoffManifestNumber})`
+              : ''}
+            . Cuando el camión registre la entrega al mensajero podrá recoger/entregar.
+          </p>
+        )}
         {g.locked ? (
           <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
             Se habilita cuando se registre la recogida y se actualice la lista.
+          </p>
+        ) : g.tasks.every((t) => t.waitingForHandoff) ? (
+          <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
+            Acciones bloqueadas hasta el handoff del camión.
           </p>
         ) : (
           <div className="grid grid-cols-2 gap-2">

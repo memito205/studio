@@ -122,6 +122,11 @@ export type NewRouteTask = {
   order?: number;
   deliverOrder?: number;
   notes?: string;
+  pickupKind?: 'camion' | 'cajon' | 'otro';
+  waitingForHandoff?: boolean;
+  handoffFromManifestId?: string;
+  handoffStopId?: string;
+  handoffManifestNumber?: number;
 };
 
 /**
@@ -162,10 +167,15 @@ export async function createRouteTasks(input: {
       };
     }
 
-    // Órdenes finales: reorderMessengerDayRoute (secuencia planificador Norte + CAJÓN al inicio si aplica).
+    // Órdenes finales: reorderMessengerDayRoute (camión → cajón → Norte).
     tasks.forEach((t) => {
-      if (isCajonPickupPoint(t.pickupPoint)) {
+      if (t.pickupKind === 'camion' || t.handoffFromManifestId) {
+        t.pickupKind = t.pickupKind || 'camion';
         t.order = t.order ?? 1;
+        if (t.deliverOrder == null) t.deliverOrder = 50;
+      } else if (isCajonPickupPoint(t.pickupPoint)) {
+        t.pickupKind = t.pickupKind || 'cajon';
+        t.order = t.order ?? 2;
         if (t.deliverOrder == null) t.deliverOrder = 50;
       }
     });
@@ -268,8 +278,17 @@ export async function createRouteTasks(input: {
           bodegaOrigen: first ? platformWhs(first.bodegaOrigen) || undefined : undefined,
           bodegaDestino: first ? platformWhs(first.bodegaDestino) || undefined : t.bodegaDestino,
           unidades: lines.reduce((n, l) => n + (Number(l.data.cantidad) || 0), 0),
-          pickupPoint: t.pickupPoint ? pickupStore?.nombreCorto || normPoint(t.pickupPoint) : undefined,
+          pickupPoint: t.pickupPoint
+            ? t.pickupKind === 'camion'
+              ? normPoint(t.pickupPoint)
+              : pickupStore?.nombreCorto || normPoint(t.pickupPoint)
+            : undefined,
           pickupStoreCode: pickupStore?.codigoErp,
+          pickupKind: t.pickupKind || (isCajonPickupPoint(t.pickupPoint) ? 'cajon' : undefined),
+          waitingForHandoff: t.waitingForHandoff === true ? true : undefined,
+          handoffFromManifestId: t.handoffFromManifestId || undefined,
+          handoffStopId: t.handoffStopId || undefined,
+          handoffManifestNumber: t.handoffManifestNumber || undefined,
           deliverPoint,
           deliverStoreCode: deliverStore?.codigoErp,
           deliverType: BODEGA_POINTS.includes(normPoint(t.deliverPoint)) || BODEGA_POINTS.includes(normPoint(deliverPoint)) ? 'bodega' : 'tienda',
@@ -683,6 +702,13 @@ export async function submitRouteTasks(
       if (tasks.length === 0) throw new Error('Las tareas ya no existen.');
       if (tasks.every((x) => x.raw.lastSubmissionId === submissionId)) return { success: true, already: true };
       cajonPlatformIds.clear();
+      const waiting = tasks.find((x) => x.t.waitingForHandoff === true);
+      if (waiting) {
+        const rel = waiting.t.handoffManifestNumber ? ` #${waiting.t.handoffManifestNumber}` : '';
+        throw new Error(
+          `La TF ${waiting.t.numeroTF} espera el handoff del camión (relación${rel}). El camión debe registrar “Entregar a mensajero” antes de recoger/entregar.`
+        );
+      }
       const expected = action === 'recoger' || action === 'no_recoger' ? 'por_recoger' : 'por_entregar';
       const stale = tasks.find((x) => x.t.status !== expected);
       if (stale) {

@@ -17,6 +17,7 @@ import {
   updateDoc,
   where,
   documentId,
+  writeBatch,
   type DocumentData,
 } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
@@ -370,6 +371,63 @@ export async function submitDeliveryStop(
       const tSnaps = await Promise.all(transferIds.map((id) => tx.get(doc(firestore, 'transfers', id))));
       const tfOf = (d: (typeof tSnaps)[number]) => String(d.data()?.numeroTF || d.id).trim();
 
+      /** Camión → mensajero: prueba de intercambio; TF siguen Enviado a Destino para la entrega en tienda. */
+      if (stop.stopKind === 'handoff_mensajero') {
+        if (photos.length === 0) throw new Error('Tome foto de la mercancía entregada al mensajero.');
+        const receiver = String(input.receivedByName || '').trim();
+        if (!receiver) throw new Error('Escriba el nombre del mensajero que recibe.');
+        const now = Timestamp.now();
+        const deliveredIds: string[] = [];
+        tSnaps.forEach((d) => {
+          if (!d.exists()) return;
+          deliveredIds.push(d.id);
+          tx.update(
+            d.ref,
+            clean({
+              lastMilePendingHandoff: deleteField(),
+              handoffAt: now,
+              handoffBy: actor.userId,
+              handoffByName: actorName,
+              handoffReceivedByName: receiver,
+              handoffManifestDocId: manifestDocId,
+              handoffStopId: stopId,
+              handoffPhotos: photos.map((p) => ({ ...p, uploadedAt: now })),
+              statusHistory: arrayUnion({
+                status: 'Enviado a Destino',
+                at: now,
+                userId: actor.userId,
+                userName: `${actorName} (handoff → ${receiver})`,
+              }),
+            })
+          );
+        });
+        const gps = input.gps
+          ? { lat: input.gps.lat, lng: input.gps.lng, accuracyM: input.gps.accuracyM, at: Timestamp.fromDate(new Date(input.gps.at)) }
+          : null;
+        tx.update(
+          stopRef,
+          clean({
+            status: 'entregada' as DeliveryStopStatus,
+            deliveredTransferIds: deliveredIds,
+            notDeliveredTransferIds: [],
+            photos: photos.map((p) => ({ ...p, uploadedAt: now })),
+            gps,
+            receivedByName: receiver,
+            notes: String(input.notes || '').trim() || undefined,
+            completedAt: now,
+            completedById: actor.userId,
+            completedByName: actorName,
+            submissionId,
+          })
+        );
+        tx.update(manifestRef, {
+          stopsDone: 1,
+          deliveryStatus: 'pendiente_validacion',
+          deliveryCompletedAt: now,
+        });
+        return { success: true, stopStatus: 'entregada' as DeliveryStopStatus, unlockMessengerHandoff: true };
+      }
+
       const storeReceivedTfs = new Set(tSnaps.filter((d) => d.data()?.storeReceivedAt).map(tfOf));
       const missing = Array.from(new Set(tSnaps.map(tfOf))).filter(
         (tf) => !delivered.has(tf) && !notDelivered.has(tf) && !storeReceivedTfs.has(tf)
@@ -499,11 +557,34 @@ export async function submitDeliveryStop(
     if (result.success && !result.already && publish.value) {
       await publishPodToPlatform(publish.value).catch((e) => console.error('Entrega registrada sin estado plataforma:', e));
     }
+    if (result.success && !result.already && (result as { unlockMessengerHandoff?: boolean }).unlockMessengerHandoff) {
+      await unlockMessengerTasksAfterHandoff(manifestDocId).catch((e) =>
+        console.error('Handoff OK pero no se desbloquearon tareas del mensajero:', e)
+      );
+    }
     return result;
   } catch (error: any) {
     console.error('Error registrando entrega:', error);
     return { success: false, error: error.message || 'No se pudo registrar la entrega.' };
   }
+}
+
+/** Tras handoff del camión: el mensajero ya puede recoger/entregar esas TF en su ruta. */
+async function unlockMessengerTasksAfterHandoff(manifestDocId: string): Promise<number> {
+  const snap = await getDocs(
+    query(collection(firestore, 'routeTasks'), where('handoffFromManifestId', '==', manifestDocId))
+  );
+  const pending = snap.docs.filter((d) => d.data().waitingForHandoff === true);
+  if (pending.length === 0) return 0;
+  let unlocked = 0;
+  for (let i = 0; i < pending.length; i += 400) {
+    const batch = writeBatch(firestore);
+    const chunk = pending.slice(i, i + 400);
+    chunk.forEach((d) => batch.update(d.ref, { waitingForHandoff: deleteField() }));
+    await batch.commit();
+    unlocked += chunk.length;
+  }
+  return unlocked;
 }
 
 const actorNameOf = (actor: TransferActor) => (actor.displayName || '').trim() || actor.userId;

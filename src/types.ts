@@ -567,6 +567,14 @@ export interface DeliveryManifest {
     verificationName?: string;
     /** Usuario (perfil conductor) asignado; sin él la relación no aparece en la app del conductor. */
     driverUserId?: string;
+    /**
+     * Última milla por mensajero: el camión solo hace handoff (prueba de intercambio);
+     * el mensajero entrega en tienda con remisión (su ruta / Excel).
+     */
+    lastMileMessengerUserId?: string;
+    lastMileMessengerName?: string;
+    lastMileDay?: string;
+    lastMileMessengerPlaca?: string;
     /** Ausente en relaciones anteriores a pruebas de entrega. */
     deliveryStatus?: DeliveryManifestStatus;
     stopsCount?: number;
@@ -616,6 +624,10 @@ export type DeliveryStopStatus = 'pendiente' | 'entregada' | 'parcial' | 'no_ent
 export interface DeliveryManifestStop {
     id: string;
     order: number;
+    /** `handoff_mensajero` = entrega camión → mensajero (no tienda). */
+    stopKind?: 'tienda' | 'handoff_mensajero';
+    handoffMessengerUserId?: string;
+    handoffMessengerName?: string;
     /** Código destino tal como viene en las TF (bodegaDestino). */
     destino: string;
     /** Código ERP del maestro de tiendas, si se encontró. */
@@ -715,6 +727,16 @@ export interface DriverRouteTask {
     /** Punto donde se recoge (vacío = ya va en el vehículo, solo entregar). */
     pickupPoint?: string;
     pickupStoreCode?: string;
+    /** Origen de la recogida: camión (handoff) manda primero en el orden del día. */
+    pickupKind?: 'camion' | 'cajon' | 'otro';
+    /**
+     * Esperando que el camión cierre el handoff en su relación.
+     * Mientras sea true no se puede entregar en tienda / cajón.
+     */
+    waitingForHandoff?: boolean;
+    handoffFromManifestId?: string;
+    handoffStopId?: string;
+    handoffManifestNumber?: number;
     /** Punto donde se entrega. `bodega` = la deja en bodega (sigue la recepción normal). */
     deliverPoint: string;
     deliverStoreCode?: string;

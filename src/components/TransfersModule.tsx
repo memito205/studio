@@ -1288,6 +1288,11 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     const [isCreateManifestOpen, setIsCreateManifestOpen] = useState(false);
     const [manifestDetails, setManifestDetails] = useState<{ resource: string, driver: string, assistants: string }>({ resource: '', driver: '', assistants: '' });
     const [manifestDriverUserId, setManifestDriverUserId] = useState<string | undefined>(undefined);
+    const [lastMileEnabled, setLastMileEnabled] = useState(false);
+    const [lastMileMessengerUserId, setLastMileMessengerUserId] = useState<string | undefined>(undefined);
+    const [lastMileMessengerName, setLastMileMessengerName] = useState('');
+    const [lastMileDay, setLastMileDay] = useState(() => format(new Date(), 'yyyy-MM-dd'));
+    const [lastMilePlaca, setLastMilePlaca] = useState('');
     const [isSavingManifest, setIsSavingManifest] = useState(false);
     const [selectedManifest, setSelectedManifest] = useState<DeliveryManifest | null>(null);
     const [isManifestDetailsOpen, setIsManifestDetailsOpen] = useState(false);
@@ -1854,11 +1859,33 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             toast({ variant: 'destructive', title: 'Sin selección', description: 'Debe seleccionar al menos una transferencia.'});
             return;
         }
+        if (lastMileEnabled) {
+            if (!lastMileMessengerUserId || !lastMileMessengerName.trim()) {
+                toast({ variant: 'destructive', title: 'Última milla', description: 'Elija el mensajero (usuario con app).' });
+                return;
+            }
+            if (!lastMileDay) {
+                toast({ variant: 'destructive', title: 'Última milla', description: 'Indique el día de la ruta del mensajero.' });
+                return;
+            }
+            if (lastMilePlaca.trim().length < 3) {
+                toast({ variant: 'destructive', title: 'Última milla', description: 'Placa del mensajero (mín. 3 caracteres).' });
+                return;
+            }
+        }
         setIsSavingManifest(true);
         const manifestTransferIds = Array.from(selectedForManifest);
         const result = await createDeliveryManifest({
             ...manifestDetails,
             ...(manifestDriverUserId ? { driverUserId: manifestDriverUserId } : {}),
+            ...(lastMileEnabled
+              ? {
+                  lastMileMessengerUserId,
+                  lastMileMessengerName: lastMileMessengerName.trim(),
+                  lastMileDay,
+                  lastMileMessengerPlaca: lastMilePlaca.trim().toUpperCase(),
+                }
+              : {}),
             transferIds: manifestTransferIds,
             summary: {
                 totalTransfers: manifestSummary.totalItems,
@@ -1872,7 +1899,12 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             if (activeDraftId) {
                 await closeDeliveryManifestDraft(activeDraftId);
             }
-            toast({ title: 'Manifiesto Creado', description: 'La relación de entrega ha sido guardada.' });
+            toast({
+              title: 'Manifiesto Creado',
+              description: lastMileEnabled
+                ? `Relación de handoff creada. Ruta del mensajero: ${result.messengerTasksCreated || 0} TF (orden: camión → cajón → tiendas).`
+                : 'La relación de entrega ha sido guardada.',
+            });
             onTransfersChanged(manifestTransferIds);
             skipDraftAutosaveRef.current = true;
             setSelectedForManifest(new Set());
@@ -1880,6 +1912,10 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
             setActiveDraftNumber(null);
             setManifestDetails({ resource: '', driver: '', assistants: '' });
             setManifestDriverUserId(undefined);
+            setLastMileEnabled(false);
+            setLastMileMessengerUserId(undefined);
+            setLastMileMessengerName('');
+            setLastMilePlaca('');
             setIsCreateManifestOpen(false);
             fetchManifestData();
             void refreshOpenDrafts();
@@ -2040,7 +2076,7 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         />
       )}
       <Dialog open={isCreateManifestOpen} onOpenChange={setIsCreateManifestOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Crear Relación de Entrega (Manifiesto)</DialogTitle>
             <DialogDescription>
@@ -2049,11 +2085,11 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
           </DialogHeader>
           <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label htmlFor="resource">Recurso / Placa</Label>
+                <Label htmlFor="resource">Recurso / Placa (camión)</Label>
                 <Input id="resource" value={manifestDetails.resource} onChange={(e) => setManifestDetails(prev => ({...prev, resource: e.target.value}))} />
               </div>
                <div className="space-y-2">
-                <Label htmlFor="driver">Conductor</Label>
+                <Label htmlFor="driver">Conductor (camión)</Label>
                 <DriverUserSelect
                     id="driver"
                     value={{ driverUserId: manifestDriverUserId, driver: manifestDetails.driver }}
@@ -2066,6 +2102,47 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
                <div className="space-y-2">
                 <Label htmlFor="assistants">Auxiliares</Label>
                 <Input id="assistants" value={manifestDetails.assistants} onChange={(e) => setManifestDetails(prev => ({...prev, assistants: e.target.value}))} />
+              </div>
+              <div className="rounded-md border p-3 space-y-3">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <Checkbox
+                    checked={lastMileEnabled}
+                    onCheckedChange={(c) => setLastMileEnabled(!!c)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="font-medium text-sm">Última milla por mensajero</span>
+                    <span className="block text-xs text-muted-foreground mt-0.5">
+                      El camión solo registra entrega al mensajero (foto + nombre). El mensajero entrega en tienda con remisión.
+                      En su ruta/Excel: 1º camión, 2º Cajón Norte, luego tiendas. Bloqueado hasta el handoff.
+                    </span>
+                  </span>
+                </label>
+                {lastMileEnabled && (
+                  <div className="space-y-3 pl-6">
+                    <div className="space-y-2">
+                      <Label>Mensajero (app)</Label>
+                      <DriverUserSelect
+                        id="last-mile-messenger"
+                        value={{ driverUserId: lastMileMessengerUserId, driver: lastMileMessengerName }}
+                        onChange={(v) => {
+                          setLastMileMessengerUserId(v.driverUserId);
+                          setLastMileMessengerName(v.driver);
+                        }}
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="last-mile-day">Día ruta mensajero</Label>
+                        <Input id="last-mile-day" type="date" value={lastMileDay} onChange={(e) => setLastMileDay(e.target.value)} />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="last-mile-placa">Placa mensajero</Label>
+                        <Input id="last-mile-placa" value={lastMilePlaca} onChange={(e) => setLastMilePlaca(e.target.value)} placeholder="ABC123" />
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
           </div>
           <DialogFooter>

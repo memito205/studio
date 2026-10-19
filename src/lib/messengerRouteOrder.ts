@@ -50,6 +50,19 @@ export function isCajonPoint(point: unknown): boolean {
   return /CAJ[OÓ]N/i.test(String(point || ''));
 }
 
+/** Recogida que viene de camión (última milla / handoff). Va antes que Cajón Norte. */
+export function isTruckHandoffTask(t: {
+  pickupKind?: string | null;
+  handoffFromManifestId?: string | null;
+  pickupPoint?: string | null;
+}): boolean {
+  if (t.pickupKind === 'camion') return true;
+  if (t.handoffFromManifestId) return true;
+  return /^CAMION\b/i.test(String(t.pickupPoint || '').trim());
+}
+
+const HANDOFF_VISIT_PREFIX = 'HANDOFF:';
+
 /**
  * Normaliza nombres de la app al código del planificador Norte.
  * Ej: "BR 12" → B12, "MOL" → MOLINOS, "B2 JUNIN" → B2, "GARANTÍAS" → GARANTIAS.
@@ -122,8 +135,11 @@ export type ComputeMessengerDayOrdersOpts = {
 
 /**
  * Recalcula order/deliverOrder.
- * Sin custom: secuencia planificador Norte.
- * Con custom: el texto pegado manda (CAJÓN recogida sigue primero si no lo incluyeron).
+ * Prioridad fija de visitas:
+ *  1) Recogidas de camión (handoff / última milla)
+ *  2) Cajón Norte (recogida)
+ *  3) Ruta Norte / orden pegado
+ *  4) Cajón Norte (entrega al final, si aplica)
  */
 export function computeMessengerDayOrders(
   tasks: DriverRouteTask[],
@@ -135,11 +151,23 @@ export function computeMessengerDayOrders(
   const hasCajonPickup = active.some((t) => t.pickupPoint && isCajonPoint(t.pickupPoint));
   const hasCajonDeliver = active.some((t) => isCajonPoint(t.deliverPoint));
 
+  /** Etiquetas de puntos de cruce camión (CAMION ESR736, …), orden estable. */
+  const handoffPickupLabels: string[] = [];
+  active.forEach((t) => {
+    if (!isTruckHandoffTask(t) || !t.pickupPoint || isCajonPoint(t.pickupPoint)) return;
+    const label = norm(t.pickupPoint);
+    if (label && !handoffPickupLabels.includes(label)) handoffPickupLabels.push(label);
+  });
+  handoffPickupLabels.sort((a, b) => a.localeCompare(b));
+
   type Meta = { hint: number };
   const points = new Map<string, Meta>();
 
   const touch = (raw: unknown, hint: number) => {
     if (!raw) return;
+    if (isCajonPoint(raw)) return;
+    // Los puntos CAMION* se ordenan aparte (siempre primero).
+    if (/^CAMION\b/i.test(String(raw).trim())) return;
     const key = toNorteKey(raw);
     if (!key || key === 'CAJON NORTE') return;
     const prev = points.get(key);
@@ -150,7 +178,7 @@ export function computeMessengerDayOrders(
   active.forEach((t) => {
     const ord = typeof t.order === 'number' ? t.order : 9999;
     const dOrd = typeof t.deliverOrder === 'number' ? t.deliverOrder : 9999;
-    touch(t.pickupPoint, ord);
+    if (!isTruckHandoffTask(t)) touch(t.pickupPoint, ord);
     touch(t.deliverPoint, Math.min(dOrd, t.pickupPoint ? 9999 : ord));
   });
 
@@ -169,6 +197,10 @@ export function computeMessengerDayOrders(
     visitKeys.push(key);
   };
 
+  // 1) Siempre primero: lo que viene de los camiones.
+  handoffPickupLabels.forEach((label) => pushVisit(HANDOFF_VISIT_PREFIX + label));
+
+  // 2) Cajón Norte (recogida) — primero o segundo.
   if (hasCajonPickup && !(useCustom && customUnique.includes('CAJON NORTE'))) {
     pushVisit('CAJON NORTE');
   }
@@ -199,7 +231,11 @@ export function computeMessengerDayOrders(
     else pushVisit('CAJON NORTE');
   }
 
-  const visitIndex = (point: string, kind: 'pickup' | 'deliver'): number => {
+  const visitIndex = (point: string, kind: 'pickup' | 'deliver', task?: DriverRouteTask): number => {
+    if (kind === 'pickup' && task && isTruckHandoffTask(task) && point) {
+      const idx = visitKeys.indexOf(HANDOFF_VISIT_PREFIX + norm(point));
+      return idx >= 0 ? idx : 0;
+    }
     const key = toNorteKey(point);
     if (kind === 'deliver' && key === 'CAJON NORTE') {
       const end = visitKeys.indexOf('CAJON NORTE#END');
@@ -208,7 +244,7 @@ export function computeMessengerDayOrders(
     }
     if (kind === 'pickup' && key === 'CAJON NORTE') {
       const idx = visitKeys.indexOf('CAJON NORTE');
-      return idx >= 0 ? idx : 0;
+      return idx >= 0 ? idx : handoffPickupLabels.length > 0 ? 1 : 0;
     }
     const idx = visitKeys.indexOf(key);
     return idx >= 0 ? idx : 1000 + norteRank(point);
@@ -217,8 +253,8 @@ export function computeMessengerDayOrders(
   return active.map((t) => {
     const pickup = t.pickupPoint ? norm(t.pickupPoint) : '';
     const deliver = norm(t.deliverPoint);
-    const order = pickup ? visitIndex(pickup, 'pickup') + 1 : undefined;
-    let deliverOrder = deliver ? visitIndex(deliver, 'deliver') + 1 : undefined;
+    const order = pickup ? visitIndex(pickup, 'pickup', t) + 1 : undefined;
+    let deliverOrder = deliver ? visitIndex(deliver, 'deliver', t) + 1 : undefined;
     if (order != null && deliverOrder != null && deliverOrder <= order) {
       deliverOrder = order + 1;
     }

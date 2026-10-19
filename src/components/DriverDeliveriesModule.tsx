@@ -135,18 +135,24 @@ const DeliveryForm: React.FC<{
 
   useEffect(() => () => photos.forEach((p) => URL.revokeObjectURL(p.preview)), []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const isHandoff = stop.stopKind === 'handoff_mensajero';
+  useEffect(() => {
+    if (isHandoff && stop.handoffMessengerName && !receivedBy) {
+      setReceivedBy(stop.handoffMessengerName);
+    }
+  }, [isHandoff, stop.handoffMessengerName]); // eslint-disable-line react-hooks/exhaustive-deps
   const deliveredTfs = useMemo(() => {
-    if (mode === 'todo') return stop.tfs.map((t) => t.numeroTF);
+    if (isHandoff || mode === 'todo') return stop.tfs.map((t) => t.numeroTF);
     return stop.tfs
       .filter((t) => t.storeReceivedAt || (mode === 'parcial' && selected.has(t.numeroTF)))
       .map((t) => t.numeroTF);
-  }, [mode, selected, stop.tfs]);
-  const notDeliveredTfs = stop.tfs.filter((t) => !deliveredTfs.includes(t.numeroTF));
+  }, [mode, selected, stop.tfs, isHandoff]);
+  const notDeliveredTfs = isHandoff ? [] : stop.tfs.filter((t) => !deliveredTfs.includes(t.numeroTF));
   const needsProof = deliveredTfs.length > 0;
   const reasonOf = (tf: string) => reasons[tf] || bulkReason;
 
   const distance =
-    gps && Number.isFinite(stop.storeLat) && Number.isFinite(stop.storeLng)
+    !isHandoff && gps && Number.isFinite(stop.storeLat) && Number.isFinite(stop.storeLng)
       ? distanceMeters(gps, { lat: stop.storeLat!, lng: stop.storeLng! })
       : null;
 
@@ -183,10 +189,15 @@ const DeliveryForm: React.FC<{
     });
 
   const problems: string[] = [];
-  if (needsProof && !photos.some((p) => p.category === 'remision')) problems.push('Tome al menos una foto de la remisión firmada.');
-  if (needsProof && !receivedBy.trim()) problems.push('Escriba el nombre de quien recibe.');
-  if (notDeliveredTfs.some((t) => !reasonOf(t.numeroTF))) problems.push('Indique el motivo de las TF no entregadas.');
-  if (mode === 'parcial' && !needsProof) problems.push('En entrega parcial marque al menos una TF entregada.');
+  if (isHandoff) {
+    if (photos.length === 0) problems.push('Tome foto de la mercancía entregada al mensajero.');
+    if (!receivedBy.trim()) problems.push('Escriba el nombre del mensajero que recibe.');
+  } else {
+    if (needsProof && !photos.some((p) => p.category === 'remision')) problems.push('Tome al menos una foto de la remisión firmada.');
+    if (needsProof && !receivedBy.trim()) problems.push('Escriba el nombre de quien recibe.');
+    if (notDeliveredTfs.some((t) => !reasonOf(t.numeroTF))) problems.push('Indique el motivo de las TF no entregadas.');
+    if (mode === 'parcial' && !needsProof) problems.push('En entrega parcial marque al menos una TF entregada.');
+  }
 
   const handleConfirm = async () => {
     if (problems.length > 0) return;
@@ -194,7 +205,9 @@ const DeliveryForm: React.FC<{
     try {
       const record: QueuedDelivery = {
         submissionId: newId(),
-        label: `Relación #${manifest.manifestId} · ${stop.storeName || stop.destino}`,
+        label: isHandoff
+          ? `Relación #${manifest.manifestId} · Handoff → ${stop.handoffMessengerName || stop.destino}`
+          : `Relación #${manifest.manifestId} · ${stop.storeName || stop.destino}`,
         storeKey: (stop.storeCode || stop.id || 'SIN-TIENDA').replace(/[\/\s]+/g, '-'),
         monthKey: format(new Date(), 'yyyy-MM'),
         input: {
@@ -228,12 +241,19 @@ const DeliveryForm: React.FC<{
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-lg">{stop.storeName || stop.destino}</CardTitle>
+          <CardTitle className="text-lg">
+            {isHandoff
+              ? `Entregar a mensajero · ${stop.handoffMessengerName || stop.destino}`
+              : stop.storeName || stop.destino}
+          </CardTitle>
           <CardDescription>
-            {stop.tfs.length} TF · {stop.unidades} und{stop.storeAddress ? ` · ${stop.storeAddress}` : ''}
+            {isHandoff
+              ? `${stop.tfs.length} TF · ${stop.unidades} und · Prueba de intercambio (sin remisión de tienda)`
+              : `${stop.tfs.length} TF · ${stop.unidades} und${stop.storeAddress ? ` · ${stop.storeAddress}` : ''}`}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          {!isHandoff && (
           <div className="grid grid-cols-3 gap-2">
             {([
               ['todo', 'Entregar todo'],
@@ -251,8 +271,9 @@ const DeliveryForm: React.FC<{
               </Button>
             ))}
           </div>
+          )}
 
-          {mode !== 'todo' && (
+          {!isHandoff && mode !== 'todo' && (
             <div className="space-y-2">
               <Label className="text-xs">Motivo para las no entregadas</Label>
               <Select value={bulkReason} onValueChange={setBulkReason}>
@@ -272,7 +293,7 @@ const DeliveryForm: React.FC<{
                   <label className="flex items-center gap-3">
                     {t.storeReceivedAt ? (
                       <CheckCircle2 className="h-4 w-4 text-green-600" />
-                    ) : mode === 'parcial' ? (
+                    ) : !isHandoff && mode === 'parcial' ? (
                       <Checkbox
                         checked={selected.has(t.numeroTF)}
                         onCheckedChange={(c) =>
@@ -300,7 +321,7 @@ const DeliveryForm: React.FC<{
                     </span>
                     <span className="text-xs text-muted-foreground">{t.unidades} und</span>
                   </label>
-                  {!isDelivered && mode === 'parcial' && (
+                  {!isHandoff && !isDelivered && mode === 'parcial' && (
                     <Select value={reasons[t.numeroTF] || ''} onValueChange={(v) => setReasons((p) => ({ ...p, [t.numeroTF]: v }))}>
                       <SelectTrigger className="h-8 text-xs">
                         <SelectValue placeholder={bulkReason ? `Motivo: ${bulkReason}` : 'Motivo de esta TF...'} />
@@ -321,9 +342,11 @@ const DeliveryForm: React.FC<{
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Fotos ({photos.length}/{MAX_DELIVERY_PHOTOS})</CardTitle>
           <CardDescription>
-            {needsProof
-              ? 'La remisión firmada es obligatoria (puede tomar varias hojas).'
-              : 'Opcional cuando no se entrega.'}
+            {isHandoff
+              ? 'Foto de la mercancía al entregar al mensajero (obligatoria).'
+              : needsProof
+                ? 'La remisión firmada es obligatoria (puede tomar varias hojas).'
+                : 'Opcional cuando no se entrega.'}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -334,7 +357,9 @@ const DeliveryForm: React.FC<{
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm font-medium">
                     {c.label}
-                    {c.required && needsProof && <span className="text-red-600"> *</span>}
+                    {((c.required && needsProof && !isHandoff) || (isHandoff && c.id === 'mercancia')) && (
+                      <span className="text-red-600"> *</span>
+                    )}
                   </span>
                   <div className="flex gap-2">
                     <Button type="button" size="sm" variant="secondary" disabled={busyPhotos} onClick={() => cameraRefs.current[c.id]?.click()}>
@@ -393,7 +418,9 @@ const DeliveryForm: React.FC<{
         <CardContent className="space-y-3 pt-6">
           {deliveredTfs.length > 0 && (
             <div className="space-y-1">
-              <Label htmlFor="pod-received">Nombre de quien recibe{needsProof ? ' *' : ''}</Label>
+              <Label htmlFor="pod-received">
+                {isHandoff ? 'Nombre del mensajero que recibe *' : `Nombre de quien recibe${needsProof ? ' *' : ''}`}
+              </Label>
               <Input id="pod-received" value={receivedBy} onChange={(e) => setReceivedBy(e.target.value)} />
             </div>
           )}
@@ -665,9 +692,18 @@ export const DriverDeliveriesModule: React.FC<{ onReturn: () => void }> = ({ onR
                 <CardHeader className="pb-2">
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <CardTitle className="text-base">{s.storeName || s.destino}</CardTitle>
+                      <CardTitle className="text-base">
+                        {s.stopKind === 'handoff_mensajero'
+                          ? `Handoff → ${s.handoffMessengerName || s.destino}`
+                          : s.storeName || s.destino}
+                      </CardTitle>
                       <CardDescription>
-                        {s.tfs.length} TF · {s.unidades} und{s.storeAddress ? ` · ${s.storeAddress}` : ''}
+                        {s.tfs.length} TF · {s.unidades} und
+                        {s.stopKind === 'handoff_mensajero'
+                          ? ' · entrega a mensajero'
+                          : s.storeAddress
+                            ? ` · ${s.storeAddress}`
+                            : ''}
                       </CardDescription>
                     </div>
                     <Badge className={isQueued ? 'bg-amber-500 text-white' : STATUS_CLASS[s.status]}>

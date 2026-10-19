@@ -6886,10 +6886,71 @@ async function createManifestStops(manifestDocId: string, transferIds: string[])
     await batch.commit();
 }
 
+/** Una sola parada: camión entrega al mensajero (prueba de intercambio, sin remisión de tienda). */
+async function createHandoffManifestStop(input: {
+  manifestDocId: string;
+  transferIds: string[];
+  messengerUserId: string;
+  messengerName: string;
+  truckPlaca: string;
+}): Promise<{ stopId: string; lines: Array<{ id: string; numeroTF: string; bodegaDestino: string; transferIds: string[] }> }> {
+  const ids = Array.from(new Set(input.transferIds.filter(Boolean)));
+  const linesRaw: Array<{ id: string; data: DocumentData }> = [];
+  for (let i = 0; i < ids.length; i += 30) {
+    const snap = await getDocs(query(collection(firestore, 'transfers'), where(documentId(), 'in', ids.slice(i, i + 30))));
+    snap.forEach((d) => linesRaw.push({ id: d.id, data: d.data() }));
+  }
+
+  const numerosTF: string[] = [];
+  let unidades = 0;
+  const byDest = new Map<string, { numeroTF: string; bodegaDestino: string; transferIds: string[] }>();
+  linesRaw.forEach(({ id, data }) => {
+    const tf = String(data.numeroTF || '').trim();
+    const dest = String(data.bodegaDestino || 'SIN DESTINO').trim();
+    if (tf && !numerosTF.includes(tf)) numerosTF.push(tf);
+    unidades += Number(data.cantidad || 0) || 0;
+    const key = `${tf}|${dest.toUpperCase()}`;
+    const g = byDest.get(key) || { numeroTF: tf, bodegaDestino: dest, transferIds: [] };
+    g.transferIds.push(id);
+    byDest.set(key, g);
+  });
+
+  const messengerName = (input.messengerName || '').trim() || 'Mensajero';
+  const stopId = `HANDOFF-${String(input.messengerUserId || 'msj').replace(/[^A-Za-z0-9]/g, '').slice(0, 12) || 'MSJ'}`;
+  const placa = String(input.truckPlaca || '').trim().toUpperCase() || 'CAMION';
+  const batch = writeBatch(firestore);
+  const manifestRef = doc(firestore, 'deliveryManifests', input.manifestDocId);
+  batch.set(
+    doc(manifestRef, 'stops', stopId),
+    withoutUndefined({
+      id: stopId,
+      order: 0,
+      stopKind: 'handoff_mensajero',
+      handoffMessengerUserId: input.messengerUserId,
+      handoffMessengerName: messengerName,
+      destino: `MENSAJERO ${messengerName}`,
+      storeName: `Entregar a ${messengerName}`,
+      transferIds: linesRaw.map((l) => l.id),
+      numerosTF,
+      unidades,
+      status: 'pendiente',
+      notes: `Handoff desde camión ${placa}. El mensajero entrega en tienda con remisión.`,
+    })
+  );
+  batch.update(manifestRef, {
+    deliveryStatus: 'en_ruta',
+    stopsCount: 1,
+    stopsDone: 0,
+    storeOpenCodes: [],
+  });
+  await batch.commit();
+  return { stopId, lines: Array.from(byDest.values()) };
+}
+
 export async function createDeliveryManifest(
     manifestData: Omit<DeliveryManifest, 'id' | 'createdAt' | 'manifestId'>,
     actor?: TransferActor
-): Promise<{ success: boolean; error?: string; id?: string }> {
+): Promise<{ success: boolean; error?: string; id?: string; messengerTasksCreated?: number }> {
     const counterRef = doc(firestore, 'counters', 'manifestCounter');
     const manifestsCollection = collection(firestore, 'deliveryManifests');
     
@@ -6897,6 +6958,24 @@ export async function createDeliveryManifest(
         const transferIds = Array.from(new Set((manifestData.transferIds || []).filter(Boolean)));
         if (transferIds.length === 0) {
             return { success: false, error: 'No hay transferencias para la relación.' };
+        }
+
+        const lastMileUserId = String(manifestData.lastMileMessengerUserId || '').trim();
+        const lastMileName = String(manifestData.lastMileMessengerName || '').trim();
+        const lastMileDay = String(manifestData.lastMileDay || '').trim();
+        const lastMilePlaca = String(manifestData.lastMileMessengerPlaca || '').trim().toUpperCase();
+        const useLastMile = !!lastMileUserId;
+        if (useLastMile) {
+            if (!lastMileName) return { success: false, error: 'Indique el mensajero de última milla.' };
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(lastMileDay)) {
+                return { success: false, error: 'Día de ruta del mensajero inválido (AAAA-MM-DD).' };
+            }
+            if (lastMilePlaca.length < 3) {
+                return { success: false, error: 'Placa del mensajero obligatoria (mín. 3 caracteres).' };
+            }
+            if (manifestData.driverUserId && manifestData.driverUserId === lastMileUserId) {
+                return { success: false, error: 'El conductor del camión y el mensajero deben ser personas distintas.' };
+            }
         }
 
         const { isTransferLockedInRoute, transferLockedInRouteMessage } = await import('@/lib/transferRouteLock');
@@ -6927,11 +7006,12 @@ export async function createDeliveryManifest(
             }
         }
 
-        const manifestDocRef = doc(manifestsCollection); // Generate a new ID for the manifest
+        const manifestDocRef = doc(manifestsCollection);
+        let newCount = 0;
 
         await runTransaction(firestore, async (transaction) => {
             const counterDoc = await transaction.get(counterRef);
-            const newCount = (counterDoc.data()?.count || 0) + 1;
+            newCount = (counterDoc.data()?.count || 0) + 1;
             
             const manifestToSave: DeliveryManifest = {
                 id: manifestDocRef.id,
@@ -6939,12 +7019,19 @@ export async function createDeliveryManifest(
                 createdAt: new Date(),
                 ...manifestData,
                 transferIds,
+                ...(useLastMile
+                  ? {
+                      lastMileMessengerUserId: lastMileUserId,
+                      lastMileMessengerName: lastMileName,
+                      lastMileDay,
+                      lastMileMessengerPlaca: lastMilePlaca,
+                    }
+                  : {}),
             };
             
             transaction.set(manifestDocRef, convertDatesToTimestamps(withoutUndefined(manifestToSave)));
-            transaction.set(counterRef, { count: newCount }, { merge: true }); // Use set with merge instead of update
+            transaction.set(counterRef, { count: newCount }, { merge: true });
 
-            // Update status of all included transfers (guarda vínculo al manifiesto para trazabilidad).
             const now = new Date();
             const enviadoUpdates: Record<string, unknown> = {
                 status: 'Enviado a Destino',
@@ -6952,6 +7039,10 @@ export async function createDeliveryManifest(
                 podManifestDocId: manifestDocRef.id,
                 manifestId: newCount,
             };
+            if (useLastMile) {
+                enviadoUpdates.lastMileMessengerUserId = lastMileUserId;
+                enviadoUpdates.lastMilePendingHandoff = true;
+            }
             applyTransferStatusActor(enviadoUpdates, 'Enviado a Destino', actor);
             for (const transferId of transferIds) {
                 const transferRef = doc(firestore, 'transfers', transferId);
@@ -6959,13 +7050,59 @@ export async function createDeliveryManifest(
             }
         });
 
+        let messengerTasksCreated = 0;
         try {
-            await createManifestStops(manifestDocRef.id, manifestData.transferIds);
+            if (useLastMile) {
+                const truckPlaca = String(manifestData.resource || '').trim().toUpperCase() || 'CAMION';
+                const { stopId, lines } = await createHandoffManifestStop({
+                    manifestDocId: manifestDocRef.id,
+                    transferIds,
+                    messengerUserId: lastMileUserId,
+                    messengerName: lastMileName,
+                    truckPlaca,
+                });
+                const { createRouteTasks } = await import('@/app/routeTaskActions');
+                const pickupPoint = `CAMION ${truckPlaca}`;
+                const routeRes = await createRouteTasks({
+                    tasks: lines
+                        .filter((l) => l.numeroTF && l.bodegaDestino)
+                        .map((l) => ({
+                            numeroTF: l.numeroTF,
+                            transferIds: l.transferIds,
+                            bodegaDestino: l.bodegaDestino,
+                            pickupPoint,
+                            deliverPoint: l.bodegaDestino,
+                            pickupKind: 'camion' as const,
+                            waitingForHandoff: true,
+                            handoffFromManifestId: manifestDocRef.id,
+                            handoffStopId: stopId,
+                            handoffManifestNumber: newCount,
+                            notes: `Última milla · Relación #${newCount} · esperar handoff del camión`,
+                        })),
+                    driverId: lastMileUserId,
+                    driverName: lastMileName,
+                    placa: lastMilePlaca,
+                    day: lastMileDay,
+                    source: 'transferencias',
+                    actor: actor || { userId: 'system', displayName: 'Sistema' },
+                });
+                if (!routeRes.success) {
+                    console.error('Relación handoff creada pero falló ruta mensajero:', routeRes.error);
+                    return {
+                        success: false,
+                        error: `Relación #${newCount} creada, pero no se pudo armar la ruta del mensajero: ${routeRes.error}`,
+                        id: manifestDocRef.id,
+                    };
+                }
+                messengerTasksCreated = routeRes.created || 0;
+            } else {
+                await createManifestStops(manifestDocRef.id, transferIds);
+            }
         } catch (stopsError) {
             console.error('Relación creada sin paradas de entrega:', stopsError);
         }
 
-        return { success: true, id: manifestDocRef.id };
+        return { success: true, id: manifestDocRef.id, messengerTasksCreated };
 
     } catch (e: any) {
         console.error("Error creating delivery manifest:", e);
