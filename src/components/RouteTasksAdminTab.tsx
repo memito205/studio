@@ -62,9 +62,13 @@ type DriverRoute = {
   delivered: number;
   pending: number;
   failed: number;
+  leftInCajon: number;
+  leftInBodega: number;
   lastAt?: Date;
   stops: Array<{ n: number; point: string; lines: StopLine[] }>;
 };
+
+type AdminTaskFilter = DriverRouteTaskStatus | 'todas' | 'por_revalidar' | 'dejado_cajon' | 'dejado_bodega';
 
 const routeKey = (t: DriverRouteTask) => `${t.day}|${t.driverId}`;
 
@@ -139,6 +143,8 @@ function buildDriverRoutes(tasks: DriverRouteTask[]): DriverRoute[] {
         delivered: list.filter((t) => t.status === 'entregada').length,
         pending: list.filter((t) => t.status === 'por_recoger' || t.status === 'por_entregar').length,
         failed: list.filter((t) => t.status === 'no_recogida' || t.status === 'no_entregada').length,
+        leftInCajon: list.filter((t) => !!t.leftInCajon).length,
+        leftInBodega: list.filter((t) => !!t.leftInBodega).length,
         lastAt: times.length ? new Date(Math.max(...times)) : undefined,
         stops,
       };
@@ -190,7 +196,7 @@ export function RouteTasksAdminTab() {
   const [reorderingKey, setReorderingKey] = useState<string | null>(null);
   const [customOrderOpen, setCustomOrderOpen] = useState(false);
   const [customOrderText, setCustomOrderText] = useState('');
-  const [filter, setFilter] = useState<DriverRouteTaskStatus | 'todas' | 'por_revalidar'>('todas');
+  const [filter, setFilter] = useState<AdminTaskFilter>('todas');
   const [routeSel, setRouteSel] = useState<string | null>(null);
   const day = from === to ? from : `${from}_a_${to}`;
 
@@ -366,16 +372,50 @@ export function RouteTasksAdminTab() {
   const routes = useMemo(() => buildDriverRoutes(tasks || []), [tasks]);
   const selectedRoute = routes.find((r) => r.key === routeSel);
 
-  const needle = text.trim().toUpperCase();
-  const visible = (tasks || []).filter(
-    (t) =>
-      (!routeSel || routeKey(t) === routeSel) &&
-      (filter === 'todas' ||
-        (filter === 'por_revalidar' ? !!t.pendingRevalidation : t.status === filter)) &&
-      (!needle ||
-        [t.numeroTF, t.description, t.refText, t.pickupPoint, t.deliverPoint, t.driverName, t.placa, t.receivedByName, t.notes]
-          .some((v) => String(v || '').toUpperCase().includes(needle)))
+  /** Conteos de filtros según mensajero/placa elegida (o toda la consulta). */
+  const scopedTasks = useMemo(
+    () => (tasks || []).filter((t) => !routeSel || routeKey(t) === routeSel),
+    [tasks, routeSel]
   );
+  const scopedCounts = useMemo(
+    () => ({
+      total: scopedTasks.length,
+      por_revalidar: scopedTasks.filter((t) => t.pendingRevalidation).length,
+      dejado_cajon: scopedTasks.filter((t) => !!t.leftInCajon).length,
+      dejado_bodega: scopedTasks.filter((t) => !!t.leftInBodega).length,
+      byStatus: (() => {
+        const c: Record<DriverRouteTaskStatus, number> = {
+          por_recoger: 0,
+          por_entregar: 0,
+          entregada: 0,
+          no_recogida: 0,
+          no_entregada: 0,
+          cancelada: 0,
+        };
+        scopedTasks.forEach((t) => c[t.status]++);
+        return c;
+      })(),
+    }),
+    [scopedTasks]
+  );
+
+  const needle = text.trim().toUpperCase();
+  const visible = scopedTasks.filter((t) => {
+    const statusOk =
+      filter === 'todas' ||
+      (filter === 'por_revalidar'
+        ? !!t.pendingRevalidation
+        : filter === 'dejado_cajon'
+          ? !!t.leftInCajon
+          : filter === 'dejado_bodega'
+            ? !!t.leftInBodega
+            : t.status === filter);
+    if (!statusOk) return false;
+    if (!needle) return true;
+    return [t.numeroTF, t.description, t.refText, t.pickupPoint, t.deliverPoint, t.driverName, t.placa, t.receivedByName, t.notes].some(
+      (v) => String(v || '').toUpperCase().includes(needle)
+    );
+  });
 
   const exportXlsx = () => {
     const rows = visible.map((t) => ({
@@ -537,6 +577,8 @@ export function RouteTasksAdminTab() {
                         <p className="mt-2 text-xs">
                           {r.total} TF/envíos · recogidas {r.picked}/{r.withPickup} · entregadas {r.delivered}
                           {r.failed > 0 && <span className="text-red-700"> · {r.failed} novedad(es)</span>}
+                          {r.leftInCajon > 0 && <span className="text-amber-800"> · {r.leftInCajon} en cajón</span>}
+                          {r.leftInBodega > 0 && <span className="text-slate-800"> · {r.leftInBodega} en bodega</span>}
                         </p>
                       </button>
                     );
@@ -546,7 +588,7 @@ export function RouteTasksAdminTab() {
                   <div className="space-y-2 rounded-md border p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="text-sm font-semibold">
-                        Ruta de {selectedRoute.driverName} · {selectedRoute.day}
+                        Ruta de {selectedRoute.driverName} · {selectedRoute.placa} · {selectedRoute.day}
                         <span className="ml-2 text-xs font-normal text-muted-foreground">La tabla de abajo quedó filtrada a este mensajero.</span>
                       </p>
                       <div className="flex flex-wrap gap-2">
@@ -587,6 +629,34 @@ export function RouteTasksAdminTab() {
                         </Button>
                       </div>
                     </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs text-muted-foreground">Revisar en esta placa:</span>
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          'cursor-pointer',
+                          filter === 'dejado_cajon' ? 'bg-amber-600 text-white' : 'border-amber-500 text-amber-900'
+                        )}
+                        onClick={() => setFilter(filter === 'dejado_cajon' ? 'todas' : 'dejado_cajon')}
+                      >
+                        Dejado en cajón ({selectedRoute.leftInCajon})
+                      </Badge>
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          'cursor-pointer',
+                          filter === 'dejado_bodega' ? 'bg-slate-700 text-white' : 'border-slate-500 text-slate-800'
+                        )}
+                        onClick={() => setFilter(filter === 'dejado_bodega' ? 'todas' : 'dejado_bodega')}
+                      >
+                        Dejado en bodega ({selectedRoute.leftInBodega})
+                      </Badge>
+                      {(filter === 'dejado_cajon' || filter === 'dejado_bodega') && (
+                        <span className="text-xs text-muted-foreground">
+                          Mostrando {visible.length} en la tabla · pulse de nuevo el filtro para ver todas.
+                        </span>
+                      )}
+                    </div>
                     {selectedRoute.stops.map((s) => (
                       <div key={s.point} className="rounded border p-2">
                         <p className="text-xs font-semibold uppercase text-muted-foreground">
@@ -607,7 +677,9 @@ export function RouteTasksAdminTab() {
               </div>
             )}
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={filter === 'todas' ? 'default' : 'outline'} className="cursor-pointer" onClick={() => setFilter('todas')}>Todas ({tasks.length})</Badge>
+              <Badge variant={filter === 'todas' ? 'default' : 'outline'} className="cursor-pointer" onClick={() => setFilter('todas')}>
+                Todas ({scopedCounts.total})
+              </Badge>
               <Badge
                 variant="outline"
                 className={cn(
@@ -616,7 +688,27 @@ export function RouteTasksAdminTab() {
                 )}
                 onClick={() => setFilter('por_revalidar')}
               >
-                Por revalidar ({kpi.pendingRevalidation})
+                Por revalidar ({scopedCounts.por_revalidar})
+              </Badge>
+              <Badge
+                variant="outline"
+                className={cn(
+                  'cursor-pointer',
+                  filter === 'dejado_cajon' ? 'bg-amber-600 text-white' : 'border-amber-500 text-amber-900'
+                )}
+                onClick={() => setFilter('dejado_cajon')}
+              >
+                Dejado en cajón ({scopedCounts.dejado_cajon})
+              </Badge>
+              <Badge
+                variant="outline"
+                className={cn(
+                  'cursor-pointer',
+                  filter === 'dejado_bodega' ? 'bg-slate-700 text-white' : 'border-slate-500 text-slate-800'
+                )}
+                onClick={() => setFilter('dejado_bodega')}
+              >
+                Dejado en bodega ({scopedCounts.dejado_bodega})
               </Badge>
               {(Object.keys(ROUTE_TASK_STATUS) as DriverRouteTaskStatus[]).map((s) => (
                 <Badge
@@ -625,7 +717,7 @@ export function RouteTasksAdminTab() {
                   className={`cursor-pointer ${filter === s ? ROUTE_TASK_STATUS[s].className : ''}`}
                   onClick={() => setFilter(s)}
                 >
-                  {ROUTE_TASK_STATUS[s].label} ({kpi.c[s]})
+                  {ROUTE_TASK_STATUS[s].label} ({scopedCounts.byStatus[s]})
                 </Badge>
               ))}
               {kpi.pendingRevalidation > 0 && (
@@ -644,6 +736,14 @@ export function RouteTasksAdminTab() {
             {filter === 'por_revalidar' && (
               <p className="text-xs text-violet-800">
                 Solo pruebas que el mensajero envió de nuevo después de un rechazo. Revise fotos y marque “Revisada”.
+              </p>
+            )}
+            {(filter === 'dejado_cajon' || filter === 'dejado_bodega') && (
+              <p className="text-xs text-amber-900">
+                {filter === 'dejado_cajon'
+                  ? 'Solo TF/envíos que el conductor marcó como dejados en CAJÓN NORTE.'
+                  : 'Solo TF/envíos que el conductor marcó como dejados en bodega (Validar Supervisor).'}
+                {routeSel ? ' Filtrado a la placa/mensajero seleccionado.' : ' Elija un mensajero arriba para acotar a una placa.'}
               </p>
             )}
             <div className="max-h-[60vh] overflow-auto rounded-md border">
