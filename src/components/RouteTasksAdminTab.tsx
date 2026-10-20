@@ -290,7 +290,7 @@ export function RouteTasksAdminTab() {
     }
     toast({
       title: 'Ya en cajón',
-      description: `Tarea cerrada · ${res.transfersMoved || 0} TF en Cajón Norte. Sale de pendientes del mensajero.`,
+      description: `${res.transfersMoved || 0} TF en Recibido en Bodega / CAJÓN NORTE (lista TF en cajón). Tarea cerrada.`,
     });
     void load();
   };
@@ -876,7 +876,7 @@ export function RouteTasksAdminTab() {
                               ) : (
                                 <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
                               )}
-                              Ya en cajón
+                              A TF en cajón
                             </Button>
                           )}
                           {t.status === 'por_entregar' && t.pickedAt && (

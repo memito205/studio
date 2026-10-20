@@ -17,6 +17,7 @@ import {
   writeBatch,
   type DocumentData,
   type DocumentReference,
+  type Transaction,
 } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
 import { buildStoreMatcher } from '@/lib/deliveryStores';
@@ -1376,10 +1377,166 @@ export async function markRouteTasksRevalidated(input: {
   }
 }
 
+const CAJON_MOVE_FROM: TransferStatus[] = [
+  'En Tránsito',
+  'Recolectado en Ruta',
+  'Enviado a Destino',
+  'Novedad de Entrega',
+  'Recibido en Bodega',
+];
+
+function applyCajonOnTransfers(
+  tx: Transaction,
+  lineSnaps: Array<{ id: string; ref: DocumentReference; data: DocumentData }>,
+  opts: { actor: TransferActor; actorName: string; now: Timestamp; routeTaskId?: string }
+): { moved: number; platformIds: string[] } {
+  let moved = 0;
+  const platformIds: string[] = [];
+  lineSnaps.forEach(({ ref, data: d }) => {
+    if (d.storeReceivedAt) return;
+    if (isInCajon(d)) {
+      tx.update(ref, { ...clearMisEntregasFields });
+      return;
+    }
+    if (!CAJON_MOVE_FROM.includes(d.status as TransferStatus)) return;
+    moved++;
+    const pid = platformDocId(d.numeroTF, d.bodegaDestino);
+    if (pid) platformIds.push(pid);
+    tx.update(ref, {
+      status: 'Recibido en Bodega',
+      ubicacion: CAJON_POINT,
+      ubicacionAt: opts.now,
+      reprogramada: true,
+      cajonAt: opts.now,
+      cajonByName: opts.actorName,
+      ...(opts.routeTaskId
+        ? { cajonRouteTaskId: opts.routeTaskId, routeTaskId: opts.routeTaskId }
+        : {}),
+      ...clearMisEntregasFields,
+      statusHistory: arrayUnion({
+        status: 'Recibido en Bodega',
+        at: opts.now,
+        userId: opts.actor.userId,
+        userName: `${opts.actorName} (admin · CAJÓN NORTE)`,
+      }),
+    });
+  });
+  return { moved, platformIds };
+}
+
+async function syncCajonPlatformStatus(platformIds: string[], actorName: string) {
+  const at = Timestamp.now();
+  const unique = Array.from(new Set(platformIds.filter(Boolean)));
+  for (const id of unique) {
+    const ref = doc(firestore, 'tf_platform_status', id);
+    const snap = await getDoc(ref).catch(() => null);
+    if (!snap?.exists() || snap.data()?.estadoPlataforma === 'ENTREGADO') continue;
+    await updateDoc(ref, {
+      estadoPlataforma: 'EN BODEGA',
+      ubicacionActual: CAJON_POINT,
+      cajonAt: at,
+      cajonByName: actorName,
+      updatedAt: at,
+    }).catch((e) => console.error('Admin cajón sin estado plataforma:', e));
+  }
+}
+
 /**
- * Admin: la mercancía ya está físicamente en CAJÓN NORTE pero el mensajero no registró
- * recoger → dejar en cajón. Cierra la tarea abierta y deja la TF en Recibido en Bodega / cajón.
- * Acepta `por_recoger` o `por_entregar` (no exige el paso de recolección en la app).
+ * Admin: pasa TF a Recibido en Bodega + ubicación CAJÓN NORTE (mismo pool que “TF en cajón”).
+ * Cierra tareas abiertas del mensajero ligadas a esas TF. Sirve cuando no recogió en la app
+ * y hay que dejarlas ordenadas para reasignar desde cajón.
+ */
+export async function adminMoveTransfersToCajon(input: {
+  transferIds: string[];
+  note: string;
+  actor: TransferActor;
+}): Promise<{ success: boolean; transfersMoved?: number; tasksClosed?: number; error?: string }> {
+  if (!input.actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  const note = String(input.note || '').trim();
+  if (!note) return { success: false, error: 'Escriba el motivo (pasar a Cajón Norte).' };
+  const transferIds = Array.from(new Set((input.transferIds || []).filter(Boolean)));
+  if (!transferIds.length) return { success: false, error: 'No hay TF seleccionadas.' };
+  const actorName = actorNameOf(input.actor);
+
+  try {
+    const lineSnaps: Array<{ id: string; ref: DocumentReference; data: DocumentData }> = [];
+    for (let i = 0; i < transferIds.length; i += 30) {
+      const snap = await getDocs(
+        query(collection(firestore, 'transfers'), where(documentId(), 'in', transferIds.slice(i, i + 30)))
+      );
+      snap.docs.forEach((d) => lineSnaps.push({ id: d.id, ref: d.ref, data: d.data() }));
+    }
+    if (!lineSnaps.length) return { success: false, error: 'No se encontraron las TF.' };
+
+    const tfs = Array.from(
+      new Set(lineSnaps.map((l) => String(l.data.numeroTF || '').trim()).filter(Boolean))
+    );
+    const openTasks: Array<{ id: string; data: DocumentData }> = [];
+    for (let i = 0; i < tfs.length; i += 30) {
+      const snap = await getDocs(query(collection(firestore, TASKS), where('openKey', 'in', tfs.slice(i, i + 30))));
+      snap.docs.forEach((d) => {
+        const st = String(d.data().status || '');
+        if (st === 'por_recoger' || st === 'por_entregar') openTasks.push({ id: d.id, data: d.data() });
+      });
+    }
+
+    let transfersMoved = 0;
+    let tasksClosed = 0;
+    const platformIds: string[] = [];
+    const now = Timestamp.now();
+
+    await runTransaction(firestore, async (tx) => {
+      transfersMoved = 0;
+      tasksClosed = 0;
+      platformIds.length = 0;
+      const freshLines = await Promise.all(lineSnaps.map((l) => tx.get(l.ref)));
+      const lineRows = freshLines
+        .filter((s) => s.exists())
+        .map((s) => ({ id: s.id, ref: s.ref, data: s.data()! }));
+      const moved = applyCajonOnTransfers(tx, lineRows, { actor: input.actor, actorName, now });
+      transfersMoved = moved.moved;
+      platformIds.push(...moved.platformIds);
+
+      const taskSnaps = await Promise.all(openTasks.map((t) => tx.get(doc(firestore, TASKS, t.id))));
+      taskSnaps.forEach((s) => {
+        if (!s.exists()) return;
+        const d = s.data()!;
+        if (!['por_recoger', 'por_entregar'].includes(String(d.status || ''))) return;
+        const ids = (Array.isArray(d.transferIds) ? d.transferIds : []).map(String);
+        if (!ids.some((id) => transferIds.includes(id))) return;
+        tasksClosed++;
+        tx.update(
+          s.ref,
+          clean({
+            status: 'entregada',
+            leftInCajon: true,
+            leftInBodega: false,
+            deliveredAt: now,
+            deliveredById: input.actor.userId,
+            deliveredByName: actorName,
+            deliveryNotes: `Admin: TF a CAJÓN NORTE (TF en cajón). ${note}`.slice(0, 500),
+            failReason: note,
+            tfMarkedDelivered: false,
+            driverOpen: deleteField(),
+            openKey: deleteField(),
+            waitingForHandoff: deleteField(),
+          })
+        );
+      });
+    });
+
+    await syncCajonPlatformStatus(platformIds, actorName);
+    return { success: true, transfersMoved, tasksClosed };
+  } catch (error: any) {
+    console.error('adminMoveTransfersToCajon:', error);
+    return { success: false, error: error.message || 'No se pudo pasar a Cajón Norte.' };
+  }
+}
+
+/**
+ * Admin: la mercancía ya está en CAJÓN NORTE pero el mensajero no registró recoger → cajón.
+ * Deja la TF en Recibido en Bodega + ubicación CAJÓN NORTE (aparece en “TF en cajón”)
+ * y cierra la tarea abierta. Acepta `por_recoger` o `por_entregar`.
  */
 export async function adminPlaceRouteTasksInCajon(input: {
   taskIds: string[];
@@ -1396,12 +1553,12 @@ export async function adminPlaceRouteTasksInCajon(input: {
   try {
     let closed = 0;
     let transfersMoved = 0;
-    const cajonPlatformIds = new Set<string>();
+    const platformIds: string[] = [];
 
     await runTransaction(firestore, async (tx) => {
       closed = 0;
       transfersMoved = 0;
-      cajonPlatformIds.clear();
+      platformIds.length = 0;
       const snaps = await Promise.all(ids.map((id) => tx.get(doc(firestore, TASKS, id))));
       const eligible = snaps.filter((s) => {
         const d = s.data();
@@ -1419,43 +1576,18 @@ export async function adminPlaceRouteTasksInCajon(input: {
       eligible.forEach((s) => {
         const t = toTask(s.id, s.data()!);
         if (t.kind !== 'libre') {
-          (t.transferIds || []).forEach((id) => {
-            const ls = lineById.get(id);
-            if (!ls) return;
-            const d = ls.data()!;
-            if (d.storeReceivedAt) return;
-            const alreadyCajon = isInCajon(d);
-            const canMove =
-              alreadyCajon ||
-              DELIVERABLE.includes(d.status as TransferStatus) ||
-              d.status === 'Recolectado en Ruta' ||
-              d.status === 'En Tránsito';
-            if (!canMove) return;
-            if (!alreadyCajon) {
-              transfersMoved++;
-              const pid = platformDocId(d.numeroTF, d.bodegaDestino);
-              if (pid) cajonPlatformIds.add(pid);
-              tx.update(ls.ref, {
-                status: 'Recibido en Bodega',
-                ubicacion: CAJON_POINT,
-                ubicacionAt: now,
-                reprogramada: true,
-                cajonAt: now,
-                cajonByName: actorName,
-                cajonRouteTaskId: t.id,
-                routeTaskId: t.id,
-                ...clearMisEntregasFields,
-                statusHistory: arrayUnion({
-                  status: 'Recibido en Bodega',
-                  at: now,
-                  userId: input.actor.userId,
-                  userName: `${actorName} (admin · ya en cajón)`,
-                }),
-              });
-            } else {
-              tx.update(ls.ref, { ...clearMisEntregasFields });
-            }
+          const rows = (t.transferIds || [])
+            .map((id) => lineById.get(id))
+            .filter((ls): ls is NonNullable<typeof ls> => !!ls)
+            .map((ls) => ({ id: ls.id, ref: ls.ref, data: ls.data()! }));
+          const moved = applyCajonOnTransfers(tx, rows, {
+            actor: input.actor,
+            actorName,
+            now,
+            routeTaskId: t.id,
           });
+          transfersMoved += moved.moved;
+          platformIds.push(...moved.platformIds);
         }
         tx.update(
           s.ref,
@@ -1466,7 +1598,7 @@ export async function adminPlaceRouteTasksInCajon(input: {
             deliveredAt: now,
             deliveredById: input.actor.userId,
             deliveredByName: actorName,
-            deliveryNotes: `Admin: ya en CAJÓN NORTE. ${note}`.slice(0, 500),
+            deliveryNotes: `Admin: TF en CAJÓN NORTE (lista TF en cajón). ${note}`.slice(0, 500),
             failReason: note,
             tfMarkedDelivered: false,
             driverOpen: deleteField(),
@@ -1478,20 +1610,7 @@ export async function adminPlaceRouteTasksInCajon(input: {
       });
     });
 
-    const at = Timestamp.now();
-    for (const id of cajonPlatformIds) {
-      const ref = doc(firestore, 'tf_platform_status', id);
-      const snap = await getDoc(ref).catch(() => null);
-      if (!snap?.exists() || snap.data()?.estadoPlataforma === 'ENTREGADO') continue;
-      await updateDoc(ref, {
-        estadoPlataforma: 'EN BODEGA',
-        ubicacionActual: CAJON_POINT,
-        cajonAt: at,
-        cajonByName: actorName,
-        updatedAt: at,
-      }).catch((e) => console.error('Admin cajón sin estado plataforma:', e));
-    }
-
+    await syncCajonPlatformStatus(platformIds, actorName);
     return { success: true, closed, transfersMoved };
   } catch (error: any) {
     console.error('adminPlaceRouteTasksInCajon:', error);

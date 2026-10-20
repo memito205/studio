@@ -8,6 +8,7 @@ import { useToast } from '@/hooks/use-toast';
 import { getTransfersByStatus } from '@/app/actions';
 import { getDeliveryStores } from '@/app/deliveryActions';
 import {
+  adminMoveTransfersToCajon,
   adminPlaceRouteTasksInCajon,
   cancelRouteTasks,
   createRouteTasks,
@@ -251,8 +252,8 @@ export const RouteTasksAssignView: React.FC = () => {
       return;
     }
     const note = window.prompt(
-      `Marcar ${open.length} TF/envío(s) como ya en CAJÓN NORTE.\n` +
-        `Sale de la ruta del mensajero sin exigir Recoger → Dejar en cajón.\nMotivo:`
+      `Pasar ${open.length} TF/envío(s) a CAJÓN NORTE (Recibido en Bodega).\n` +
+        `Quedan en la lista “TF en cajón” para reasignar con orden. Motivo:`
     );
     if (note === null) return;
     if (!String(note).trim()) {
@@ -267,12 +268,47 @@ export const RouteTasksAssignView: React.FC = () => {
     if (!res.success) toast({ variant: 'destructive', title: 'No se pudo marcar', description: res.error });
     else {
       toast({
-        title: 'Marcadas en cajón',
-        description: `${res.closed || 0} tarea(s) cerradas · ${res.transfersMoved || 0} TF a Cajón Norte.`,
+        title: 'En TF en cajón',
+        description: `${res.transfersMoved || 0} TF en Recibido en Bodega / CAJÓN NORTE · ${res.closed || 0} tarea(s) cerradas. Use “TF en cajón” para reasignar.`,
       });
       setTaskSel(new Set());
       void loadDay(day);
     }
+  };
+
+  /** Desde En Tránsito: pasan al mismo pool que el botón “TF en cajón”. */
+  const handleMoveInTransitToCajon = async () => {
+    if (!actor || selected.size === 0) return;
+    const chosen = groups.filter((g) => selected.has(g.key));
+    const transferIds = chosen.flatMap((g) => g.ids);
+    if (!transferIds.length) return;
+    const note = window.prompt(
+      `Pasar ${chosen.length} TF (${transferIds.length} línea(s)) a CAJÓN NORTE.\n` +
+        `Quedan como Recibido en Bodega + ubicación CAJÓN NORTE → aparecen en “TF en cajón” para ordenar/reasignar.\nMotivo:`
+    );
+    if (note === null) return;
+    if (!String(note).trim()) {
+      toast({ variant: 'destructive', title: 'Motivo obligatorio' });
+      return;
+    }
+    setSaving(true);
+    const res = await adminMoveTransfersToCajon({
+      transferIds,
+      note: String(note).trim(),
+      actor,
+    });
+    setSaving(false);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'No se pudo pasar a cajón', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Listas en TF en cajón',
+      description: `${res.transfersMoved || 0} TF movidas · ${res.tasksClosed || 0} tarea(s) de mensajero cerradas. Pulse “TF en cajón” para verlas y asignar con orden.`,
+    });
+    setSelected(new Set());
+    setLines((prev) => prev.filter((l) => !transferIds.includes(l.id)));
+    void loadDay(day);
   };
 
   const handleReassign = async () => {
@@ -389,13 +425,30 @@ export const RouteTasksAssignView: React.FC = () => {
                 Quitar selección
               </Button>
               <div className="flex-1" />
+              {linesSource === 'transito' && (
+                <Button
+                  variant="outline"
+                  className="border-amber-500 text-amber-900"
+                  onClick={() => void handleMoveInTransitToCajon()}
+                  disabled={saving || selected.size === 0}
+                >
+                  {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Pasar a Cajón Norte ({selected.size})
+                </Button>
+              )}
               <Button onClick={() => void handleAssign()} disabled={saving || selected.size === 0 || !driverReady}>
                 {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />} Asignar {selected.size} TF
               </Button>
             </div>
           )}
-          {groups.length > 0 && !driverReady && selected.size > 0 && (
+          {groups.length > 0 && !driverReady && selected.size > 0 && linesSource !== 'transito' && (
             <p className="text-xs text-amber-700">Para asignar elija arriba conductor (usuario de la app), placa y día.</p>
+          )}
+          {groups.length > 0 && linesSource === 'transito' && selected.size > 0 && (
+            <p className="text-xs text-amber-900">
+              <strong>Pasar a Cajón Norte</strong> = Recibido en Bodega + ubicación CAJÓN NORTE (mismas que ve en “TF en cajón”)
+              para reasignar con orden. No hace falta que el mensajero registre la recolección.
+            </p>
           )}
 
           {groups.length > 0 && (
@@ -508,7 +561,7 @@ export const RouteTasksAssignView: React.FC = () => {
                 onClick={() => void handleMarkInCajon()}
                 disabled={taskSel.size === 0}
               >
-                Ya en Cajón Norte ({taskSel.size})
+                A TF en cajón ({taskSel.size})
               </Button>
               <Button variant="outline" className="text-red-700" onClick={() => void handleCancel()} disabled={taskSel.size === 0}>
                 <Ban className="mr-2 h-4 w-4" /> Cancelar
