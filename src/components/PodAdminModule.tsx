@@ -20,10 +20,12 @@ import {
   reassignDeliveryManifestDriver,
   rejectDeliveryStop,
   resolvePodNovedades,
+  voidDuplicateDeliveryManifests,
   type AdminManifest,
   type AdminStop,
   type PodNovedadLine,
   type StopWithTfs,
+  type VoidDuplicateManifestsPreview,
 } from '@/app/podActions';
 import { PHOTO_CATEGORIES, STOP_STATUS_LABEL, STORE_RECEPTION_LABEL } from '@/lib/pod';
 import type { DeliveryManifestStatus, DeliveryPhoto, DeliveryStopStatus, StoreReceipt, TransferActor } from '@/types';
@@ -983,6 +985,133 @@ function exportRelations(list: AdminManifest[], month: string) {
   XLSX.writeFile(wb, `Entregas_${month}.xlsx`);
 }
 
+function VoidDuplicatesDialog({
+  actor,
+  onClose,
+  onDone,
+}: {
+  actor: TransferActor;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { toast } = useToast();
+  const [keep, setKeep] = useState('1415');
+  const [voids, setVoids] = useState('1407, 1408, 1410, 1414');
+  const [note, setNote] = useState('Error al crear varias relaciones con las mismas TF; queda solo la #1415.');
+  const [preview, setPreview] = useState<VoidDuplicateManifestsPreview | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const parseVoids = () =>
+    voids
+      .split(/[,;\s]+/)
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isFinite(n) && n > 0);
+
+  const runPreview = async () => {
+    setBusy(true);
+    setPreview(null);
+    const res = await voidDuplicateDeliveryManifests({
+      keepManifestNumber: Number(keep),
+      voidManifestNumbers: parseVoids(),
+      note,
+      actor,
+      dryRun: true,
+    });
+    setBusy(false);
+    if (!res.success || !res.preview) {
+      toast({ variant: 'destructive', title: 'No se pudo previsualizar', description: res.error });
+      return;
+    }
+    setPreview(res.preview);
+  };
+
+  const apply = async () => {
+    setBusy(true);
+    const res = await voidDuplicateDeliveryManifests({
+      keepManifestNumber: Number(keep),
+      voidManifestNumbers: parseVoids(),
+      note,
+      actor,
+      dryRun: false,
+    });
+    setBusy(false);
+    if (!res.success || !res.result) {
+      toast({ variant: 'destructive', title: 'No se pudo corregir', description: res.error });
+      return;
+    }
+    const r = res.result;
+    toast({
+      title: `Válida #${keep}`,
+      description: `Cerradas: ${r.closed.join(', ') || 'ninguna'}${
+        r.alreadyClosed.length ? ` · ya cerradas: ${r.alreadyClosed.join(', ')}` : ''
+      }${r.stripped.length ? ` · limpiadas (siguen en ruta): ${r.stripped.join(', ')}` : ''}. Ruta: ${r.routeTasksRetargeted} reapuntadas, ${r.routeTasksCancelled} canceladas. TF alineadas: ${r.transfersFixed}.`,
+    });
+    onDone();
+  };
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Anular relaciones duplicadas</DialogTitle>
+          <DialogDescription>
+            Cierra las relaciones erróneas, deja la válida en ruta y reapunta las tareas del mensajero (handoff) a esa
+            relación. No cambia el estado de las TF.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label>Relación válida (#)</Label>
+            <Input value={keep} onChange={(e) => setKeep(e.target.value)} inputMode="numeric" />
+          </div>
+          <div className="space-y-1">
+            <Label>Duplicadas a anular (separadas por coma)</Label>
+            <Input value={voids} onChange={(e) => setVoids(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label>Motivo</Label>
+            <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} />
+          </div>
+          {preview && (
+            <div className="rounded-md border bg-amber-50 px-3 py-2 text-xs text-amber-950 space-y-1">
+              <p>
+                Válida <strong>#{preview.keep.manifestId}</strong> · {preview.keep.transferCount} TF ·{' '}
+                {preview.keep.driver || 'sin conductor'} · estado {preview.keep.deliveryStatus}
+                {preview.keep.handoffStopId ? ` · handoff ${preview.keep.handoffStopId}` : ' · sin parada handoff'}
+              </p>
+              {preview.voiding.map((v) => (
+                <p key={v.docId}>
+                  #{v.manifestId}: {v.overlap}/{v.transferCount} TF en común
+                  {v.exclusiveCount ? ` · ${v.exclusiveCount} propias` : ''} · {v.deliveryStatus} →{' '}
+                  {v.action === 'close' ? 'cerrar' : v.action === 'strip_shared' ? 'quitar solo TF compartidas' : 'marcar'}
+                  {v.driver ? ` · ${v.driver}` : ''}
+                </p>
+              ))}
+              <p>
+                Tareas ruta: {preview.routeTasksToRetarget} a reapuntar, {preview.routeTasksToCancel} a cancelar · TF a
+                alinear: {preview.transfersToFix}
+              </p>
+            </div>
+          )}
+        </div>
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button variant="outline" disabled={busy} onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button variant="secondary" disabled={busy || !note.trim()} onClick={() => void runPreview()}>
+            {busy && !preview ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            Previsualizar
+          </Button>
+          <Button disabled={busy || !preview || !note.trim()} onClick={() => void apply()}>
+            {busy && preview ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            Aplicar corrección
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export const PodAdminModule: React.FC<{ onReturn: () => void }> = ({ onReturn }) => {
   const { user, userName, role } = useAuth();
   const { toast } = useToast();
@@ -1003,6 +1132,7 @@ export const PodAdminModule: React.FC<{ onReturn: () => void }> = ({ onReturn })
   const [altTfs, setAltTfs] = useState<string[]>([]);
   const [selected, setSelected] = useState<AdminManifest | null>(null);
   const [noteRequest, setNoteRequest] = useState<NoteRequest | null>(null);
+  const [dupDialogOpen, setDupDialogOpen] = useState(false);
 
   const load = useCallback(async () => {
     const { from, to } = monthRange(month);
@@ -1085,8 +1215,24 @@ export const PodAdminModule: React.FC<{ onReturn: () => void }> = ({ onReturn })
           <Button variant="outline" onClick={() => void load()} disabled={loading}>
             <RefreshCw className={cn('mr-2 h-4 w-4', loading && 'animate-spin')} /> Actualizar
           </Button>
+          {(role === 'admin' || role === 'supervisor') && (
+            <Button variant="outline" onClick={() => setDupDialogOpen(true)}>
+              <AlertTriangle className="mr-2 h-4 w-4" /> Anular duplicados
+            </Button>
+          )}
         </div>
       </div>
+
+      {dupDialogOpen && actor && (
+        <VoidDuplicatesDialog
+          actor={actor}
+          onClose={() => setDupDialogOpen(false)}
+          onDone={() => {
+            setDupDialogOpen(false);
+            void load();
+          }}
+        />
+      )}
 
       <Tabs defaultValue="relaciones">
         <TabsList>

@@ -724,6 +724,448 @@ export async function closeDeliveryManifestWithoutApp(input: {
   }
 }
 
+export type VoidDuplicateManifestsPreview = {
+  keep: {
+    docId: string;
+    manifestId: number;
+    deliveryStatus?: string;
+    transferCount: number;
+    driver?: string;
+    handoffStopId?: string;
+  };
+  voiding: Array<{
+    docId: string;
+    manifestId: number;
+    deliveryStatus?: string;
+    transferCount: number;
+    overlap: number;
+    exclusiveCount: number;
+    action: 'close' | 'strip_shared' | 'mark_only';
+    driver?: string;
+  }>;
+  routeTasksToRetarget: number;
+  routeTasksToCancel: number;
+  transfersToFix: number;
+};
+
+const TERMINAL_TF_FOR_DUP_CLOSE = new Set([
+  'Entregado en Tienda',
+  'Entregado en Cajon',
+  'Devuelto a Bodega',
+  'Novedad de Entrega',
+]);
+
+async function stripSharedTransfersFromManifest(opts: {
+  manifestDocId: string;
+  sharedIds: Set<string>;
+  keepManifestNumber: number;
+  note: string;
+  actorName: string;
+}): Promise<{ removed: number; remaining: number }> {
+  const manifestRef = doc(firestore, 'deliveryManifests', opts.manifestDocId);
+  const mSnap = await getDoc(manifestRef);
+  if (!mSnap.exists()) return { removed: 0, remaining: 0 };
+  const data = mSnap.data();
+  const transferIds = (Array.isArray(data.transferIds) ? data.transferIds : []).map(String);
+  const remainingIds = transferIds.filter((id) => !opts.sharedIds.has(id));
+  const removed = transferIds.length - remainingIds.length;
+  if (removed === 0) return { removed: 0, remaining: remainingIds.length };
+
+  const stopsSnap = await getDocs(collection(manifestRef, 'stops'));
+  const remainingStopPlans: Array<{
+    ref: ReturnType<typeof doc>;
+    stopTfs: string[];
+    status: string;
+    storeCode?: string;
+    prevUnidades: number;
+    prevNumeros: string[];
+    removedCount: number;
+  }> = [];
+  stopsSnap.docs.forEach((d) => {
+    const s = d.data();
+    const prevIds = (Array.isArray(s.transferIds) ? s.transferIds : []).map(String);
+    const stopTfs = prevIds.filter((id) => !opts.sharedIds.has(id));
+    if (stopTfs.length === 0) {
+      remainingStopPlans.push({
+        ref: d.ref,
+        stopTfs: [],
+        status: String(s.status || 'pendiente'),
+        storeCode: s.storeCode ? String(s.storeCode) : undefined,
+        prevUnidades: Number(s.unidades) || 0,
+        prevNumeros: (Array.isArray(s.numerosTF) ? s.numerosTF : []).map(String),
+        removedCount: prevIds.length,
+      });
+      return;
+    }
+    remainingStopPlans.push({
+      ref: d.ref,
+      stopTfs,
+      status: String(s.status || 'pendiente'),
+      storeCode: s.storeCode ? String(s.storeCode) : undefined,
+      prevUnidades: Number(s.unidades) || 0,
+      prevNumeros: (Array.isArray(s.numerosTF) ? s.numerosTF : []).map(String),
+      removedCount: prevIds.length - stopTfs.length,
+    });
+  });
+
+  const remainingLookupIds = Array.from(new Set(remainingStopPlans.flatMap((p) => p.stopTfs)));
+  const tfMeta = new Map<string, { numeroTF: string; cantidad: number }>();
+  for (let i = 0; i < remainingLookupIds.length; i += 30) {
+    const snap = await getDocs(
+      query(collection(firestore, 'transfers'), where(documentId(), 'in', remainingLookupIds.slice(i, i + 30)))
+    );
+    snap.docs.forEach((d) => {
+      tfMeta.set(d.id, {
+        numeroTF: String(d.data().numeroTF || '').trim(),
+        cantidad: Number(d.data().cantidad) || 0,
+      });
+    });
+  }
+
+  const batch = writeBatch(firestore);
+  let stopsCount = 0;
+  let stopsDone = 0;
+  const storeOpenCodes: string[] = [];
+  remainingStopPlans.forEach((p) => {
+    if (p.stopTfs.length === 0) {
+      batch.delete(p.ref);
+      return;
+    }
+    const numerosTF = Array.from(
+      new Set(p.stopTfs.map((id) => tfMeta.get(id)?.numeroTF || '').filter(Boolean))
+    );
+    const unidades = p.stopTfs.reduce((n, id) => n + (tfMeta.get(id)?.cantidad || 0), 0);
+    stopsCount++;
+    if (p.status !== 'pendiente') stopsDone++;
+    if (p.storeCode && p.status === 'pendiente') storeOpenCodes.push(p.storeCode);
+    batch.update(p.ref, {
+      transferIds: p.stopTfs,
+      numerosTF: numerosTF.length ? numerosTF : p.prevNumeros,
+      unidades: unidades || p.prevUnidades,
+    });
+  });
+
+  const now = Timestamp.now();
+  batch.update(manifestRef, {
+    transferIds: remainingIds,
+    stopsCount,
+    stopsDone,
+    storeOpenCodes: Array.from(new Set(storeOpenCodes)),
+    strippedSharedOfManifestId: opts.keepManifestNumber,
+    strippedSharedAt: now,
+    strippedSharedByName: opts.actorName,
+    strippedSharedNote: opts.note.slice(0, 500),
+    ...(remainingIds.length === 0
+      ? {
+          deliveryStatus: 'cerrada',
+          closedWithoutApp: true,
+          closedAt: now,
+          closedByName: opts.actorName,
+          closedNote: `Sin TF propias tras quitar duplicados de #${opts.keepManifestNumber}. ${opts.note}`.slice(0, 500),
+        }
+      : {}),
+  });
+  await batch.commit();
+  return { removed, remaining: remainingIds.length };
+}
+
+/**
+ * Corrige relaciones que repiten TF de una válida:
+ * - Si el duplicado solo tiene esas TF (o exclusivas ya terminales) → se cierra.
+ * - Si tiene otras TF vivas → solo se retiran las compartidas (la relación sigue).
+ * Reapunta tareas handoff y alinea podManifestDocId solo de las TF de la válida.
+ */
+export async function voidDuplicateDeliveryManifests(input: {
+  keepManifestNumber: number;
+  voidManifestNumbers: number[];
+  note: string;
+  actor: TransferActor;
+  dryRun?: boolean;
+}): Promise<{
+  success: boolean;
+  error?: string;
+  preview?: VoidDuplicateManifestsPreview;
+  result?: {
+    closed: number[];
+    alreadyClosed: number[];
+    stripped: number[];
+    routeTasksRetargeted: number;
+    routeTasksCancelled: number;
+    transfersFixed: number;
+  };
+}> {
+  if (!input.actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  const note = String(input.note || '').trim();
+  if (!note) return { success: false, error: 'Escriba el motivo de la corrección.' };
+  const keepNum = Number(input.keepManifestNumber);
+  const voidNums = Array.from(
+    new Set((input.voidManifestNumbers || []).map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0 && n !== keepNum))
+  );
+  if (!Number.isFinite(keepNum) || keepNum <= 0) {
+    return { success: false, error: 'Indique el # de relación válida.' };
+  }
+  if (voidNums.length === 0) {
+    return { success: false, error: 'Indique al menos un # de relación duplicada a anular.' };
+  }
+
+  try {
+    const allNums = [keepNum, ...voidNums];
+    const byNumber = new Map<number, { id: string; data: DocumentData }>();
+    for (let i = 0; i < allNums.length; i += 30) {
+      const chunk = allNums.slice(i, i + 30);
+      const snap = await getDocs(query(collection(firestore, 'deliveryManifests'), where('manifestId', 'in', chunk)));
+      snap.docs.forEach((d) => {
+        const mid = Number(d.data().manifestId);
+        if (!Number.isFinite(mid)) return;
+        if (byNumber.has(mid)) {
+          throw new Error(`Hay más de un documento con relación #${mid}; revise a mano.`);
+        }
+        byNumber.set(mid, { id: d.id, data: d.data() });
+      });
+    }
+
+    const keep = byNumber.get(keepNum);
+    if (!keep) return { success: false, error: `No se encontró la relación #${keepNum}.` };
+    const missing = voidNums.filter((n) => !byNumber.has(n));
+    if (missing.length) {
+      return { success: false, error: `No se encontraron las relaciones: ${missing.join(', ')}.` };
+    }
+
+    const keepTfIds = new Set((Array.isArray(keep.data.transferIds) ? keep.data.transferIds : []).map(String));
+    if (keepTfIds.size === 0) {
+      return { success: false, error: `La relación #${keepNum} no tiene TF.` };
+    }
+
+    const exclusiveIds = Array.from(
+      new Set(
+        voidNums.flatMap((n) => {
+          const m = byNumber.get(n)!;
+          return (Array.isArray(m.data.transferIds) ? m.data.transferIds : [])
+            .map(String)
+            .filter((id) => !keepTfIds.has(id));
+        })
+      )
+    );
+    const exclusiveStatus = new Map<string, string>();
+    for (let i = 0; i < exclusiveIds.length; i += 30) {
+      const snap = await getDocs(
+        query(collection(firestore, 'transfers'), where(documentId(), 'in', exclusiveIds.slice(i, i + 30)))
+      );
+      snap.docs.forEach((d) => exclusiveStatus.set(d.id, String(d.data().status || '')));
+    }
+
+    const voiding = voidNums.map((n) => {
+      const m = byNumber.get(n)!;
+      const ids = (Array.isArray(m.data.transferIds) ? m.data.transferIds : []).map(String);
+      const shared = ids.filter((id) => keepTfIds.has(id));
+      const exclusive = ids.filter((id) => !keepTfIds.has(id));
+      const exclusiveLive = exclusive.filter((id) => !TERMINAL_TF_FOR_DUP_CLOSE.has(exclusiveStatus.get(id) || ''));
+      const status = String(m.data.deliveryStatus || 'en_ruta');
+      let action: 'close' | 'strip_shared' | 'mark_only' = 'close';
+      if (status === 'cerrada') action = 'mark_only';
+      else if (exclusiveLive.length > 0) action = 'strip_shared';
+      else action = 'close';
+      return {
+        docId: m.id,
+        manifestId: n,
+        deliveryStatus: status,
+        transferCount: ids.length,
+        overlap: shared.length,
+        exclusiveCount: exclusive.length,
+        exclusiveLiveCount: exclusiveLive.length,
+        action,
+        driver: String(m.data.driver || '').trim() || undefined,
+        transferIds: ids,
+        sharedIds: shared,
+      };
+    });
+    const noOverlap = voiding.filter((v) => v.overlap === 0);
+    if (noOverlap.length) {
+      return {
+        success: false,
+        error: `Las relaciones ${noOverlap.map((v) => `#${v.manifestId}`).join(', ')} no comparten TF con #${keepNum}. Abortado.`,
+      };
+    }
+
+    const stopsSnap = await getDocs(collection(firestore, 'deliveryManifests', keep.id, 'stops'));
+    const handoffStop = stopsSnap.docs.find((d) => d.data().stopKind === 'handoff_mensajero');
+    const handoffStopId = handoffStop?.id;
+
+    const routeSnaps = await Promise.all(
+      voiding.map((v) =>
+        getDocs(query(collection(firestore, 'routeTasks'), where('handoffFromManifestId', '==', v.docId)))
+      )
+    );
+    const openStatuses = new Set(['por_recoger', 'por_entregar']);
+    const routeDocs = routeSnaps.flatMap((s) => s.docs).filter((d) => openStatuses.has(String(d.data().status || '')));
+
+    const openKeysOnKeep = new Set<string>();
+    const keepRouteSnap = await getDocs(
+      query(collection(firestore, 'routeTasks'), where('handoffFromManifestId', '==', keep.id))
+    );
+    keepRouteSnap.docs.forEach((d) => {
+      if (!openStatuses.has(String(d.data().status || ''))) return;
+      const k = String(d.data().openKey || d.data().numeroTF || '').trim();
+      if (k) openKeysOnKeep.add(k);
+    });
+
+    let routeTasksToRetarget = 0;
+    let routeTasksToCancel = 0;
+    const routePlan: Array<{ id: string; action: 'retarget' | 'cancel' }> = [];
+    for (const d of routeDocs) {
+      const k = String(d.data().openKey || d.data().numeroTF || '').trim();
+      if (k && openKeysOnKeep.has(k)) {
+        routeTasksToCancel++;
+        routePlan.push({ id: d.id, action: 'cancel' });
+      } else {
+        routeTasksToRetarget++;
+        routePlan.push({ id: d.id, action: 'retarget' });
+        if (k) openKeysOnKeep.add(k);
+      }
+    }
+
+    const transferFixIds: string[] = [];
+    const keepIdList = Array.from(keepTfIds);
+    for (let i = 0; i < keepIdList.length; i += 30) {
+      const chunk = keepIdList.slice(i, i + 30);
+      const snap = await getDocs(query(collection(firestore, 'transfers'), where(documentId(), 'in', chunk)));
+      snap.docs.forEach((d) => {
+        const data = d.data();
+        const pod = String(data.podManifestDocId || '');
+        const mid = Number(data.manifestId);
+        if (pod !== keep.id || mid !== keepNum) transferFixIds.push(d.id);
+      });
+    }
+
+    const preview: VoidDuplicateManifestsPreview = {
+      keep: {
+        docId: keep.id,
+        manifestId: keepNum,
+        deliveryStatus: String(keep.data.deliveryStatus || 'en_ruta'),
+        transferCount: keepTfIds.size,
+        driver: String(keep.data.driver || '').trim() || undefined,
+        handoffStopId,
+      },
+      voiding: voiding.map(({ transferIds: _t, sharedIds: _s, exclusiveLiveCount: _e, ...rest }) => rest),
+      routeTasksToRetarget,
+      routeTasksToCancel,
+      transfersToFix: transferFixIds.length,
+    };
+
+    if (input.dryRun) {
+      return { success: true, preview };
+    }
+
+    const closed: number[] = [];
+    const alreadyClosed: number[] = [];
+    const stripped: number[] = [];
+    const now = Timestamp.now();
+    const actorName = actorNameOf(input.actor);
+    const closeNote = `Duplicado de relación #${keepNum}. ${note}`.slice(0, 500);
+
+    for (const v of voiding) {
+      if (v.action === 'mark_only') {
+        alreadyClosed.push(v.manifestId);
+        await updateDoc(doc(firestore, 'deliveryManifests', v.docId), {
+          duplicateOfManifestId: keepNum,
+          duplicateVoidedAt: now,
+          duplicateVoidedByName: actorName,
+          closedNote: closeNote,
+        });
+        continue;
+      }
+      if (v.action === 'strip_shared') {
+        await stripSharedTransfersFromManifest({
+          manifestDocId: v.docId,
+          sharedIds: keepTfIds,
+          keepManifestNumber: keepNum,
+          note,
+          actorName,
+        });
+        stripped.push(v.manifestId);
+        continue;
+      }
+      await updateDoc(doc(firestore, 'deliveryManifests', v.docId), {
+        deliveryStatus: 'cerrada',
+        closedWithoutApp: true,
+        closedAt: now,
+        closedById: input.actor.userId,
+        closedByName: actorName,
+        closedNote: closeNote,
+        duplicateOfManifestId: keepNum,
+        duplicateVoidedAt: now,
+        duplicateVoidedByName: actorName,
+        storeOpenCodes: [],
+        driverUserId: deleteField(),
+      });
+      closed.push(v.manifestId);
+      await autoCompleteStoreReceptions(v.docId, 'cerrada', actorName).catch((e) =>
+        console.error(`autoComplete al anular #${v.manifestId}:`, e)
+      );
+    }
+
+    let routeTasksRetargeted = 0;
+    let routeTasksCancelled = 0;
+    for (let i = 0; i < routePlan.length; i += 400) {
+      const batch = writeBatch(firestore);
+      const chunk = routePlan.slice(i, i + 400);
+      chunk.forEach((p) => {
+        const ref = doc(firestore, 'routeTasks', p.id);
+        if (p.action === 'cancel') {
+          batch.update(ref, {
+            status: 'cancelada',
+            failedAt: now,
+            failedByName: actorName,
+            failReason: `Duplicado anulado; válida #${keepNum}`,
+            driverOpen: deleteField(),
+            openKey: deleteField(),
+          });
+          routeTasksCancelled++;
+        } else {
+          const upd: Record<string, unknown> = {
+            handoffFromManifestId: keep.id,
+            handoffManifestNumber: keepNum,
+            notes: `Reapuntada a relación #${keepNum} (duplicados anulados)`,
+          };
+          if (handoffStopId) upd.handoffStopId = handoffStopId;
+          batch.update(ref, upd);
+          routeTasksRetargeted++;
+        }
+      });
+      await batch.commit();
+    }
+
+    let transfersFixed = 0;
+    for (let i = 0; i < transferFixIds.length; i += 400) {
+      const batch = writeBatch(firestore);
+      transferFixIds.slice(i, i + 400).forEach((id) => {
+        batch.update(doc(firestore, 'transfers', id), {
+          podManifestDocId: keep.id,
+          manifestId: keepNum,
+        });
+        transfersFixed++;
+      });
+      await batch.commit();
+    }
+
+    return {
+      success: true,
+      preview,
+      result: {
+        closed,
+        alreadyClosed,
+        stripped,
+        routeTasksRetargeted,
+        routeTasksCancelled,
+        transfersFixed,
+      },
+    };
+  } catch (error: any) {
+    console.error('voidDuplicateDeliveryManifests:', error);
+    return { success: false, error: error.message || 'No se pudieron anular los duplicados.' };
+  }
+}
+
 /** Cambia el conductor (y opcionalmente la placa) de una relación en ruta; las paradas ya registradas no cambian. */
 export async function reassignDeliveryManifestDriver(input: {
   manifestDocId: string;

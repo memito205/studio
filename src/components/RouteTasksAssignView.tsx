@@ -216,7 +216,15 @@ export const RouteTasksAssignView: React.FC = () => {
 
   const handleCancel = async () => {
     if (!actor || taskSel.size === 0) return;
-    const res = await cancelRouteTasks({ taskIds: Array.from(taskSel), actor });
+    const note = window.prompt(
+      `Cancelar ${taskSel.size} tarea(s).\nSi ya habían marcado recolección, la TF vuelve a En Tránsito.\nMotivo (opcional):`
+    );
+    if (note === null) return;
+    const res = await cancelRouteTasks({
+      taskIds: Array.from(taskSel),
+      actor,
+      note: String(note).trim() || undefined,
+    });
     if (!res.success) toast({ variant: 'destructive', title: 'Error', description: res.error });
     else toast({ title: `${res.cancelled} tarea(s) cancelada(s)` });
     void loadDay(day);

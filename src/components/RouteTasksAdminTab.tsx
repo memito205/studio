@@ -11,6 +11,7 @@ import {
   markRouteTasksRevalidated,
   rejectRouteTaskDelivery,
   reorderMessengerDayRoute,
+  undoRouteTaskPickup,
 } from '@/app/routeTaskActions';
 import { ROUTE_TASK_STATUS } from '@/components/RouteTasksAssignView';
 import { deliverOrderOf } from '@/components/DriverRouteTasks';
@@ -184,6 +185,7 @@ export function RouteTasksAdminTab() {
   const [tasks, setTasks] = useState<DriverRouteTask[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [undoingId, setUndoingId] = useState<string | null>(null);
   const [markingId, setMarkingId] = useState<string | null>(null);
   const [reorderingKey, setReorderingKey] = useState<string | null>(null);
   const [customOrderOpen, setCustomOrderOpen] = useState(false);
@@ -224,6 +226,34 @@ export function RouteTasksAdminTab() {
     toast({
       title: 'Entrega rechazada',
       description: 'Volvió a Mis entregas del mensajero para que la cierre bien. No podrá montar ruta de un día nuevo mientras tenga esta pendiente.',
+    });
+    void load();
+  };
+
+  const undoPickup = async (t: DriverRouteTask) => {
+    if (!actor) {
+      toast({ variant: 'destructive', title: 'Sesión', description: 'Inicie sesión para corregir.' });
+      return;
+    }
+    const note = window.prompt(
+      `Deshacer recolección de ${t.driverName} (TF ${t.kind === 'libre' ? t.description || t.numeroTF : t.numeroTF}).\n` +
+        `La TF vuelve a En Tránsito y la tarea queda No recogida (sin exigir entrega). Motivo:`
+    );
+    if (note === null) return;
+    if (!String(note).trim()) {
+      toast({ variant: 'destructive', title: 'Motivo obligatorio', description: 'Escriba por qué se deshace la recolección.' });
+      return;
+    }
+    setUndoingId(t.id);
+    const res = await undoRouteTaskPickup({ taskIds: [t.id], note: String(note).trim(), actor });
+    setUndoingId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'No se pudo deshacer', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Recolección deshecha',
+      description: `${res.undone || 0} tarea(s) · ${res.transfersReverted || 0} TF a En Tránsito. Ya no bloquea el cierre del día.`,
     });
     void load();
   };
@@ -422,7 +452,9 @@ export function RouteTasksAdminTab() {
       <CardHeader>
         <CardTitle>Recolecciones de ruta</CardTitle>
         <CardDescription>
-          Rechazar → el mensajero reenvía → aparece en <strong>Por revalidar</strong> para revisar solo esas. Mientras tenga día anterior abierto no se monta ruta nueva.
+          Recolección exitosa por error → <strong>Deshacer recolección</strong> (TF a En Tránsito, tarea No recogida). Entrega mal
+          registrada → <strong>Rechazar</strong> (reenvía y sale en Por revalidar). Mientras tenga día anterior abierto no se monta
+          ruta nueva.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -698,6 +730,22 @@ export function RouteTasksAdminTab() {
                                 <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
                               )}
                               Revisada
+                            </Button>
+                          )}
+                          {t.status === 'por_entregar' && t.pickedAt && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full text-amber-800"
+                              disabled={undoingId === t.id || !actor}
+                              onClick={() => void undoPickup(t)}
+                            >
+                              {undoingId === t.id ? (
+                                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Undo2 className="mr-1 h-3.5 w-3.5" />
+                              )}
+                              Deshacer recolección
                             </Button>
                           )}
                           {REJECTABLE.includes(t.status) && (

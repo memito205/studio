@@ -1376,43 +1376,183 @@ export async function markRouteTasksRevalidated(input: {
   }
 }
 
-/** Cancela tareas abiertas (admin). */
+/**
+ * Admin: deshace una recolección marcada exitosa por error.
+ * La TF vuelve a En Tránsito (si seguía Recolectado en Ruta por esta tarea) y la tarea queda
+ * `no_recogida` para poder cerrar el día sin exigir entrega.
+ */
+export async function undoRouteTaskPickup(input: {
+  taskIds: string[];
+  note: string;
+  actor: TransferActor;
+}): Promise<{ success: boolean; undone?: number; transfersReverted?: number; error?: string }> {
+  if (!input.actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  const note = String(input.note || '').trim();
+  if (!note) return { success: false, error: 'Escriba el motivo (recolección errónea).' };
+  const ids = Array.from(new Set((input.taskIds || []).filter(Boolean)));
+  if (!ids.length) return { success: false, error: 'No hay tareas seleccionadas.' };
+  const actorName = actorNameOf(input.actor);
+
+  try {
+    let undone = 0;
+    let transfersReverted = 0;
+    const logIds = new Set<string>();
+
+    await runTransaction(firestore, async (tx) => {
+      undone = 0;
+      transfersReverted = 0;
+      logIds.clear();
+      const snaps = await Promise.all(ids.map((id) => tx.get(doc(firestore, TASKS, id))));
+      const eligible = snaps.filter((s) => {
+        const d = s.data();
+        return s.exists() && !!d && d.status === 'por_entregar' && !!d.pickedAt;
+      });
+      if (eligible.length === 0) {
+        throw new Error('Ninguna tarea está en “Recogida / por entregar” con recolección registrada.');
+      }
+
+      const lineIds = Array.from(new Set(eligible.flatMap((s) => (s.data()?.transferIds as string[]) || [])));
+      const lineSnaps = await Promise.all(lineIds.map((id) => tx.get(doc(firestore, 'transfers', id))));
+      const lineById = new Map(lineSnaps.filter((s) => s.exists()).map((s) => [s.id, s]));
+      const now = Timestamp.now();
+
+      eligible.forEach((s) => {
+        const t = toTask(s.id, s.data()!);
+        (t.transferIds || []).forEach((id) => {
+          const ls = lineById.get(id);
+          if (!ls) return;
+          const d = ls.data()!;
+          if (d.status !== 'Recolectado en Ruta') return;
+          if (d.routeTaskId && d.routeTaskId !== t.id) return;
+          transfersReverted++;
+          tx.update(ls.ref, {
+            status: 'En Tránsito',
+            recolectadoBy: deleteField(),
+            recolectadoByName: deleteField(),
+            routeTaskId: deleteField(),
+            ...clearMisEntregasFields,
+            statusHistory: arrayUnion({
+              status: 'En Tránsito',
+              at: now,
+              userId: input.actor.userId,
+              userName: `${actorName} (deshacer recolección)`,
+            }),
+          });
+        });
+        if (t.collectionLogId) logIds.add(t.collectionLogId);
+        tx.update(
+          s.ref,
+          clean({
+            status: 'no_recogida',
+            failedAt: now,
+            failedById: input.actor.userId,
+            failedByName: actorName,
+            failReason: note,
+            failNotes: 'Recolección exitosa deshecha por admin (sin entrega).',
+            driverOpen: deleteField(),
+            openKey: deleteField(),
+            pickedAt: deleteField(),
+            pickedById: deleteField(),
+            pickedByName: deleteField(),
+            pickupPhotos: deleteField(),
+            pickupGps: deleteField(),
+            collectionLogId: deleteField(),
+            lastSubmissionId: deleteField(),
+            lastRejection: {
+              at: now,
+              byId: input.actor.userId,
+              byName: actorName,
+              note: `Deshacer recolección: ${note}`,
+            },
+          })
+        );
+        undone++;
+      });
+    });
+
+    for (const logId of logIds) {
+      await updateDoc(doc(firestore, 'collectionLogs', logId), {
+        voided: true,
+        voidReason: note,
+        voidedAt: Timestamp.now(),
+        voidedByName: actorName,
+      }).catch(() => undefined);
+    }
+
+    return { success: true, undone, transfersReverted };
+  } catch (error: any) {
+    console.error('undoRouteTaskPickup:', error);
+    return { success: false, error: error.message || 'No se pudo deshacer la recolección.' };
+  }
+}
+
+/** Cancela tareas abiertas (admin). Si ya habían recogido, revierte TF a En Tránsito. */
 export async function cancelRouteTasks(input: { taskIds: string[]; actor: TransferActor; note?: string }): Promise<{ success: boolean; cancelled?: number; error?: string }> {
   if (!input.actor?.userId) return { success: false, error: 'Sesión no válida.' };
   try {
     let cancelled = 0;
+    const actorName = actorNameOf(input.actor);
+    const note = String(input.note || '').trim() || 'Cancelada por el administrador';
     await runTransaction(firestore, async (tx) => {
       cancelled = 0;
       const snaps = await Promise.all(input.taskIds.map((id) => tx.get(doc(firestore, TASKS, id))));
       const now = Timestamp.now();
-      const lineIds = Array.from(
-        new Set(
-          snaps
-            .filter((s) => {
-              const d = s.data();
-              return s.exists() && !!d && ['por_recoger', 'por_entregar'].includes(d.status);
-            })
-            .flatMap((s) => (s.data()?.transferIds as string[] | undefined) || [])
-        )
-      );
-      const lineSnaps = await Promise.all(lineIds.map((id) => tx.get(doc(firestore, 'transfers', id))));
-      lineSnaps.forEach((ls) => {
-        const d = ls.data();
-        if (ls.exists() && d?.misEntregasTaskOpen) {
-          tx.update(ls.ref, { ...clearMisEntregasFields });
-        }
-      });
-      snaps.forEach((s) => {
+      const openSnaps = snaps.filter((s) => {
         const d = s.data();
-        if (!s.exists() || !d || !['por_recoger', 'por_entregar'].includes(d.status)) return;
+        return s.exists() && !!d && ['por_recoger', 'por_entregar'].includes(d.status);
+      });
+      const lineIds = Array.from(new Set(openSnaps.flatMap((s) => (s.data()?.transferIds as string[] | undefined) || [])));
+      const lineSnaps = await Promise.all(lineIds.map((id) => tx.get(doc(firestore, 'transfers', id))));
+      const lineById = new Map(lineSnaps.filter((s) => s.exists()).map((s) => [s.id, s]));
+
+      openSnaps.forEach((s) => {
+        const d = s.data()!;
+        const taskId = s.id;
+        (Array.isArray(d.transferIds) ? d.transferIds : []).forEach((id: string) => {
+          const ls = lineById.get(id);
+          if (!ls) return;
+          const td = ls.data()!;
+          const revertPickup =
+            d.status === 'por_entregar' &&
+            td.status === 'Recolectado en Ruta' &&
+            (!td.routeTaskId || td.routeTaskId === taskId);
+          if (!revertPickup && !td.misEntregasTaskOpen) return;
+          tx.update(ls.ref, {
+            ...(revertPickup
+              ? {
+                  status: 'En Tránsito' as TransferStatus,
+                  recolectadoBy: deleteField(),
+                  recolectadoByName: deleteField(),
+                  routeTaskId: deleteField(),
+                  statusHistory: arrayUnion({
+                    status: 'En Tránsito',
+                    at: now,
+                    userId: input.actor.userId,
+                    userName: `${actorName} (cancelar ruta)`,
+                  }),
+                }
+              : {}),
+            ...clearMisEntregasFields,
+          });
+        });
         cancelled++;
         tx.update(s.ref, {
           status: 'cancelada',
           failedAt: now,
-          failedByName: actorNameOf(input.actor),
-          failReason: String(input.note || '').trim() || 'Cancelada por el administrador',
+          failedByName: actorName,
+          failReason: note,
           driverOpen: deleteField(),
           openKey: deleteField(),
+          ...(d.status === 'por_entregar'
+            ? {
+                pickedAt: deleteField(),
+                pickedById: deleteField(),
+                pickedByName: deleteField(),
+                pickupPhotos: deleteField(),
+                pickupGps: deleteField(),
+                collectionLogId: deleteField(),
+              }
+            : {}),
         });
       });
     });
