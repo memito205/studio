@@ -1377,6 +1377,129 @@ export async function markRouteTasksRevalidated(input: {
 }
 
 /**
+ * Admin: la mercancía ya está físicamente en CAJÓN NORTE pero el mensajero no registró
+ * recoger → dejar en cajón. Cierra la tarea abierta y deja la TF en Recibido en Bodega / cajón.
+ * Acepta `por_recoger` o `por_entregar` (no exige el paso de recolección en la app).
+ */
+export async function adminPlaceRouteTasksInCajon(input: {
+  taskIds: string[];
+  note: string;
+  actor: TransferActor;
+}): Promise<{ success: boolean; closed?: number; transfersMoved?: number; error?: string }> {
+  if (!input.actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  const note = String(input.note || '').trim();
+  if (!note) return { success: false, error: 'Escriba el motivo (mercancía ya en cajón).' };
+  const ids = Array.from(new Set((input.taskIds || []).filter(Boolean)));
+  if (!ids.length) return { success: false, error: 'No hay tareas seleccionadas.' };
+  const actorName = actorNameOf(input.actor);
+
+  try {
+    let closed = 0;
+    let transfersMoved = 0;
+    const cajonPlatformIds = new Set<string>();
+
+    await runTransaction(firestore, async (tx) => {
+      closed = 0;
+      transfersMoved = 0;
+      cajonPlatformIds.clear();
+      const snaps = await Promise.all(ids.map((id) => tx.get(doc(firestore, TASKS, id))));
+      const eligible = snaps.filter((s) => {
+        const d = s.data();
+        return s.exists() && !!d && ['por_recoger', 'por_entregar'].includes(String(d.status || ''));
+      });
+      if (eligible.length === 0) {
+        throw new Error('Ninguna tarea está abierta (por recoger / por entregar).');
+      }
+
+      const lineIds = Array.from(new Set(eligible.flatMap((s) => (s.data()?.transferIds as string[]) || [])));
+      const lineSnaps = await Promise.all(lineIds.map((id) => tx.get(doc(firestore, 'transfers', id))));
+      const lineById = new Map(lineSnaps.filter((s) => s.exists()).map((s) => [s.id, s]));
+      const now = Timestamp.now();
+
+      eligible.forEach((s) => {
+        const t = toTask(s.id, s.data()!);
+        if (t.kind !== 'libre') {
+          (t.transferIds || []).forEach((id) => {
+            const ls = lineById.get(id);
+            if (!ls) return;
+            const d = ls.data()!;
+            if (d.storeReceivedAt) return;
+            const alreadyCajon = isInCajon(d);
+            const canMove =
+              alreadyCajon ||
+              DELIVERABLE.includes(d.status as TransferStatus) ||
+              d.status === 'Recolectado en Ruta' ||
+              d.status === 'En Tránsito';
+            if (!canMove) return;
+            if (!alreadyCajon) {
+              transfersMoved++;
+              const pid = platformDocId(d.numeroTF, d.bodegaDestino);
+              if (pid) cajonPlatformIds.add(pid);
+              tx.update(ls.ref, {
+                status: 'Recibido en Bodega',
+                ubicacion: CAJON_POINT,
+                ubicacionAt: now,
+                reprogramada: true,
+                cajonAt: now,
+                cajonByName: actorName,
+                cajonRouteTaskId: t.id,
+                routeTaskId: t.id,
+                ...clearMisEntregasFields,
+                statusHistory: arrayUnion({
+                  status: 'Recibido en Bodega',
+                  at: now,
+                  userId: input.actor.userId,
+                  userName: `${actorName} (admin · ya en cajón)`,
+                }),
+              });
+            } else {
+              tx.update(ls.ref, { ...clearMisEntregasFields });
+            }
+          });
+        }
+        tx.update(
+          s.ref,
+          clean({
+            status: 'entregada',
+            leftInCajon: true,
+            leftInBodega: false,
+            deliveredAt: now,
+            deliveredById: input.actor.userId,
+            deliveredByName: actorName,
+            deliveryNotes: `Admin: ya en CAJÓN NORTE. ${note}`.slice(0, 500),
+            failReason: note,
+            tfMarkedDelivered: false,
+            driverOpen: deleteField(),
+            openKey: deleteField(),
+            waitingForHandoff: deleteField(),
+          })
+        );
+        closed++;
+      });
+    });
+
+    const at = Timestamp.now();
+    for (const id of cajonPlatformIds) {
+      const ref = doc(firestore, 'tf_platform_status', id);
+      const snap = await getDoc(ref).catch(() => null);
+      if (!snap?.exists() || snap.data()?.estadoPlataforma === 'ENTREGADO') continue;
+      await updateDoc(ref, {
+        estadoPlataforma: 'EN BODEGA',
+        ubicacionActual: CAJON_POINT,
+        cajonAt: at,
+        cajonByName: actorName,
+        updatedAt: at,
+      }).catch((e) => console.error('Admin cajón sin estado plataforma:', e));
+    }
+
+    return { success: true, closed, transfersMoved };
+  } catch (error: any) {
+    console.error('adminPlaceRouteTasksInCajon:', error);
+    return { success: false, error: error.message || 'No se pudo marcar en cajón.' };
+  }
+}
+
+/**
  * Admin: deshace una recolección marcada exitosa por error.
  * La TF vuelve a En Tránsito (si seguía Recolectado en Ruta por esta tarea) y la tarea queda
  * `no_recogida` para poder cerrar el día sin exigir entrega.

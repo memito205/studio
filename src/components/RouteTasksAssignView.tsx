@@ -7,7 +7,14 @@ import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import { getTransfersByStatus } from '@/app/actions';
 import { getDeliveryStores } from '@/app/deliveryActions';
-import { cancelRouteTasks, createRouteTasks, getRouteTasksByDay, getTransfersInCajon, reassignRouteTasks } from '@/app/routeTaskActions';
+import {
+  adminPlaceRouteTasksInCajon,
+  cancelRouteTasks,
+  createRouteTasks,
+  getRouteTasksByDay,
+  getTransfersInCajon,
+  reassignRouteTasks,
+} from '@/app/routeTaskActions';
 import { downloadMessengerRouteExcel } from '@/lib/messengerRouteExcel';
 import { DriverUserSelect, type DriverValue } from '@/components/DriverUserSelect';
 import type { DeliveryStore, DriverRouteTask, DriverRouteTaskStatus, TransferActor, TransferEntry } from '@/types';
@@ -228,6 +235,44 @@ export const RouteTasksAssignView: React.FC = () => {
     if (!res.success) toast({ variant: 'destructive', title: 'Error', description: res.error });
     else toast({ title: `${res.cancelled} tarea(s) cancelada(s)` });
     void loadDay(day);
+  };
+
+  const handleMarkInCajon = async () => {
+    if (!actor || taskSel.size === 0) return;
+    const open = (dayTasks || []).filter(
+      (t) => taskSel.has(t.id) && (t.status === 'por_recoger' || t.status === 'por_entregar')
+    );
+    if (!open.length) {
+      toast({
+        variant: 'destructive',
+        title: 'Nada abierto',
+        description: 'Seleccione tareas Por recoger o Recogida / por entregar.',
+      });
+      return;
+    }
+    const note = window.prompt(
+      `Marcar ${open.length} TF/envío(s) como ya en CAJÓN NORTE.\n` +
+        `Sale de la ruta del mensajero sin exigir Recoger → Dejar en cajón.\nMotivo:`
+    );
+    if (note === null) return;
+    if (!String(note).trim()) {
+      toast({ variant: 'destructive', title: 'Motivo obligatorio' });
+      return;
+    }
+    const res = await adminPlaceRouteTasksInCajon({
+      taskIds: open.map((t) => t.id),
+      note: String(note).trim(),
+      actor,
+    });
+    if (!res.success) toast({ variant: 'destructive', title: 'No se pudo marcar', description: res.error });
+    else {
+      toast({
+        title: 'Marcadas en cajón',
+        description: `${res.closed || 0} tarea(s) cerradas · ${res.transfersMoved || 0} TF a Cajón Norte.`,
+      });
+      setTaskSel(new Set());
+      void loadDay(day);
+    }
   };
 
   const handleReassign = async () => {
@@ -456,6 +501,14 @@ export const RouteTasksAssignView: React.FC = () => {
               )}
               <Button variant="outline" onClick={() => void handleReassign()} disabled={taskSel.size === 0 || !driverReady}>
                 <Shuffle className="mr-2 h-4 w-4" /> Reasignar ({taskSel.size})
+              </Button>
+              <Button
+                variant="outline"
+                className="text-amber-900 border-amber-500"
+                onClick={() => void handleMarkInCajon()}
+                disabled={taskSel.size === 0}
+              >
+                Ya en Cajón Norte ({taskSel.size})
               </Button>
               <Button variant="outline" className="text-red-700" onClick={() => void handleCancel()} disabled={taskSel.size === 0}>
                 <Ban className="mr-2 h-4 w-4" /> Cancelar

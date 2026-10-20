@@ -7,6 +7,7 @@ import { CheckCircle2, ClipboardPaste, Download, ListOrdered, Loader2, Search, U
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import {
+  adminPlaceRouteTasksInCajon,
   getRouteTasksByRange,
   markRouteTasksRevalidated,
   rejectRouteTaskDelivery,
@@ -192,6 +193,7 @@ export function RouteTasksAdminTab() {
   const [loading, setLoading] = useState(false);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [undoingId, setUndoingId] = useState<string | null>(null);
+  const [cajonId, setCajonId] = useState<string | null>(null);
   const [markingId, setMarkingId] = useState<string | null>(null);
   const [reorderingKey, setReorderingKey] = useState<string | null>(null);
   const [customOrderOpen, setCustomOrderOpen] = useState(false);
@@ -260,6 +262,35 @@ export function RouteTasksAdminTab() {
     toast({
       title: 'Recolección deshecha',
       description: `${res.undone || 0} tarea(s) · ${res.transfersReverted || 0} TF a En Tránsito. Ya no bloquea el cierre del día.`,
+    });
+    void load();
+  };
+
+  const markAlreadyInCajon = async (t: DriverRouteTask) => {
+    if (!actor) {
+      toast({ variant: 'destructive', title: 'Sesión', description: 'Inicie sesión para corregir.' });
+      return;
+    }
+    const label = t.kind === 'libre' ? t.description || t.numeroTF : t.numeroTF;
+    const note = window.prompt(
+      `TF ${label} ya está en CAJÓN NORTE (el mensajero no registró la recolección).\n` +
+        `Se cierra la tarea y la TF queda Recibido en Bodega / cajón. Motivo:`
+    );
+    if (note === null) return;
+    if (!String(note).trim()) {
+      toast({ variant: 'destructive', title: 'Motivo obligatorio' });
+      return;
+    }
+    setCajonId(t.id);
+    const res = await adminPlaceRouteTasksInCajon({ taskIds: [t.id], note: String(note).trim(), actor });
+    setCajonId(null);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'No se pudo marcar', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Ya en cajón',
+      description: `Tarea cerrada · ${res.transfersMoved || 0} TF en Cajón Norte. Sale de pendientes del mensajero.`,
     });
     void load();
   };
@@ -492,9 +523,9 @@ export function RouteTasksAdminTab() {
       <CardHeader>
         <CardTitle>Recolecciones de ruta</CardTitle>
         <CardDescription>
-          Recolección exitosa por error → <strong>Deshacer recolección</strong> (TF a En Tránsito, tarea No recogida). Entrega mal
-          registrada → <strong>Rechazar</strong> (reenvía y sale en Por revalidar). Mientras tenga día anterior abierto no se monta
-          ruta nueva.
+          Olvidó registrar y la mercancía ya está en cajón → <strong>Ya en cajón</strong>. Recolección exitosa por error →{' '}
+          <strong>Deshacer recolección</strong>. Entrega mal registrada → <strong>Rechazar</strong>. Mientras tenga día anterior
+          abierto no se monta ruta nueva.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -830,6 +861,22 @@ export function RouteTasksAdminTab() {
                                 <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
                               )}
                               Revisada
+                            </Button>
+                          )}
+                          {(t.status === 'por_recoger' || t.status === 'por_entregar') && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full border-amber-500 text-amber-900"
+                              disabled={cajonId === t.id || !actor}
+                              onClick={() => void markAlreadyInCajon(t)}
+                            >
+                              {cajonId === t.id ? (
+                                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                              )}
+                              Ya en cajón
                             </Button>
                           )}
                           {t.status === 'por_entregar' && t.pickedAt && (
