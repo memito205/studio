@@ -631,13 +631,29 @@ export async function routeCollectedTransfersAfterFreeCollection(input: {
   }
 }
 
-/** TF que el mensajero dejó en el cajón y siguen allí (2 igualdades, sin índice compuesto). */
+/**
+ * TF en CAJÓN NORTE que todavía se pueden asignar.
+ * Si el número ya tiene tarea abierta (openKey), no sale: ya está en la ruta de alguien.
+ * Lecturas: docs del cajón + 1 consulta por cada 30 TF.
+ */
 export async function getTransfersInCajon(): Promise<{ data?: Array<DocumentData & { id: string }>; error?: string }> {
   try {
     const snap = await getDocs(
       query(collection(firestore, 'transfers'), where('status', '==', 'Recibido en Bodega'), where('ubicacion', '==', CAJON_POINT))
     );
-    return { data: snap.docs.map((d) => toDates({ id: d.id, ...d.data() })) };
+    const tfs = Array.from(new Set(snap.docs.map((d) => String(d.data().numeroTF || '').trim()).filter(Boolean)));
+    const busy = new Set<string>();
+    for (let i = 0; i < tfs.length; i += 30) {
+      const open = await getDocs(query(collection(firestore, TASKS), where('openKey', 'in', tfs.slice(i, i + 30))));
+      open.docs.forEach((d) => {
+        const key = String(d.data().openKey || '').trim();
+        if (key) busy.add(key);
+      });
+    }
+    const data = snap.docs
+      .filter((d) => !busy.has(String(d.data().numeroTF || '').trim()))
+      .map((d) => toDates({ id: d.id, ...d.data() }));
+    return { data };
   } catch (error: any) {
     return { error: error.message || 'No se pudieron cargar las TF del cajón.' };
   }
