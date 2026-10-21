@@ -24,12 +24,12 @@ import {
   getCanonicalOrderTotal,
   boxAuditLinesToExcelRows,
   orderVsPackedLinesToExcelRows,
+  orderVsPackedLinesToReferenceSummaryRows,
   resolveWholesaleOrderStatus,
   cargueProgressToExcelRows,
 } from '@/lib/wholesalePacking';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
-import { exportToXlsx } from '@/services/export';
 import { LabelPrintDialog } from './LabelPrintDialog';
 import { OrderAuditDialog } from './OrderAuditDialog';
 import { CargueProgressDialog } from './CargueProgressDialog';
@@ -639,10 +639,14 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
       }
       const { lines, totals } = result.data;
       const rows = orderVsPackedLinesToExcelRows(order.id, lines);
-      exportToXlsx(rows, `Relacion_Pedido_vs_Empaque_${order.id}`);
+      const byRef = orderVsPackedLinesToReferenceSummaryRows(order.id, lines);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Datos');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(byRef), 'Por referencia');
+      XLSX.writeFile(wb, `Relacion_Pedido_vs_Empaque_${order.id}.xlsx`);
       toast({
         title: 'Pedido vs leído descargado',
-        description: `Pedido ${totals.orderTotal} · Leído ${totals.packedTotal} · ${lines.length} líneas (ref/talla)${result.fromSnapshot ? ' · snapshot' : ''}.`,
+        description: `Pedido ${totals.orderTotal} · Leído ${totals.packedTotal} · ${lines.length} líneas (ref/talla) · ${byRef.length} referencias${result.fromSnapshot ? ' · snapshot' : ''}.`,
       });
     } catch (error: any) {
       toast({ variant: 'destructive', title: 'Error al descargar', description: error?.message || 'No se pudo generar el reporte pedido vs leído.' });

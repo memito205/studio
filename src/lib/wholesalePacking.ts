@@ -344,6 +344,42 @@ export function orderVsPackedLinesToExcelRows(orderId: string, lines: OrderVsPac
   }));
 }
 
+/** Mismas cantidades, sumadas por referencia (sin talla). */
+export function orderVsPackedLinesToReferenceSummaryRows(orderId: string, lines: OrderVsPackedLine[]) {
+  type Acc = { referencia: string; item: string; ordered: number; packed: number };
+  const byRef = new Map<string, Acc>();
+  lines.forEach((r) => {
+    const referencia = r.referencia || '-';
+    const prev = byRef.get(referencia);
+    if (prev) {
+      prev.ordered += r.ordered;
+      prev.packed += r.packed;
+      if ((!prev.item || prev.item === '-') && r.item && r.item !== '-') prev.item = r.item;
+    } else {
+      byRef.set(referencia, {
+        referencia,
+        item: r.item && r.item !== '-' ? r.item : '-',
+        ordered: r.ordered,
+        packed: r.packed,
+      });
+    }
+  });
+  return Array.from(byRef.values())
+    .sort((a, b) => a.referencia.localeCompare(b.referencia))
+    .map((r) => {
+      const difference = r.packed - r.ordered;
+      return {
+        Pedido: orderId,
+        Referencia: r.referencia,
+        Item: r.item,
+        'Cantidad Pedido': r.ordered,
+        'Cantidad Leída': r.packed,
+        Diferencia: difference,
+        Estado: difference === 0 ? 'Completo' : difference > 0 ? 'Sobrante' : 'Faltante',
+      };
+    });
+}
+
 const normalizeCargueLabelKey = (id: string) =>
   String(id || '')
     .trim()
