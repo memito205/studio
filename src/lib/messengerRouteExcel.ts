@@ -36,10 +36,8 @@ const CAJON_END_VISIT = 900_000;
 /**
  * Arma filas RECOGER/ENTREGAR como el Excel del mensajero.
  *
- * Igual que el planificador Norte: si la recogida es en una parada posterior a la del
- * destino, no se vuelve a esa tienda — la ENTREGAR sale como CAJON NORTE al final.
- * (La decisión real de dejar en cajón la toma el mensajero en la app; el Excel solo
- * muestra el orden lógico para no confundir.)
+ * Si la recogida queda después del destino, o el mensajero dejó la TF en cajón,
+ * ENTREGAR sale como "CAJON NORTE (→ tienda)" y RECOGER anota el punto y esa tienda.
  */
 export function buildMessengerRouteExcelRows(tasks: DriverRouteTask[]): MessengerRouteExcelRow[] {
   type Action = {
@@ -107,11 +105,15 @@ export function buildMessengerRouteExcelRows(tasks: DriverRouteTask[]): Messenge
           pIdx !== undefined &&
           dIdx !== undefined &&
           pIdx > dIdx;
+        // Tienda original: el punto de entrega, o la bodega destino si la entrega ya es el cajón.
+        const storeLabel =
+          deliver && !isCajonPoint(deliver) && toNorteKey(deliver) !== 'BODEGA'
+            ? deliver
+            : String(t.bodegaDestino || '').trim();
+        const wentToCajon = t.leftInCajon === true || isCajonPoint(deliver) || pickupAfterDestination;
 
         if (pickup) {
-          // Si esa TF no alcanza el destino hoy, al recoger ya ve para qué tienda era.
-          const pickValor =
-            pickupAfterDestination && deliver ? `${pickup} (→ ${deliver})` : pickup;
+          const pickValor = wentToCajon && storeLabel ? `${pickup} (→ ${storeLabel})` : pickup;
           actions.push({
             visit: pickOrd,
             day,
@@ -122,29 +124,27 @@ export function buildMessengerRouteExcelRows(tasks: DriverRouteTask[]): Messenge
           });
         }
 
-        if (!deliver) return;
+        if (!deliver && !t.leftInCajon) return;
 
-        // Ya es cajón / bodega especial: conservar destino si venía en notas no aplica; mostrar cajón.
-        if (isCajonPoint(deliver) || toNorteKey(deliver) === 'BODEGA') {
+        if (wentToCajon) {
           actions.push({
-            visit: delOrd,
+            visit: pickupAfterDestination || t.leftInCajon ? CAJON_END_VISIT + delOrd : delOrd,
             day,
             tf,
             atributo: 'ENTREGAR',
-            valor: isCajonPoint(deliver) ? CAJON_LABEL : deliver,
+            valor: storeLabel ? `${CAJON_LABEL} (→ ${storeLabel})` : CAJON_LABEL,
             stopKey: 'CAJON NORTE',
           });
           return;
         }
 
-        if (pickupAfterDestination) {
-          // Cajón + almacén destino original (para que al imprimir sepa para dónde era).
+        if (toNorteKey(deliver) === 'BODEGA') {
           actions.push({
-            visit: CAJON_END_VISIT + delOrd,
+            visit: delOrd,
             day,
             tf,
             atributo: 'ENTREGAR',
-            valor: `${CAJON_LABEL} (→ ${deliver})`,
+            valor: deliver,
             stopKey: 'CAJON NORTE',
           });
           return;
