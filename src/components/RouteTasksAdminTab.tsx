@@ -3,11 +3,12 @@
 import React, { useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
-import { CheckCircle2, ClipboardPaste, Download, ListOrdered, Loader2, Search, Undo2 } from 'lucide-react';
+import { ArrowRightLeft, CheckCircle2, ClipboardPaste, Download, ListOrdered, Loader2, Search, Undo2 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth-context';
 import { useToast } from '@/hooks/use-toast';
 import {
   adminPlaceRouteTasksInCajon,
+  changeRouteTasksDriver,
   getRouteTasksByRange,
   markRouteTasksRevalidated,
   rejectRouteTaskDelivery,
@@ -33,7 +34,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { DriverUserSelect, type DriverValue } from '@/components/DriverUserSelect';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
+
+const canChangeDriver = (t: DriverRouteTask) =>
+  (t.status === 'por_recoger' || t.status === 'por_entregar') && !t.reassignedTo;
 
 const fmt = (d?: Date) => (d ? format(new Date(d), 'dd/MM HH:mm') : '');
 
@@ -200,6 +207,11 @@ export function RouteTasksAdminTab() {
   const [customOrderText, setCustomOrderText] = useState('');
   const [filter, setFilter] = useState<AdminTaskFilter>('todas');
   const [routeSel, setRouteSel] = useState<string | null>(null);
+  const [taskSel, setTaskSel] = useState<Set<string>>(new Set());
+  const [changeOpen, setChangeOpen] = useState(false);
+  const [changeDriver, setChangeDriver] = useState<DriverValue>({});
+  const [changePlaca, setChangePlaca] = useState('');
+  const [changing, setChanging] = useState(false);
   const day = from === to ? from : `${from}_a_${to}`;
 
   const load = async () => {
@@ -209,6 +221,63 @@ export function RouteTasksAdminTab() {
     if (res.error) toast({ variant: 'destructive', title: 'Error', description: res.error });
     setTasks(res.data || []);
     setRouteSel(null);
+    setTaskSel(new Set());
+  };
+
+  const toggleTask = (id: string, on: boolean) => {
+    setTaskSel((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  const openChangeDriver = (ids: string[]) => {
+    const open = (tasks || []).filter((t) => ids.includes(t.id) && canChangeDriver(t));
+    if (!open.length) {
+      toast({ variant: 'destructive', title: 'Sin recolecciones abiertas', description: 'Solo se puede cambiar conductor en Por recoger o Por entregar.' });
+      return;
+    }
+    const days = new Set(open.map((t) => t.day));
+    if (days.size > 1) {
+      toast({ variant: 'destructive', title: 'Un solo día', description: 'Seleccione recolecciones del mismo día.' });
+      return;
+    }
+    setTaskSel(new Set(open.map((t) => t.id)));
+    setChangeDriver({});
+    setChangePlaca('');
+    setChangeOpen(true);
+  };
+
+  const applyChangeDriver = async () => {
+    if (!actor) {
+      toast({ variant: 'destructive', title: 'Sesión', description: 'Inicie sesión para cambiar el conductor.' });
+      return;
+    }
+    if (!changeDriver.driverUserId) {
+      toast({ variant: 'destructive', title: 'Conductor', description: 'Elija un usuario conductor para que le aparezca en la app.' });
+      return;
+    }
+    setChanging(true);
+    const res = await changeRouteTasksDriver({
+      taskIds: Array.from(taskSel),
+      driverId: changeDriver.driverUserId,
+      driverName: changeDriver.driver,
+      placa: changePlaca,
+      actor,
+    });
+    setChanging(false);
+    if (!res.success) {
+      toast({ variant: 'destructive', title: 'No se cambió el conductor', description: res.error });
+      return;
+    }
+    toast({
+      title: 'Conductor actualizado',
+      description: `${res.moved || 0} recolección(es) pasaron a ${changeDriver.driver} · ${changePlaca.trim().toUpperCase()}. Ya salen en su Mis entregas.`,
+    });
+    setChangeOpen(false);
+    void load();
   };
 
   const rejectTask = async (t: DriverRouteTask) => {
@@ -523,6 +592,7 @@ export function RouteTasksAdminTab() {
       <CardHeader>
         <CardTitle>Recolecciones de ruta</CardTitle>
         <CardDescription>
+          Si la recoge otro carro → <strong>Cambiar conductor</strong> (sale de la app del anterior y entra en Mis entregas del nuevo).
           Olvidó registrar y la mercancía ya está en cajón → <strong>Ya en cajón</strong>. Recolección exitosa por error →{' '}
           <strong>Deshacer recolección</strong>. Entrega mal registrada → <strong>Rechazar</strong>. Mientras tenga día anterior
           abierto no se monta ruta nueva.
@@ -623,6 +693,20 @@ export function RouteTasksAdminTab() {
                         <span className="ml-2 text-xs font-normal text-muted-foreground">La tabla de abajo quedó filtrada a este mensajero.</span>
                       </p>
                       <div className="flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            openChangeDriver(
+                              (tasks || [])
+                                .filter((t) => routeKey(t) === selectedRoute.key && canChangeDriver(t))
+                                .map((t) => t.id)
+                            )
+                          }
+                        >
+                          <ArrowRightLeft className="mr-1 h-3.5 w-3.5" />
+                          Cambiar conductor
+                        </Button>
                         <Button
                           size="sm"
                           variant="outline"
@@ -777,10 +861,20 @@ export function RouteTasksAdminTab() {
                 {routeSel ? ' Filtrado a la placa/mensajero seleccionado.' : ' Elija un mensajero arriba para acotar a una placa.'}
               </p>
             )}
+            {taskSel.size > 0 && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" onClick={() => openChangeDriver(Array.from(taskSel))}>
+                  <ArrowRightLeft className="mr-1 h-3.5 w-3.5" />
+                  Cambiar conductor ({taskSel.size})
+                </Button>
+                <span className="text-xs text-muted-foreground">Pasan al carro que sí las recoge, el mismo día.</span>
+              </div>
+            )}
             <div className="max-h-[60vh] overflow-auto rounded-md border">
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-10" />
                     <TableHead>TF</TableHead>
                     <TableHead>Conductor</TableHead>
                     <TableHead>Recoger</TableHead>
@@ -794,10 +888,19 @@ export function RouteTasksAdminTab() {
                 </TableHeader>
                 <TableBody>
                   {visible.length === 0 ? (
-                    <TableRow><TableCell colSpan={9} className="h-16 text-center text-muted-foreground">Sin tareas.</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={10} className="h-16 text-center text-muted-foreground">Sin tareas.</TableCell></TableRow>
                   ) : (
                     visible.map((t) => (
                       <TableRow key={t.id} className={cn(t.pendingRevalidation && 'bg-violet-50')}>
+                        <TableCell>
+                          {canChangeDriver(t) && (
+                            <Checkbox
+                              checked={taskSel.has(t.id)}
+                              onCheckedChange={(c) => toggleTask(t.id, c === true)}
+                              aria-label={`Cambiar conductor de ${t.numeroTF}`}
+                            />
+                          )}
+                        </TableCell>
                         <TableCell className="font-medium">
                           {t.kind === 'libre' ? t.description : t.numeroTF}
                           <span className="block text-xs text-muted-foreground">
@@ -808,7 +911,16 @@ export function RouteTasksAdminTab() {
                             <Badge className="mt-1 bg-violet-600 text-white">Reenviada · por validar</Badge>
                           )}
                         </TableCell>
-                        <TableCell>{t.driverName}<span className="block text-xs text-muted-foreground">{t.placa}</span></TableCell>
+                        <TableCell>
+                          {t.driverName}
+                          <span className="block text-xs text-muted-foreground">{t.placa}</span>
+                          {t.previousDriverName && (
+                            <span className="block text-xs text-amber-800">
+                              Antes: {t.previousDriverName}
+                              {t.previousPlaca ? ` · ${t.previousPlaca}` : ''}
+                            </span>
+                          )}
+                        </TableCell>
                         <TableCell>{t.pickupPoint || '—'}</TableCell>
                         <TableCell>{t.deliverPoint}</TableCell>
                         <TableCell><Badge className={ROUTE_TASK_STATUS[t.status].className}>{ROUTE_TASK_STATUS[t.status].label}</Badge></TableCell>
@@ -950,6 +1062,44 @@ export function RouteTasksAdminTab() {
           <Button onClick={() => void applyCustomOrder()} disabled={!!reorderingKey || !customOrderText.trim()}>
             {reorderingKey ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ClipboardPaste className="mr-2 h-4 w-4" />}
             Aplicar orden
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={changeOpen} onOpenChange={(o) => !changing && setChangeOpen(o)}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Cambiar conductor</DialogTitle>
+          <DialogDescription>
+            {taskSel.size} recolección(es) salen de la app del conductor actual y le aparecen al nuevo en Mis entregas, el mismo día.
+            Si aún no las recogen, el nuevo carro las registra. Si ya figuran recogidas, siguen en su ruta para entregar.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label>Conductor que sí las recoge</Label>
+            <DriverUserSelect value={changeDriver} onChange={setChangeDriver} />
+            {changeDriver.driver && !changeDriver.driverUserId && (
+              <p className="text-xs text-red-600">Tiene que ser un usuario conductor para que le salga en la app.</p>
+            )}
+          </div>
+          <div className="space-y-1">
+            <Label>Placa del carro</Label>
+            <Input
+              value={changePlaca}
+              onChange={(e) => setChangePlaca(e.target.value.toUpperCase())}
+              placeholder="ABC123"
+            />
+          </div>
+        </div>
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button variant="outline" onClick={() => setChangeOpen(false)} disabled={changing}>
+            Cancelar
+          </Button>
+          <Button onClick={() => void applyChangeDriver()} disabled={changing || !changeDriver.driverUserId || changePlaca.trim().length < 3}>
+            {changing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ArrowRightLeft className="mr-2 h-4 w-4" />}
+            Pasar a este conductor
           </Button>
         </DialogFooter>
       </DialogContent>

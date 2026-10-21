@@ -24,7 +24,7 @@ import { buildStoreMatcher } from '@/lib/deliveryStores';
 import { getDeliveryStoresCached, invalidateDeliveryStoresCache } from '@/lib/deliveryStoresCache';
 import { computeMessengerDayOrders } from '@/lib/messengerRouteOrder';
 import { publishPodToPlatform, type PlatformLine } from '@/app/podActions';
-import type { DeliveryStore, DriverRouteTask, DriverRouteTaskPhoto, TransferActor, TransferStatus } from '@/types';
+import type { DeliveryStore, DriverRouteTask, DriverRouteTaskPhoto, DriverRouteTaskStatus, TransferActor, TransferStatus } from '@/types';
 
 const TASKS = 'routeTasks';
 /** Puntos que no son tiendas: se agregan al maestro sin GPS para poder asignarles tareas. */
@@ -1878,6 +1878,99 @@ export async function cancelRouteTasks(input: { taskIds: string[]; actor: Transf
     return { success: true, cancelled };
   } catch (error: any) {
     return { success: false, error: error.message || 'No se pudieron cancelar.' };
+  }
+}
+
+const MOVABLE_DRIVER: DriverRouteTaskStatus[] = ['por_recoger', 'por_entregar'];
+
+/**
+ * Pasa recolecciones abiertas a otro conductor y placa, el mismo día.
+ * Salen de Mis entregas del anterior y le aparecen al nuevo.
+ * Lecturas: tareas elegidas (lotes de 30) + abiertas del conductor nuevo + 1 consulta del día al reordenar.
+ */
+export async function changeRouteTasksDriver(input: {
+  taskIds: string[];
+  driverId: string;
+  driverName: string;
+  placa: string;
+  actor: TransferActor;
+}): Promise<{ success: boolean; moved?: number; error?: string }> {
+  if (!input.actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  const driverId = String(input.driverId || '').trim();
+  const driverName = String(input.driverName || '').trim();
+  if (!driverId || !driverName) return { success: false, error: 'Elija el conductor (usuario con app).' };
+  const placa = normPoint(input.placa);
+  if (placa.length < 3) return { success: false, error: 'La placa del carro que recoge es obligatoria (mínimo 3 caracteres).' };
+  const ids = Array.from(new Set((input.taskIds || []).map((id) => String(id || '').trim()).filter(Boolean)));
+  if (!ids.length) return { success: false, error: 'Seleccione al menos una recolección.' };
+
+  try {
+    const found: Array<{ id: string; t: DriverRouteTask }> = [];
+    for (let i = 0; i < ids.length; i += 30) {
+      const chunk = ids.slice(i, i + 30);
+      const snap = await getDocs(query(collection(firestore, TASKS), where(documentId(), 'in', chunk)));
+      snap.docs.forEach((d) => found.push({ id: d.id, t: toTask(d.id, d.data()) }));
+    }
+    const movable = found.filter(
+      ({ t }) => MOVABLE_DRIVER.includes(t.status) && !t.reassignedTo && !(t.driverId === driverId && normPoint(t.placa) === placa)
+    );
+    if (!movable.length) {
+      return { success: false, error: 'No hay recolecciones abiertas para cambiar (ya entregadas, o ya están con ese conductor y placa).' };
+    }
+    const days = Array.from(new Set(movable.map(({ t }) => t.day)));
+    if (days.length !== 1) return { success: false, error: 'Seleccione recolecciones de un solo día.' };
+    const day = days[0];
+    const prior = await getDriverOpenPriorDayTasks(driverId, day);
+    if (prior.days.length > 0) {
+      const detail = prior.days.map((d) => `${d} (${prior.countByDay[d]} pendiente(s))`).join(', ');
+      return {
+        success: false,
+        error: `Ese conductor tiene ruta sin cerrar de día(s) anterior(es): ${detail}. Ciérrela antes de pasarle la del ${day}.`,
+      };
+    }
+
+    const actorName = actorNameOf(input.actor);
+    const now = Timestamp.now();
+    const batches = [writeBatch(firestore)];
+    let n = 0;
+    const logIds = new Set<string>();
+    for (const { id, t } of movable) {
+      if (n > 0 && n % 400 === 0) batches.push(writeBatch(firestore));
+      batches[batches.length - 1].update(
+        doc(firestore, TASKS, id),
+        clean({
+          driverId,
+          driverName,
+          placa,
+          driverOpen: `${driverId}|open`,
+          previousDriverName: t.driverName,
+          previousPlaca: t.placa,
+          driverChangedAt: now,
+          driverChangedByName: actorName,
+          ...(t.pickedAt ? { pickedById: driverId, pickedByName: driverName } : {}),
+        })
+      );
+      if (t.collectionLogId) logIds.add(t.collectionLogId);
+      n++;
+    }
+    for (const b of batches) await b.commit();
+
+    const movedIds = new Set(movable.map(({ id }) => id));
+    for (const logId of logIds) {
+      const s = await getDoc(doc(firestore, 'collectionLogs', logId));
+      if (!s.exists()) continue;
+      const routeTaskIds = (s.data().routeTaskIds as string[] | undefined) || [];
+      if (routeTaskIds.length && routeTaskIds.every((id) => movedIds.has(id))) {
+        await updateDoc(s.ref, { placa, recolectadoPor: driverId, recolectadoPorNombre: driverName });
+      }
+    }
+
+    const re = await reorderMessengerDayRoute({ driverId, day, actor: input.actor });
+    if (!re.success) console.warn('changeRouteTasksDriver: reorder falló', re.error);
+    return { success: true, moved: n };
+  } catch (error: any) {
+    console.error('changeRouteTasksDriver:', error);
+    return { success: false, error: error.message || 'No se pudo cambiar el conductor.' };
   }
 }
 

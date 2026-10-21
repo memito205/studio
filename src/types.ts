@@ -806,6 +806,11 @@ export interface DriverRouteTask {
     revalidatedByName?: string;
     reassignedFrom?: string;
     reassignedTo?: string;
+    /** Conductor/placa anteriores, si un admin pasó la tarea a otro carro. */
+    previousDriverName?: string;
+    previousPlaca?: string;
+    driverChangedAt?: Date;
+    driverChangedByName?: string;
 }
 
 /** Maestro de tiendas para entregas: `deliveryStores/{codigoErp}`. */
