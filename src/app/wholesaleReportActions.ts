@@ -6,6 +6,7 @@ import {
   getDoc,
   getDocs,
   query,
+  runTransaction,
   setDoc,
   Timestamp,
   where,
@@ -252,6 +253,29 @@ function buildCargueReportFromBundle(bundle: {
   });
 }
 
+/**
+ * Si el resumen del pedido no cuadra con la suma real de lecturas, lo corrige
+ * solo cuando nadie lo movió desde que se leyó (otro escaneo en curso no se pisa).
+ */
+async function alignPackingSummary(order: WholesaleOrder, packedItems: PackedItem[], packedTotal: number) {
+  const savedPacked = Number(order.packingData?.packedUnits);
+  const savedBoxes = Number(order.packingData?.boxCount);
+  const realBoxes = new Set(packedItems.map((p) => p.packingUnitId).filter(Boolean)).size;
+  const packedDrift = Number.isFinite(savedPacked) && savedPacked !== packedTotal;
+  const boxDrift = Number.isFinite(savedBoxes) && savedBoxes !== realBoxes;
+  if (!packedDrift && !boxDrift) return;
+  const orderRef = doc(firestore, 'wholesaleOrders', order.id);
+  await runTransaction(firestore, async (tx) => {
+    const snap = await tx.get(orderRef);
+    if (!snap.exists()) return;
+    const cur = (snap.data().packingData || {}) as NonNullable<WholesaleOrder['packingData']>;
+    const patch: Record<string, number> = {};
+    if (packedDrift && Number(cur.packedUnits) === savedPacked) patch['packingData.packedUnits'] = packedTotal;
+    if (boxDrift && Number(cur.boxCount) === savedBoxes) patch['packingData.boxCount'] = realBoxes;
+    if (Object.keys(patch).length) tx.update(orderRef, patch);
+  }).catch((err) => console.warn('alignPackingSummary:', err));
+}
+
 export async function getOrBuildPedidoVsLeidoReport(params: {
   orderId: string;
   orderStatus?: string | null;
@@ -305,6 +329,7 @@ export async function getOrBuildPedidoVsLeidoReport(params: {
     }
 
     const payload = buildPedidoPayload(order!, packedItems);
+    if (hint.length === 0) await alignPackingSummary(order!, packedItems, payload.totals.packedTotal);
     const captureStatus = String(status || order!.status || '');
 
     if (isWholesaleReportTerminal('pedidoVsLeido', captureStatus)) {

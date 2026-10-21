@@ -1226,17 +1226,56 @@ export async function syncWholesaleOrderPackingStatus(
 
         if (useCheap) {
           const delta = typeof opts?.packedDelta === 'number' ? opts.packedDelta : 0;
-          packedTotal = Math.max(0, Number(prevPacking!.packedUnits || 0) + delta);
-          boxCount = Math.max(0, Number(prevPacking!.boxCount || 0) + Number(opts?.boxCountDelta || 0));
-          // Sin releer packedItems: cajas cerradas deben tener VXM; cajas abiertas sin etiqueta bloquean Empacado.
+          const boxDelta = Number(opts?.boxCountDelta || 0);
           const units = sessionData?.units || [];
-          allUnitsLabeled = !units.some((u) => {
-            const labeled = !!String(u.labelBarcode || '').trim();
-            if (labeled) return false;
-            if (u.status === 'closed') return true;
-            // Unidad abierta sin etiqueta: solo bloquea si el pedido ya está completo (evita Empacado prematuro).
-            return u.status === 'open' && orderTotal > 0 && packedTotal === orderTotal;
+          let resultStatus = currentStatus;
+          let becameEmpacado = false;
+          // Lectura y suma en la misma transacción: dos escaneos a la vez no pisan el mismo total.
+          await runTransaction(firestore, async (tx) => {
+            const fresh = await tx.get(orderRef);
+            if (!fresh.exists()) throw new Error('Order not found');
+            const freshData = fresh.data();
+            const prev = (freshData.packingData || {}) as NonNullable<WholesaleOrder['packingData']>;
+            const packedNow = Math.max(0, Number(prev.packedUnits || 0) + delta);
+            const boxesNow = Math.max(0, Number(prev.boxCount || 0) + boxDelta);
+            const totalNow = getCanonicalOrderTotal({
+              details: freshData.details || [],
+              cantidadTotal: freshData.cantidadTotal || 0,
+            });
+            const labeled = !units.some((u) => {
+              const hasLabel = !!String(u.labelBarcode || '').trim();
+              if (hasLabel) return false;
+              if (u.status === 'closed') return true;
+              return u.status === 'open' && totalNow > 0 && packedNow === totalNow;
+            });
+            const statusNow = (freshData.status || 'Pte Empaque') as OrderStatus;
+            const isTerminal = statusNow === 'En Cargue' || statusNow === 'Despachado' || statusNow === 'Cancelado';
+            const packingData = { packedUnits: packedNow, totalUnits: totalNow, boxCount: boxesNow };
+            if (isTerminal) {
+              if (typeof prev.packedUnits !== 'number' || opts?.forceFullRecount) tx.update(orderRef, { packingData });
+              resultStatus = statusNow;
+              return;
+            }
+            const nextStatus = resolveWholesaleOrderStatus({
+              currentStatus: statusNow,
+              orderTotal: totalNow,
+              packedTotal: packedNow,
+              packingForceClosed: !!freshData.packingForceClosed,
+              allUnitsLabeled: labeled,
+            });
+            tx.update(orderRef, {
+              packingData,
+              ...(nextStatus !== statusNow ? { status: nextStatus } : {}),
+            });
+            resultStatus = nextStatus;
+            becameEmpacado = nextStatus === 'Empacado' && nextStatus !== statusNow;
           });
+          if (becameEmpacado) {
+            void import('@/app/wholesaleReportActions')
+              .then((m) => m.captureWholesaleReportSnapshotsForStatus(orderId, 'Empacado'))
+              .catch((err) => console.warn('wholesale report snapshot capture skipped:', err));
+          }
+          return { success: true, status: resultStatus };
         } else {
           const packedQ = query(collection(firestore, "packedItems"), where("orderId", "==", orderId));
           const packedSnap = await getDocs(packedQ);
@@ -1643,11 +1682,18 @@ export async function addPackedItem(itemData: Omit<PackedItem, 'id' | 'scannedAt
             quantity: 1, // Always add one at a time initially
             scannedAt: new Date()
         };
+        const unitId = String(itemData.packingUnitId || '').trim();
+        // 1 lectura: si la caja aún no tiene mercancía, el contador de cajas sube 1.
+        let boxCountDelta = 0;
+        if (unitId) {
+            const already = await getDocs(query(collection(firestore, 'packedItems'), where('packingUnitId', '==', unitId), limit(1)));
+            if (already.empty) boxCountDelta = 1;
+        }
         await setDoc(itemRef, convertDatesToTimestamps(newItem));
 
         // Actualiza packingData con +1 (sin releer toda la colección).
         try {
-            await syncWholesaleOrderPackingStatus(itemData.orderId, { packedDelta: 1 });
+            await syncWholesaleOrderPackingStatus(itemData.orderId, { packedDelta: 1, boxCountDelta });
         } catch (statusError) {
             console.error("Error updating order status during addPackedItem:", statusError);
         }
@@ -2513,7 +2559,11 @@ export async function deletePackingUnit(orderId: string, firestoreId: string, la
         // 2. Delete Items
         const q = query(collection(firestore, 'packedItems'), where('packingUnitId', '==', firestoreId));
         const itemsSnap = await getDocs(q);
-        itemsSnap.docs.forEach(d => batch.delete(d.ref));
+        let removedQty = 0;
+        itemsSnap.docs.forEach(d => {
+            removedQty += Number(d.data().quantity ?? 1);
+            batch.delete(d.ref);
+        });
 
         // 3. Revert Label
         if (labelBarcode) {
@@ -2528,6 +2578,9 @@ export async function deletePackingUnit(orderId: string, firestoreId: string, la
         }
 
         await batch.commit();
+        if (removedQty > 0) {
+            await syncWholesaleOrderPackingStatus(orderId, { packedDelta: -removedQty, boxCountDelta: -1 });
+        }
         return { success: true };
     } catch (error: any) {
         console.error("Error in deletePackingUnit:", error);
