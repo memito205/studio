@@ -47,6 +47,39 @@ const platformDocId = (tf: unknown, whs: unknown) => `${platformTf(tf)}_${platfo
 const normPoint = (v: unknown) => String(v || '').trim().toUpperCase();
 const actorNameOf = (a: TransferActor) => (a.displayName || '').trim() || a.userId;
 
+/**
+ * La tarea guarda ids de TF que a veces ya no existen (reimportación).
+ * Busca la línea viva por numeroTF + bodegaDestino para que recoger/cajón no se pierda.
+ */
+async function liveTransferIdsByTask(
+  tasks: Array<{ id: string; numeroTF?: string; bodegaDestino?: string; kind?: string; transferIds?: string[] }>
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  const need = tasks.filter((t) => t.kind !== 'libre' && String(t.numeroTF || '').trim());
+  if (!need.length) return out;
+  const tfs = Array.from(new Set(need.map((t) => String(t.numeroTF).trim())));
+  const byTf = new Map<string, Array<{ id: string; dest: string; status: string }>>();
+  for (let i = 0; i < tfs.length; i += 30) {
+    const snap = await getDocs(query(collection(firestore, 'transfers'), where('numeroTF', 'in', tfs.slice(i, i + 30))));
+    snap.docs.forEach((d) => {
+      const data = d.data();
+      const tf = String(data.numeroTF || '').trim();
+      const list = byTf.get(tf) || [];
+      list.push({ id: d.id, dest: platformWhs(data.bodegaDestino), status: String(data.status || '') });
+      byTf.set(tf, list);
+    });
+  }
+  need.forEach((t) => {
+    const tf = String(t.numeroTF).trim();
+    const dest = platformWhs(t.bodegaDestino);
+    const lines = (byTf.get(tf) || []).filter((l) => !dest || l.dest === dest);
+    const movable = lines.filter((l) => DELIVERABLE.includes(l.status as TransferStatus) || l.status === 'Recibido en Bodega');
+    const ids = Array.from(new Set([...(t.transferIds || []), ...movable.map((l) => l.id)]));
+    if (ids.length) out.set(t.id, ids);
+  });
+  return out;
+}
+
 const toDates = (v: any): any => {
   if (v instanceof Timestamp) return v.toDate();
   if (Array.isArray(v)) return v.map(toDates);
@@ -694,6 +727,23 @@ export async function submitRouteTasks(
     const podMeta: { distanceM?: number; placa?: string; taskIds: string[] } = { taskIds: [] };
     const cajonPlatformIds = new Set<string>();
 
+    const preSnaps = await Promise.all(input.taskIds.map((id) => getDoc(doc(firestore, TASKS, id))));
+    const preTasks = preSnaps
+      .filter((s) => s.exists())
+      .map((s) => ({ id: s.id, ...(s.data() as DocumentData) }));
+    const liveByTask =
+      action === 'recoger' || action === 'cajon' || action === 'no_entregar'
+        ? await liveTransferIdsByTask(
+            preTasks.map((t) => ({
+              id: t.id,
+              numeroTF: t.numeroTF,
+              bodegaDestino: t.bodegaDestino,
+              kind: t.kind,
+              transferIds: t.transferIds,
+            }))
+          )
+        : new Map<string, string[]>();
+
     const result = await runTransaction(firestore, async (tx) => {
       publishLines.clear();
       podMeta.taskIds = [];
@@ -727,9 +777,16 @@ export async function submitRouteTasks(
       if (libreDelivery && input.photos.length === 0) throw new Error('Tome la foto de la entrega.');
       if ((toStore || libreDelivery) && !String(input.receivedByName || '').trim()) throw new Error('Falta el nombre de quien recibe.');
 
-      const lineIds = action !== 'no_recoger' ? Array.from(new Set(tasks.flatMap((x) => x.t.transferIds || []))) : [];
+      const lineIds =
+        action === 'no_recoger'
+          ? []
+          : Array.from(
+              new Set(tasks.flatMap((x) => [...(x.t.transferIds || []), ...(liveByTask.get(x.t.id) || [])]))
+            );
       const lineSnaps = await Promise.all(lineIds.map((id) => tx.get(doc(firestore, 'transfers', id))));
       const lineById = new Map(lineSnaps.filter((s) => s.exists()).map((s) => [s.id, s]));
+      const idsOf = (t: DriverRouteTask) =>
+        Array.from(new Set([...(t.transferIds || []), ...(liveByTask.get(t.id) || [])])).filter((id) => lineById.has(id));
 
       const now = Timestamp.now();
       const gps = input.gps
@@ -749,12 +806,13 @@ export async function submitRouteTasks(
         if (!messengerRoute) throw new Error('En rutas de camión use “Dejar en bodega” (no cajón).');
         if (photos.length === 0) throw new Error('Tome la foto de la mercancía en el cajón.');
         tasks.forEach(({ ref, t, raw }) => {
+          const linked = idsOf(t);
           if (t.kind !== 'libre') {
-            (t.transferIds || []).forEach((id) => {
+            linked.forEach((id) => {
               const s = lineById.get(id);
               if (!s) return;
               const d = s.data()!;
-              if (d.storeReceivedAt || !DELIVERABLE.includes(d.status)) return;
+              if (d.storeReceivedAt || isInCajon(d) || !DELIVERABLE.includes(d.status)) return;
               const pid = platformDocId(d.numeroTF, d.bodegaDestino);
               cajonPlatformIds.add(pid);
               tx.update(s.ref, {
@@ -774,6 +832,7 @@ export async function submitRouteTasks(
           tx.update(ref, clean({
             status: 'entregada',
             leftInCajon: true,
+            ...(linked.length ? { transferIds: linked } : {}),
             deliveredAt: now,
             deliveredById: actor.userId,
             deliveredByName: actorName,
@@ -860,12 +919,13 @@ export async function submitRouteTasks(
         if (messenger) {
           // Mensajero: no entrega → Cajón (nunca Novedad / Validado Supervisor / Entregado en Ruta).
           tasks.forEach(({ ref, t, raw }) => {
+            const linked = idsOf(t);
             if (t.kind !== 'libre') {
-              (t.transferIds || []).forEach((id) => {
+              linked.forEach((id) => {
                 const s = lineById.get(id);
                 if (!s) return;
                 const d = s.data()!;
-                if (d.storeReceivedAt || !DELIVERABLE.includes(d.status)) return;
+                if (d.storeReceivedAt || isInCajon(d) || !DELIVERABLE.includes(d.status)) return;
                 const pid = platformDocId(d.numeroTF, d.bodegaDestino);
                 cajonPlatformIds.add(pid);
                 touchedLines.add(id);
@@ -892,6 +952,7 @@ export async function submitRouteTasks(
             tx.update(ref, clean({
               status: 'entregada',
               leftInCajon: true,
+              ...(linked.length ? { transferIds: linked } : {}),
               deliveredAt: now,
               deliveredById: actor.userId,
               deliveredByName: actorName,
@@ -988,7 +1049,7 @@ export async function submitRouteTasks(
         const changed: string[] = [];
         const destinations: Record<string, number> = {};
         tasks.forEach(({ t }) =>
-          (t.transferIds || []).forEach((id) => {
+          idsOf(t).forEach((id) => {
             const s = lineById.get(id);
             if (!s) return;
             const d = s.data()!;
