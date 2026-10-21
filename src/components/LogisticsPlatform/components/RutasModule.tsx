@@ -206,14 +206,32 @@ const exportNorteMessengerRoute = (plan: VehiclePlan) => {
     const year = today.getFullYear();
     const formattedDate = `${day}/${month}/${year}`;
 
-    const dataToExport = plan.tasks.map(task => ({
-        'FECHA': formattedDate,
+    const cajonDestByTf = new Map<string, { where: string; dest: string }>();
+    plan.tasks.forEach((task) => {
+      const obs = String(task.observaciones || '');
+      const match = obs.match(/recogido en:\s*(.+?)\s+PARA ENTREGA EN\s+(.+)$/i);
+      const where = String(task.valor || '').trim().toUpperCase();
+      if (match && (where === 'CAJON NORTE' || where === 'BODEGA')) {
+        cajonDestByTf.set(String(task.tf), { where, dest: match[2].trim() });
+      }
+    });
+
+    const dataToExport = plan.tasks.map((task) => {
+      const redirected = cajonDestByTf.get(String(task.tf));
+      let valor = task.valor || '';
+      if (redirected) {
+        if (task.type === 'ENTREGAR') valor = `${redirected.where} (→ ${redirected.dest})`;
+        else if (task.type === 'RECOGER') valor = `${valor} (→ ${redirected.dest})`;
+      }
+      return {
+        FECHA: formattedDate,
         'NUMERO TF': task.tf,
-        'Atributo': task.type,
-        'Valor': task.valor,
-        'ORDEN': task.order,
-        'FIRMA': '',
-    }));
+        Atributo: task.type,
+        Valor: valor,
+        ORDEN: task.order,
+        FIRMA: '',
+      };
+    });
     
     if (dataToExport.length === 0) {
         alert('No hay tareas para exportar.');
