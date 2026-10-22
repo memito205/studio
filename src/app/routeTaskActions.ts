@@ -9,6 +9,7 @@ import {
   documentId,
   getDoc,
   getDocs,
+  limit,
   query,
   runTransaction,
   Timestamp,
@@ -417,8 +418,10 @@ export function normalizeLibreRouteCode(raw: string): string {
   return `MSJ-${m[1]}-${m[2].padStart(3, '0')}`;
 }
 
+const isLibreTask = (t: DriverRouteTask) => t.kind === 'libre' || String(t.numeroTF || '').startsWith('MSJ-');
+
 /**
- * Consulta de un envío sin TF (el que se asigna al camión/mensajero con código MSJ).
+ * Consulta de un envío sin TF por el consecutivo interno MSJ-AAAAMMDD-###.
  * 1 consulta por igualdad. No abre Recolecciones.
  */
 export async function lookupLibreRouteTasks(code: string): Promise<{
@@ -431,9 +434,50 @@ export async function lookupLibreRouteTasks(code: string): Promise<{
     const snap = await getDocs(query(collection(firestore, TASKS), where('numeroTF', '==', normalized), limit(20)));
     const data = snap.docs
       .map((d) => toTask(d.id, d.data()))
-      .filter((t) => t.kind === 'libre' || String(t.numeroTF || '').startsWith('MSJ-'))
+      .filter(isLibreTask)
       .sort((a, b) => b.day.localeCompare(a.day));
     return { data };
+  } catch (error: any) {
+    return { error: error.message || 'No se pudo buscar el envío sin TF.' };
+  }
+}
+
+/**
+ * Código visible del envío sin TF (el de la columna TF, ej. 1669491421137-01).
+ * Un número corto (8389, 106322) sigue siendo una TF de plataforma.
+ */
+export function isExternalLibreCode(raw: string): boolean {
+  const compact = String(raw || '').trim().replace(/\s+/g, '');
+  if (!compact || normalizeLibreRouteCode(compact)) return false;
+  const body = compact.replace(/^TF-?/i, '');
+  if (/^\d+$/.test(body) && body.length < 10) return false;
+  if (body.replace(/\D/g, '').length >= 10) return true;
+  return /[^0-9]/.test(body);
+}
+
+/**
+ * Consulta de un envío sin TF por el código que se ve (description / refText), no por el MSJ.
+ * 2 consultas por igualdad. No abre Recolecciones.
+ */
+export async function lookupLibreRouteTasksByExternalCode(raw: string): Promise<{
+  data?: DriverRouteTask[];
+  error?: string;
+}> {
+  try {
+    const compact = String(raw || '').trim().replace(/\s+/g, '');
+    if (!compact) return { data: [] };
+    const variants = Array.from(new Set([compact, compact.toUpperCase()]));
+    const tasks = collection(firestore, TASKS);
+    const [byDesc, byRef] = await Promise.all([
+      getDocs(query(tasks, where('description', 'in', variants), limit(20))),
+      getDocs(query(tasks, where('refText', 'in', variants), limit(20))),
+    ]);
+    const map = new Map<string, DriverRouteTask>();
+    for (const d of [...byDesc.docs, ...byRef.docs]) {
+      const t = toTask(d.id, d.data());
+      if (isLibreTask(t)) map.set(t.id, t);
+    }
+    return { data: Array.from(map.values()).sort((a, b) => b.day.localeCompare(a.day)) };
   } catch (error: any) {
     return { error: error.message || 'No se pudo buscar el envío sin TF.' };
   }

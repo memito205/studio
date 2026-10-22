@@ -9,7 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { getTfPlatformStatusByTf } from '@/app/actions';
-import { lookupLibreRouteTasks, normalizeLibreRouteCode } from '@/app/routeTaskActions';
+import { isExternalLibreCode, lookupLibreRouteTasks, lookupLibreRouteTasksByExternalCode, normalizeLibreRouteCode } from '@/app/routeTaskActions';
 import { ROUTE_TASK_STATUS } from '@/components/RouteTasksAssignView';
 import type { DriverRouteTask } from '@/types';
 import type { TfPlatformEstado } from '@/types';
@@ -94,13 +94,22 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
     setResults([]);
     setLibreResults([]);
     const libreCode = normalizeLibreRouteCode(tfQuery);
+    const externalCode = isExternalLibreCode(tfQuery) ? tfQuery.trim().replace(/\s+/g, '') : '';
     try {
-      if (libreCode) {
-        const libre = await lookupLibreRouteTasks(tfQuery);
+      if (libreCode || externalCode) {
+        const libre = libreCode
+          ? await lookupLibreRouteTasks(tfQuery)
+          : await lookupLibreRouteTasksByExternalCode(externalCode);
         if (libre.error) setError(libre.error);
         else {
           setLibreResults(libre.data || []);
-          if (!libre.data?.length) setError(`No hay un envío sin TF con el código ${libreCode}.`);
+          if (!libre.data?.length) {
+            setError(
+              libreCode
+                ? `No hay un envío sin TF con el consecutivo ${libreCode}.`
+                : `No hay un envío sin TF con el código ${externalCode}.`
+            );
+          }
         }
         return;
       }
@@ -144,7 +153,7 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
         <CardHeader>
           <CardTitle>Buscar</CardTitle>
           <CardDescription>
-            Busque una TF por número, un envío sin TF por su código MSJ, o vea las TF de su tienda en el último reporte del analizador.
+            Busque una TF por número, un envío sin TF por el código que aparece (ej. 1669491421137-01) o por su consecutivo MSJ, o vea las TF de su tienda en el último reporte del analizador.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -158,10 +167,10 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
             </TabsContent>
             <TabsContent value="tf" className="space-y-3">
               <div className="space-y-1">
-                <Label>Número TF o código MSJ</Label>
+                <Label>Número TF, código del envío o consecutivo MSJ</Label>
                 <div className="flex gap-2">
                   <Input
-                    placeholder="Ej. 8389 o MSJ-20261022-001"
+                    placeholder="Ej. 8389, 1669491421137-01 o MSJ-20261022-010"
                     value={tfQuery}
                     onChange={(e) => setTfQuery(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && runSearchByTf()}
@@ -194,8 +203,8 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <p className="text-sm text-muted-foreground">Código</p>
-                    <p className="text-xl font-bold">{t.numeroTF}</p>
-                    {t.description && <p className="text-sm">{t.description}</p>}
+                    <p className="text-xl font-bold">{t.description || t.refText || t.numeroTF}</p>
+                    <p className="text-xs text-muted-foreground">Consecutivo {t.numeroTF}</p>
                   </div>
                   <Badge className={ROUTE_TASK_STATUS[t.status]?.className || ''}>
                     {ROUTE_TASK_STATUS[t.status]?.label || t.status}
