@@ -409,6 +409,36 @@ export async function reorderMessengerDayRoute(input: {
   }
 }
 
+/** Código MSJ-AAAAMMDD-### de un envío sin TF. Vacío si no es ese código. */
+export function normalizeLibreRouteCode(raw: string): string {
+  const compact = String(raw || '').trim().toUpperCase().replace(/\s+/g, '');
+  const m = compact.match(/^MSJ-?(\d{8})-?(\d{1,4})$/);
+  if (!m) return '';
+  return `MSJ-${m[1]}-${m[2].padStart(3, '0')}`;
+}
+
+/**
+ * Consulta de un envío sin TF (el que se asigna al camión/mensajero con código MSJ).
+ * 1 consulta por igualdad. No abre Recolecciones.
+ */
+export async function lookupLibreRouteTasks(code: string): Promise<{
+  data?: DriverRouteTask[];
+  error?: string;
+}> {
+  try {
+    const normalized = normalizeLibreRouteCode(code);
+    if (!normalized) return { data: [] };
+    const snap = await getDocs(query(collection(firestore, TASKS), where('numeroTF', '==', normalized), limit(20)));
+    const data = snap.docs
+      .map((d) => toTask(d.id, d.data()))
+      .filter((t) => t.kind === 'libre' || String(t.numeroTF || '').startsWith('MSJ-'))
+      .sort((a, b) => b.day.localeCompare(a.day));
+    return { data };
+  } catch (error: any) {
+    return { error: error.message || 'No se pudo buscar el envío sin TF.' };
+  }
+}
+
 /** Tareas abiertas del conductor (1 consulta de igualdad; solo lo pendiente). */
 export async function getMyRouteTasks(driverId: string): Promise<{ data?: DriverRouteTask[]; error?: string }> {
   try {

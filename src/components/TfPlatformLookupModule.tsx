@@ -9,6 +9,9 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { getTfPlatformStatusByTf } from '@/app/actions';
+import { lookupLibreRouteTasks, normalizeLibreRouteCode } from '@/app/routeTaskActions';
+import { ROUTE_TASK_STATUS } from '@/components/RouteTasksAssignView';
+import type { DriverRouteTask } from '@/types';
 import type { TfPlatformEstado } from '@/types';
 import { format } from 'date-fns';
 import { StoreReceiveCard } from '@/components/StoreReceiveCard';
@@ -83,12 +86,24 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<any[]>([]);
+  const [libreResults, setLibreResults] = useState<DriverRouteTask[]>([]);
 
   const runSearchByTf = async () => {
     setIsLoading(true);
     setError(null);
     setResults([]);
+    setLibreResults([]);
+    const libreCode = normalizeLibreRouteCode(tfQuery);
     try {
+      if (libreCode) {
+        const libre = await lookupLibreRouteTasks(tfQuery);
+        if (libre.error) setError(libre.error);
+        else {
+          setLibreResults(libre.data || []);
+          if (!libre.data?.length) setError(`No hay un envío sin TF con el código ${libreCode}.`);
+        }
+        return;
+      }
       const res = await getTfPlatformStatusByTf(tfQuery);
       if (res.error) setError(res.error);
       else {
@@ -129,7 +144,7 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
         <CardHeader>
           <CardTitle>Buscar</CardTitle>
           <CardDescription>
-            Busque una TF por número, o vea las TF de su tienda en el último reporte del analizador.
+            Busque una TF por número, un envío sin TF por su código MSJ, o vea las TF de su tienda en el último reporte del analizador.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -143,10 +158,10 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
             </TabsContent>
             <TabsContent value="tf" className="space-y-3">
               <div className="space-y-1">
-                <Label>Número TF</Label>
+                <Label>Número TF o código MSJ</Label>
                 <div className="flex gap-2">
                   <Input
-                    placeholder="Ej. 8389"
+                    placeholder="Ej. 8389 o MSJ-20261022-001"
                     value={tfQuery}
                     onChange={(e) => setTfQuery(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && runSearchByTf()}
@@ -166,6 +181,70 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
           )}
         </CardContent>
       </Card>
+
+      {libreResults.length > 0 && (
+        <div className="space-y-3">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <Package className="h-5 w-5" />
+            Envío sin TF · {libreResults.length} registro(s)
+          </h2>
+          {libreResults.map((t) => (
+            <Card key={t.id}>
+              <CardContent className="pt-6 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Código</p>
+                    <p className="text-xl font-bold">{t.numeroTF}</p>
+                    {t.description && <p className="text-sm">{t.description}</p>}
+                  </div>
+                  <Badge className={ROUTE_TASK_STATUS[t.status]?.className || ''}>
+                    {ROUTE_TASK_STATUS[t.status]?.label || t.status}
+                    {t.reassignedTo ? ' · reasignada' : ''}
+                  </Badge>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                  <div>
+                    <p className="text-muted-foreground">Conductor</p>
+                    <p className="font-medium">{t.driverName || 'N/D'}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Placa</p>
+                    <p className="font-medium">{t.placa || 'N/D'}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Día</p>
+                    <p className="font-medium">{t.day || 'N/D'}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Recoger</p>
+                    <p className="font-medium">{t.pickupPoint || 'Ya lo lleva'}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Entregar</p>
+                    <p className="font-medium">{t.deliverPoint || 'N/D'}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Recogida</p>
+                    <p className="font-medium">{t.pickedAt ? formatMaybeDateTime(t.pickedAt) : '—'}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Entrega</p>
+                    <p className="font-medium">{t.deliveredAt ? formatMaybeDateTime(t.deliveredAt) : '—'}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Recibió</p>
+                    <p className="font-medium">{t.receivedByName || '—'}</p>
+                  </div>
+                </div>
+                {t.notes && <p className="text-xs text-muted-foreground">{t.notes}</p>}
+                {t.failReason && <p className="text-xs text-red-800">Motivo: {t.failReason}</p>}
+                {t.leftInCajon && <p className="text-xs text-amber-800">Dejado en Cajón Norte</p>}
+                {t.leftInBodega && <p className="text-xs text-slate-800">Dejado en bodega</p>}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
 
       {results.length > 0 && (
         <div className="space-y-3">
