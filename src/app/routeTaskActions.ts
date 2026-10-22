@@ -489,7 +489,7 @@ export async function getDriverOnRouteDestinationKeys(driverId: string): Promise
 /**
  * Tras recolección libre: parte el lote.
  * - on-route → routeTask por_entregar (Mis entregas)
- * - mensajero off-route → routeTask a CAJON NORTE
+ * - mensajero off-route → routeTask al destino real (puede entregar o dejar en cajón)
  * - otro conductor off-route → queda para supervisor (sin tarea)
  */
 export async function routeCollectedTransfersAfterFreeCollection(input: {
@@ -578,14 +578,14 @@ export async function routeCollectedTransfersAfterFreeCollection(input: {
 
     const cajonList = Array.from(cajonBuckets.values()).filter((b) => b.numeroTF);
     if (cajonList.length) {
-      await ensureNonStorePoints([CAJON_POINT], (await loadStores()).stores, actorNameOf(actor));
+      // El destino sigue siendo la tienda: el mensajero puede entregar o dejar en cajón.
       const res = await createRouteTasks({
         tasks: cajonList.map((b) => ({
           numeroTF: b.numeroTF,
           transferIds: b.transferIds,
           bodegaDestino: b.destino,
-          deliverPoint: CAJON_POINT,
-          notes: 'Recogida fuera de ruta (mensajero) · dejar en cajón',
+          deliverPoint: b.destino,
+          notes: 'Recogida fuera de ruta (mensajero) · puede entregar en destino o dejar en cajón',
         })),
         driverId: input.driverId,
         driverName: input.driverName,
@@ -1112,7 +1112,15 @@ export async function submitRouteTasks(
 
       // entregar
       tasks.forEach(({ ref, t, raw }) => {
-        const store = t.deliverStoreCode ? match(t.deliverStoreCode) : match(t.deliverPoint);
+        const original = String(t.bodegaDestino || '').trim();
+        const originalIsStore =
+          !!original && !isCajonPickupPoint(original) && !BODEGA_POINTS.includes(normPoint(original));
+        const forcedCajon = isCajonPickupPoint(t.deliverPoint) && originalIsStore;
+        const store = forcedCajon
+          ? match(original)
+          : t.deliverStoreCode
+            ? match(t.deliverStoreCode)
+            : match(t.deliverPoint);
         const distanceM =
           gps && store && typeof store.latitud === 'number' && typeof store.longitud === 'number'
             ? distanceMeters({ lat: gps.lat, lng: gps.lng }, { lat: store.latitud, lng: store.longitud })
@@ -1123,8 +1131,8 @@ export async function submitRouteTasks(
           store
             ? match(d.bodegaDestino)?.codigoErp === store.codigoErp
             : !!t.bodegaDestino && platformWhs(d.bodegaDestino) === platformWhs(t.bodegaDestino);
-        if (t.deliverType === 'tienda' && t.kind !== 'libre') {
-          (t.transferIds || []).forEach((id) => {
+        if (t.kind !== 'libre' && (t.deliverType === 'tienda' || forcedCajon)) {
+          idsOf(t).forEach((id) => {
             const s = lineById.get(id);
             if (!s) return;
             const d = s.data()!;

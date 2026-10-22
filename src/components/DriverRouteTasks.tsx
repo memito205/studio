@@ -68,6 +68,21 @@ const NO_ORDER = 9999;
 
 const isCajonPoint = (point: string) => /CAJ[OÓ]N/i.test(point || '');
 
+/** Destino de tienda guardado en la TF, aunque la parada haya quedado como Cajón Norte. */
+const storeDestOf = (t: DriverRouteTask): string => {
+  const d = String(t.bodegaDestino || '').trim();
+  if (!d || isCajonPoint(d)) return '';
+  if (/^(BODEGA|BODEGA PIONEROS|PIONEROS|RECEPCION)$/i.test(d)) return '';
+  return d;
+};
+
+const storeDestLabel = (tasks: DriverRouteTask[]): string => {
+  const dests = Array.from(new Set(tasks.map(storeDestOf).filter(Boolean)));
+  if (dests.length === 1) return dests[0];
+  if (dests.length > 1) return 'destino';
+  return '';
+};
+
 export const deliverOrderOf = (t: DriverRouteTask) => t.deliverOrder ?? (t.pickupPoint ? NO_ORDER : t.order ?? NO_ORDER);
 
 /**
@@ -187,7 +202,12 @@ const RouteTaskForm: React.FC<{
 
   const failing = action === 'no_recoger' || action === 'no_entregar';
   const chosenTasks = group.tasks.filter((t) => selected.has(t.id));
-  const toStore = action === 'entregar' && group.deliverType === 'tienda' && chosenTasks.some((t) => t.kind !== 'libre');
+  const deliverOriginal =
+    action === 'entregar' && isCajonPoint(group.point) && chosenTasks.some((t) => t.kind !== 'libre' && storeDestOf(t));
+  const toStore =
+    action === 'entregar' &&
+    chosenTasks.some((t) => t.kind !== 'libre') &&
+    (group.deliverType === 'tienda' || deliverOriginal);
   const libreDelivery = action === 'entregar' && chosenTasks.some((t) => t.kind === 'libre');
   const categories = action === 'recoger'
     ? [{ id: 'mercancia' as DeliveryPhotoCategory, label: 'Mercancía recogida', required: true }]
@@ -289,7 +309,7 @@ const RouteTaskForm: React.FC<{
   const title = {
     recoger: 'Recoger',
     no_recoger: 'No recogida',
-    entregar: group.deliverType === 'bodega' ? 'Dejar en bodega' : 'Entregar en tienda',
+    entregar: group.deliverType === 'bodega' && !deliverOriginal ? 'Dejar en bodega' : 'Entregar en tienda',
     no_entregar: 'No entregada',
     cajon: 'Dejar en cajón',
     bodega: 'Dejar en bodega',
@@ -302,7 +322,9 @@ const RouteTaskForm: React.FC<{
       </Button>
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-lg">{title} · {group.point}</CardTitle>
+          <CardTitle className="text-lg">
+            {title} · {deliverOriginal ? storeDestLabel(chosenTasks) || group.point : group.point}
+          </CardTitle>
           <CardDescription>Marque las TF de este registro.</CardDescription>
         </CardHeader>
         <CardContent className="divide-y rounded-md border p-0">
@@ -486,7 +508,9 @@ const renderGroupCards = (
               : g.kind === 'recoger'
                 ? 'Recoger'
                 : isCajonPoint(g.point)
-                  ? 'Dejar en cajón'
+                  ? storeDestLabel(g.tasks)
+                    ? 'Entregar o cajón'
+                    : 'Dejar en cajón'
                   : g.deliverType === 'bodega'
                     ? 'Dejar en bodega'
                     : 'Entregar'}
@@ -528,34 +552,53 @@ const renderGroupCards = (
           </p>
         ) : (
           <div className="grid grid-cols-2 gap-2">
-            {g.kind === 'entregar' && isCajonPoint(g.point) ? (
+            {g.kind === 'entregar' && isCajonPoint(g.point) && !storeDestLabel(g.tasks) ? (
               <Button onClick={() => onOpenForm({ group: g, action: 'cajon' })}>
                 <Archive className="mr-2 h-4 w-4" /> Dejar en cajón
               </Button>
             ) : (
               <Button onClick={() => onOpenForm({ group: g, action: g.kind === 'recoger' ? 'recoger' : 'entregar' })}>
-                <PackageCheck className="mr-2 h-4 w-4" /> {g.kind === 'recoger' ? 'Recoger' : 'Entregar'}
+                <PackageCheck className="mr-2 h-4 w-4" />{' '}
+                {g.kind === 'recoger' ? 'Recoger' : storeDestLabel(g.tasks) && isCajonPoint(g.point) ? `Entregar en ${storeDestLabel(g.tasks)}` : 'Entregar'}
               </Button>
             )}
-            {!(g.kind === 'entregar' && isCajonPoint(g.point)) && (
+            {!(g.kind === 'entregar' && isCajonPoint(g.point) && !storeDestLabel(g.tasks)) && g.kind === 'recoger' && (
               <Button
                 variant="outline"
                 className="text-red-700"
-                onClick={() => onOpenForm({ group: g, action: g.kind === 'recoger' ? 'no_recoger' : 'no_entregar' })}
+                onClick={() => onOpenForm({ group: g, action: 'no_recoger' })}
               >
-                <PackageX className="mr-2 h-4 w-4" /> {g.kind === 'recoger' ? 'No recogida' : 'No entregada'}
+                <PackageX className="mr-2 h-4 w-4" /> No recogida
               </Button>
             )}
-            {g.kind === 'entregar' && g.deliverType === 'tienda' && !isCajonPoint(g.point) && (
-              isMessengerDriver({ displayName: g.tasks[0]?.driverName }) ? (
-                <Button variant="secondary" className="col-span-2" onClick={() => onOpenForm({ group: g, action: 'cajon' })}>
-                  <Archive className="mr-2 h-4 w-4" /> No se pudo entregar: dejar en cajón
+            {g.kind === 'entregar' && !isCajonPoint(g.point) && g.deliverType !== 'tienda' && (
+              <Button
+                variant="outline"
+                className="text-red-700"
+                onClick={() => onOpenForm({ group: g, action: 'no_entregar' })}
+              >
+                <PackageX className="mr-2 h-4 w-4" /> No entregada
+              </Button>
+            )}
+            {g.kind === 'entregar' && (g.deliverType === 'tienda' || (!!storeDestLabel(g.tasks) && isCajonPoint(g.point))) && (
+              isMessengerDriver({ displayName: g.tasks[0]?.driverName }) || isCajonPoint(g.point) ? (
+                <Button variant="secondary" onClick={() => onOpenForm({ group: g, action: 'cajon' })}>
+                  <Archive className="mr-2 h-4 w-4" /> Dejar en Cajón Norte
                 </Button>
               ) : (
                 <Button variant="secondary" className="col-span-2" onClick={() => onOpenForm({ group: g, action: 'bodega' })}>
                   <Archive className="mr-2 h-4 w-4" /> No se pudo entregar: dejar en bodega
                 </Button>
               )
+            )}
+            {g.kind === 'entregar' && g.deliverType === 'tienda' && !isCajonPoint(g.point) && (
+              <Button
+                variant="outline"
+                className="col-span-2 text-red-700"
+                onClick={() => onOpenForm({ group: g, action: 'no_entregar' })}
+              >
+                <PackageX className="mr-2 h-4 w-4" /> No entregada
+              </Button>
             )}
           </div>
         )}
