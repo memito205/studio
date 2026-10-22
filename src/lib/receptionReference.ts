@@ -14,6 +14,17 @@ export function normalizeReceptionSize(size: string | undefined | null): string 
   return s.toUpperCase();
 }
 
+/** Esperado cargado solo por referencia (sin código ni talla). No es un código de barras real. */
+export const RECEPTION_REF_ONLY_BARCODE_PREFIX = 'POR-REF:';
+
+export function receptionRefOnlyBarcode(ref: string | undefined | null): string {
+  return `${RECEPTION_REF_ONLY_BARCODE_PREFIX}${normalizeReceptionReference(ref)}`;
+}
+
+export function isReceptionRefOnlyBarcode(barcode: string | undefined | null): boolean {
+  return String(barcode || '').startsWith(RECEPTION_REF_ONLY_BARCODE_PREFIX);
+}
+
 /** Clave estable para cruzar esperado vs leído por referencia + talla */
 export function receptionRefSizeKey(
   ref: string | undefined | null,

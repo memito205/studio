@@ -16,7 +16,7 @@ import type { ReceptionOperation, DetailedReportItem, ScannedItem, ItemNovelty, 
 import { Badge } from '@/components/ui/badge';
 import { exportToXlsx } from '@/services/export';
 import { cn } from '@/lib/utils';
-import { normalizeReceptionReference, normalizeReceptionSize } from '@/lib/receptionReference';
+import { isReceptionRefOnlyBarcode, normalizeReceptionReference, normalizeReceptionSize, receptionRefOnlyBarcode } from '@/lib/receptionReference';
 import PackingUnitDetailsDialog from '@/components/PackingUnitDetailsDialog';
 import { showError } from '@/lib/toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'; // Import Tabs
@@ -113,8 +113,20 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
     const packingUnitIdMap = new Map<string, number>(
         (allPackingUnits || []).map(unit => [unit.firestoreId, unit.id])
     );
+    const refOnlyByRef = new Map<string, { qty: number; name: string; location?: string }>();
+    (operation.expectedItems || []).forEach((item) => {
+        if (!isReceptionRefOnlyBarcode(item.barcode)) return;
+        const ref = normalizeReceptionReference(item.reference);
+        const prev = refOnlyByRef.get(ref) || { qty: 0, name: item.item || '' };
+        prev.qty += Number(item.expected_quantity) || 0;
+        if (!prev.name && item.item) prev.name = item.item;
+        if (!prev.location && item.location) prev.location = item.location;
+        refOnlyByRef.set(ref, prev);
+    });
     const expectedItemsMap = new Map<string, ReceptionExpectedItem>(
-        (operation.expectedItems || []).map(item => [item.barcode, item])
+        (operation.expectedItems || [])
+            .filter((item) => !isReceptionRefOnlyBarcode(item.barcode))
+            .map(item => [item.barcode, item])
     );
     const scannedDataMap = new Map<string, { total: number, breakdown: DetailedReportItem['packingUnitBreakdown'], productDetails: { item: string, reference: string, size: string } }>();
     allScannedItems.forEach(item => {
@@ -151,7 +163,6 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
         const scannedInfo = scannedDataMap.get(barcode);
         const scannedQty = scannedInfo?.total || 0;
         const expectedQty = expectedItem?.expected_quantity || 0;
-        const difference = scannedQty - expectedQty;
         const noveltyText = [...new Set(allNovelties.filter(n => n.barcode === barcode).map(n => n.novelty_type))].join(', ') || 'N/A';
         
         const dbProductDetails = productDetailsMap.get(barcode);
@@ -168,19 +179,37 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
           (fallbackDetails as ReceptionExpectedItem)?.size ||
           (scannedInfo?.productDetails.size) ||
           '';
+        const reference = rawRef ? normalizeReceptionReference(rawRef) : 'N/A';
+        const refOnly = reference !== 'N/A' && refOnlyByRef.has(reference) && scannedQty > 0;
 
         return {
             barcode: barcode,
             productName: dbProductDetails?.item || fallbackDetails?.item || 'Producto Inesperado',
-            reference: rawRef ? normalizeReceptionReference(rawRef) : 'N/A',
+            reference,
             size: rawSize ? normalizeReceptionSize(rawSize) : 'N/A',
-            expectedQuantity: expectedQty,
+            expectedQuantity: refOnly ? 0 : expectedQty,
             scannedQuantity: scannedQty,
-            difference: difference,
+            difference: refOnly ? 0 : scannedQty - expectedQty,
+            expectedByReference: refOnly,
             noveltyType: noveltyText,
             packingUnitBreakdown: scannedInfo?.breakdown || [],
         };
     });
+    for (const [ref, info] of refOnlyByRef) {
+        const hasScan = detailedItems.some((item) => item.reference === ref && item.scannedQuantity > 0);
+        if (hasScan) continue;
+        detailedItems.push({
+            barcode: receptionRefOnlyBarcode(ref),
+            productName: info.name || ref,
+            reference: ref,
+            size: 'Sin detalle',
+            expectedQuantity: info.qty,
+            scannedQuantity: 0,
+            difference: -info.qty,
+            noveltyType: 'N/A',
+            packingUnitBreakdown: [],
+        });
+    }
     setReportItems(detailedItems);
 
     const consolidatedMap = new Map<string, ConsolidatedReportItem>();
@@ -195,6 +224,7 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
     }
 
     detailedItems.forEach(item => {
+        if (isReceptionRefOnlyBarcode(item.barcode)) return;
         // Sin referencia válida: no fusionar filas distintas por el mismo placeholder "N/A"
         const groupKey =
           item.reference !== 'N/A'
@@ -217,7 +247,7 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
             };
             consolidatedMap.set(groupKey, entry);
         }
-        entry.expectedQuantity += item.expectedQuantity;
+        entry.expectedQuantity += item.expectedByReference ? 0 : item.expectedQuantity;
         entry.scannedQuantity += item.scannedQuantity;
         if (item.packingUnitBreakdown) {
             item.packingUnitBreakdown.forEach(bd => {
@@ -225,6 +255,24 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
             });
         }
     });
+
+    for (const [ref, info] of refOnlyByRef) {
+        let entry = consolidatedMap.get(ref);
+        if (!entry) {
+            entry = {
+                reference: ref,
+                productName: info.name || ref,
+                expectedQuantity: 0,
+                scannedQuantity: 0,
+                difference: 0,
+                location: info.location || locationMapByReference.get(ref) || 'N/A',
+                packingUnitBreakdown: [],
+            };
+            consolidatedMap.set(ref, entry);
+        }
+        entry.expectedQuantity += info.qty;
+        if (!entry.productName && info.name) entry.productName = info.name;
+    }
 
     const consolidatedList = Array.from(consolidatedMap.values()).map(item => ({
         ...item,
@@ -349,12 +397,12 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
     const dataToExport = filteredReportItems.map(item => ({
         'Referencia': item.reference,
         'Talla': item.size,
-        'Cód. Barras': item.barcode,
+        'Cód. Barras': isReceptionRefOnlyBarcode(item.barcode) ? 'Sin código' : item.barcode,
         'Nombre Producto': item.productName,
-        'Cant. Esperada': item.expectedQuantity,
+        'Cant. Esperada': item.expectedByReference ? 'Sin detalle' : item.expectedQuantity,
         'Cant. Leída': item.scannedQuantity,
-        'Diferencia': item.difference,
-        'Estado': item.noveltyType,
+        'Diferencia': item.expectedByReference ? '' : item.difference,
+        'Estado': item.expectedByReference && item.noveltyType === 'N/A' ? 'Leída' : item.noveltyType,
     }));
     exportToXlsx(dataToExport, `Reporte_Detallado_${operation.rk_identifier}`);
   };
@@ -559,14 +607,14 @@ export const OperationDetailedReport: React.FC<OperationDetailedReportProps> = (
                                       </TableCell>
                                       <TableCell className="font-medium">{item.reference}</TableCell>
                                       <TableCell>{item.size}</TableCell>
-                                      <TableCell>{item.barcode}</TableCell>
-                                      <TableCell className="text-center">{item.expectedQuantity}</TableCell>
+                                      <TableCell>{isReceptionRefOnlyBarcode(item.barcode) ? 'Sin código' : item.barcode}</TableCell>
+                                      <TableCell className="text-center">{item.expectedByReference ? '—' : item.expectedQuantity}</TableCell>
                                       <TableCell className="text-center font-semibold">{item.scannedQuantity}</TableCell>
-                                      <TableCell className={`text-center font-bold ${item.difference !== 0 ? (item.difference > 0 ? 'text-blue-500' : 'text-orange-500') : ''}`}>
-                                      {item.difference > 0 ? `+${item.difference}`: item.difference}
+                                      <TableCell className={`text-center font-bold ${!item.expectedByReference && item.difference !== 0 ? (item.difference > 0 ? 'text-blue-500' : 'text-orange-500') : ''}`}>
+                                      {item.expectedByReference ? '—' : (item.difference > 0 ? `+${item.difference}` : item.difference)}
                                       </TableCell>
                                       <TableCell>
-                                          {getStatusBadge(item.difference, item.noveltyType)}
+                                          {item.expectedByReference && item.noveltyType === 'N/A' ? <Badge variant="secondary">Leída</Badge> : getStatusBadge(item.difference, item.noveltyType)}
                                       </TableCell>
                                   </TableRow>
                                   {openRows.has(item.barcode) && (

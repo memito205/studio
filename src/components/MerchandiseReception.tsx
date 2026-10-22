@@ -58,24 +58,39 @@ const downloadReceptionImportTemplate = () => {
         'tipo_mercancia',
         'Marca',
     ];
-    const exampleRow = {
-        Fecha: '2026-07-04',
-        'Nombre RK': 'RK-EJEMPLO-001',
-        Proveedor: 'PROVEEDOR EJEMPLO',
-        'Código de barras': '7701234567890',
-        Referencia: 'REF-001',
-        'descripción del producto': 'NI CALZADO TENIS HOMBRE',
-        Talla: '40',
-        Cantidad: 10,
-        ubicación: 'BODEGA',
-        tipo_mercancia: 'IMPORTADA',
-        Marca: 'NIKE',
-    };
-    const worksheet = XLSX.utils.json_to_sheet([exampleRow], { header: headers });
+    const exampleRows = [
+        {
+            Fecha: '2026-07-04',
+            'Nombre RK': 'RK-EJEMPLO-001',
+            Proveedor: 'PROVEEDOR EJEMPLO',
+            'Código de barras': '7701234567890',
+            Referencia: 'REF-001',
+            'descripción del producto': 'NI CALZADO TENIS HOMBRE',
+            Talla: '40',
+            Cantidad: 10,
+            ubicación: 'BODEGA',
+            tipo_mercancia: 'IMPORTADA',
+            Marca: 'NIKE',
+        },
+        {
+            Fecha: '2026-07-04',
+            'Nombre RK': 'RK-EJEMPLO-001',
+            Proveedor: 'PROVEEDOR EJEMPLO',
+            'Código de barras': '',
+            Referencia: 'REF-002',
+            'descripción del producto': 'NI CALZADO SIN DETALLE DE TALLA',
+            Talla: '',
+            Cantidad: 120,
+            ubicación: 'BODEGA',
+            tipo_mercancia: 'IMPORTADA',
+            Marca: 'NIKE',
+        },
+    ];
+    const worksheet = XLSX.utils.json_to_sheet(exampleRows, { header: headers });
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Recepcion');
     worksheet['!cols'] = headers.map((header) => ({
-        wch: Math.max(header.length, String(exampleRow[header as keyof typeof exampleRow] ?? '').length) + 4,
+        wch: Math.max(header.length, ...exampleRows.map((row) => String(row[header as keyof typeof row] ?? '').length)) + 4,
     }));
     XLSX.writeFile(workbook, 'Plantilla_Recepcion_Mercancia.xlsx');
 };
@@ -457,7 +472,7 @@ export const MerchandiseReception: React.FC<MerchandiseReceptionProps> = ({
                     variant="secondary"
                     onClick={downloadReceptionImportTemplate}
                     className="flex-1 md:flex-none"
-                    title="Incluye columna Marca al final. tipo_mercancia ya no se usa como marca comercial."
+                    title="Con detalle: una fila por código y talla. Sin detalle de talla: deje Código de barras y Talla vacíos y ponga la cantidad total de la referencia."
                 >
                     <Download className="mr-2 h-4 w-4" />
                     Plantilla

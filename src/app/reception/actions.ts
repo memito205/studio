@@ -9,7 +9,7 @@ import { parseISO } from 'date-fns';
 import { startOfDay, endOfDay, isWithinInterval } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { normalizeHeader, parseFlexibleDate, excelSerialDateToJSDate, findCaseInsensitiveKey } from '@/lib/parsingUtils';
-import { normalizeReceptionReference, normalizeReceptionSize, receptionRefSizeKey } from '@/lib/receptionReference';
+import { isReceptionRefOnlyBarcode, normalizeReceptionReference, normalizeReceptionSize, receptionRefOnlyBarcode, receptionRefSizeKey } from '@/lib/receptionReference';
 import type { ReceptionOperation, ScannedItem, ItemNovelty, PackingUnit, Location, CsvRow, ReceptionExpectedItem, ReceptionProduct, AlternateBarcodeUploadRow, AppUser, OperationPause, ProductivitySettings, UserGoal, PackedItem, ProductDatabaseItem, DiscardedRecord, LabelingOperation, LabelingActivityLog, LabelingActivityType, LabelingOperationStatus, PackingScanResult, ExternalVendor, LabelingDashboardData, LabelingSummaryKPIs, LabelingEmployeePerformance, ReceptionIdleTimeDetail, ReceptionIdleJustifications } from '@/types';
 import {
   stripUndefinedDeep,
@@ -555,12 +555,17 @@ export async function exportBasicOperationReport(operationId: string): Promise<{
     const expectedNoSizeKeys = new Set(
       expectedItems.filter((item) => normalizeReceptionSize(item.size) === 'N/A').map((item) => receptionRefSizeKey(item.reference, ''))
     );
+    /** Esperado cargado solo con el total de la referencia: el detalle por talla sale de lo leído. */
+    const refOnlyRefs = new Set(
+      expectedItems.filter((item) => isReceptionRefOnlyBarcode(item.barcode)).map((item) => normalizeReceptionReference(item.reference))
+    );
 
     scannedItems.forEach(item => {
       const product = productMap.get(item.barcode);
       const exactKey = receptionRefSizeKey(item.reference, item.talla);
       const noSizeKey = receptionRefSizeKey(item.reference, '');
-      const key = !allItems.has(exactKey) && expectedNoSizeKeys.has(noSizeKey) ? noSizeKey : exactKey;
+      const refOnly = refOnlyRefs.has(normalizeReceptionReference(item.reference));
+      const key = !refOnly && !allItems.has(exactKey) && expectedNoSizeKeys.has(noSizeKey) ? noSizeKey : exactKey;
       const existing = allItems.get(key) || {
         expected: 0,
         scanned: 0,
@@ -577,15 +582,41 @@ export async function exportBasicOperationReport(operationId: string): Promise<{
       allItems.set(key, existing);
     });
 
-    const detailedData = Array.from(allItems.values()).map(item => ({
-      'Referencia': item.ref,
-      'Talla': item.talla,
-      'Nombre Producto': item.name,
-      'Cant. Esperada': item.expected,
-      'Cant. Leída': item.scanned,
-      'Diferencia': item.scanned - item.expected,
-      'Estado': (item.scanned - item.expected) === 0 ? 'OK' : (item.scanned > item.expected ? 'Sobrante' : 'Faltante')
-    }));
+    const detailedData = Array.from(allItems.values()).flatMap(item => {
+      if (refOnlyRefs.has(item.ref) && item.talla === 'N/A' && item.scanned === 0) {
+        const hasSizes = Array.from(allItems.values()).some((other) => other.ref === item.ref && other.talla !== 'N/A' && other.scanned > 0);
+        if (hasSizes) return [];
+        return [{
+          'Referencia': item.ref,
+          'Talla': 'Sin detalle',
+          'Nombre Producto': item.name,
+          'Cant. Esperada': item.expected,
+          'Cant. Leída': 0,
+          'Diferencia': -item.expected,
+          'Estado': 'Faltante',
+        }];
+      }
+      if (refOnlyRefs.has(item.ref) && item.talla !== 'N/A') {
+        return [{
+          'Referencia': item.ref,
+          'Talla': item.talla,
+          'Nombre Producto': item.name,
+          'Cant. Esperada': 'Sin detalle',
+          'Cant. Leída': item.scanned,
+          'Diferencia': '',
+          'Estado': 'Leída',
+        }];
+      }
+      return [{
+        'Referencia': item.ref,
+        'Talla': item.talla,
+        'Nombre Producto': item.name,
+        'Cant. Esperada': item.expected,
+        'Cant. Leída': item.scanned,
+        'Diferencia': item.scanned - item.expected,
+        'Estado': (item.scanned - item.expected) === 0 ? 'OK' : (item.scanned > item.expected ? 'Sobrante' : 'Faltante'),
+      }];
+    });
 
     const consolidatedMap = new Map<string, { expected: number; scanned: number; name: string }>();
     allItems.forEach(item => {
@@ -665,6 +696,7 @@ export async function exportBasicOperationReport(operationId: string): Promise<{
     const catalogData: any[] = [];
     allItems.forEach((item, key) => {
         item.barcodes.forEach(barcode => {
+            if (isReceptionRefOnlyBarcode(barcode)) return;
             catalogData.push({
                 'Referencia': item.ref,
                 'Talla': item.talla,
@@ -834,8 +866,6 @@ export async function bulkUploadReceptionDataFromExcel(fileContent: string, user
 
         for (const row of jsonData) {
             const barcode = readCell(row, 'Código de barras', 'Codigo de barras', 'Barcode');
-            if (!barcode) continue;
-
             const description = readCell(row, 'descripción del producto', 'descripcion del producto', 'Descripción', 'Descripcion');
             const reference = readCell(row, 'Referencia', 'Reference');
             const size = readCell(row, 'Talla', 'Size');
@@ -844,24 +874,27 @@ export async function bulkUploadReceptionDataFromExcel(fileContent: string, user
             // Marca comercial real (NIKE, ADIDAS, etc.). Solo se escribe si viene en el archivo
             // para no pisar marcas ya corregidas al re-subir plantillas antiguas sin esta columna.
             const marca = readCell(row, 'Marca', 'Brand').toUpperCase();
+            const quantity = Number(readCell(row, 'Cantidad') || 0);
 
-            // Celdas vacías del archivo no pisan el maestro (ej. RK de accesorios sin talla borraba la talla real).
-            const productData: Record<string, unknown> = {
-                barcode,
-                updated_at: Timestamp.now(),
-                ...(description ? { name: description, item: description } : {}),
-                ...(reference ? { reference, referencia: reference } : {}),
-                ...(size ? { size, talla: size } : {}),
-            };
+            if (barcode) {
+                // Celdas vacías del archivo no pisan el maestro (ej. RK de accesorios sin talla borraba la talla real).
+                const productData: Record<string, unknown> = {
+                    barcode,
+                    updated_at: Timestamp.now(),
+                    ...(description ? { name: description, item: description } : {}),
+                    ...(reference ? { reference, referencia: reference } : {}),
+                    ...(size ? { size, talla: size } : {}),
+                };
 
-            if (merchandiseType) {
-                productData.merchandise_type = merchandiseType;
+                if (merchandiseType) {
+                    productData.merchandise_type = merchandiseType;
+                }
+                if (marca) {
+                    productData.marca = marca;
+                }
+
+                productsMap.set(barcode, productData);
             }
-            if (marca) {
-                productData.marca = marca;
-            }
-
-            productsMap.set(barcode, productData);
 
             const rkIdentifier = findCaseInsensitiveKey(row, 'Nombre RK');
             if (!rkIdentifier || !row[rkIdentifier]) continue;
@@ -880,14 +913,50 @@ export async function bulkUploadReceptionDataFromExcel(fileContent: string, user
             }
             
             const operationEntry = operationsMap.get(rkId)!;
+            if (!barcode) {
+                if (!reference || !(quantity > 0)) continue;
+                operationEntry.items.push({
+                    barcode: receptionRefOnlyBarcode(reference),
+                    reference,
+                    size: '',
+                    item: description,
+                    expected_quantity: quantity,
+                    location: readCell(row, 'ubicación', 'ubicacion') || 'N/A',
+                });
+                continue;
+            }
             operationEntry.items.push({
                 barcode,
                 reference,
                 size,
                 item: description,
-                expected_quantity: Number(readCell(row, 'Cantidad') || 0),
+                expected_quantity: quantity,
                 location: readCell(row, 'ubicación', 'ubicacion') || 'N/A',
             });
+        }
+
+        for (const opData of operationsMap.values()) {
+            const detailedRefs = new Set(
+                opData.items
+                    .filter((item) => !isReceptionRefOnlyBarcode(item.barcode))
+                    .map((item) => normalizeReceptionReference(item.reference))
+            );
+            const detailed = opData.items.filter((item) => !isReceptionRefOnlyBarcode(item.barcode));
+            const byRef = new Map<string, ReceptionExpectedItem>();
+            for (const item of opData.items) {
+                if (!isReceptionRefOnlyBarcode(item.barcode)) continue;
+                const ref = normalizeReceptionReference(item.reference);
+                if (detailedRefs.has(ref)) continue;
+                const prev = byRef.get(ref);
+                if (prev) {
+                    prev.expected_quantity += item.expected_quantity;
+                    if (!prev.item && item.item) prev.item = item.item;
+                    if ((!prev.location || prev.location === 'N/A') && item.location) prev.location = item.location;
+                } else {
+                    byRef.set(ref, { ...item, reference: ref, barcode: receptionRefOnlyBarcode(ref) });
+                }
+            }
+            opData.items = [...detailed, ...byRef.values()];
         }
         
         const CHUNK_SIZE = 450;

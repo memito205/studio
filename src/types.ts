@@ -2342,6 +2342,8 @@ export interface DetailedReportItem {
   expectedQuantity: number;
   scannedQuantity: number;
   difference: number;
+  /** El esperado venía solo por referencia. La talla sale de lo leído, no se compara como sobrante. */
+  expectedByReference?: boolean;
   noveltyType: string;
   packingUnitBreakdown?: {
     unitId: string;
