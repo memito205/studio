@@ -475,7 +475,7 @@ const renderGroupCards = (
   groups: Group[],
   queuedTaskIds: Set<string>,
   onOpenForm: (form: { group: Group; action: RouteTaskAction } | null) => void,
-  opts?: { showStopNumbers?: boolean; freeCollection?: boolean }
+  opts?: { showStopNumbers?: boolean; freeCollection?: boolean; lockedByPriorDay?: boolean }
 ) =>
   groups.map((g, i) => (
     <Card key={g.key} className={cn(g.locked && 'border-dashed bg-muted/30', opts?.freeCollection && 'border-amber-200')}>
@@ -542,7 +542,11 @@ const renderGroupCards = (
             . Cuando el camión registre la entrega al mensajero podrá recoger/entregar.
           </p>
         )}
-        {g.locked ? (
+        {opts?.lockedByPriorDay ? (
+          <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
+            Visible en la ruta. Se habilita cuando cierre el día anterior.
+          </p>
+        ) : g.locked ? (
           <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
             Se habilita cuando se registre la recogida y se actualice la lista.
           </p>
@@ -645,7 +649,7 @@ export const DriverRouteTasksSection: React.FC<{
         <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900">
           <p className="font-semibold">Debe cerrar la ruta del día anterior</p>
           <p className="text-xs mt-1">
-            Tiene pendientes del {priorDays.map(fmtDayLabel).join(', ')}. Ciérrelas bien antes de que le monten una ruta nueva.
+            Tiene pendientes del {priorDays.map(fmtDayLabel).join(', ')}. Ciérrelas primero. Si le montaron última milla, igual aparece abajo en la ruta de hoy: puede verla, y la habilita al cerrar el día anterior.
           </p>
         </div>
       )}
@@ -687,7 +691,11 @@ export const DriverRouteTasksSection: React.FC<{
               {freeGroups.length > 0 && (
                 <div className="space-y-2">
                   <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">Recogidas</p>
-                  {renderGroupCards(freeGroups, queuedTaskIds, onOpenForm, { showStopNumbers: false, freeCollection: true })}
+                  {renderGroupCards(freeGroups, queuedTaskIds, onOpenForm, {
+                    showStopNumbers: false,
+                    freeCollection: true,
+                    lockedByPriorDay: !isPrior && priorDays.length > 0,
+                  })}
                 </div>
               )}
               {planGroups.length > 0 && (
@@ -697,7 +705,9 @@ export const DriverRouteTasksSection: React.FC<{
                       Asignadas / planificador
                     </p>
                   )}
-                  {renderGroupCards(planGroups, queuedTaskIds, onOpenForm)}
+                  {renderGroupCards(planGroups, queuedTaskIds, onOpenForm, {
+                    lockedByPriorDay: !isPrior && priorDays.length > 0,
+                  })}
                 </div>
               )}
             </div>

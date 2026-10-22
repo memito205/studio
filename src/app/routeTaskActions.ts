@@ -191,8 +191,9 @@ export async function createRouteTasks(input: {
   const actorName = actorNameOf(actor);
 
   try {
-    // Obliga a cerrar rutas de días anteriores antes de montar una nueva.
-    const prior = await getDriverOpenPriorDayTasks(input.driverId, input.day);
+    // Última milla sí se monta aunque tenga un día abierto: el camión ya salió y debe verla en Mis entregas.
+    const lastMileHandoff = tasks.length > 0 && tasks.every((t) => !!t.handoffFromManifestId);
+    const prior = lastMileHandoff ? { days: [] as string[], countByDay: {} as Record<string, number> } : await getDriverOpenPriorDayTasks(input.driverId, input.day);
     if (prior.days.length > 0) {
       const detail = prior.days.map((d) => `${d} (${prior.countByDay[d]} pendiente(s))`).join(', ');
       return {
