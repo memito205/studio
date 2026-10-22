@@ -77,6 +77,29 @@ const formatMaybeDateTime = (value: any): string => {
   return Number.isNaN(d.getTime()) ? String(value) : format(d, 'dd/MM/yyyy HH:mm');
 };
 
+const TaskPhotos: React.FC<{ title: string; list?: DriverRouteTask['deliveryPhotos'] }> = ({ title, list }) => {
+  if (!list?.length) return null;
+  return (
+    <div className="space-y-1">
+      <p className="text-xs text-muted-foreground">{title}</p>
+      <div className="flex flex-wrap gap-2">
+        {list.map((p, i) => (
+          <a
+            key={p.path || p.url || i}
+            href={p.url}
+            target="_blank"
+            rel="noreferrer"
+            className="block h-24 w-24 overflow-hidden rounded border bg-muted"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={p.url} alt={p.category || title} className="h-full w-full object-cover" />
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 interface TfPlatformLookupModuleProps {
   onReturn: () => void;
 }
@@ -246,6 +269,11 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
                     <p className="font-medium">{t.receivedByName || '—'}</p>
                   </div>
                 </div>
+                <TaskPhotos title="Foto de entrega" list={t.deliveryPhotos} />
+                <TaskPhotos title="Foto de recogida" list={t.pickupPhotos} />
+                {!t.deliveryPhotos?.length && !t.pickupPhotos?.length && (
+                  <p className="text-xs text-muted-foreground">Sin foto de entrega.</p>
+                )}
                 {t.notes && <p className="text-xs text-muted-foreground">{t.notes}</p>}
                 {t.failReason && <p className="text-xs text-red-800">Motivo: {t.failReason}</p>}
                 {t.leftInCajon && <p className="text-xs text-amber-800">Dejado en Cajón Norte</p>}
