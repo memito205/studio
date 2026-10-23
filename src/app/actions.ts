@@ -4534,12 +4534,14 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
             const dest = (incoming.bodegaDestino || 'UNKNOWN').trim().toUpperCase();
             
             if (existing) {
-                // UPDATE metadata but keep status
+                // Solo datos del archivo. No reescribir `status`: la lectura es anterior al commit
+                // y pisaría una novedad o entrega que ocurrió mientras se cargaba la base.
                 const docRef = doc(transfersCollection, existing.id);
                 const updates: Record<string, any> = {
                     ...convertDatesToTimestamps(incoming),
-                    status: existing.data.status // Preserve operational status
                 };
+                delete updates.status;
+                delete updates.statusHistory;
                 // El Excel no trae alterno para TF de operadores externos (vienen del plano): no borrarlo.
                 if (!normalizeAltCode(incoming.codigoAlterno) && existing.data.codigoAlterno) delete updates.codigoAlterno;
                 batch.update(docRef, updates);
