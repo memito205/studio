@@ -9,6 +9,7 @@ import { ArrowLeft, Loader2, UploadCloud, Package, CheckCircle, Clock, AlertTria
 import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
 import { ecomOrderFingerprint } from '@/lib/ecommerceIndex';
+import { normalizeEcommerceGuide } from '@/lib/ecommerceDispatch';
 import { saveEcommerceOrders, loadEcommerceOrders, loadEcommerceOrdersByIds, getEcommerceOrderIndex, updateEcommerceOrderIndex, getDelayedOrderLogs, upsertDelayedOrderLog, addJustificationToLog, resolveDelayedOrderLog, batchResolveDelayedOrderLogs, batchUpsertDelayedOrderLogs } from '@/app/actions';
 import type { EcommerceOrder, FilterCategory, DelayedOrderLog, Justification, Filters } from '@/types';
 import { excelSerialDateToJSDate, findCaseInsensitiveKey, parseFlexibleDate, calculateSlaHours, parseRobustNumber } from '@/lib/parsingUtils';
@@ -573,10 +574,18 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
             ped_telefono: String(findCaseInsensitiveKey(row, 'PED_TELEFONO') ? row[findCaseInsensitiveKey(row, 'PED_TELEFONO')!] : ''),
             ped_celular: String(findCaseInsensitiveKey(row, 'PED_CELULAR') ? row[findCaseInsensitiveKey(row, 'PED_CELULAR')!] : ''),
             ped_factura: String(findCaseInsensitiveKey(row, 'PED_FACTURA') ? row[findCaseInsensitiveKey(row, 'PED_FACTURA')!] : ''),
+            guia: (() => {
+                const header = findCaseInsensitiveKey(row, 'PED_GUIA_TTE', 'GUIA SIOP', 'GUIA', 'NRO GUIA', 'NUMERO GUIA', 'NUMERO 99');
+                const value = header ? row[header] : '';
+                if (typeof value === 'number' && Number.isFinite(value)) {
+                    return String(Number.isInteger(value) ? value : value).replace(/\.0+$/, '').trim();
+                }
+                return String(value ?? '').trim();
+            })(),
             bodega: String(findCaseInsensitiveKey(row, 'BODEGA', 'ALMACEN', 'BODEGA_ORIGEN', 'AGENCIA') ? row[findCaseInsensitiveKey(row, 'BODEGA', 'ALMACEN', 'BODEGA_ORIGEN', 'AGENCIA')!] : ''),
         })).filter(o => o.id);
 
-        // Solo se leen los pedidos cuyo estado/tienda/bodega/valor/transportadora cambió según el índice.
+        // Se leen los pedidos cuyo estado, tienda, bodega, valor, transportadora o guía cambió.
         const indexRes = await getEcommerceOrderIndex();
         const index = indexRes.data || {};
         const candidates = parsedOrders.filter((o) => index[o.id] !== ecomOrderFingerprint(o));
@@ -595,6 +604,16 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
             const newOrderState = (newOrder.estado || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, ' ');
             
             let finalOrder = { ...newOrder };
+            const fileGuia = String(newOrder.guia || '').trim();
+            const guia = fileGuia || String(storedOrder?.guia || '').trim();
+            const guiaKey = normalizeEcommerceGuide(guia);
+            if (guiaKey) {
+                finalOrder.guia = guia;
+                finalOrder.guiaKey = guiaKey;
+            } else {
+                delete finalOrder.guia;
+                delete finalOrder.guiaKey;
+            }
 
             if (!storedOrder) {
                 if (dispatchedStates.includes(newOrderState)) {
@@ -631,8 +650,9 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
             const hasValorChanged = o.valorTotal !== stored.valorTotal;
             const hasDispatchDateChanged = o.dispatchDate?.getTime() !== stored.dispatchDate?.getTime();
             const hasTransporterChanged = (o.transportadora || '') !== (stored.transportadora || '');
+            const hasGuiaChanged = normalizeEcommerceGuide(o.guia) !== normalizeEcommerceGuide(stored.guia);
 
-            return hasStatusChanged || hasTiendaChanged || hasBodegaChanged || hasValorChanged || hasDispatchDateChanged || hasTransporterChanged;
+            return hasStatusChanged || hasTiendaChanged || hasBodegaChanged || hasValorChanged || hasDispatchDateChanged || hasTransporterChanged || hasGuiaChanged;
         });
 
         let totalProcessed = 0;

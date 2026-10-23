@@ -20,6 +20,7 @@ import {
   ecomDispatchDestDay,
   ECOM_DISPATCH_BODEGA,
   isEcomDispatchDestino,
+  normalizeEcommerceGuide,
   orderMatchesDispatchDestino,
 } from '@/lib/ecommerceDispatch';
 
@@ -33,6 +34,7 @@ export type EcomDispatchView = {
   carrier: string;
   dispatchAt: string;
   orderIds: string[];
+  orderGuides: { id: string; guia: string }[];
   photos: EcomDispatchPhoto[];
   closedByName: string;
   status: 'abierto' | 'cerrado' | 'anulado';
@@ -61,6 +63,14 @@ const toView = (id: string, data: Record<string, unknown>): EcomDispatchView => 
     carrier: String(data.carrier || ''),
     dispatchAt: at ? at.toISOString() : '',
     orderIds: Array.isArray(data.orderIds) ? data.orderIds.map(String) : [],
+    orderGuides: Array.isArray(data.orderGuides)
+      ? data.orderGuides
+          .map((g) => {
+            const row = g as { id?: string; guia?: string };
+            return { id: String(row.id || '').trim(), guia: String(row.guia || '').trim() };
+          })
+          .filter((g) => g.id && g.guia)
+      : [],
     photos: photos
       .map((p) => {
         const row = p as { path?: string; url?: string };
@@ -73,30 +83,56 @@ const toView = (id: string, data: Record<string, unknown>): EcomDispatchView => 
   };
 };
 
+const guidesFor = (orderIds: string[], guides?: { id?: string; guia?: string }[]) => {
+  const byId = new Map<string, string>();
+  for (const g of guides || []) {
+    const id = String(g?.id || '').trim();
+    const guia = String(g?.guia || '').trim();
+    if (id && guia && orderIds.includes(id)) byId.set(id, guia);
+  }
+  return orderIds.filter((id) => byId.has(id)).map((id) => ({ id, guia: byId.get(id)! }));
+};
+
+/** La lectura es la guía impresa. Si no está guardada, también acepta el número de pedido. */
+async function resolveEcommerceOrder(code: string): Promise<{ id: string; data: Record<string, unknown> } | { error: string }> {
+  const raw = String(code || '').trim();
+  const key = normalizeEcommerceGuide(raw);
+  if (!raw) return { error: 'Escriba o escanee la guía.' };
+  if (key) {
+    const snap = await getDocs(query(collection(firestore, 'ecommerceOrders'), where('guiaKey', '==', key), limit(2)));
+    if (snap.size > 1) return { error: `La guía ${raw} está en más de un pedido.` };
+    if (snap.size === 1) return { id: snap.docs[0].id, data: snap.docs[0].data() as Record<string, unknown> };
+  }
+  const direct = await getDoc(doc(firestore, 'ecommerceOrders', raw));
+  if (direct.exists()) return { id: direct.id, data: direct.data() as Record<string, unknown> };
+  return {
+    error: `No hay un pedido con la guía ${raw}. Vuelva a cargar el reporte del tablero para que queden guardadas las guías.`,
+  };
+}
+
 export async function lookupEcommerceOrderForDispatch(
   orderId: string,
   destino: string
-): Promise<{ id?: string; tienda?: string; estado?: string; error?: string }> {
-  const id = String(orderId || '').trim();
+): Promise<{ id?: string; guia?: string; tienda?: string; estado?: string; error?: string }> {
   const dest = String(destino || '').trim().toUpperCase();
-  if (!id) return { error: 'Escriba o escanee el pedido.' };
   if (!isEcomDispatchDestino(dest)) return { error: 'Destino no válido.' };
   try {
-    const snap = await getDoc(doc(firestore, 'ecommerceOrders', id));
-    if (!snap.exists()) return { error: `El pedido ${id} no está en el tablero.` };
-    const data = snap.data();
+    const resolved = await resolveEcommerceOrder(orderId);
+    if ('error' in resolved) return { error: resolved.error };
+    const data = resolved.data;
     const tienda = String(data.tienda || '').trim();
     if (!orderMatchesDispatchDestino(tienda, dest)) {
-      return { error: `El pedido ${id} es de ${tienda || 'otra tienda'}, no de ${dest}.` };
+      return { error: `La guía corresponde al pedido ${resolved.id}, de ${tienda || 'otra tienda'}, no de ${dest}.` };
     }
     const linked = String(data.ecommerceDispatchId || '').trim();
     if (linked) {
       const prev = await getDoc(doc(firestore, COL, linked));
       if (prev.exists() && prev.data().status !== 'anulado') {
-        return { error: `El pedido ${id} ya está en un despacho cerrado.` };
+        return { error: `El pedido ${resolved.id} ya está en un despacho cerrado.` };
       }
     }
-    return { id, tienda, estado: String(data.estado || '') };
+    const guia = String(data.guia || '').trim();
+    return { id: resolved.id, guia: guia || undefined, tienda, estado: String(data.estado || '') };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'No se pudo leer el pedido.';
     return { error: message };
@@ -121,12 +157,14 @@ export async function saveOpenEcommerceDispatch(input: {
   carrier: string;
   dispatchAt: string;
   orderIds: string[];
+  orderGuides?: { id: string; guia: string }[];
   actor?: TransferActor;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const dest = String(input.destino || '').trim().toUpperCase();
   const carrier = String(input.carrier || '').trim();
   const when = new Date(input.dispatchAt);
   const orderIds = Array.from(new Set((input.orderIds || []).map((id) => String(id || '').trim()).filter(Boolean)));
+  const orderGuides = guidesFor(orderIds, input.orderGuides);
   if (!input.actor?.userId) return { success: false, error: 'Sesión no válida. Vuelva a iniciar sesión.' };
   if (!isEcomDispatchDestino(dest)) return { success: false, error: 'Destino no válido.' };
   if (carrier.length < 2) return { success: false, error: 'Escriba la transportadora.' };
@@ -152,6 +190,7 @@ export async function saveOpenEcommerceDispatch(input: {
       monthKey: day.slice(0, 7),
       destDay: ecomDispatchDestDay(dest, day),
       orderIds,
+      orderGuides,
       photos: Array.isArray(existing?.data()?.photos) ? existing?.data()?.photos : [],
       status: 'abierto',
       openKey: OPEN_KEY,
@@ -210,6 +249,7 @@ export async function closeEcommerceDispatch(input: {
   carrier: string;
   dispatchAt: string;
   orderIds: string[];
+  orderGuides?: { id: string; guia: string }[];
   photos: EcomDispatchPhoto[];
   actor?: TransferActor;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
@@ -217,6 +257,7 @@ export async function closeEcommerceDispatch(input: {
   const carrier = String(input.carrier || '').trim();
   const when = new Date(input.dispatchAt);
   const orderIds = Array.from(new Set((input.orderIds || []).map((id) => String(id || '').trim()).filter(Boolean)));
+  const orderGuides = guidesFor(orderIds, input.orderGuides);
   const photos = (input.photos || []).filter((p) => p?.url && String(p.path || '').startsWith('despachos-ecommerce/'));
   if (!input.actor?.userId) return { success: false, error: 'Sesión no válida. Vuelva a iniciar sesión.' };
   if (!isEcomDispatchDestino(dest)) return { success: false, error: 'Destino no válido.' };
@@ -253,6 +294,7 @@ export async function closeEcommerceDispatch(input: {
       monthKey: day.slice(0, 7),
       destDay: ecomDispatchDestDay(dest, day),
       orderIds,
+      orderGuides,
       photos: photos.map((p) => ({ path: p.path, url: p.url })),
       status: 'cerrado',
       openKey: deleteField(),
@@ -338,16 +380,16 @@ export async function annulEcommerceDispatch(
 export async function searchEcommerceDispatchByOrder(
   orderId: string
 ): Promise<{ data?: EcomDispatchView; error?: string }> {
-  const id = String(orderId || '').trim();
-  if (!id) return { error: 'Escriba el número de pedido.' };
+  const raw = String(orderId || '').trim();
+  if (!raw) return { error: 'Escriba la guía o el número de pedido.' };
   try {
-    const order = await getDoc(doc(firestore, 'ecommerceOrders', id));
-    if (!order.exists()) return { error: `El pedido ${id} no está en el tablero.` };
-    const dispatchId = String(order.data().ecommerceDispatchId || '').trim();
-    if (!dispatchId) return { error: `El pedido ${id} no tiene prueba de despacho.` };
+    const resolved = await resolveEcommerceOrder(raw);
+    if ('error' in resolved) return { error: resolved.error };
+    const dispatchId = String(resolved.data.ecommerceDispatchId || '').trim();
+    if (!dispatchId) return { error: `El pedido ${resolved.id} no tiene prueba de despacho.` };
     const dispatch = await getDoc(doc(firestore, COL, dispatchId));
     if (!dispatch.exists()) return { error: 'La prueba de ese pedido ya no está.' };
-    return { data: toView(dispatch.id, dispatch.data()) };
+    return { data: toView(dispatch.id, dispatch.data() as Record<string, unknown>) };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'No se pudo buscar la prueba.';
     return { error: message };

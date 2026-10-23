@@ -2677,6 +2677,10 @@ export interface EcommerceOrder {
   ped_telefono?: string;
   ped_celular?: string;
   ped_factura?: string;
+  /** Número de guía impreso en el soporte (PED_GUIA_TTE u otra columna de guía). */
+  guia?: string;
+  /** Guía normalizada para buscarla por igualdad, sin recorrer los pedidos. */
+  guiaKey?: string;
 
   // These are optional as they are not in the image
   fechaPedido?: Date | null;

@@ -24,3 +24,13 @@ export const bogotaDayKey = (d: Date): string => {
 
 export const ecomDispatchDestDay = (destino: string, day: string) =>
   `${destino.trim().toUpperCase()}|${day}`;
+
+/** Misma guía aunque el lector o Excel cambien espacios, guiones o ceros a la izquierda. */
+export const normalizeEcommerceGuide = (value: unknown): string => {
+  let guide = String(value ?? '').trim();
+  if (!guide || guide.toLowerCase() === 'null' || guide.toLowerCase() === 'undefined') return '';
+  guide = guide.replace(/[\s\-_/\\]/g, '').toUpperCase();
+  guide = guide.replace(/\.0+$/g, '');
+  if (/^\d+$/.test(guide)) guide = guide.replace(/^0+/, '');
+  return guide;
+};

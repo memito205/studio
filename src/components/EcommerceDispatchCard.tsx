@@ -28,7 +28,9 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import JSZip from 'jszip';
 
-type Line = { id: string; tienda: string };
+type Line = { id: string; tienda: string; guia?: string };
+
+const lineLabel = (line: Line) => (line.guia && line.guia !== line.id ? `${line.guia} → ${line.id}` : line.id);
 
 const localNow = () => {
   const d = new Date();
@@ -101,7 +103,7 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
     if (item.destino) setDestino(item.destino);
     setCarrier(item.carrier);
     if (item.dispatchAt) setWhen(toLocalInput(item.dispatchAt));
-    setLines(item.orderIds.map((id) => ({ id, tienda: item.destino })));
+    setLines(item.orderIds.map((id) => ({ id, tienda: item.destino, guia: item.orderGuides.find((g) => g.id === id)?.guia })));
   };
 
   const loadOpen = async (quiet = false) => {
@@ -126,20 +128,21 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
   }, [canCreate]);
 
   const addOrder = async () => {
-    const id = scan.trim();
-    if (!id || busy) return;
-    if (lines.some((l) => l.id === id)) {
-      setScan('');
-      return;
-    }
+    const code = scan.trim();
+    if (!code || busy) return;
     setBusy(true);
-    const res = await lookupEcommerceOrderForDispatch(id, destino);
+    const res = await lookupEcommerceOrderForDispatch(code, destino);
     setBusy(false);
     if (res.error || !res.id) {
-      toast({ variant: 'destructive', title: 'Pedido', description: res.error || 'No se pudo agregar.' });
+      toast({ variant: 'destructive', title: 'Guía', description: res.error || 'No se pudo agregar.' });
       return;
     }
-    setLines((prev) => [...prev, { id: res.id!, tienda: res.tienda || destino }]);
+    if (lines.some((l) => l.id === res.id)) {
+      setScan('');
+      toast({ title: 'Ya está', description: `El pedido ${res.id} ya está en esta lectura.` });
+      return;
+    }
+    setLines((prev) => [...prev, { id: res.id!, tienda: res.tienda || destino, guia: res.guia }]);
     setScan('');
   };
 
@@ -178,6 +181,7 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
         carrier,
         dispatchAt: new Date(when).toISOString(),
         orderIds: lines.map((l) => l.id),
+        orderGuides: lines.filter((l) => l.guia).map((l) => ({ id: l.id, guia: l.guia! })),
         photos,
         actor,
       });
@@ -209,6 +213,7 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
       carrier,
       dispatchAt: new Date(when).toISOString(),
       orderIds: lines.map((l) => l.id),
+      orderGuides: lines.filter((l) => l.guia).map((l) => ({ id: l.id, guia: l.guia! })),
       actor,
     });
     setBusy(false);
@@ -308,7 +313,7 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
       <CardHeader>
         <CardTitle>Despacho ecommerce</CardTitle>
         <CardDescription>
-          En el computador escanee los pedidos y use Guardar lectura. En el celular, con el mismo usuario, traiga esa lectura, tome las fotos y cierre.
+          Escanee la guía impresa. El sistema la enlaza con el pedido y sigue el despacho. En el computador use Guardar lectura; en el celular, con el mismo usuario, traiga esa lectura, tome las fotos y cierre.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -332,7 +337,7 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
               </div>
             </div>
             <div className="space-y-1">
-              <Label>Pedido</Label>
+              <Label>Guía</Label>
               <div className="flex gap-2">
                 <Input
                   value={scan}
@@ -343,7 +348,7 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
                       void addOrder();
                     }
                   }}
-                  placeholder="Escanear o escribir el número"
+                  placeholder="Escanear la guía"
                 />
                 <Button type="button" onClick={() => void addOrder()} disabled={busy || !scan.trim()}>
                   Agregar
@@ -354,8 +359,8 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
               <div className="flex flex-wrap gap-2">
                 {lines.map((l) => (
                   <Badge key={l.id} variant="secondary" className="gap-1">
-                    {l.id}
-                    <button type="button" className="ml-1" onClick={() => setLines((prev) => prev.filter((x) => x.id !== l.id))} aria-label={`Quitar ${l.id}`}>
+                    {lineLabel(l)}
+                    <button type="button" className="ml-1" onClick={() => setLines((prev) => prev.filter((x) => x.id !== l.id))} aria-label={`Quitar ${lineLabel(l)}`}>
                       ×
                     </button>
                   </Badge>
@@ -421,10 +426,10 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
               value={orderQuery}
               onChange={(e) => setOrderQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && void searchOrder()}
-              placeholder="Número de pedido"
+              placeholder="Guía o pedido"
             />
             <Button type="button" variant="secondary" onClick={() => void searchOrder()} disabled={busy || !orderQuery.trim()}>
-              <Search className="mr-2 h-4 w-4" /> Pedido
+              <Search className="mr-2 h-4 w-4" /> Buscar
             </Button>
           </div>
           <div className="flex flex-wrap items-end gap-2">

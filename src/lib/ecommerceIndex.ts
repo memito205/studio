@@ -1,4 +1,5 @@
 import type { EcommerceOrder } from '@/types';
+import { normalizeEcommerceGuide } from '@/lib/ecommerceDispatch';
 
 /** Documentos `ecommerceOrderIndex/s{n}`: mapa `o` pedidoId -> huella de los campos que trae el reporte. */
 export const ECOM_INDEX_SHARDS = 16;
@@ -9,9 +10,10 @@ export const ecomIndexShard = (id: string) => {
   return Math.abs(h) % ECOM_INDEX_SHARDS;
 };
 
-/** Huella (FNV-1a 32 bits) de los campos del archivo; dispatchDate no entra porque se edita aparte. */
-export const ecomOrderFingerprint = (o: Pick<EcommerceOrder, 'estado' | 'tienda' | 'bodega' | 'valorTotal' | 'transportadora'>) => {
-  const s = [o.estado || '', o.tienda || '', o.bodega || '', String(o.valorTotal ?? ''), o.transportadora || ''].join('\u0001');
+/** Huella de los campos del archivo. La guía solo entra cuando viene en el reporte, para no releer pedidos que no traen esa columna. */
+export const ecomOrderFingerprint = (o: Pick<EcommerceOrder, 'estado' | 'tienda' | 'bodega' | 'valorTotal' | 'transportadora' | 'guia'>) => {
+  const guide = normalizeEcommerceGuide(o.guia);
+  const s = [o.estado || '', o.tienda || '', o.bodega || '', String(o.valorTotal ?? ''), o.transportadora || ''].join('\u0001') + (guide ? `\u0001${guide}` : '');
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
