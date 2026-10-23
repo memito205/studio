@@ -2663,6 +2663,8 @@ export interface EcommerceOrder {
   valorTotal: number; // PED_VALOR_TOTAL
   transportadora: string; // TRA_NOMBRE
   dispatchDate?: Date; // NEW
+  /** Despacho ecommerce de BODVI al que quedó amarrada la prueba. */
+  ecommerceDispatchId?: string;
   bodega?: string | string[]; // Added: Warehouse field
 
   // Other columns from image

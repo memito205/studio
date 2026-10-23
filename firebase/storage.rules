@@ -17,6 +17,24 @@ service firebase.storage {
       return signedIn() && role() in ['conductor', 'admin', 'supervisor', 'operator', 'office'];
     }
 
+    function isBodviStore() {
+      return signedIn()
+        && role() == 'tiendas'
+        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.storeCode.upper() == 'BODVI';
+    }
+
+    // Hojas del despacho ecommerce de BODVI. No van en entregas/ (ese prefijo se borra a los 210 días por su propia regla).
+    match /despachos-ecommerce/{month}/{bodega}/{destino}/{file} {
+      allow read: if isReviewer() || isBodviStore()
+        || (signedIn() && resource.metadata.uploadedBy == request.auth.uid);
+      allow create: if (isReviewer() || isBodviStore())
+        && request.resource.size < 3 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*')
+        && request.resource.metadata.uploadedBy == request.auth.uid;
+      allow update: if false;
+      allow delete: if signedIn() && role() == 'admin';
+    }
+
     match /entregas/{month}/{store}/{stop}/{file} {
       allow read: if isReviewer()
         || (signedIn() && resource.metadata.uploadedBy == request.auth.uid);

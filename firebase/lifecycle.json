@@ -3,6 +3,10 @@
     {
       "action": { "type": "Delete" },
       "condition": { "age": 210, "matchesPrefix": ["entregas/"] }
+    },
+    {
+      "action": { "type": "Delete" },
+      "condition": { "age": 210, "matchesPrefix": ["despachos-ecommerce/"] }
     }
   ]
 }

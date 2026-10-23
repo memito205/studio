@@ -548,6 +548,67 @@ export function RouteTasksAdminTab() {
     XLSX.writeFile(wb, `Recolecciones_ruta_${day}.xlsx`);
   };
 
+  /** Entregas cerradas en destino, de todo el rango consultado. No cuenta cajón, bodega ni lo pendiente. */
+  const exportEffectiveByDestination = () => {
+    const all = tasks || [];
+    const drivers = new Map<string, string>();
+    all.forEach((t) => {
+      if (t.driverId && !drivers.has(t.driverId)) drivers.set(t.driverId, t.driverName || t.driverId);
+    });
+    let driverId = selectedRoute?.driverId;
+    let driverName = selectedRoute?.driverName || '';
+    if (!driverId) {
+      const juan = Array.from(drivers.entries()).filter(([, name]) => /juan\s+esteban/i.test(name));
+      if (juan.length === 1) {
+        driverId = juan[0][0];
+        driverName = juan[0][1];
+      }
+    }
+    if (!driverId) {
+      toast({
+        variant: 'destructive',
+        title: 'Elija el mensajero',
+        description: 'Pulse la tarjeta de Juan Esteban en Avance por mensajero. El Excel usa todas las fechas que ya consultó.',
+      });
+      return;
+    }
+    const name = drivers.get(driverId) || driverName;
+    const effective = all.filter(
+      (t) => t.driverId === driverId && t.status === 'entregada' && !t.leftInCajon && !t.leftInBodega
+    );
+    const counts = new Map<string, number>();
+    effective.forEach((t) => {
+      const dest = (t.deliverPoint || t.deliverStoreCode || 'Sin destino').trim() || 'Sin destino';
+      counts.set(dest, (counts.get(dest) || 0) + 1);
+    });
+    const rows = Array.from(counts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'es'));
+    if (rows.length === 0) {
+      toast({
+        title: 'Sin entregas efectivas',
+        description: `${name} no tiene entregas cerradas en destino entre ${from} y ${to}.`,
+      });
+      return;
+    }
+    const total = rows.reduce((sum, row) => sum + row[1], 0);
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ['Mensajero', name],
+      ['Desde', from],
+      ['Hasta', to],
+      ['Entregas efectivas', total],
+      [],
+      ['Punto de destino', 'Entregas'],
+      ...rows,
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, 'Por destino');
+    const safeName = name.replace(/[^\w]+/g, '_').replace(/^_|_$/g, '') || 'mensajero';
+    XLSX.writeFile(wb, `Entregas_efectivas_${safeName}_${from}_${to}.xlsx`);
+    toast({
+      title: `Excel · ${name}`,
+      description: `${total} entrega(s) efectiva(s) en ${rows.length} destino(s), del ${from} al ${to}.`,
+    });
+  };
+
   /** Misma estructura que el Excel del planificador (FECHA, NUMERO TF, Atributo, Valor, ORDEN, FIRMA). */
   const exportMessengerRouteExcel = (driverFilter?: { driverId: string; driverName: string; day: string }) => {
     // Sin filtro explícito: usa el mensajero seleccionado en “Avance”. No mezcla los 3.
@@ -620,6 +681,9 @@ export function RouteTasksAdminTab() {
               </Button>
               <Button variant="outline" onClick={exportXlsx}>
                 <Download className="mr-2 h-4 w-4" /> Excel detalle
+              </Button>
+              <Button variant="outline" onClick={exportEffectiveByDestination}>
+                <Download className="mr-2 h-4 w-4" /> Excel por destino
               </Button>
             </>
           )}

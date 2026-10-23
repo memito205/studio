@@ -600,6 +600,9 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
                 if (dispatchedStates.includes(newOrderState)) {
                     finalOrder.dispatchDate = analysisDate;
                 }
+            } else if (storedOrder.dispatchDate) {
+                // La hora que cerró BODVI en Despacho ecommerce no se reemplaza con la del archivo.
+                finalOrder.dispatchDate = storedOrder.dispatchDate;
             } else {
                 const storedOrderState = (storedOrder.estado || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, ' ');
                 
@@ -610,8 +613,6 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
 
                 if (isNewDispatch) {
                     finalOrder.dispatchDate = analysisDate;
-                } else if (storedOrder.dispatchDate) {
-                    finalOrder.dispatchDate = storedOrder.dispatchDate;
                 }
             }
             

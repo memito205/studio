@@ -16,6 +16,7 @@ import type { DriverRouteTask } from '@/types';
 import type { TfPlatformEstado } from '@/types';
 import { format } from 'date-fns';
 import { StoreReceiveCard } from '@/components/StoreReceiveCard';
+import { EcommerceDispatchCard } from '@/components/EcommerceDispatchCard';
 import { AnalyzerSnapshotView } from '@/components/AnalyzerSnapshotView';
 import { useAuth } from '@/hooks/use-auth-context';
 import { serverActionErrorText } from '@/lib/serverActionError';
@@ -105,7 +106,9 @@ interface TfPlatformLookupModuleProps {
 }
 
 export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ onReturn }) => {
-  const { role } = useAuth();
+  const { role, storeCode } = useAuth();
+  const isBodvi = role === 'tiendas' && (storeCode || '').trim().toUpperCase() === 'BODVI';
+  const canReviewDispatch = role === 'admin' || role === 'supervisor';
   const [tfQuery, setTfQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -172,6 +175,10 @@ export const TfPlatformLookupModule: React.FC<TfPlatformLookupModuleProps> = ({ 
       </div>
 
       {role !== 'office' && <StoreReceiveCard />}
+
+      {(isBodvi || canReviewDispatch) && (
+        <EcommerceDispatchCard canCreate={isBodvi} canBackup={canReviewDispatch} />
+      )}
 
       <Card>
         <CardHeader>
