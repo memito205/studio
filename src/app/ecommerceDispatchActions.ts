@@ -35,9 +35,11 @@ export type EcomDispatchView = {
   orderIds: string[];
   photos: EcomDispatchPhoto[];
   closedByName: string;
-  status: 'cerrado' | 'anulado';
+  status: 'abierto' | 'cerrado' | 'anulado';
   day: string;
 };
+
+const OPEN_KEY = ECOM_DISPATCH_BODEGA;
 
 const asDate = (v: unknown): Date | null => {
   if (!v) return null;
@@ -66,7 +68,7 @@ const toView = (id: string, data: Record<string, unknown>): EcomDispatchView => 
       })
       .filter((p) => p.url),
     closedByName: String(data.closedByName || ''),
-    status: data.status === 'anulado' ? 'anulado' : 'cerrado',
+    status: data.status === 'anulado' ? 'anulado' : data.status === 'abierto' ? 'abierto' : 'cerrado',
     day: String(data.day || ''),
   };
 };
@@ -101,7 +103,109 @@ export async function lookupEcommerceOrderForDispatch(
   }
 }
 
+/** La lectura armada en el computador, todavía sin fotos. Una sola por BODVI. */
+export async function getOpenEcommerceDispatch(): Promise<{ data?: EcomDispatchView | null; error?: string }> {
+  try {
+    const snap = await getDocs(query(collection(firestore, COL), where('openKey', '==', OPEN_KEY), limit(1)));
+    const d = snap.docs[0];
+    return { data: d ? toView(d.id, d.data()) : null };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'No se pudo leer el despacho abierto.';
+    return { error: message };
+  }
+}
+
+/** Guarda los pedidos escaneados para terminarlos en el celular. No escribe la hora en el tablero. */
+export async function saveOpenEcommerceDispatch(input: {
+  destino: string;
+  carrier: string;
+  dispatchAt: string;
+  orderIds: string[];
+  actor?: TransferActor;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const dest = String(input.destino || '').trim().toUpperCase();
+  const carrier = String(input.carrier || '').trim();
+  const when = new Date(input.dispatchAt);
+  const orderIds = Array.from(new Set((input.orderIds || []).map((id) => String(id || '').trim()).filter(Boolean)));
+  if (!input.actor?.userId) return { success: false, error: 'Sesión no válida. Vuelva a iniciar sesión.' };
+  if (!isEcomDispatchDestino(dest)) return { success: false, error: 'Destino no válido.' };
+  if (carrier.length < 2) return { success: false, error: 'Escriba la transportadora.' };
+  if (Number.isNaN(when.getTime())) return { success: false, error: 'Fecha y hora no válidas.' };
+  if (orderIds.length === 0) return { success: false, error: 'Escanee al menos un pedido.' };
+
+  try {
+    const openSnap = await getDocs(query(collection(firestore, COL), where('openKey', '==', OPEN_KEY), limit(1)));
+    const existing = openSnap.docs[0];
+    const check = await assertOrdersForDispatch(orderIds, dest, existing?.id);
+    if (check.error) return { success: false, error: check.error };
+
+    const day = bogotaDayKey(when);
+    const ref = existing?.ref || doc(collection(firestore, COL));
+    const now = Timestamp.now();
+    const payload = {
+      id: ref.id,
+      bodega: ECOM_DISPATCH_BODEGA,
+      destino: dest,
+      carrier,
+      dispatchAt: Timestamp.fromDate(when),
+      day,
+      monthKey: day.slice(0, 7),
+      destDay: ecomDispatchDestDay(dest, day),
+      orderIds,
+      photos: Array.isArray(existing?.data()?.photos) ? existing?.data()?.photos : [],
+      status: 'abierto',
+      openKey: OPEN_KEY,
+      closedById: input.actor!.userId,
+      closedByName: (input.actor!.displayName || '').trim() || input.actor!.userId,
+      ...(existing ? { updatedAt: now } : { createdAt: now }),
+    };
+    const batch = writeBatch(firestore);
+    batch.set(ref, payload, { merge: true });
+    await batch.commit();
+    return { success: true, id: ref.id };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'No se pudo guardar la lectura.';
+    return { success: false, error: message };
+  }
+}
+
+async function assertOrdersForDispatch(
+  orderIds: string[],
+  dest: string,
+  ignoreDispatchId?: string
+): Promise<{ error?: string }> {
+  const found = new Map<string, { tienda: string; linked: string }>();
+  for (let i = 0; i < orderIds.length; i += 30) {
+    const chunk = orderIds.slice(i, i + 30);
+    const snap = await getDocs(query(collection(firestore, 'ecommerceOrders'), where(documentId(), 'in', chunk)));
+    snap.docs.forEach((d) => {
+      const data = d.data();
+      found.set(d.id, { tienda: String(data.tienda || ''), linked: String(data.ecommerceDispatchId || '') });
+    });
+  }
+  for (const id of orderIds) {
+    const row = found.get(id);
+    if (!row) return { error: `El pedido ${id} no está en el tablero.` };
+    if (!orderMatchesDispatchDestino(row.tienda, dest)) {
+      return { error: `El pedido ${id} es de ${row.tienda || 'otra tienda'}, no de ${dest}.` };
+    }
+  }
+  const linkedIds = Array.from(new Set(Array.from(found.values()).map((r) => r.linked).filter((id) => id && id !== ignoreDispatchId)));
+  const blocking = new Set<string>();
+  for (let i = 0; i < linkedIds.length; i += 30) {
+    const chunk = linkedIds.slice(i, i + 30);
+    const snap = await getDocs(query(collection(firestore, COL), where(documentId(), 'in', chunk)));
+    snap.docs.forEach((d) => {
+      if (d.data().status !== 'anulado') blocking.add(d.id);
+    });
+  }
+  const busy = orderIds.find((id) => blocking.has(found.get(id)?.linked || ''));
+  if (busy) return { error: `El pedido ${busy} ya está en un despacho cerrado.` };
+  return {};
+}
+
 export async function closeEcommerceDispatch(input: {
+  id?: string;
   destino: string;
   carrier: string;
   dispatchAt: string;
@@ -125,36 +229,18 @@ export async function closeEcommerceDispatch(input: {
   if (photos.length > 40) return { success: false, error: 'Máximo 40 fotos por despacho.' };
 
   try {
-    const found = new Map<string, { tienda: string; linked: string }>();
-    for (let i = 0; i < orderIds.length; i += 30) {
-      const chunk = orderIds.slice(i, i + 30);
-      const snap = await getDocs(query(collection(firestore, 'ecommerceOrders'), where(documentId(), 'in', chunk)));
-      snap.docs.forEach((d) => {
-        const data = d.data();
-        found.set(d.id, { tienda: String(data.tienda || ''), linked: String(data.ecommerceDispatchId || '') });
-      });
+    const requestedId = String(input.id || '').trim();
+    let ref = doc(collection(firestore, COL));
+    if (requestedId) {
+      const current = await getDoc(doc(firestore, COL, requestedId));
+      if (!current.exists()) return { success: false, error: 'La lectura abierta ya no está.' };
+      if (current.data().status !== 'abierto') return { success: false, error: 'Ese despacho ya se cerró.' };
+      ref = current.ref;
     }
-    for (const id of orderIds) {
-      const row = found.get(id);
-      if (!row) return { success: false, error: `El pedido ${id} no está en el tablero.` };
-      if (!orderMatchesDispatchDestino(row.tienda, dest)) {
-        return { success: false, error: `El pedido ${id} es de ${row.tienda || 'otra tienda'}, no de ${dest}.` };
-      }
-    }
-    const linkedIds = Array.from(new Set(Array.from(found.values()).map((r) => r.linked).filter(Boolean)));
-    const openLinks = new Set<string>();
-    for (let i = 0; i < linkedIds.length; i += 30) {
-      const chunk = linkedIds.slice(i, i + 30);
-      const snap = await getDocs(query(collection(firestore, COL), where(documentId(), 'in', chunk)));
-      snap.docs.forEach((d) => {
-        if (d.data().status !== 'anulado') openLinks.add(d.id);
-      });
-    }
-    const busy = orderIds.find((id) => openLinks.has(found.get(id)?.linked || ''));
-    if (busy) return { success: false, error: `El pedido ${busy} ya está en un despacho cerrado.` };
+    const check = await assertOrdersForDispatch(orderIds, dest, ref.id);
+    if (check.error) return { success: false, error: check.error };
 
     const day = bogotaDayKey(when);
-    const ref = doc(collection(firestore, COL));
     const stamp = Timestamp.fromDate(when);
     const now = Timestamp.now();
     const payload = {
@@ -169,9 +255,11 @@ export async function closeEcommerceDispatch(input: {
       orderIds,
       photos: photos.map((p) => ({ path: p.path, url: p.url })),
       status: 'cerrado',
-      closedById: input.actor.userId,
-      closedByName: (input.actor.displayName || '').trim() || input.actor.userId,
-      createdAt: now,
+      openKey: deleteField(),
+      closedById: input.actor!.userId,
+      closedByName: (input.actor!.displayName || '').trim() || input.actor!.userId,
+      closedAt: now,
+      ...(requestedId ? {} : { createdAt: now }),
     };
 
     let batch = writeBatch(firestore);
@@ -182,7 +270,7 @@ export async function closeEcommerceDispatch(input: {
       batch = writeBatch(firestore);
       ops = 0;
     };
-    batch.set(ref, payload);
+    batch.set(ref, payload, { merge: true });
     ops++;
     for (const id of orderIds) {
       batch.update(doc(firestore, 'ecommerceOrders', id), {
@@ -223,6 +311,7 @@ export async function annulEcommerceDispatch(
     };
     batch.update(ref, {
       status: 'anulado',
+      openKey: deleteField(),
       annulledAt: Timestamp.now(),
       annulledById: actor.userId,
       annulledByName: (actor.displayName || '').trim() || actor.userId,

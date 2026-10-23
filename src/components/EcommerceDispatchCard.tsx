@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { format } from 'date-fns';
 import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import { Loader2, Search } from 'lucide-react';
@@ -12,8 +12,10 @@ import { ECOM_DISPATCH_BODEGA, ECOM_DISPATCH_DESTINOS, bogotaDayKey } from '@/li
 import {
   annulEcommerceDispatch,
   closeEcommerceDispatch,
+  getOpenEcommerceDispatch,
   listEcommerceDispatchesByMonth,
   lookupEcommerceOrderForDispatch,
+  saveOpenEcommerceDispatch,
   searchEcommerceDispatchByOrder,
   searchEcommerceDispatchesByDay,
   type EcomDispatchView,
@@ -34,6 +36,13 @@ const localNow = () => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
+const toLocalInput = (iso: string) => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return localNow();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
 const Photos = ({ list }: { list: EcomDispatchView['photos'] }) => (
   <div className="flex flex-wrap gap-2">
     {list.map((p, i) => (
@@ -50,8 +59,8 @@ const DispatchCard = ({ item }: { item: EcomDispatchView }) => (
     <div className="flex flex-wrap items-center gap-2">
       <span className="font-semibold">{item.destino}</span>
       <span className="text-sm text-muted-foreground">{item.carrier}</span>
-      <Badge variant={item.status === 'anulado' ? 'secondary' : 'default'}>
-        {item.status === 'anulado' ? 'Anulado' : 'Cerrado'}
+      <Badge variant={item.status === 'cerrado' ? 'default' : 'secondary'}>
+        {item.status === 'anulado' ? 'Anulado' : item.status === 'abierto' ? 'Abierto' : 'Cerrado'}
       </Badge>
     </div>
     <p className="text-sm">
@@ -77,6 +86,7 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
   const [when, setWhen] = useState(localNow);
   const [scan, setScan] = useState('');
   const [lines, setLines] = useState<Line[]>([]);
+  const [openId, setOpenId] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [orderQuery, setOrderQuery] = useState('');
@@ -85,6 +95,35 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
   const [found, setFound] = useState<EcomDispatchView | null>(null);
   const [dayList, setDayList] = useState<EcomDispatchView[] | null>(null);
   const [month, setMonth] = useState(() => bogotaDayKey(new Date()).slice(0, 7));
+
+  const applyOpen = (item: EcomDispatchView) => {
+    setOpenId(item.id);
+    if (item.destino) setDestino(item.destino);
+    setCarrier(item.carrier);
+    if (item.dispatchAt) setWhen(toLocalInput(item.dispatchAt));
+    setLines(item.orderIds.map((id) => ({ id, tienda: item.destino })));
+  };
+
+  const loadOpen = async (quiet = false) => {
+    const res = await getOpenEcommerceDispatch();
+    if (res.error) {
+      if (!quiet) toast({ variant: 'destructive', title: 'Lectura', description: res.error });
+      return;
+    }
+    if (res.data) {
+      applyOpen(res.data);
+      if (!quiet) toast({ title: 'Lectura cargada', description: `${res.data.orderIds.length} pedido(s) de ${res.data.destino}.` });
+      return;
+    }
+    if (!quiet) toast({ title: 'Sin lectura abierta', description: 'En el computador use Guardar lectura.' });
+  };
+
+  useEffect(() => {
+    if (!canCreate) return;
+    void loadOpen(true);
+    // Solo al entrar: 1 lectura del despacho abierto.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canCreate]);
 
   const addOrder = async () => {
     const id = scan.trim();
@@ -134,6 +173,7 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
         photos.push({ path, url: await getDownloadURL(r) });
       }
       const res = await closeEcommerceDispatch({
+        id: openId || undefined,
         destino,
         carrier,
         dispatchAt: new Date(when).toISOString(),
@@ -149,12 +189,38 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
       setLines([]);
       setFiles([]);
       setCarrier('');
+      setOpenId(null);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'No se pudieron subir las fotos.';
       toast({ variant: 'destructive', title: 'Fotos', description: message });
     } finally {
       setBusy(false);
     }
+  };
+
+  const saveReading = async () => {
+    if (!actor) {
+      toast({ variant: 'destructive', title: 'Sesión', description: 'Vuelva a iniciar sesión.' });
+      return;
+    }
+    setBusy(true);
+    const res = await saveOpenEcommerceDispatch({
+      destino,
+      carrier,
+      dispatchAt: new Date(when).toISOString(),
+      orderIds: lines.map((l) => l.id),
+      actor,
+    });
+    setBusy(false);
+    if (!res.success || !res.id) {
+      toast({ variant: 'destructive', title: 'No se guardó', description: res.error || 'No se pudo guardar la lectura.' });
+      return;
+    }
+    setOpenId(res.id);
+    toast({
+      title: 'Lectura guardada',
+      description: 'Entre en el celular con este mismo usuario, traiga la lectura y tome las fotos.',
+    });
   };
 
   const searchOrder = async () => {
@@ -242,7 +308,7 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
       <CardHeader>
         <CardTitle>Despacho ecommerce</CardTitle>
         <CardDescription>
-          BODVI. Elija el destino, escanee todos los pedidos y suba las fotos de las hojas. La hora que indique queda en el tablero.
+          En el computador escanee los pedidos y use Guardar lectura. En el celular, con el mismo usuario, traiga esa lectura, tome las fotos y cierre.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -296,20 +362,55 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
                 ))}
               </div>
             )}
+            {openId && (
+              <p className="text-sm text-muted-foreground">Lectura abierta. En el celular use Traer lectura y cierre con las fotos.</p>
+            )}
             <div className="space-y-1">
               <Label>Fotos de las hojas</Label>
               <Input
                 type="file"
                 accept="image/*"
                 multiple
+                capture="environment"
                 onChange={(e) => setFiles(Array.from(e.target.files || []))}
               />
               {files.length > 0 && <p className="text-xs text-muted-foreground">{files.length} foto(s) lista(s).</p>}
             </div>
-            <Button type="button" onClick={() => void closeDispatch()} disabled={busy}>
-              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Cerrar despacho ({lines.length})
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="secondary" onClick={() => void saveReading()} disabled={busy || lines.length === 0}>
+                Guardar lectura ({lines.length})
+              </Button>
+              <Button type="button" variant="outline" onClick={() => void loadOpen(false)} disabled={busy}>
+                Traer lectura
+              </Button>
+              {openId && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => {
+                    if (!actor || !window.confirm('¿Descartar esta lectura abierta? Los pedidos no quedan despachados.')) return;
+                    setBusy(true);
+                    void annulEcommerceDispatch(openId, actor).then((res) => {
+                      setBusy(false);
+                      if (!res.success) {
+                        toast({ variant: 'destructive', title: 'No se descartó', description: res.error });
+                        return;
+                      }
+                      setOpenId(null);
+                      setLines([]);
+                      toast({ title: 'Lectura descartada' });
+                    });
+                  }}
+                >
+                  Descartar lectura
+                </Button>
+              )}
+              <Button type="button" onClick={() => void closeDispatch()} disabled={busy}>
+                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Cerrar con fotos ({lines.length})
+              </Button>
+            </div>
           </div>
         )}
 
