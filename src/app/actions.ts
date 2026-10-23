@@ -19,7 +19,7 @@ import { startOfDay, endOfDay, isWithinInterval } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { CURRENT_APP_VERSION } from './version';
 import { normalizeHeader, parseFlexibleDate, excelSerialDateToJSDate, findCaseInsensitiveKey, extractLocalDateString } from '@/lib/parsingUtils';
-import { buildTransferRouteKey } from '@/lib/transferRouteKey';
+import { buildTransferRouteKey, pickExistingTransferLine, transferBrandKey } from '@/lib/transferRouteKey';
 import { processReport } from '@/services/reportProcessor';
 
 // Helper function to convert Dates back to Timestamps FOR WRITING to Firestore
@@ -4485,20 +4485,23 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
             ),
         ]);
 
-        const existingTransfersByKey = new Map<string, { id: string, data: TransferEntry }>();
+        const existingTransfersByKey = new Map<string, { id: string, data: TransferEntry }[]>();
+        const seenTransferIds = new Set<string>();
         for (const snap of snapshots) {
-            snap.forEach(doc => {
-                const data = doc.data() as TransferEntry;
+            snap.forEach(docSnap => {
+                if (seenTransferIds.has(docSnap.id)) return;
+                seenTransferIds.add(docSnap.id);
+                const data = docSnap.data() as TransferEntry;
                 // Composite Key: TF + Marca + Grupo (Normalized)
-                const key = `${data.numeroTF}-${(data.marca || '').trim().toUpperCase()}-${(data.grupo || '').trim().toUpperCase()}`;
-                existingTransfersByKey.set(key, { id: doc.id, data });
+                const key = transferBrandKey(data);
+                const list = existingTransfersByKey.get(key) || [];
+                list.push({ id: docSnap.id, data });
+                existingTransfersByKey.set(key, list);
             });
         }
 
         // Unique keys in the incoming file
-        const incomingKeys = new Set(transfers.map(t => 
-            `${t.numeroTF}-${(t.marca || '').trim().toUpperCase()}-${(t.grupo || '').trim().toUpperCase()}`
-        ));
+        const incomingKeys = new Set(transfers.map(t => transferBrandKey(t)));
 
         const batch = writeBatch(firestore);
         let added = 0;
@@ -4507,19 +4510,22 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
 
         // 2. Identify what to DELETE: In Firebase (as "En Tránsito") but NOT in Excel
         // Comparison is now done via the composite key.
-        for (const [key, existing] of existingTransfersByKey.entries()) {
-            if (!incomingKeys.has(key) && existing.data.status === 'En Tránsito') {
-                batch.delete(doc(transfersCollection, existing.id));
-                removed++;
+        for (const [key, docs] of existingTransfersByKey.entries()) {
+            if (incomingKeys.has(key)) continue;
+            for (const existing of docs) {
+                if (existing.data.status === 'En Tránsito') {
+                    batch.delete(doc(transfersCollection, existing.id));
+                    removed++;
+                }
             }
         }
 
         // 3. Process incoming transfers: ADD or UPDATE
-        // Count new records per destination
+        // Una línea que ya está en una relación no cambia de destino: la ruta nueva sale aparte.
         const newTransCounts: Record<string, number> = {};
         for (const incoming of transfers) {
-            const compositeKey = `${incoming.numeroTF}-${(incoming.marca || '').trim().toUpperCase()}-${(incoming.grupo || '').trim().toUpperCase()}`;
-            if (!existingTransfersByKey.has(compositeKey)) {
+            const docs = existingTransfersByKey.get(transferBrandKey(incoming)) || [];
+            if (pickExistingTransferLine(docs, incoming).kind !== 'update') {
                 const dest = (incoming.bodegaDestino || 'UNKNOWN').trim().toUpperCase();
                 newTransCounts[dest] = (newTransCounts[dest] || 0) + 1;
             }
@@ -4529,11 +4535,37 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
         const destOrderIndices: Record<string, number> = {};
 
         for (const incoming of transfers) {
-            const compositeKey = `${incoming.numeroTF}-${(incoming.marca || '').trim().toUpperCase()}-${(incoming.grupo || '').trim().toUpperCase()}`;
-            const existing = existingTransfersByKey.get(compositeKey);
+            const docs = existingTransfersByKey.get(transferBrandKey(incoming)) || [];
+            const target = pickExistingTransferLine(docs, incoming);
             const dest = (incoming.bodegaDestino || 'UNKNOWN').trim().toUpperCase();
-            
-            if (existing) {
+
+            if (target.kind === 'split') {
+                // El archivo trae otro destino y la línea anterior ya está en una relación.
+                // No se le pasa la entrega: esta queda Recibido en Bodega.
+                const docRef = doc(transfersCollection);
+                const destOrders = newOrdersMap[dest] || [];
+                const idx = destOrderIndices[dest] || 0;
+                const sibling = target.sibling.data;
+                const ubicacion = String(incoming.ubicacion || sibling.ubicacion || '').trim();
+                batch.set(docRef, {
+                    ...convertDatesToTimestamps(incoming),
+                    status: 'Recibido en Bodega',
+                    ...(ubicacion ? { ubicacion } : {}),
+                    ...(sibling.recibidoAt ? { recibidoAt: sibling.recibidoAt } : { recibidoAt: Timestamp.now() }),
+                    storageOrder: destOrders[idx] || 'N/A',
+                    statusHistory: [{
+                        status: 'Recibido en Bodega',
+                        at: Timestamp.now(),
+                        userName: 'Base de transferencias: otro destino, la línea anterior ya está en una relación',
+                    }],
+                });
+                destOrderIndices[dest] = idx + 1;
+                added++;
+                continue;
+            }
+
+            if (target.kind === 'update') {
+                const existing = target.line;
                 // Solo datos del archivo. No reescribir `status`: la lectura es anterior al commit
                 // y pisaría una novedad o entrega que ocurrió mientras se cargaba la base.
                 const docRef = doc(transfersCollection, existing.id);

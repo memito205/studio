@@ -134,6 +134,21 @@ export function buildStoreMatcher(stores: DeliveryStore[]) {
   return (destino: unknown): DeliveryStore | undefined => map.get(normalizeStoreCode(destino));
 }
 
+/** Mismo almacén aunque uno venga como código ERP y el otro como equivalente (BR 14 / 21401). */
+export function sameDeliveryDestination(
+  matchStore: (destino: unknown) => Pick<DeliveryStore, 'codigoErp'> | undefined,
+  a: unknown,
+  b: unknown,
+): boolean {
+  const na = normalizeStoreCode(a);
+  const nb = normalizeStoreCode(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const sa = matchStore(a);
+  const sb = matchStore(b);
+  return !!(sa && sb && sa.codigoErp === sb.codigoErp);
+}
+
 export function storeToTemplateRow(s: DeliveryStore): Record<string, string | number> {
   return {
     'Codigo ERP': s.codigoErp,

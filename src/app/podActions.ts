@@ -21,7 +21,7 @@ import {
   type DocumentData,
 } from 'firebase/firestore';
 import { firestore } from '@/services/firebase';
-import { buildStoreMatcher, DEFAULT_STORE_RADIUS_M } from '@/lib/deliveryStores';
+import { buildStoreMatcher, DEFAULT_STORE_RADIUS_M, sameDeliveryDestination } from '@/lib/deliveryStores';
 import { getDeliveryStoresCached } from '@/lib/deliveryStoresCache';
 import { MAX_DELIVERY_PHOTOS, POD_START_AT, STORE_RECEPTION_START_AT, storeStopId } from '@/lib/pod';
 
@@ -428,8 +428,16 @@ export async function submitDeliveryStop(
         return { success: true, stopStatus: 'entregada' as DeliveryStopStatus, unlockMessengerHandoff: true };
       }
 
-      const storeReceivedTfs = new Set(tSnaps.filter((d) => d.data()?.storeReceivedAt).map(tfOf));
-      const missing = Array.from(new Set(tSnaps.map(tfOf))).filter(
+      const belongsToThisStop = (destino: unknown) =>
+        [stop.destino, stop.storeCode, stopId].some(
+          (key) => key && sameDeliveryDestination(matchStore, destino, key)
+        );
+      const onStopSnaps = tSnaps.filter((d) => d.exists() && belongsToThisStop(d.data()?.bodegaDestino));
+      const offStopSnaps = tSnaps.filter((d) => d.exists() && !belongsToThisStop(d.data()?.bodegaDestino));
+      const offStopIds = new Set(offStopSnaps.map((d) => d.id));
+
+      const storeReceivedTfs = new Set(onStopSnaps.filter((d) => d.data()?.storeReceivedAt).map(tfOf));
+      const missing = Array.from(new Set(onStopSnaps.map(tfOf))).filter(
         (tf) => !delivered.has(tf) && !notDelivered.has(tf) && !storeReceivedTfs.has(tf)
       );
       if (missing.length > 0) throw new Error(`Falta marcar ${missing.length} TF como entregada o no entregada.`);
@@ -441,8 +449,7 @@ export async function submitDeliveryStop(
       const now = Timestamp.now();
       const deliveredIds: string[] = [];
       const notDeliveredIds: string[] = [];
-      tSnaps.forEach((d) => {
-        if (!d.exists()) return;
+      onStopSnaps.forEach((d) => {
         const status = d.data()?.status as TransferStatus;
         const tf = tfOf(d);
         if (delivered.has(tf) || storeReceivedTfs.has(tf)) {
@@ -474,6 +481,39 @@ export async function submitDeliveryStop(
           });
         }
       });
+      offStopSnaps.forEach((d) => {
+        const data = d.data() || {};
+        const tied =
+          String(data.podManifestDocId || '') === manifestDocId ||
+          String(data.podStopId || '') === String(stopId) ||
+          String(data.manifestId ?? '') === String(manifest.manifestId ?? '');
+        const status = data.status as TransferStatus;
+        if (!tied) return;
+        if (status !== 'Enviado a Destino' && status !== 'Entregado en Tienda' && status !== 'Novedad de Entrega') return;
+        tx.update(d.ref, {
+          status: 'Recibido en Bodega',
+          manifestId: deleteField(),
+          podManifestDocId: deleteField(),
+          podStopId: deleteField(),
+          enviadoAt: deleteField(),
+          enviadoBy: deleteField(),
+          enviadoByName: deleteField(),
+          entregadoTiendaAt: deleteField(),
+          entregadoTiendaBy: deleteField(),
+          entregadoTiendaByName: deleteField(),
+          novedadEntregaAt: deleteField(),
+          novedadEntregaBy: deleteField(),
+          novedadEntregaByName: deleteField(),
+          novedadEntregaMotivo: deleteField(),
+          reprogramada: false,
+          statusHistory: arrayUnion({
+            status: 'Recibido en Bodega',
+            at: now,
+            userId: actor.userId,
+            userName: `${actorName} (destino distinto a la parada ${stopId}; no se despacha)`,
+          }),
+        });
+      });
 
       const stopStatus: DeliveryStopStatus =
         deliveredIds.length === 0 ? 'no_entregada' : notDeliveredIds.length === 0 ? 'entregada' : 'parcial';
@@ -503,6 +543,13 @@ export async function submitDeliveryStop(
           completedById: actor.userId,
           completedByName: actorName,
           submissionId,
+          ...(offStopIds.size
+            ? {
+                transferIds: transferIds.filter((id) => !offStopIds.has(id)),
+                numerosTF: Array.from(new Set(onStopSnaps.map(tfOf))).filter(Boolean),
+                unidades: onStopSnaps.reduce((sum, d) => sum + (Number(d.data()?.cantidad || 0) || 0), 0),
+              }
+            : {}),
           ...(store && !stop.storeCode ? { storeCode: store.codigoErp, storeName: store.nombreCorto } : {}),
         })
       );
@@ -511,12 +558,13 @@ export async function submitDeliveryStop(
       const stopsDone = Number(manifest.stopsDone || 0) + 1;
       tx.update(manifestRef, {
         stopsDone,
+        ...(offStopIds.size ? { transferIds: arrayRemove(...offStopIds) } : {}),
         ...(stopsCount > 0 && stopsDone >= stopsCount ? { deliveryStatus: 'pendiente_validacion', deliveryCompletedAt: now } : {}),
       });
 
       const lines = new Map<string, PlatformLine>();
       tSnaps.forEach((d) => {
-        if (!d.exists()) return;
+        if (!d.exists() || offStopIds.has(d.id)) return;
         const t = d.data() as any;
         const id = platformDocId(t.numeroTF, t.bodegaDestino);
         const cur = lines.get(id) || {
