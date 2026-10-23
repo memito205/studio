@@ -2,6 +2,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type { TalladoPause, TalladoShift, TalladoUnit } from '@/types';
 import { TALLADO_DEFAULT_DESTINO } from '@/lib/talladoCatalog';
+import { talladoReprocesoLabel } from '@/lib/talladoEtiquetado';
 import { prepareTalladoDayConsolidated } from '@/lib/talladoMercanciaExcel';
 import { talladoLocalDayKey } from '@/lib/talladoProductivity';
 
@@ -103,7 +104,9 @@ function writeUnitsAndPauses(
             fmtDuration(u.durationMs),
             fmtDuration(u.durationNetMs ?? u.durationMs),
             u.grupo || '—',
-            u.yaEtiquetada
+            u.reproceso
+              ? talladoReprocesoLabel(u.etiquetadoModo)
+              : u.yaEtiquetada
               ? 'Ya etiquetada'
               : u.etiquetadoModo === 'ya_etiquetada'
                 ? 'Ya etiquetada'

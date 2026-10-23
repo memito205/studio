@@ -113,7 +113,7 @@ async function resolveEcommerceOrder(code: string): Promise<{ id: string; data: 
 export async function lookupEcommerceOrderForDispatch(
   orderId: string,
   destino: string
-): Promise<{ id?: string; guia?: string; tienda?: string; estado?: string; error?: string }> {
+): Promise<{ id?: string; guia?: string; tienda?: string; estado?: string; dispatchDate?: string; error?: string }> {
   const dest = String(destino || '').trim().toUpperCase();
   if (!isEcomDispatchDestino(dest)) return { error: 'Destino no válido.' };
   try {
@@ -132,7 +132,14 @@ export async function lookupEcommerceOrderForDispatch(
       }
     }
     const guia = String(data.guia || '').trim();
-    return { id: resolved.id, guia: guia || undefined, tienda, estado: String(data.estado || '') };
+    const existingDispatch = asDate(data.dispatchDate);
+    return {
+      id: resolved.id,
+      guia: guia || undefined,
+      tienda,
+      estado: String(data.estado || ''),
+      dispatchDate: existingDispatch ? existingDispatch.toISOString() : undefined,
+    };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'No se pudo leer el pedido.';
     return { error: message };
@@ -212,14 +219,18 @@ async function assertOrdersForDispatch(
   orderIds: string[],
   dest: string,
   ignoreDispatchId?: string
-): Promise<{ error?: string }> {
-  const found = new Map<string, { tienda: string; linked: string }>();
+): Promise<{ error?: string; dates?: Map<string, Date | null> }> {
+  const found = new Map<string, { tienda: string; linked: string; dispatchDate: Date | null }>();
   for (let i = 0; i < orderIds.length; i += 30) {
     const chunk = orderIds.slice(i, i + 30);
     const snap = await getDocs(query(collection(firestore, 'ecommerceOrders'), where(documentId(), 'in', chunk)));
     snap.docs.forEach((d) => {
       const data = d.data();
-      found.set(d.id, { tienda: String(data.tienda || ''), linked: String(data.ecommerceDispatchId || '') });
+      found.set(d.id, {
+        tienda: String(data.tienda || ''),
+        linked: String(data.ecommerceDispatchId || ''),
+        dispatchDate: asDate(data.dispatchDate),
+      });
     });
   }
   for (const id of orderIds) {
@@ -240,7 +251,7 @@ async function assertOrdersForDispatch(
   }
   const busy = orderIds.find((id) => blocking.has(found.get(id)?.linked || ''));
   if (busy) return { error: `El pedido ${busy} ya está en un despacho cerrado.` };
-  return {};
+  return { dates: new Map(Array.from(found.entries()).map(([id, row]) => [id, row.dispatchDate])) };
 }
 
 export async function closeEcommerceDispatch(input: {
@@ -280,6 +291,7 @@ export async function closeEcommerceDispatch(input: {
     }
     const check = await assertOrdersForDispatch(orderIds, dest, ref.id);
     if (check.error) return { success: false, error: check.error };
+    const priorDates = check.dates ?? new Map<string, Date | null>();
 
     const day = bogotaDayKey(when);
     const stamp = Timestamp.fromDate(when);
@@ -315,10 +327,14 @@ export async function closeEcommerceDispatch(input: {
     batch.set(ref, payload, { merge: true });
     ops++;
     for (const id of orderIds) {
-      batch.update(doc(firestore, 'ecommerceOrders', id), {
-        dispatchDate: stamp,
-        ecommerceDispatchId: ref.id,
-      });
+      const existing = priorDates.get(id) ?? null;
+      const keepOlder = Boolean(existing && existing.getTime() <= stamp.toDate().getTime());
+      batch.update(
+        doc(firestore, 'ecommerceOrders', id),
+        keepOlder
+          ? { ecommerceDispatchId: ref.id, dispatchDateDispatchId: deleteField() }
+          : { dispatchDate: stamp, ecommerceDispatchId: ref.id, dispatchDateDispatchId: ref.id }
+      );
       ops++;
       if (ops >= 400) await commit();
     }
@@ -343,6 +359,7 @@ export async function annulEcommerceDispatch(
     if (!snap.exists()) return { success: false, error: 'Ese despacho ya no existe.' };
     if (snap.data().status === 'anulado') return { success: true };
     const orderIds: string[] = Array.isArray(snap.data().orderIds) ? snap.data().orderIds.map(String) : [];
+    const dispatchAt = asDate(snap.data().dispatchAt);
     let batch = writeBatch(firestore);
     let ops = 0;
     const commit = async () => {
@@ -363,8 +380,19 @@ export async function annulEcommerceDispatch(
       const chunk = orderIds.slice(i, i + 30);
       const orders = await getDocs(query(collection(firestore, 'ecommerceOrders'), where(documentId(), 'in', chunk)));
       for (const d of orders.docs) {
-        if (String(d.data().ecommerceDispatchId || '') !== id) continue;
-        batch.update(d.ref, { dispatchDate: deleteField(), ecommerceDispatchId: deleteField() });
+        const data = d.data();
+        if (String(data.ecommerceDispatchId || '') !== id) continue;
+        const ownedBy = String(data.dispatchDateDispatchId || '');
+        const orderAt = asDate(data.dispatchDate);
+        const wroteDate =
+          ownedBy === id ||
+          (!ownedBy && orderAt && dispatchAt && Math.abs(orderAt.getTime() - dispatchAt.getTime()) < 2000);
+        batch.update(
+          d.ref,
+          wroteDate
+            ? { dispatchDate: deleteField(), ecommerceDispatchId: deleteField(), dispatchDateDispatchId: deleteField() }
+            : { ecommerceDispatchId: deleteField() }
+        );
         ops++;
         if (ops >= 400) await commit();
       }

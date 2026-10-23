@@ -2119,6 +2119,8 @@ export interface TalladoUnit {
   qtyDelta?: number;
   /** true si qtyDelta !== 0 (señal admin; el operario no la ve). */
   hasQtyDiff?: boolean;
+  /** Segunda pasada de la misma caja. La primera lectura no se modifica. */
+  reproceso?: boolean;
 }
 
 export interface TalladoPause {
@@ -2665,6 +2667,8 @@ export interface EcommerceOrder {
   dispatchDate?: Date; // NEW
   /** Despacho ecommerce de BODVI al que quedó amarrada la prueba. */
   ecommerceDispatchId?: string;
+  /** Id del despacho que escribió dispatchDate. Vacío si la fecha vino del tablero. */
+  dispatchDateDispatchId?: string;
   bodega?: string | string[]; // Added: Warehouse field
 
   // Other columns from image

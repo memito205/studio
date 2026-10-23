@@ -9,7 +9,7 @@ import { ArrowLeft, Loader2, UploadCloud, Package, CheckCircle, Clock, AlertTria
 import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
 import { ecomOrderFingerprint } from '@/lib/ecommerceIndex';
-import { normalizeEcommerceGuide } from '@/lib/ecommerceDispatch';
+import { ECOM_GUIDE_HEADER_ALIASES, ecommerceGuideText, normalizeEcommerceGuide } from '@/lib/ecommerceDispatch';
 import { saveEcommerceOrders, loadEcommerceOrders, loadEcommerceOrdersByIds, getEcommerceOrderIndex, updateEcommerceOrderIndex, getDelayedOrderLogs, upsertDelayedOrderLog, addJustificationToLog, resolveDelayedOrderLog, batchResolveDelayedOrderLogs, batchUpsertDelayedOrderLogs } from '@/app/actions';
 import type { EcommerceOrder, FilterCategory, DelayedOrderLog, Justification, Filters } from '@/types';
 import { excelSerialDateToJSDate, findCaseInsensitiveKey, parseFlexibleDate, calculateSlaHours, parseRobustNumber } from '@/lib/parsingUtils';
@@ -545,6 +545,41 @@ export const EcommerceDashboard: React.FC<EcommerceDashboardProps> = ({ onReturn
   };
 
 
+const guidesFromEcommerceSheet = (worksheet: XLSX.WorkSheet) => {
+    const empty = { byIndex: [] as string[], headerFound: null as string | null, headers: [] as string[] };
+    const ref = worksheet['!ref'];
+    if (!ref) return empty;
+    const range = XLSX.utils.decode_range(ref);
+    const headers: string[] = [];
+    let guideCol = -1;
+    let headerFound: string | null = null;
+    for (let c = range.s.c; c <= range.e.c; c++) {
+        const cell = worksheet[XLSX.utils.encode_cell({ r: range.s.r, c })] as { v?: unknown; w?: string } | undefined;
+        const name = String(cell?.w ?? cell?.v ?? '').trim();
+        if (name) headers.push(name);
+        if (guideCol < 0 && findCaseInsensitiveKey({ [name]: true }, ...ECOM_GUIDE_HEADER_ALIASES)) {
+            guideCol = c;
+            headerFound = name;
+        }
+    }
+    const byIndex: string[] = [];
+    for (let r = range.s.r + 1; r <= range.e.r; r++) {
+        let any = false;
+        for (let c = range.s.c; c <= range.e.c; c++) {
+            if (worksheet[XLSX.utils.encode_cell({ r, c })] != null) {
+                any = true;
+                break;
+            }
+        }
+        if (!any) continue;
+        const cell = guideCol >= 0
+            ? worksheet[XLSX.utils.encode_cell({ r, c: guideCol })] as { v?: unknown; w?: string } | undefined
+            : undefined;
+        byIndex.push(cell ? ecommerceGuideText(cell.v, cell.w) : '');
+    }
+    return { byIndex, headerFound, headers };
+};
+
 const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -553,12 +588,14 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     setIsGenerated(false);
     try {
         const data = await file.arrayBuffer();
-        const workbook = XLSX.read(data, { type: 'binary', cellDates: true });
+        const workbook = XLSX.read(data, { type: 'binary', cellDates: true, cellText: true });
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         const json: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: null });
+        const sheetGuides = guidesFromEcommerceSheet(worksheet);
+        const guidesAligned = sheetGuides.byIndex.length === json.length;
 
-        const parsedOrders: EcommerceOrder[] = json.map(row => ({
+        const parsedOrders: EcommerceOrder[] = json.map((row, index) => ({
             id: String(findCaseInsensitiveKey(row, 'PED_ID') ? row[findCaseInsensitiveKey(row, 'PED_ID')!] : ''),
             tienda: String(findCaseInsensitiveKey(row, 'NOMBRE') ? row[findCaseInsensitiveKey(row, 'NOMBRE')!] : ''),
             valorTotal: parseRobustNumber(findCaseInsensitiveKey(row, 'PED_VALOR_TOTAL') ? row[findCaseInsensitiveKey(row, 'PED_VALOR_TOTAL')!] : 0),
@@ -574,16 +611,26 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
             ped_telefono: String(findCaseInsensitiveKey(row, 'PED_TELEFONO') ? row[findCaseInsensitiveKey(row, 'PED_TELEFONO')!] : ''),
             ped_celular: String(findCaseInsensitiveKey(row, 'PED_CELULAR') ? row[findCaseInsensitiveKey(row, 'PED_CELULAR')!] : ''),
             ped_factura: String(findCaseInsensitiveKey(row, 'PED_FACTURA') ? row[findCaseInsensitiveKey(row, 'PED_FACTURA')!] : ''),
-            guia: (() => {
-                const header = findCaseInsensitiveKey(row, 'PED_GUIA_TTE', 'GUIA SIOP', 'GUIA', 'NRO GUIA', 'NUMERO GUIA', 'NUMERO 99');
-                const value = header ? row[header] : '';
-                if (typeof value === 'number' && Number.isFinite(value)) {
-                    return String(Number.isInteger(value) ? value : value).replace(/\.0+$/, '').trim();
-                }
-                return String(value ?? '').trim();
-            })(),
+            guia: guidesAligned
+                ? sheetGuides.byIndex[index] || ''
+                : (() => {
+                    const header = findCaseInsensitiveKey(row, ...ECOM_GUIDE_HEADER_ALIASES);
+                    const value = header ? row[header] : '';
+                    return ecommerceGuideText(value);
+                })(),
             bodega: String(findCaseInsensitiveKey(row, 'BODEGA', 'ALMACEN', 'BODEGA_ORIGEN', 'AGENCIA') ? row[findCaseInsensitiveKey(row, 'BODEGA', 'ALMACEN', 'BODEGA_ORIGEN', 'AGENCIA')!] : ''),
         })).filter(o => o.id);
+
+        const guidesInFile = parsedOrders.filter((o) => normalizeEcommerceGuide(o.guia)).length;
+        if (json.length > 0 && guidesInFile === 0) {
+            toast({
+                title: sheetGuides.headerFound ? 'La columna de guía está vacía' : 'No se encontró la columna de guía',
+                description: sheetGuides.headerFound
+                    ? `Se buscó «${sheetGuides.headerFound}» y no trae números. El despacho no va a cruzar hasta que el archivo traiga la guía.`
+                    : `Encabezados del archivo: ${sheetGuides.headers.slice(0, 24).join(', ') || 'sin encabezados'}.`,
+                duration: 12000,
+            });
+        }
 
         // Se leen los pedidos cuyo estado, tienda, bodega, valor, transportadora o guía cambió.
         const indexRes = await getEcommerceOrderIndex();

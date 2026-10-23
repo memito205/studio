@@ -17,3 +17,10 @@ export function talladoEtiquetadoModoLabel(modo?: TalladoEtiquetadoModo | null):
   if (modo === 'tallar_y_etiquetar') return 'Tallar y etiquetar';
   return 'Normal';
 }
+
+/** Texto de una segunda pasada. Normal se muestra como Tallado. */
+export function talladoReprocesoLabel(modo?: TalladoEtiquetadoModo | null): string {
+  if (modo === 'tallar_y_etiquetar') return 'Reprocesado · Tallado y etiquetado';
+  if (modo === 'ya_etiquetada') return 'Reprocesado · Ya etiquetada';
+  return 'Reprocesado · Tallado';
+}

@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx';
 import type { TalladoPause, TalladoShift, TalladoUnit } from '@/types';
 import { TALLADO_DEFAULT_DESTINO } from '@/lib/talladoCatalog';
+import { talladoReprocesoLabel } from '@/lib/talladoEtiquetado';
 import {
   filterTalladoBundleToDay,
   talladoLocalDayKey,
@@ -197,6 +198,7 @@ export function downloadTalladoDayConsolidatedExcel(opts: {
         : u.etiquetadoModo === 'tallar_y_etiquetar'
           ? 'Tallar y etiquetar'
           : 'Normal',
+    Reproceso: u.reproceso ? talladoReprocesoLabel(u.etiquetadoModo) : '',
     Estado: u.status,
     Inicio: fmtLocal(u.startedAt),
     Fin: fmtLocal(u.endedAt),

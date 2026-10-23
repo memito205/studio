@@ -28,7 +28,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import JSZip from 'jszip';
 
-type Line = { id: string; tienda: string; guia?: string };
+type Line = { id: string; tienda: string; guia?: string; keptAt?: string };
 
 const lineLabel = (line: Line) => (line.guia && line.guia !== line.id ? `${line.guia} → ${line.id}` : line.id);
 
@@ -142,7 +142,7 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
       toast({ title: 'Ya está', description: `El pedido ${res.id} ya está en esta lectura.` });
       return;
     }
-    setLines((prev) => [...prev, { id: res.id!, tienda: res.tienda || destino, guia: res.guia }]);
+    setLines((prev) => [...prev, { id: res.id!, tienda: res.tienda || destino, guia: res.guia, keptAt: res.dispatchDate }]);
     setScan('');
   };
 
@@ -354,12 +354,16 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
                   Agregar
                 </Button>
               </div>
+              <p className="text-xs text-muted-foreground">
+                Si el pedido ya estaba despachado en el tablero, se agrega la prueba y se deja la fecha más antigua.
+              </p>
             </div>
             {lines.length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {lines.map((l) => (
                   <Badge key={l.id} variant="secondary" className="gap-1">
                     {lineLabel(l)}
+                    {l.keptAt ? ' · conserva fecha' : ''}
                     <button type="button" className="ml-1" onClick={() => setLines((prev) => prev.filter((x) => x.id !== l.id))} aria-label={`Quitar ${lineLabel(l)}`}>
                       ×
                     </button>

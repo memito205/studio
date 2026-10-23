@@ -33,7 +33,7 @@ import type {
   ReceptionOperation,
 } from '@/types';
 import { isTalladoSameLocalDay, talladoLocalDayKey, filterTalladoBundleToDay, talladoBogotaDayBounds } from '@/lib/talladoProductivity';
-import { resolveTalladoEtiquetadoModo } from '@/lib/talladoEtiquetado';
+import { resolveTalladoEtiquetadoModo, talladoReprocesoLabel } from '@/lib/talladoEtiquetado';
 import { getCyclicExpectedByRefLoc, getCyclicInventoryLinesForDate, getCyclicInventoryLinesForReference } from '@/app/cyclicInventoryActions';
 import { isValidInventoryDateKey } from '@/lib/cyclicInventoryDate';
 
@@ -1673,6 +1673,8 @@ export async function confirmTalladoUnitFromLookup(input: {
   skipOpenPauseCheck?: boolean;
   /** Check del operario; si no viene, se sugiere según el camino (source). */
   etiquetadoModo?: TalladoEtiquetadoModo | null;
+  /** Segunda pasada de una caja ya tallada. */
+  reproceso?: boolean;
 }): Promise<{ success: boolean; data?: TalladoUnit; error?: string }> {
   try {
     if (!input.shiftId) return { success: false, error: 'Sin turno activo.' };
@@ -1706,7 +1708,7 @@ export async function confirmTalladoUnitFromLookup(input: {
     }
 
     const doneSame = isLookupAlreadyDone(prior, input.lookup, scanCode);
-    if (doneSame) {
+    if (doneSame && !input.reproceso) {
       return { success: false, error: alreadyDoneError(doneSame) };
     }
 
@@ -1785,6 +1787,7 @@ export async function confirmTalladoUnitFromLookup(input: {
       rkIdentifier: input.lookup.rkIdentifier,
       yaEtiquetada: input.lookup.yaEtiquetada,
       etiquetadoModo,
+      reproceso: input.reproceso ? true : undefined,
     };
     try {
       await setDoc(ref, stripUndefinedDeep(row) as TalladoUnit);
@@ -2110,6 +2113,8 @@ export async function scanTalladoCode(input: {
   receptionOperationId?: string;
   /** Check del operario (null/omit = sugerir según camino). */
   etiquetadoModo?: TalladoEtiquetadoModo | null;
+  /** Permite leer de nuevo una caja ya terminada. */
+  reproceso?: boolean;
 }): Promise<{
   success: boolean;
   action?: 'finished' | 'confirmed' | 'pick_reception' | 'ready_to_start' | 'auto_started';
@@ -2157,7 +2162,7 @@ export async function scanTalladoCode(input: {
     if (!lookup.data) return { success: false, error: lookup.error || 'Sin datos de lookup.' };
 
     const doneSame = isLookupAlreadyDone(prior, lookup.data, scanCode);
-    if (doneSame) {
+    if (doneSame && !input.reproceso) {
       return { success: false, error: alreadyDoneError(doneSame) };
     }
 
@@ -2168,6 +2173,7 @@ export async function scanTalladoCode(input: {
       userName: input.userName,
       grupo: input.grupo,
       etiquetadoModo: input.etiquetadoModo,
+      reproceso: input.reproceso,
     });
     if (!confirmed.success) {
       return { success: false, error: confirmed.error, lookup: lookup.data };
@@ -3457,30 +3463,38 @@ export async function getTalladoReceptionCompare(input: {
       const units = unitsSnap.docs
         .map((d) => ({ id: d.id, ...d.data() }) as TalladoUnit)
         .filter((u) => u.status === 'done' && !isTalladoSoftDeleted(u as { deletedAt?: string | null }));
-      for (const u of units) {
+      const orderedUnits = [...units].sort((a, b) => Number(Boolean(a.reproceso)) - Number(Boolean(b.reproceso)));
+      const countedPack = new Set<string>();
+      for (const u of orderedUnits) {
         const qty = Math.max(0, Number(u.cantidad) || 0);
         const weights = u.packingUnitId ? boxRefs.get(u.packingUnitId) : undefined;
         const split = weights?.length
           ? splitByWeights(qty, weights)
           : new Map([[talladoCyclicNormRef(u.referencia || u.numeroTF || ''), qty]]);
+        const pack = String(u.packingUnitId || '');
+        const repeat = Boolean(u.reproceso) && Boolean(pack) && countedPack.has(pack);
+        if (pack) countedPack.add(pack);
+        const label = u.reproceso ? talladoReprocesoLabel(u.etiquetadoModo) : modoLabel(u.etiquetadoModo);
         for (const [ref, q] of split) {
           if (!ref) continue;
           const r = row(ref);
           if (!r.marca && u.marca) r.marca = u.marca;
-          addModeQty(r.rk, u.etiquetadoModo, q);
+          if (!repeat) addModeQty(r.rk, u.etiquetadoModo, q);
           const box = u.packingUnitId ? r.boxes.find((b) => b.packingUnitId === u.packingUnitId) : undefined;
           if (box) {
-            box.tallado += q;
-            box.modo = modoLabel(u.etiquetadoModo);
-            box.userName = u.userName;
-            box.at = u.endedAt || u.startedAt;
-          } else {
+            if (!repeat) box.tallado += q;
+            if (u.reproceso || !box.modo) {
+              box.modo = label;
+              box.userName = u.userName;
+              box.at = u.endedAt || u.startedAt;
+            }
+          } else if (!repeat) {
             r.boxes.push({
               packingUnitId: u.packingUnitId || u.id,
               unitNumber: u.unitNumber,
               recibido: 0,
               tallado: q,
-              modo: modoLabel(u.etiquetadoModo),
+              modo: label,
               userName: u.userName,
               at: u.endedAt || u.startedAt,
             });

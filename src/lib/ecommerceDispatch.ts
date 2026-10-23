@@ -25,12 +25,39 @@ export const bogotaDayKey = (d: Date): string => {
 export const ecomDispatchDestDay = (destino: string, day: string) =>
   `${destino.trim().toUpperCase()}|${day}`;
 
-/** Misma guía aunque el lector o Excel cambien espacios, guiones o ceros a la izquierda. */
+/** Encabezados de guía del reporte, del más específico al genérico. */
+export const ECOM_GUIDE_HEADER_ALIASES = [
+  'PED_GUIA_TTE',
+  'GUIA SIOP',
+  'GUIA TTE',
+  'PED_GUIA',
+  'NRO GUIA',
+  'N° GUIA',
+  'Nº GUIA',
+  'NUMERO DE GUIA',
+  'NUMERO GUIA',
+  'NUMERO 99',
+  'GUIA',
+] as const;
+
+/**
+ * Misma guía aunque el lector o Excel cambien espacios o guiones.
+ * Los ceros a la izquierda se conservan: Envia siempre empieza en cero.
+ */
 export const normalizeEcommerceGuide = (value: unknown): string => {
   let guide = String(value ?? '').trim();
   if (!guide || guide.toLowerCase() === 'null' || guide.toLowerCase() === 'undefined') return '';
   guide = guide.replace(/[\s\-_/\\]/g, '').toUpperCase();
   guide = guide.replace(/\.0+$/g, '');
-  if (/^\d+$/.test(guide)) guide = guide.replace(/^0+/, '');
   return guide;
+};
+
+/** Texto de la celda. Si Excel la muestra con ceros (0123), se usa ese texto. */
+export const ecommerceGuideText = (value: unknown, formatted?: string): string => {
+  const shown = String(formatted ?? '').trim();
+  if (shown && !/[eE]\+/.test(shown)) return shown.replace(/\.0+$/, '');
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(Number.isInteger(value) ? value : value).replace(/\.0+$/, '');
+  }
+  return String(value ?? '').trim();
 };

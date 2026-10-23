@@ -25,7 +25,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { TalladoReceptionCompareReport } from './TalladoReceptionCompareReport';
+import { talladoReprocesoLabel } from '@/lib/talladoEtiquetado';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -306,6 +306,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
   const [confirmingCandidate, setConfirmingCandidate] = useState(false);
   const [receptionScopeId, setReceptionScopeId] = useState(() => readReceptionScope());
   const [etiquetadoModo, setEtiquetadoModo] = useState<TalladoEtiquetadoModo | null>(null);
+  const [reproceso, setReproceso] = useState(false);
   const [receptionOptions, setReceptionOptions] = useState<
     Array<{ id: string; rk: string; supplier: string; status: string }>
   >([]);
@@ -692,6 +693,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
           autoStart: false,
           receptionOperationId: receptionScopeId || undefined,
           etiquetadoModo,
+          reproceso,
         });
         setScanCode('');
         if (!res.success) {
@@ -765,7 +767,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
         focusScanInput(200);
       }
     },
-    [shift, user, openPause, toast, showScanFlash, focusScanInput, receptionScopeId, etiquetadoModo]
+    [shift, user, openPause, toast, showScanFlash, focusScanInput, receptionScopeId, etiquetadoModo, reproceso]
   );
 
   const handleAdminCloseShift = async (shiftId: string) => {
@@ -948,6 +950,7 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
       grupo: shift.grupo,
       skipOpenPauseCheck: true,
       etiquetadoModo,
+      reproceso,
     });
     setConfirmingCandidate(false);
     if (!res.success || !res.data) {
@@ -2017,6 +2020,18 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                           Aplica a las próximas lecturas. También puede cambiarlo en cada fila de unidades ya
                           cerradas.
                         </p>
+                        <label className="flex items-center gap-2 pt-1 text-sm font-medium">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4"
+                            checked={reproceso}
+                            onChange={(e) => setReproceso(e.target.checked)}
+                          />
+                          Reproceso
+                        </label>
+                        <p className="text-xs text-muted-foreground">
+                          Préndalo solo cuando una caja ya tallada se debe leer otra vez. El reporte dice Reprocesado y el modo elegido: Tallado, o Tallado y etiquetado.
+                        </p>
                       </div>
                       <div className="rounded-md border border-violet-600/25 bg-violet-50/40 dark:bg-violet-950/20 p-3 space-y-2">
                         <Label>Recepción (RK) para cruce por # caja</Label>
@@ -2190,6 +2205,11 @@ export function TalladoMercanciaModule({ onReturnToSuite }: TalladoMercanciaModu
                                     {u.source === 'manual' ? (
                                       <Badge variant="outline" className="text-[10px] px-1 py-0">
                                         Cíclico{u.ubicacion ? ` · ${u.ubicacion}` : ''}
+                                      </Badge>
+                                    ) : null}
+                                    {u.reproceso ? (
+                                      <Badge variant="outline" className="text-[10px] px-1 py-0">
+                                        {talladoReprocesoLabel(u.etiquetadoModo)}
                                       </Badge>
                                     ) : null}
                                   </div>
