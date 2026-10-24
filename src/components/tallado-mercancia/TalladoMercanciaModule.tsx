@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { talladoReprocesoLabel } from '@/lib/talladoEtiquetado';
+import { TalladoReceptionCompareReport } from './TalladoReceptionCompareReport';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
