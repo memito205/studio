@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { ArrowLeft } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
+import CommercialOrderPanel from './components/CommercialOrderPanel';
 import FileUpload from './components/FileUpload';
 import ResultsDisplay from './components/ResultsDisplay';
 import Spinner from './components/Spinner';
@@ -205,6 +206,7 @@ const DistributorModule: React.FC<DistributorModuleProps> = ({ onReturnToSuite }
         </header>
 
         <main className="bg-white p-6 sm:p-8 rounded-2xl shadow-xl border border-gray-200">
+          <CommercialOrderPanel />
           {!distributionResult ? (
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
