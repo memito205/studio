@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -16,7 +16,6 @@ import {
     markLabelAsUsed, 
     updateOrderStatus, 
     addPackedItem, 
-    getPackedItemsForOrder,
     deletePackedItem, 
     updatePackedItem, 
     createPackingUnit, 
@@ -275,13 +274,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
     const [assignLabelTarget, setAssignLabelTarget] = useState<PackingUnit | null>(null);
     const [assignLabelInput, setAssignLabelInput] = useState('');
     const [isAssigningLabel, setIsAssigningLabel] = useState(false);
-    
-    // Refresco puntual del pedido abierto (no el tablero completo). El listener también mantiene la lista.
-    const fetchPackedItems = useCallback(async () => {
-        if (!packingOrder?.order?.id) return;
-        const result = await getPackedItemsForOrder(packingOrder.order.id);
-        if (result.data) setAllPackedItems(result.data);
-    }, [packingOrder?.order?.id]);
 
     // 1. Sincronización Real-time de la Sesión
     useEffect(() => {
@@ -516,7 +508,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 const addResult = await addPackedItem(itemData);
                 if (addResult.success) {
                     playScanSound(packedQty + 1 > orderedQty ? 'warn' : 'ok');
-                    fetchPackedItems();
                 } else {
                     throw new Error(addResult.error);
                 }
@@ -608,9 +599,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 setUnitToCloseId(null);
                 setIsCloseUnitDialogOpen(false);
                 setLastScan(null);
-                
-                // Refrescar ítems (aunque el listener debería hacerlo, esto asegura consistencia inmediata)
-                fetchPackedItems();
             } else {
                 toast({
                     variant: "destructive",
@@ -735,10 +723,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 const updatedUnits = session.units.filter(u => u.id !== unitIdToDelete);
                 const updatedSession = { ...session, units: updatedUnits };
                 setSession(updatedSession);
-                
-                // Refresh local items
-                fetchPackedItems();
-                
+
                 toast({
                     title: "Unidad Eliminada",
                     description: `La unidad #${unitIdToDelete} y su contenido han sido eliminados correctamente.`,
@@ -768,7 +753,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
         if (itemsToDelete.length > 0) {
             const result = await bulkDeletePackedItems(itemsToDelete.map(i => i.id));
             if (result.success) {
-                fetchPackedItems();
                 toast({ title: 'Ítems Eliminados', description: `Se eliminaron ${itemsToDelete.length} unidades de la caja.` });
             } else {
                 toast({ variant: 'destructive', title: 'Error de Borrado', description: result.error });
@@ -783,7 +767,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
             const result = await bulkDeletePackedItems(itemsToDelete.map(i => i.id));
             setIsLoading(false);
             if (result.success) {
-                fetchPackedItems();
                 toast({ 
                     title: 'Registros Huérfanos Eliminados', 
                     description: `Se eliminaron ${itemsToDelete.length} ítems que no estaban asociados a ninguna caja activa.` 
@@ -821,9 +804,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 ...prev,
                 units: [...prev.units, newUnit]
             }));
-
-            // 4. Refresh items
-            await fetchPackedItems();
 
             toast({
                 title: "Unidad Recuperada",
@@ -869,9 +849,7 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                     }
                 }
 
-                if (result.success) {
-                    fetchPackedItems();
-                } else {
+                if (!result.success) {
                     toast({ variant: 'destructive', title: 'Error', description: result.error });
                 }
             }
@@ -880,7 +858,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 for (const item of itemsToUpdate) {
                     await deletePackedItem(item.id);
                 }
-                fetchPackedItems();
             }
         }
     };
@@ -923,7 +900,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
                 });
             }
             toast({ title: 'Talla Actualizada', description: `Se cambió de ${currentTalla} a ${newTalla}` });
-            fetchPackedItems();
         } catch (error: any) {
             toast({ variant: 'destructive', title: 'Error', description: error.message });
         } finally {
@@ -1024,7 +1000,6 @@ export const PackingScreen: React.FC<PackingScreenProps> = ({
 
             if (result.success) {
                 toast({ title: 'Ítem Agregado', description: `${quantity} x ${reference} - ${talla} agregados a la caja.` });
-                fetchPackedItems();
             } else {
                 throw new Error(result.error);
             }
