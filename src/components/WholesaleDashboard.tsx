@@ -543,22 +543,40 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
             }
 
             const order = ordersMap.get(orderId)!;
-            
+            const cantidad = Number(row['Cant. comprom.']) || 0;
+            const asNumber = (value: unknown) => {
+                const n = Number(String(value ?? '').replace(/,/g, '').trim());
+                return Number.isFinite(n) ? n : 0;
+            };
+            const precioUnitario = asNumber(row['Precio unitario'] ?? row['Precio'] ?? row['Valor unitario'] ?? row['Vr. unitario']);
+            const valorNeto = asNumber(row['Valor neto'] ?? row['Valor']);
+            const precio = precioUnitario > 0
+                ? precioUnitario
+                : cantidad > 0 && valorNeto > 0
+                  ? Math.round((valorNeto / cantidad) * 100) / 100
+                  : 0;
+
             const newDetail: WholesaleOrderDetail = {
                 referencia: String(row['Referencia'] || '').trim(),
                 item: String(row['Item'] || '').trim(),
                 talla: String(row['Detalle ext. 1'] || '').trim(),
-                cantidad: Number(row['Cant. comprom.']),
+                cantidad,
+                ...(precio > 0 ? { precio } : {}),
             };
 
             order.cantidadTotal += newDetail.cantidad;
-            order.valorNetoTotal += Number(row['Valor neto']) || 0;
+            order.valorNetoTotal += valorNeto;
             
             const detailKey = `${newDetail.referencia}-${newDetail.talla}-${newDetail.item}`;
             const existingDetail = order.details.find(d => `${d.referencia}-${d.talla}-${d.item}` === detailKey);
             
             if (existingDetail) {
+                const prevValor = (existingDetail.precio || 0) * existingDetail.cantidad;
                 existingDetail.cantidad += newDetail.cantidad;
+                const nextValor = prevValor + precio * newDetail.cantidad;
+                existingDetail.precio = existingDetail.cantidad > 0 && nextValor > 0
+                    ? Math.round((nextValor / existingDetail.cantidad) * 100) / 100
+                    : existingDetail.precio;
             } else {
                 order.details.push(newDetail);
             }
@@ -708,9 +726,22 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
       if (result.error || !result.data) {
         throw new Error(result.error || 'No se pudo leer lo empacado de este pedido.');
       }
+      const priceOf = (referencia: string, talla: string) => {
+        const ref = referencia.trim();
+        const size = talla.trim();
+        const exact = order.details.find((d) => d.referencia.trim() === ref && String(d.talla || '').trim() === size && Number(d.precio) > 0);
+        if (exact?.precio) return exact.precio;
+        const sameRef = order.details.find((d) => d.referencia.trim() === ref && Number(d.precio) > 0);
+        return sameRef?.precio || 0;
+      };
       const lines = result.data.lines
         .filter((line) => line.packed > 0)
-        .map((line) => ({ referencia: line.referencia, talla: line.talla, cantidad: line.packed }));
+        .map((line) => ({
+          referencia: line.referencia,
+          talla: line.talla,
+          cantidad: line.packed,
+          precio: priceOf(line.referencia, line.talla),
+        }));
       const book = buildReadOrderCommercialWorkbook({
         orderId: order.id,
         cliente: order.cliente,
@@ -724,7 +755,9 @@ export const WholesaleDashboard: React.FC<WholesaleDashboardProps> = ({
       downloadCommercialWorkbook(book.pedidos, book.movto, `Pedidos_comercial_${order.id}.xlsx`);
       toast({
         title: 'Plano de lo leído',
-        description: `${book.movto.length} tallas, ${book.units} unidades. El precio queda en 0: este pedido no trae precio por talla.`,
+        description: book.sinPrecio > 0
+          ? `${book.movto.length} tallas, ${book.units} unidades. ${book.sinPrecio} tallas sin precio: ese pedido se cargó sin guardar el valor por talla.`
+          : `${book.movto.length} tallas, ${book.units} unidades, con el precio del pedido.`,
       });
     } catch (error: unknown) {
       toast({

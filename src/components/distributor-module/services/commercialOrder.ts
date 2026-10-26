@@ -252,7 +252,7 @@ export const downloadCommercialWorkbook = (
   XLSX.writeFile(book, fileName);
 };
 
-export type ReadOrderCommercialLine = { referencia: string; talla: string; cantidad: number };
+export type ReadOrderCommercialLine = { referencia: string; talla: string; cantidad: number; precio?: number };
 
 const fechaToYmd = (fecha: string) => {
   const parsed = new Date(fecha);
@@ -277,16 +277,19 @@ export const buildReadOrderCommercialWorkbook = (input: {
   ordenDeCompra: string;
   lines: ReadOrderCommercialLine[];
 }) => {
-  const grouped = new Map<string, { referencia: string; talla: string; cantidad: number }>();
+  const grouped = new Map<string, { referencia: string; talla: string; cantidad: number; precio: number }>();
   input.lines.forEach((line) => {
     const referencia = String(line.referencia || '').trim();
     const talla = String(line.talla || '').trim();
     const cantidad = Math.max(0, Math.floor(Number(line.cantidad) || 0));
+    const precio = Math.max(0, Number(line.precio) || 0);
     if (!referencia || cantidad <= 0) return;
     const key = `${referencia}\u0001${talla}`;
     const prev = grouped.get(key);
-    if (prev) prev.cantidad += cantidad;
-    else grouped.set(key, { referencia, talla, cantidad });
+    if (prev) {
+      prev.cantidad += cantidad;
+      if (prev.precio <= 0 && precio > 0) prev.precio = precio;
+    } else grouped.set(key, { referencia, talla, cantidad, precio });
   });
   const rows = Array.from(grouped.values()).sort((a, b) =>
     a.referencia === b.referencia ? a.talla.localeCompare(b.talla, undefined, { numeric: true }) : a.referencia.localeCompare(b.referencia)
@@ -332,9 +335,9 @@ export const buildReadOrderCommercialWorkbook = (input: {
     NRO_DIAS: 3,
     LISTA_PRECIO: 'VME',
     CANT: row.cantidad,
-    PRECIO_UNI: 0,
+    PRECIO_UNI: row.precio,
   }));
-  return { pedidos, movto, units: rows.reduce((sum, row) => sum + row.cantidad, 0) };
+  return { pedidos, movto, units: rows.reduce((sum, row) => sum + row.cantidad, 0), sinPrecio: rows.filter((row) => row.precio <= 0).length };
 };
 
 export const downloadCommercialTemplate = () => {

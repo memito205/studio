@@ -1324,6 +1324,8 @@ export interface WholesaleOrderDetail {
     item?: string;
     talla: string;
     cantidad: number;
+    /** Precio unitario. Sale de la columna de precio o de Valor neto / cantidad al cargar el pedido. */
+    precio?: number;
 }
 
 export interface ProductDatabaseItem {

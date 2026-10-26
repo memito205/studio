@@ -61,15 +61,15 @@ describe('pedido comercial', () => {
       fecha: '2026-09-30T00:00:00.000Z',
       ordenDeCompra: '7617',
       lines: [
-        { referencia: '441920BEI', talla: '7', cantidad: 4 },
-        { referencia: '441920BEI', talla: '7', cantidad: 2 },
-        { referencia: '441920BEI', talla: '8', cantidad: 6 },
+        { referencia: '441920BEI', talla: '7', cantidad: 4, precio: 63070 },
+        { referencia: '441920BEI', talla: '7', cantidad: 2, precio: 63070 },
+        { referencia: '441920BEI', talla: '8', cantidad: 6, precio: 65450 },
       ],
     });
     expect(book.pedidos[0]).toMatchObject({ TERCERO: 805027987, NRO_PEDIDO: 7617, NOTAS: 'Leido OC-99' });
     expect(book.movto).toEqual([
-      expect.objectContaining({ REF: '441920BEI', EXT: 7, CANT: 6, BODEGA: 'BDIS2', PRECIO_UNI: 0 }),
-      expect.objectContaining({ REF: '441920BEI', EXT: 8, CANT: 6 }),
+      expect.objectContaining({ REF: '441920BEI', EXT: 7, CANT: 6, BODEGA: 'BDIS2', PRECIO_UNI: 63070 }),
+      expect.objectContaining({ REF: '441920BEI', EXT: 8, CANT: 6, PRECIO_UNI: 65450 }),
     ]);
     expect(book.units).toBe(12);
   });

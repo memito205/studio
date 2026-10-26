@@ -886,7 +886,14 @@ export async function saveWholesaleOrders(orders: WholesaleOrder[]): Promise<{ d
             const orderForFirestore = {
                 ...order,
                 fecha: Timestamp.fromDate(new Date(order.fecha)),
-            };
+            } as Record<string, unknown>;
+            const existingSnap = await getDoc(docRef);
+            if (existingSnap.exists()) {
+                const prev = existingSnap.data();
+                if (prev.status) orderForFirestore.status = prev.status;
+                if (prev.packingData) orderForFirestore.packingData = prev.packingData;
+                if (prev.packingForceClosed) orderForFirestore.packingForceClosed = true;
+            }
             batch.set(docRef, orderForFirestore, { merge: true });
         }
         await batch.commit();
