@@ -5342,8 +5342,7 @@ export async function getTransfersInTransitForCollection(filters: {
     try {
         const status: TransferStatus = 'En Tránsito';
         const max = Math.min(Math.max(filters.maxItems ?? 3000, 1), 10000);
-        const tfDigits = String(filters.numeroTF || '').replace(/\D/g, '');
-        const tf = tfDigits ? String(Number(tfDigits)) : '';
+        const tf = String(filters.numeroTF || '').trim();
         const origen = String(filters.bodegaOrigen || '').trim().toUpperCase();
         const destino = String(filters.bodegaDestino || '').trim().toUpperCase();
 
@@ -5378,27 +5377,41 @@ export async function getTransfersInTransitForCollection(filters: {
     }
 }
 
+/**
+ * Valores a consultar en numeroTF.
+ * 47441, TF-47441 y TF 47441 siguen yendo al número sin ceros a la izquierda.
+ * T3167 se busca tal cual: la T hace parte del consecutivo y no se descarta.
+ */
+function numeroTfLookupValues(searchQuery: string): string[] {
+    const typed = String(searchQuery || '').trim();
+    if (!typed) return [];
+    const values = new Set<string>();
+    values.add(typed);
+    values.add(typed.toUpperCase());
+    const compact = typed.toUpperCase().replace(/[\s\-_]/g, '');
+    if (compact) values.add(compact);
+    const withoutTf = compact.replace(/^TF/, '');
+    if (/^\d+$/.test(withoutTf)) values.add(String(Number(withoutTf)));
+    return [...values].filter(Boolean).slice(0, 10);
+}
+
 export async function getTransfersByQuery(searchQuery: string, type: 'number' | 'origin' | 'destination' | 'altCode'): Promise<{ data?: TransferEntry[]; error?: string }> {
     try {
         let field = 'numeroTF';
         if (type === 'origin') field = 'bodegaOrigen';
         if (type === 'destination') field = 'bodegaDestino';
         if (type === 'altCode') field = 'codigoAlterno';
-        // Por número: acepta "47441", "TF-47441", "TF 47441" (solo dígitos, sin ceros a la izquierda).
-        const value =
+        const values =
             type === 'altCode'
-                ? searchQuery.toUpperCase().replace(/\s+/g, '')
+                ? [searchQuery.toUpperCase().replace(/\s+/g, '')].filter(Boolean)
                 : type === 'number'
-                  ? (() => {
-                        const digits = String(searchQuery || '').replace(/\D/g, '');
-                        return digits ? String(Number(digits)) : '';
-                    })()
-                  : searchQuery.toUpperCase().trim();
-        if (!value) return { data: [] };
+                  ? numeroTfLookupValues(searchQuery)
+                  : [searchQuery.toUpperCase().trim()].filter(Boolean);
+        if (values.length === 0) return { data: [] };
 
         const q = query(
-            collection(firestore, "transfers"), 
-            where(field, "==", value),
+            collection(firestore, "transfers"),
+            values.length === 1 ? where(field, "==", values[0]) : where(field, "in", values),
             limit(1000)
         );
         

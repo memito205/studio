@@ -3639,7 +3639,7 @@ const CollectionTabView: React.FC<{
                     </Button>
                     <Button variant="ghost" onClick={() => { setFilters({ numeroTF: '', bodegaOrigen: '', bodegaDestino: '' }); setTransfers([]); }}>Limpiar</Button>
                 </div>
-                <p className="text-xs text-muted-foreground">Escriba el número y oprima Buscar (o Enter). Acepta 47441, TF-47441 o TF 47441.</p>
+                <p className="text-xs text-muted-foreground">Escriba el número y oprima Buscar (o Enter). Acepta 47441, TF-47441, TF 47441 o T3167.</p>
                  <div className="border rounded-md max-h-[60vh] overflow-auto">
                     <Table>
                         <TableHeader>
