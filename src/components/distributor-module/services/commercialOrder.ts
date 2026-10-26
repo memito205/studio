@@ -241,14 +241,100 @@ export const buildCommercialWorkbook = (
 
 export const downloadCommercialWorkbook = (
   pedidos: Record<string, string | number | null>[],
-  movto: Record<string, string | number>[]
+  movto: Record<string, string | number>[],
+  fileName = 'Pedidos_comercial.xlsx'
 ) => {
   const book = XLSX.utils.book_new();
   const pedidosSheet = XLSX.utils.json_to_sheet(pedidos);
   const movtoSheet = XLSX.utils.json_to_sheet(movto);
   XLSX.utils.book_append_sheet(book, pedidosSheet, 'Pedidos ');
   XLSX.utils.book_append_sheet(book, movtoSheet, 'Movto Pedidos comercial');
-  XLSX.writeFile(book, 'Pedidos_comercial.xlsx');
+  XLSX.writeFile(book, fileName);
+};
+
+export type ReadOrderCommercialLine = { referencia: string; talla: string; cantidad: number };
+
+const fechaToYmd = (fecha: string) => {
+  const parsed = new Date(fecha);
+  if (!Number.isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getDate()).padStart(2, '0');
+    return `${y}${m}${d}`;
+  }
+  const digits = String(fecha || '').replace(/\D/g, '');
+  return digits.length >= 8 ? digits.slice(0, 8) : new Date().toISOString().slice(0, 10).replace(/-/g, '');
+};
+
+/** Plano comercial con las tallas ya leídas del pedido, sin volver a repartir. */
+export const buildReadOrderCommercialWorkbook = (input: {
+  orderId: string;
+  cliente: string;
+  sucursal: string;
+  bodega: string;
+  vendedor: string;
+  fecha: string;
+  ordenDeCompra: string;
+  lines: ReadOrderCommercialLine[];
+}) => {
+  const grouped = new Map<string, { referencia: string; talla: string; cantidad: number }>();
+  input.lines.forEach((line) => {
+    const referencia = String(line.referencia || '').trim();
+    const talla = String(line.talla || '').trim();
+    const cantidad = Math.max(0, Math.floor(Number(line.cantidad) || 0));
+    if (!referencia || cantidad <= 0) return;
+    const key = `${referencia}\u0001${talla}`;
+    const prev = grouped.get(key);
+    if (prev) prev.cantidad += cantidad;
+    else grouped.set(key, { referencia, talla, cantidad });
+  });
+  const rows = Array.from(grouped.values()).sort((a, b) =>
+    a.referencia === b.referencia ? a.talla.localeCompare(b.talla, undefined, { numeric: true }) : a.referencia.localeCompare(b.referencia)
+  );
+  if (rows.length === 0) throw new Error('Este pedido no tiene unidades leídas para armar el plano.');
+
+  const cliente = String(input.cliente || '').trim();
+  const tercero = /^\d+$/.test(cliente) ? Number(cliente) : cliente || 'SIN_NIT';
+  const sucursal = String(input.sucursal || '').trim() || '001';
+  const bodega = String(input.bodega || '').trim().toUpperCase() || 'BDIS2';
+  const vendedor = String(input.vendedor || '').trim();
+  const fecha = Number(fechaToYmd(input.fecha));
+  const oc = String(input.ordenDeCompra || '').replace(/\D/g, '');
+  const nroPedido = oc ? Number(oc) : 1;
+
+  const pedidos = [{
+    CO: 999,
+    NUMDOC: 1,
+    FECHA_PEDIDO: fecha,
+    TERCERO: tercero,
+    SUCURSAL: sucursal,
+    TERCERO_DESP: tercero,
+    SUCURSAL_DESP: sucursal,
+    TIPO_CLIENTE: '0002',
+    CO_FACT: 999,
+    FECHA_ENT: fecha,
+    'NRO:DIAS_ENTREGA': 3,
+    NRO_PEDIDO: nroPedido,
+    COND_PAGO: 'M30',
+    NOTAS: `Leido ${input.orderId}`,
+    PTO_ENVIO: '000',
+    VENDEDOR_PEDIDO: /^\d+$/.test(vendedor) ? Number(vendedor) : 1000,
+  }];
+  const movto = rows.map((row, index) => ({
+    CO: 999,
+    NRO_DOCTO: 1,
+    NRO_REGISTRO: index + 1,
+    REF: row.referencia,
+    EXT: sizeToExte(row.talla),
+    BODEGA: bodega,
+    CO_MVTO: 999,
+    FECHA_ENTREGA: fecha,
+    NRO_DIAS: 3,
+    LISTA_PRECIO: 'VME',
+    CANT: row.cantidad,
+    PRECIO_UNI: 0,
+  }));
+  return { pedidos, movto, units: rows.reduce((sum, row) => sum + row.cantidad, 0) };
 };
 
 export const downloadCommercialTemplate = () => {

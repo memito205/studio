@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCommercialWorkbook, resolveCommercialLines, type CommercialHeader } from './commercialOrder';
+import { buildCommercialWorkbook, buildReadOrderCommercialWorkbook, resolveCommercialLines, type CommercialHeader } from './commercialOrder';
 import type { StockItem } from '../types';
 
 const header: CommercialHeader = {
@@ -49,6 +49,29 @@ describe('pedido comercial', () => {
     expect(units).toBe(12);
     const bodegas = new Set(book.movto.map((line) => line.BODEGA));
     expect(bodegas).toEqual(new Set(['BDIS2', 'BODVI']));
+  });
+
+  it('arma el plano con las tallas leídas del pedido, sin repartir de nuevo', () => {
+    const book = buildReadOrderCommercialWorkbook({
+      orderId: 'OC-99',
+      cliente: '805027987',
+      sucursal: '001',
+      bodega: 'BDIS2',
+      vendedor: '1000',
+      fecha: '2026-09-30T00:00:00.000Z',
+      ordenDeCompra: '7617',
+      lines: [
+        { referencia: '441920BEI', talla: '7', cantidad: 4 },
+        { referencia: '441920BEI', talla: '7', cantidad: 2 },
+        { referencia: '441920BEI', talla: '8', cantidad: 6 },
+      ],
+    });
+    expect(book.pedidos[0]).toMatchObject({ TERCERO: 805027987, NRO_PEDIDO: 7617, NOTAS: 'Leido OC-99' });
+    expect(book.movto).toEqual([
+      expect.objectContaining({ REF: '441920BEI', EXT: 7, CANT: 6, BODEGA: 'BDIS2', PRECIO_UNI: 0 }),
+      expect.objectContaining({ REF: '441920BEI', EXT: 8, CANT: 6 }),
+    ]);
+    expect(book.units).toBe(12);
   });
 
   it('usa el NIT de pantalla cuando el archivo no lo trae', () => {
