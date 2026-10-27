@@ -784,24 +784,26 @@ export async function reopenDeliveryManifest(input: {
   if (!note) return { success: false, error: 'Escriba por qué se reabre la relación.' };
   try {
     const ref = doc(firestore, 'deliveryManifests', input.manifestDocId);
+    const stopRefs = (await getDocs(collection(ref, 'stops'))).docs.map((s) => s.ref);
     const status = await runTransaction(firestore, async (tx) => {
       const snap = await tx.get(ref);
       if (!snap.exists()) throw new Error('La relación no existe.');
       const data = snap.data();
       if (data.deliveryStatus !== 'cerrada') throw new Error('Solo se reabre una relación cerrada.');
-      const stopsSnap = await tx.get(query(collection(ref, 'stops')));
+      const stopSnaps = await Promise.all(stopRefs.map((stopRef) => tx.get(stopRef)));
       const now = Timestamp.now();
       const toStatus: DeliveryManifestStatus = data.closedWithoutApp ? 'en_ruta' : 'pendiente_validacion';
       const restored: string[] = [];
-      const statusDeletes: unknown[] = [];
-      stopsSnap.docs.forEach((s) => {
+      const statusDeletes: FieldPath[] = [];
+      stopSnaps.forEach((s) => {
+        if (!s.exists()) return;
         const rec = s.data().storeReception as { status?: string; byId?: string } | undefined;
         if (!rec || rec.byId) return;
         if (rec.status !== 'completada_por_conductor' && rec.status !== 'cerrada_por_logistica') return;
         const code = String(s.data().storeCode || '').trim();
         tx.update(s.ref, { storeReception: deleteField() });
         if (code) restored.push(code);
-        statusDeletes.push(new FieldPath('storeReceptionStatus', s.id), deleteField());
+        statusDeletes.push(new FieldPath('storeReceptionStatus', s.id));
       });
       const doneKeys: string[] = Array.isArray(data.storeDoneKeys) ? data.storeDoneKeys.map(String) : [];
       const dropKeys = doneKeys.filter((k) => restored.some((c) => k.startsWith(`${c}|`)));
@@ -826,9 +828,7 @@ export async function reopenDeliveryManifest(input: {
         ...(restored.length ? { storeOpenCodes: arrayUnion(...restored) } : {}),
         ...(dropKeys.length ? { storeDoneKeys: arrayRemove(...dropKeys) } : {}),
       });
-      for (let i = 0; i < statusDeletes.length; i += 2) {
-        tx.update(ref, statusDeletes[i] as FieldPath, deleteField());
-      }
+      statusDeletes.forEach((field) => tx.update(ref, field, deleteField()));
       return toStatus;
     });
     return { success: true, status };
