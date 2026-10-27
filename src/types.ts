@@ -605,6 +605,14 @@ export interface DeliveryManifest {
     storeDoneKeys?: string[];
     /** stopId -> estado de la recepción en tienda. */
     storeReceptionStatus?: Record<string, StoreReceptionStatus>;
+    /** Reaperturas de una relación cerrada por error. */
+    reopenHistory?: Array<{
+        at: Date;
+        byId: string;
+        byName: string;
+        note: string;
+        to: DeliveryManifestStatus;
+    }>;
     /** Cambios de conductor/placa hechos por el admin mientras estaba en ruta. */
     driverHistory?: Array<{
         fromUserId?: string | null;

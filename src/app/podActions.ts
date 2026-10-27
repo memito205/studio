@@ -35,6 +35,7 @@ const platformWhs = (v: unknown) => String(v || '').trim().toUpperCase();
 const platformDocId = (tf: unknown, whs: unknown) => `${platformTf(tf)}_${platformWhs(whs).replace(/[^A-Z0-9]/g, '_')}`;
 import type {
   DeliveryManifest,
+  DeliveryManifestStatus,
   DeliveryManifestStop,
   DeliveryPhoto,
   DeliveryStopStatus,
@@ -769,6 +770,70 @@ export async function closeDeliveryManifestWithoutApp(input: {
     return { success: true };
   } catch (error: any) {
     return { success: false, error: error.message || 'No se pudo cerrar la relación.' };
+  }
+}
+
+/** Devuelve una relación cerrada a validación (o a ruta, si se cerró sin app). No toca las TF ni las recepciones que cerró la tienda. */
+export async function reopenDeliveryManifest(input: {
+  manifestDocId: string;
+  note: string;
+  actor: TransferActor;
+}): Promise<{ success: boolean; status?: DeliveryManifestStatus; error?: string }> {
+  if (!input.actor?.userId) return { success: false, error: 'Sesión no válida.' };
+  const note = String(input.note || '').trim();
+  if (!note) return { success: false, error: 'Escriba por qué se reabre la relación.' };
+  try {
+    const ref = doc(firestore, 'deliveryManifests', input.manifestDocId);
+    const status = await runTransaction(firestore, async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists()) throw new Error('La relación no existe.');
+      const data = snap.data();
+      if (data.deliveryStatus !== 'cerrada') throw new Error('Solo se reabre una relación cerrada.');
+      const stopsSnap = await tx.get(query(collection(ref, 'stops')));
+      const now = Timestamp.now();
+      const toStatus: DeliveryManifestStatus = data.closedWithoutApp ? 'en_ruta' : 'pendiente_validacion';
+      const restored: string[] = [];
+      const statusDeletes: unknown[] = [];
+      stopsSnap.docs.forEach((s) => {
+        const rec = s.data().storeReception as { status?: string; byId?: string } | undefined;
+        if (!rec || rec.byId) return;
+        if (rec.status !== 'completada_por_conductor' && rec.status !== 'cerrada_por_logistica') return;
+        const code = String(s.data().storeCode || '').trim();
+        tx.update(s.ref, { storeReception: deleteField() });
+        if (code) restored.push(code);
+        statusDeletes.push(new FieldPath('storeReceptionStatus', s.id), deleteField());
+      });
+      const doneKeys: string[] = Array.isArray(data.storeDoneKeys) ? data.storeDoneKeys.map(String) : [];
+      const dropKeys = doneKeys.filter((k) => restored.some((c) => k.startsWith(`${c}|`)));
+      tx.update(ref, {
+        deliveryStatus: toStatus,
+        validatedAt: deleteField(),
+        validatedById: deleteField(),
+        validatedByName: deleteField(),
+        validationNote: deleteField(),
+        closedWithoutApp: deleteField(),
+        closedAt: deleteField(),
+        closedById: deleteField(),
+        closedByName: deleteField(),
+        closedNote: deleteField(),
+        reopenHistory: arrayUnion({
+          at: now,
+          byId: input.actor.userId,
+          byName: actorNameOf(input.actor),
+          note,
+          to: toStatus,
+        }),
+        ...(restored.length ? { storeOpenCodes: arrayUnion(...restored) } : {}),
+        ...(dropKeys.length ? { storeDoneKeys: arrayRemove(...dropKeys) } : {}),
+      });
+      for (let i = 0; i < statusDeletes.length; i += 2) {
+        tx.update(ref, statusDeletes[i] as FieldPath, deleteField());
+      }
+      return toStatus;
+    });
+    return { success: true, status };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'No se pudo reabrir la relación.' };
   }
 }
 

@@ -19,6 +19,7 @@ import {
   getStoreReceipts,
   reassignDeliveryManifestDriver,
   rejectDeliveryStop,
+  reopenDeliveryManifest,
   resolvePodNovedades,
   voidDuplicateDeliveryManifests,
   type AdminManifest,
@@ -250,6 +251,31 @@ function ManifestDetail({
       },
     });
 
+  const reopen = () =>
+    askNote({
+      title: `Reabrir relación #${manifest.manifestId}`,
+      description:
+        manifest.closedWithoutApp
+          ? 'Vuelve a En ruta. Las paradas ya registradas se conservan. La recepción que se cerró sola al cerrar la relación queda pendiente de nuevo.'
+          : 'Vuelve a Por validar. Las entregas registradas se conservan. Para corregir una parada, después use Rechazar. La recepción que cerró la tienda no se borra.',
+      required: true,
+      confirmLabel: 'Reabrir',
+      onConfirm: async (note) => {
+        const res = await reopenDeliveryManifest({ manifestDocId: manifest.id, note, actor });
+        if (!res.success) {
+          toast({ variant: 'destructive', title: 'No se pudo reabrir', description: res.error });
+          return false;
+        }
+        toast({
+          title: `Relación #${manifest.manifestId} reabierta`,
+          description: res.status === 'en_ruta' ? 'Quedó en ruta.' : 'Quedó por validar.',
+        });
+        onChanged();
+        onClose();
+        return true;
+      },
+    });
+
   const closeWithoutApp = () =>
     askNote({
       title: `Cerrar relación #${manifest.manifestId} sin app`,
@@ -322,8 +348,22 @@ function ManifestDetail({
             Cerrada sin app {fmt(manifest.closedAt)} por {manifest.closedByName} · {manifest.closedNote}
           </p>
         )}
+        {(manifest.reopenHistory || []).length > 0 && (
+          <div className="text-xs bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 space-y-0.5 text-amber-950">
+            {(manifest.reopenHistory || []).map((h, i) => (
+              <p key={i}>
+                Reabierta {fmt(h.at)} por {h.byName}: {h.note}
+              </p>
+            ))}
+          </div>
+        )}
 
         <div className="flex flex-wrap gap-2">
+          {status === 'cerrada' && (
+            <Button variant="outline" onClick={reopen}>
+              <Undo2 className="mr-2 h-4 w-4" /> Reabrir
+            </Button>
+          )}
           {status === 'pendiente_validacion' && (
             <Button onClick={approve}>
               <CheckCircle2 className="mr-2 h-4 w-4" /> Aprobar y cerrar
