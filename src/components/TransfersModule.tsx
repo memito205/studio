@@ -28,6 +28,7 @@ import { releaseOrphanMisEntregasLocks } from '@/app/routeTaskActions';
 import { compressImage, uploadPhotosNow } from '@/lib/podQueue';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
+import { isUnnumberedTransfer } from '@/lib/transferRouteKey';
 import { Badge } from './ui/badge';
 import { useAuth } from '@/hooks/use-auth-context';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -105,8 +106,11 @@ const groupTransfersByTF = (transfers: TransferEntry[], placaMap?: Map<string, s
 
     transfers.forEach(t => {
         const placa = placaMap ? (placaMap.get(t.id) || '') : '';
-        // Removed status from key to truly unify the TF
-        const key = `${t.numeroTF}-${t.bodegaOrigen}-${t.bodegaDestino}-${placa}`;
+        // Una TF real se unifica. N/A no es una TF: cada código alterno queda en su propia fila.
+        const identity = isUnnumberedTransfer(t.numeroTF)
+            ? `${t.id}|${String(t.codigoAlterno || '').trim()}`
+            : t.numeroTF;
+        const key = `${identity}-${t.bodegaOrigen}-${t.bodegaDestino}-${placa}`;
         const existing = groups.get(key);
         
         if (existing) {
@@ -1838,7 +1842,8 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
         return operationalTransfers.filter(
             (t) =>
                 (t.status === 'Recibido en Bodega' || t.status === 'Validado Supervisor') &&
-                !isCajonNorteLocation(t.ubicacion)
+                !isCajonNorteLocation(t.ubicacion) &&
+                !isUnnumberedTransfer(t.numeroTF)
         );
     }, [operationalTransfers]);
     
@@ -4096,6 +4101,10 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
                   description: `Analizador: ${analysisResult.count || 0} TFs. Operación: ${result.summary.added} nuevas / ${result.summary.updated} actualizadas.${
                     result.summary.altLinked || result.summary.altPending
                       ? ` Código alterno: ${result.summary.altLinked || 0} enlazadas · ${result.summary.altPending || 0} pendientes sin TF.`
+                      : ''
+                  }${
+                    result.summary.altYaEnRuta
+                      ? ` ${result.summary.altYaEnRuta} código(s) ya tenían TF en una relación y no se duplicaron.`
                       : ''
                   }`, 
               });

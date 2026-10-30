@@ -22,6 +22,7 @@ import type { MerchandiseItem, TFTItem, VerificationItem, SavedVerification, Alt
 import { parseMerchandiseExcel, exportToExcel, normalizeDestination } from './utils/excel';
 import { generatePDF } from './utils/pdf';
 import { firstWarehouseArrival } from '@/lib/transferDates';
+import { isUnnumberedTransfer } from '@/lib/transferRouteKey';
 import {
   downloadStoreSummaryPdfs,
   merchandiseItemsToSummaryRows,
@@ -219,31 +220,43 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                         : current.fechaLlegada,
             });
         };
-        receivedInWarehouseTransfers.forEach(t => {
+        const dispatchLineKey = (t: { id?: string; numeroTF?: string; bodegaDestino?: string }) => {
             const tfKey = String(t.numeroTF || '').trim().toUpperCase();
-            if (!tfKey) return;
-            upsertWarehouse(warehouseByTfDest, `${tfKey}|${normalizeDestination(t.bodegaDestino)}`, t);
-            upsertWarehouse(warehouseByTf, tfKey, t);
+            if (!tfKey) return '';
+            if (isUnnumberedTransfer(tfKey)) return `ALT|${t.id || normalizeAltCodeKey((t as { codigoAlterno?: string }).codigoAlterno)}`;
+            return `${tfKey}|${normalizeDestination(t.bodegaDestino || '')}`;
+        };
+
+        receivedInWarehouseTransfers.forEach(t => {
+            const key = dispatchLineKey(t);
+            if (!key) return;
+            upsertWarehouse(warehouseByTfDest, key, t);
+            if (!isUnnumberedTransfer(t.numeroTF)) {
+                upsertWarehouse(warehouseByTf, String(t.numeroTF || '').trim().toUpperCase(), t);
+            }
         });
 
         const pendingRes = await getPendingAltCodeReceipts();
         setPendingAltReceipts(pendingRes.pending || []);
         const linesByTfDest = new Map<string, typeof receivedInWarehouseTransfers>();
         receivedInWarehouseTransfers.forEach((t) => {
-            const tfKey = String(t.numeroTF || '').trim().toUpperCase();
-            if (!tfKey) return;
-            const key = `${tfKey}|${normalizeDestination(t.bodegaDestino)}`;
+            const key = dispatchLineKey(t);
+            if (!key) return;
             if (!linesByTfDest.has(key)) linesByTfDest.set(key, []);
             linesByTfDest.get(key)!.push(t);
         });
 
-        // Una fila por TF + destino (una TF = una caja); el código coincide con el de la etiqueta DESTINO-TF.
+        // Una fila por TF + destino. Sin número de TF, una fila por código alterno.
         const consolidatedMerchandiseData: MerchandiseItem[] = Array.from(linesByTfDest.values()).map((lines) => {
             const t = lines[0];
             const originalDest = t.bodegaDestino;
             const normalizedDest = normalizeDestination(originalDest);
-            const codigo = `${originalDest.trim()}-${t.numeroTF}`.toUpperCase();
+            const unnumbered = isUnnumberedTransfer(t.numeroTF);
+            const codigo = unnumbered
+                ? (normalizeAltCodeKey(t.codigoAlterno) || `${originalDest.trim()}-${t.id}`.toUpperCase())
+                : `${originalDest.trim()}-${t.numeroTF}`.toUpperCase();
             const units = lines.reduce((sum, l) => sum + (Number(l.cantidad || 0) || 0), 0);
+            const llegada = firstWarehouseArrival(t) || undefined;
 
             return {
                 codigo: codigo.replace(/'/g, '-'),
@@ -269,6 +282,9 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
                 empacador: 'SISTEMA',
                 marca: String(t.marca || '').trim().toUpperCase() || undefined,
                 ...(lines.some((l) => l.reprogramada) ? { reprogramada: true } : {}),
+                ...(unnumbered && t.ubicacion ? { ubicacion: t.ubicacion } : {}),
+                ...(unnumbered && llegada && !Number.isNaN(llegada.getTime()) ? { fechaLlegada: llegada } : {}),
+                ...(unnumbered && t.codigoAlterno ? { codigoAlterno: t.codigoAlterno } : {}),
             };
         });
 
@@ -307,7 +323,7 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
 
         allTransfersFromDB.forEach(t => {
             const tfKey = String(t.numeroTF || '').trim().toUpperCase();
-            if (!tfKey) return;
+            if (!tfKey || isUnnumberedTransfer(tfKey)) return;
             const destKey = normalizeDestination(t.bodegaDestino);
             upsertTftAgg(tftMapByTfDest, `${tfKey}|${destKey}`, t);
             upsertTftAgg(tftMapByTfOnly, tfKey, t);
@@ -316,6 +332,15 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
         const joined = consolidatedMerchandiseData.map(item => {
             const tfForMatch = String(item.tf || item.contenido || '').trim().toUpperCase();
             const destForMatch = normalizeDestination(item.destino);
+            if (isUnnumberedTransfer(tfForMatch)) {
+                return {
+                    ...item,
+                    tftMatch: item.tf,
+                    tftFecha: item.fechaCreacion,
+                    tftCantidad: item.cant,
+                    marca: item.marca,
+                };
+            }
             // Preferir TF+destino para no mezclar rutas distintas del mismo número (ej. 44852 BODPN vs otra tienda).
             const match =
                 (tfForMatch && destForMatch

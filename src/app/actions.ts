@@ -19,7 +19,7 @@ import { startOfDay, endOfDay, isWithinInterval } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { CURRENT_APP_VERSION } from './version';
 import { normalizeHeader, parseFlexibleDate, excelSerialDateToJSDate, findCaseInsensitiveKey, extractLocalDateString } from '@/lib/parsingUtils';
-import { buildTransferRouteKey, pickExistingTransferLine, transferBrandKey } from '@/lib/transferRouteKey';
+import { buildTransferRouteKey, isTransferCommittedToRoute, isUnnumberedTransfer, pickExistingTransferLine, transferBrandKey } from '@/lib/transferRouteKey';
 import { processReport } from '@/services/reportProcessor';
 
 // Helper function to convert Dates back to Timestamps FOR WRITING to Firestore
@@ -4467,7 +4467,7 @@ async function flagReceivedNotInBase(incoming: Array<{ numeroTF: unknown; bodega
     }
 }
 
-export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | 'status'>[]): Promise<{ success: boolean; error?: string; summary?: { added: number, updated: number, removed: number, altLinked?: number, altPending?: number, fueraBase?: number } }> {
+export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | 'status'>[]): Promise<{ success: boolean; error?: string; summary?: { added: number, updated: number, removed: number, altLinked?: number, altPending?: number, fueraBase?: number, altYaEnRuta?: number } }> {
     const transfersCollection = collection(firestore, 'transfers');
     const transfers = transfersInput.map((t) => {
         const alt = normalizeAltCode(t.codigoAlterno);
@@ -4514,6 +4514,29 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
         let added = 0;
         let updated = 0;
         let removed = 0;
+        let altYaEnRuta = 0;
+
+        // Filas sin número de TF se identifican por código alterno, no por la clave N/A+marca+grupo.
+        // Si ese sticker ya está en una TF numerada, no se crea otra línea.
+        const unnumberedAlts = Array.from(
+            new Set(
+                transfers
+                    .filter((t) => isUnnumberedTransfer(t.numeroTF))
+                    .map((t) => normalizeAltCode(t.codigoAlterno))
+                    .filter(Boolean)
+            )
+        );
+        const linesByAlt = unnumberedAlts.length > 0 ? await findTransfersByAltCodes(unnumberedAlts) : new Map<string, Array<{ id: string; data: any }>>();
+
+        const applyIncomingUpdate = (lineId: string, incoming: Omit<TransferEntry, 'id' | 'status'>, keepNumeroTF: boolean) => {
+            const updates: Record<string, any> = { ...convertDatesToTimestamps(incoming) };
+            delete updates.status;
+            delete updates.statusHistory;
+            if (keepNumeroTF) delete updates.numeroTF;
+            if (!normalizeAltCode(incoming.codigoAlterno)) delete updates.codigoAlterno;
+            batch.update(doc(transfersCollection, lineId), updates);
+            updated++;
+        };
 
         // 2. Identify what to DELETE: In Firebase (as "En Tránsito") but NOT in Excel
         // Comparison is now done via the composite key.
@@ -4531,6 +4554,13 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
         // Una línea que ya está en una relación no cambia de destino: la ruta nueva sale aparte.
         const newTransCounts: Record<string, number> = {};
         for (const incoming of transfers) {
+            if (isUnnumberedTransfer(incoming.numeroTF) && normalizeAltCode(incoming.codigoAlterno)) {
+                const known = linesByAlt.get(normalizeAltCode(incoming.codigoAlterno)) || [];
+                if (known.length > 0) continue;
+                const dest = (incoming.bodegaDestino || 'UNKNOWN').trim().toUpperCase();
+                newTransCounts[dest] = (newTransCounts[dest] || 0) + 1;
+                continue;
+            }
             const docs = existingTransfersByKey.get(transferBrandKey(incoming)) || [];
             if (pickExistingTransferLine(docs, incoming).kind !== 'update') {
                 const dest = (incoming.bodegaDestino || 'UNKNOWN').trim().toUpperCase();
@@ -4542,7 +4572,29 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
         const destOrderIndices: Record<string, number> = {};
 
         for (const incoming of transfers) {
-            const docs = existingTransfersByKey.get(transferBrandKey(incoming)) || [];
+            if (isUnnumberedTransfer(incoming.numeroTF)) {
+                const alt = normalizeAltCode(incoming.codigoAlterno);
+                const known = (alt ? linesByAlt.get(alt) : undefined) || [];
+                const numbered = known.filter((l) => !isUnnumberedTransfer(l.data.numeroTF));
+                if (numbered.length > 0) {
+                    // Ya existe la TF de ese sticker, aunque el destino del archivo sea otro. No se crea una segunda línea.
+                    altYaEnRuta++;
+                    continue;
+                }
+                const openGhost = known.find((l) => !isTransferCommittedToRoute(l.data));
+                if (openGhost) {
+                    applyIncomingUpdate(openGhost.id, incoming, true);
+                    continue;
+                }
+                if (known.length > 0) {
+                    altYaEnRuta++;
+                    continue;
+                }
+            }
+            const docs =
+                isUnnumberedTransfer(incoming.numeroTF) && normalizeAltCode(incoming.codigoAlterno)
+                    ? []
+                    : existingTransfersByKey.get(transferBrandKey(incoming)) || [];
             const target = pickExistingTransferLine(docs, incoming);
             const dest = (incoming.bodegaDestino || 'UNKNOWN').trim().toUpperCase();
 
@@ -4605,7 +4657,7 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
         await batch.commit();
         const fueraBase = await flagReceivedNotInBase(transfers);
         const altLink = await linkPendingAltCodeReceipts();
-        return { success: true, summary: { added, updated, removed, altLinked: altLink.linked, altPending: altLink.pending, fueraBase } };
+        return { success: true, summary: { added, updated, removed, altLinked: altLink.linked, altPending: altLink.pending, fueraBase, altYaEnRuta } };
 
     } catch (error: any) {
         console.error("Error guardando transferencias (Composite Sync):", error);
@@ -5520,7 +5572,13 @@ export async function loadTransfersForDispatch(): Promise<{ data?: TransferEntry
         );
         const byId = new Map<string, DocumentData>();
         receivedSnap.docs.forEach((d) => byId.set(d.id, d.data()));
-        const tfs = Array.from(new Set(receivedSnap.docs.map((d) => d.data().numeroTF).filter((v) => v !== undefined && v !== null && v !== '')));
+        const tfs = Array.from(
+            new Set(
+                receivedSnap.docs
+                    .map((d) => d.data().numeroTF)
+                    .filter((v) => v !== undefined && v !== null && v !== '' && !isUnnumberedTransfer(String(v)))
+            )
+        );
         for (let i = 0; i < tfs.length; i += 30) {
             const snap = await getDocs(query(collection(firestore, 'transfers'), where('numeroTF', 'in', tfs.slice(i, i + 30))));
             snap.docs.forEach((d) => byId.set(d.id, d.data()));
@@ -6048,6 +6106,12 @@ type PendingWrite = { ref: DocumentReference; data: DocumentData };
  * Prepara las escrituras para enlazar un registro con sus líneas de TF:
  * pasa a Recibido en Bodega con la hora real del registro; no toca TF ya despachadas.
  */
+/** Si el sticker ya está en una TF con número, no se enlaza la copia N/A. */
+function preferNumberedAltLines<T extends { data: { numeroTF?: unknown } }>(lines: T[]): T[] {
+    const numbered = lines.filter((l) => !isUnnumberedTransfer(l.data?.numeroTF));
+    return numbered.length > 0 ? numbered : lines;
+}
+
 function buildAltCodeLinkWrites(
     receiptId: string,
     receipt: any,
@@ -6139,8 +6203,8 @@ export async function linkPendingAltCodeReceipts(): Promise<{ success: boolean; 
         let linked = 0;
         receipts.forEach((r) => {
             const code = normalizeAltCode(r.data.codigoAlterno);
-            const lines = matches.get(code);
-            if (!lines || lines.length === 0 || usedCodes.has(code)) return;
+            const lines = preferNumberedAltLines(matches.get(code) || []);
+            if (lines.length === 0 || usedCodes.has(code)) return;
             usedCodes.add(code);
             writes.push(...buildAltCodeLinkWrites(r.id, r.data, lines));
             linked++;
@@ -6224,7 +6288,7 @@ async function analyzeAltCodeBulk(
             };
         }
 
-        let lines = matches.get(code) || [];
+        let lines = preferNumberedAltLines(matches.get(code) || []);
         if (destino && lines.length > 0) {
             const byDest = lines.filter((l) => normalizeDestination(String(l.data.bodegaDestino || '')) === normalizeDestination(destino));
             if (byDest.length > 0) lines = byDest;
@@ -6374,7 +6438,7 @@ export async function registerAltCodeReceipt(
         await setDoc(ref, data);
 
         const matches = await findTransfersByAltCodes([code]);
-        const lines = matches.get(code) || [];
+        const lines = preferNumberedAltLines(matches.get(code) || []);
         if (lines.length > 0) {
             // Si la TF ya existía al digitar el código, el operario lo registró tarde.
             const late = lines.some((l) => !TRANSFER_FINAL_STATUSES.includes(l.data.status) && l.data.status !== 'Recibido en Bodega');
@@ -6431,7 +6495,7 @@ export async function correctAltCodeReceipt(receiptId: string, newCode: string):
         const duplicate = await findActiveAltCodeReceipt(code, receiptId);
         if (duplicate) return { success: false, error: `El código ${code} ya está registrado (${duplicate.ubicacion || 'sin ubicación'}).` };
         await updateDoc(ref, { codigoAlterno: code });
-        const lines = (await findTransfersByAltCodes([code])).get(code) || [];
+        const lines = preferNumberedAltLines((await findTransfersByAltCodes([code])).get(code) || []);
         if (lines.length > 0) {
             await commitWrites(buildAltCodeLinkWrites(receiptId, { ...snap.data(), codigoAlterno: code }, lines));
         }
@@ -6661,11 +6725,16 @@ export async function lookupTransferForVerification(
         const byTf = async (tf: string) =>
             (await getDocs(query(transfersRef, where('numeroTF', '==', tf)))).docs.map((d) => ({ id: d.id, data: d.data() }));
 
-        docs = await byTf(code);
+        if (!isUnnumberedTransfer(code)) {
+            docs = await byTf(code);
+        }
         if (docs.length === 0 && code.includes('-')) {
             const idx = code.lastIndexOf('-');
+            const tfPart = code.slice(idx + 1).trim();
             destFilter = code.slice(0, idx).trim();
-            docs = await byTf(code.slice(idx + 1).trim());
+            if (!isUnnumberedTransfer(tfPart)) {
+                docs = await byTf(tfPart);
+            }
         }
         if (docs.length === 0) {
             const alt = normalizeAltCode(code);
@@ -6682,7 +6751,7 @@ export async function lookupTransferForVerification(
         const groups = new Map<string, VerificationTransferLookup>();
         docs.forEach(({ id, data }) => {
             const dest = String(data.bodegaDestino || '').trim();
-            const key = `${data.numeroTF}|${dest.toUpperCase()}`;
+            const key = isUnnumberedTransfer(data.numeroTF) ? `ALT|${id}` : `${data.numeroTF}|${dest.toUpperCase()}`;
             const fecha = tsToIso(data.fecha);
             const llegada = firstWarehouseArrival(data)?.toISOString();
             const g = groups.get(key) || {
@@ -7102,6 +7171,12 @@ export async function createDeliveryManifest(
                 const data = d.data();
                 if (isTransferLockedInRoute(data)) {
                     return { success: false, error: transferLockedInRouteMessage({ ...data, id: d.id }) };
+                }
+                if (isUnnumberedTransfer(data.numeroTF)) {
+                    return {
+                        success: false,
+                        error: `La línea ${String(data.codigoAlterno || d.id)} no tiene número de TF y no puede entrar en una relación de despacho.`,
+                    };
                 }
                 if (isCajonNorteLocation(data.ubicacion)) {
                     const tf = String(data.numeroTF || d.id);
@@ -8296,7 +8371,7 @@ export async function closeVerificationDispatch(
         sessionName: string;
         results: VerificationItem[];
         stats: SavedVerification['stats'];
-        loaded: Array<{ codigo: string; tf: string; destino: string }>;
+        loaded: Array<{ codigo: string; tf: string; destino: string; codigoAlterno?: string }>;
         summary: Record<VerificationDispatchClass, number>;
         cargue: VerificationCargueInfo;
     },
@@ -8310,7 +8385,13 @@ export async function closeVerificationDispatch(
     error?: string;
 }> {
     try {
-        const tfs = Array.from(new Set(payload.loaded.map((l) => String(l.tf || '').trim()).filter(Boolean)));
+        const tfs = Array.from(
+            new Set(
+                payload.loaded
+                    .map((l) => String(l.tf || '').trim())
+                    .filter((tf) => tf && !isUnnumberedTransfer(tf))
+            )
+        );
         const linesByTf = new Map<string, Array<{ id: string; data: any }>>();
         for (let i = 0; i < tfs.length; i += 30) {
             const snap = await getDocs(query(collection(firestore, 'transfers'), where('numeroTF', 'in', tfs.slice(i, i + 30))));
@@ -8320,7 +8401,6 @@ export async function closeVerificationDispatch(
                 linesByTf.get(tf)!.push({ id: d.id, data: d.data() });
             });
         }
-
         const eligible: TransferStatus[] = ['Recibido en Bodega', 'Validado Supervisor'];
         const { isCajonNorteLocation } = await import('@/lib/transferRouteLock');
         const transferIds = new Set<string>();
@@ -8330,6 +8410,10 @@ export async function closeVerificationDispatch(
         const altMap = new Map<string, { codigoAlterno: string; numeroTF: string; destino: string; cantidad: number }>();
 
         payload.loaded.forEach((l) => {
+            if (isUnnumberedTransfer(l.tf)) {
+                skipped.push({ ...l, reason: 'Sin número de TF: no entra en la relación de despacho.' });
+                return;
+            }
             const lines = (linesByTf.get(String(l.tf || '').trim()) || []).filter(
                 (line) => normalizeDestination(String(line.data.bodegaDestino || '')) === l.destino
             );
@@ -8338,7 +8422,10 @@ export async function closeVerificationDispatch(
                 return;
             }
             const ok = lines.filter(
-                (line) => eligible.includes(line.data.status) && !isCajonNorteLocation(line.data.ubicacion)
+                (line) =>
+                    eligible.includes(line.data.status) &&
+                    !isCajonNorteLocation(line.data.ubicacion) &&
+                    !isUnnumberedTransfer(line.data.numeroTF)
             );
             if (ok.length === 0) {
                 const states = Array.from(new Set(lines.map((line) => line.data.status))).join(', ');

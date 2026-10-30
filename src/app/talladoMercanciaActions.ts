@@ -1017,6 +1017,43 @@ async function resolveReceptionBoxQty(
 }
 
 /**
+ * El cruce RK lee referenceStats. A veces el doc de packingUnits ya no existe
+ * y el resumen de la caja sí. Devuelve esa caja para poder tallarla.
+ * Una lectura de las referencias de ESA recepción, solo si el doc no apareció.
+ */
+async function findReceptionBoxInStats(
+  receptionId: string,
+  unitNumber: number
+): Promise<{ packingUnitId: string; qty: number; refs: string[] } | null> {
+  const statsSnap = await getDocs(collection(firestore, RECEPTION_OPS_COL, receptionId, 'referenceStats'));
+  const byPid = new Map<string, { qty: number; refs: Map<string, number> }>();
+  statsSnap.forEach((d) => {
+    const data = d.data() as {
+      reference?: string;
+      packUnitsById?: Record<string, { qty?: number; unitNumber?: number }>;
+    };
+    const ref = String(data.reference || d.id || '').trim();
+    for (const [pid, det] of Object.entries(data.packUnitsById || {})) {
+      if (Number(det?.unitNumber) !== unitNumber) continue;
+      const q = Math.max(0, Number(det?.qty) || 0);
+      if (q <= 0 || !pid) continue;
+      const cur = byPid.get(pid) || { qty: 0, refs: new Map<string, number>() };
+      cur.qty += q;
+      if (ref) cur.refs.set(ref, (cur.refs.get(ref) || 0) + q);
+      byPid.set(pid, cur);
+    }
+  });
+  let best: { packingUnitId: string; qty: number; refs: string[] } | null = null;
+  for (const [packingUnitId, info] of byPid) {
+    const refs = Array.from(info.refs.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([r]) => r);
+    if (!best || info.qty > best.qty) best = { packingUnitId, qty: info.qty, refs };
+  }
+  return best;
+}
+
+/**
  * Cruce por # caja: exige recepción (RK) elegida.
  * El # se reinicia en cada recepción; sin RK no se puede asociar.
  */
@@ -1072,7 +1109,8 @@ async function lookupReceptionBoxForTallado(
     seenUnitIds.add(d.id);
     return true;
   });
-  if (unitDocs.length === 0) {
+  const fromStats = unitDocs.length === 0 ? await findReceptionBoxInStats(receptionId, unitNumber) : null;
+  if (unitDocs.length === 0 && !fromStats) {
     return {
       success: false,
       error: `No hay caja #${unitNumber} en la recepción seleccionada.`,
@@ -1090,8 +1128,18 @@ async function lookupReceptionBoxForTallado(
     return tb.localeCompare(ta);
   });
   const d = ranked[0];
-  const raw = d.data() as Omit<PackingUnit, 'firestoreId'>;
-  const unit: PackingUnit = { firestoreId: d.id, ...raw };
+  const raw = d ? (d.data() as Omit<PackingUnit, 'firestoreId'>) : null;
+  const unit: PackingUnit = d
+    ? { firestoreId: d.id, ...raw! }
+    : {
+        firestoreId: fromStats!.packingUnitId,
+        id: unitNumber,
+        items: {},
+        status: 'closed',
+        reception_id: receptionId,
+        closedQty: fromStats!.qty,
+        closedRefs: fromStats!.refs,
+      };
 
   let rkIdentifier: string | undefined;
   try {
@@ -1117,7 +1165,7 @@ async function lookupReceptionBoxForTallado(
       const op = lab.data() as LabelingOperation;
       const plan = op.labelingPackPlan;
       if (!Array.isArray(plan)) continue;
-      if (plan.some((u) => u.packingUnitId === d.id && u.confirmed)) {
+      if (plan.some((u) => u.packingUnitId === unit.firestoreId && u.confirmed)) {
         yaEtiquetada = true;
         break;
       }
@@ -1126,17 +1174,19 @@ async function lookupReceptionBoxForTallado(
     /* ignore */
   }
 
-  const fromStats = await resolveReceptionBoxQty(receptionId, d.id, { unitNumber });
+  const qtyResolved = await resolveReceptionBoxQty(receptionId, unit.firestoreId, { unitNumber });
+  const refs = qtyResolved.refs.length ? qtyResolved.refs : fromStats?.refs || [];
+  const qty = qtyResolved.qty > 0 ? qtyResolved.qty : fromStats?.qty || 0;
 
   return {
     success: true,
     data: packingUnitToReceptionLookup(scanCode, {
       unit,
-      packingUnitFirestoreId: fromStats.packingUnitId || d.id,
+      packingUnitFirestoreId: qtyResolved.packingUnitId || unit.firestoreId,
       rkIdentifier,
       yaEtiquetada,
-      cantidadOverride: fromStats.qty > 0 ? fromStats.qty : undefined,
-      referenciaOverride: fromStats.refs.length ? fromStats.refs.join(', ') : undefined,
+      cantidadOverride: qty > 0 ? qty : undefined,
+      referenciaOverride: refs.length ? refs.join(', ') : undefined,
     }),
   };
 }

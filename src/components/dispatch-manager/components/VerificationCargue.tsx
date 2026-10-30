@@ -322,7 +322,12 @@ const VerificationCargue: React.FC<{
         sessionName: session.name,
         results,
         stats,
-        loaded: loadedRows.map((r) => ({ codigo: r.codigo, tf: r.tftCruce || r.tfOriginal, destino: r.destino })),
+        loaded: loadedRows.map((r) => ({
+          codigo: r.codigo,
+          tf: r.tftCruce || r.tfOriginal,
+          destino: r.destino,
+          ...(r.codigoAlterno ? { codigoAlterno: r.codigoAlterno } : {}),
+        })),
         summary: counts,
         cargue: session.cargue,
       },

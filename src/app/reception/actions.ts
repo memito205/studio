@@ -1632,10 +1632,19 @@ export async function deletePackingUnitAndContents(unitFirestoreId: string): Pro
                 
                 const safeRefId = normalizeReceptionReference(itemData.reference);
                 refStatsMap.set(safeRefId, (refStatsMap.get(safeRefId) || 0) + qty);
-                
+            });
+
+            const statsReads = new Map<string, Awaited<ReturnType<typeof transaction.get>>>();
+            if (receptionId && totalQuantityDeleted > 0) {
+                for (const safeRefId of refStatsMap.keys()) {
+                    const statsRef = doc(firestore, 'receptionOperations', receptionId, 'referenceStats', safeRefId);
+                    statsReads.set(safeRefId, await transaction.get(statsRef));
+                }
+            }
+
+            itemsSnapshot.forEach(itemDoc => {
                 transaction.delete(itemDoc.ref);
             });
-            
             transaction.delete(unitRef);
 
             if (receptionId) {
@@ -1644,13 +1653,21 @@ export async function deletePackingUnitAndContents(unitFirestoreId: string): Pro
                 if (totalQuantityDeleted > 0) {
                     transaction.update(receptionRef, { totalScannedQuantity: increment(-totalQuantityDeleted) });
                     
-                    // Update each reference's stats
                     for (const [safeRefId, qty] of refStatsMap.entries()) {
                         const statsRef = doc(firestore, 'receptionOperations', receptionId, 'referenceStats', safeRefId);
-                        transaction.set(statsRef, {
-                            totalScanned: increment(-qty),
-                            packingUnits: arrayRemove(unitFirestoreId)
-                        }, { merge: true });
+                        const statsSnap = statsReads.get(safeRefId);
+                        if (statsSnap?.exists()) {
+                            transaction.update(statsRef, {
+                                totalScanned: increment(-qty),
+                                packingUnits: arrayRemove(unitFirestoreId),
+                                [`packUnitsById.${unitFirestoreId}`]: deleteField(),
+                            });
+                        } else {
+                            transaction.set(statsRef, {
+                                totalScanned: increment(-qty),
+                                packingUnits: arrayRemove(unitFirestoreId),
+                            }, { merge: true });
+                        }
                     }
                 }
             }

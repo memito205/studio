@@ -18,6 +18,12 @@ export function normalizeTransferRoutePart(value: string | undefined | null): st
     .replace(/\s+/g, ' ');
 }
 
+/** Sin número de TF: cada código alterno es una caja distinta. No se pueden agrupar entre sí. */
+export function isUnnumberedTransfer(numeroTF: string | undefined | null): boolean {
+  const n = normalizeTransferRoutePart(numeroTF).replace(/\s+/g, '');
+  return !n || n === 'N/A' || n === 'NA' || n === '-' || n === 'S/N' || n === 'SN' || n === 'SINTF' || n === 'NOENCONTRADO';
+}
+
 const COMMITTED_ROUTE_STATUSES: TransferStatus[] = [
   'Enviado a Destino',
   'Entregado en Tienda',

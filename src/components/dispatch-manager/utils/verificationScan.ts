@@ -3,6 +3,7 @@ import type { VerificationItem } from '@/types';
 import { lookupTransferForVerification } from '@/app/actions';
 import { normalizeDestination } from './excel';
 import { weekdayShortEs } from '@/lib/warehouseLocations';
+import { isUnnumberedTransfer } from '@/lib/transferRouteKey';
 
 export const upperKey = (value: unknown) => String(value ?? '').trim().toUpperCase();
 export const altKey = (value: unknown) => upperKey(value).replace(/\s+/g, '');
@@ -17,7 +18,10 @@ export const findItemForCode = (items: VerificationItem[], code: string): ItemMa
 
   const byTf = items
     .map((item, index) => ({ item, index }))
-    .filter(({ item }) => upperKey(item.tftCruce) === code || upperKey(item.tfOriginal) === code);
+    .filter(({ item }) => {
+      if (isUnnumberedTransfer(code) || isUnnumberedTransfer(item.tftCruce) || isUnnumberedTransfer(item.tfOriginal)) return false;
+      return upperKey(item.tftCruce) === code || upperKey(item.tfOriginal) === code;
+    });
   if (byTf.length > 0) {
     const pending = byTf.filter(({ item }) => !item.scanned);
     const pool = pending.length > 0 ? pending : byTf;
@@ -60,6 +64,15 @@ export async function resolveOutOfPlanCode(
     return { ok: true, item: ctx.excluded[excludedMatch.index], reason: 'Estaba excluida por el límite del destino.' };
   }
 
+  if (code.includes('-') && isUnnumberedTransfer(code.slice(code.lastIndexOf('-') + 1))) {
+    return {
+      ok: false,
+      type: 'error',
+      message: 'N/A NO IDENTIFICA LA CAJA',
+      detail: 'Lea el código alterno. Cada caja sin TF se despacha sola.',
+    };
+  }
+
   const res = await lookupTransferForVerification(code);
   if (res.error) return { ok: false, type: 'error', message: 'ERROR CONSULTANDO LA TF', detail: res.error };
   if (res.pendingAlt) {
@@ -96,7 +109,11 @@ export async function resolveOutOfPlanCode(
   }
 
   const g = inSessionDest[0];
-  const codigo = `${g.bodegaDestino.trim()}-${g.numeroTF}`.toUpperCase().replace(/'/g, '-');
+  const codigo = (
+    isUnnumberedTransfer(g.numeroTF) && g.codigoAlterno
+      ? altKey(g.codigoAlterno)
+      : `${g.bodegaDestino.trim()}-${g.numeroTF}`.toUpperCase()
+  ).replace(/'/g, '-');
   if (ctx.existing.some((list) => findItemForCode(list, codigo))) {
     return { ok: false, type: 'duplicate', message: '¡CÓDIGO YA ESCANEADO!' };
   }
