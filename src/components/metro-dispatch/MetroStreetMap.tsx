@@ -102,6 +102,8 @@ export function MetroStreetMap({ orders, stores }: { orders: StreetMapPoint[]; s
     void (async () => {
       const maplibregl = await import('maplibre-gl');
       if (disposed) return;
+      // El paquete busca el worker junto al bundle de Next y no lo encuentra: el mapa queda en blanco.
+      maplibregl.setWorkerUrl(`${window.location.origin}/maplibre-gl-worker.mjs`);
       map = new maplibregl.Map({
         container: node,
         style: STYLE,
@@ -161,6 +163,16 @@ export function MetroStreetMap({ orders, stores }: { orders: StreetMapPoint[]; s
           map?.getCanvas().style.setProperty('cursor', '');
         });
         paint(map);
+        map.resize();
+      });
+      map.on('error', (event) => {
+        const message = event.error?.message || '';
+        if (!/worker/i.test(message) || node.dataset.mapError === '1') return;
+        node.dataset.mapError = '1';
+        const note = document.createElement('p');
+        note.className = 'mt-2 text-sm text-amber-700';
+        note.textContent = 'El callejero no pudo arrancar. Recarga la página.';
+        node.insertAdjacentElement('afterend', note);
       });
       mapRef.current = map;
     })();
