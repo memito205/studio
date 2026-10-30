@@ -610,6 +610,7 @@ export async function routeCollectedTransfersAfterFreeCollection(input: {
     let onRouteTasks = 0;
     let cajonTasks = 0;
 
+    const lockedIds = new Set<string>();
     const onRouteList = Array.from(onRouteBuckets.values()).filter((b) => b.numeroTF);
     if (onRouteList.length) {
       const res = await createRouteTasks({
@@ -628,7 +629,14 @@ export async function routeCollectedTransfersAfterFreeCollection(input: {
         collectionLogId: input.collectionLogId,
         actor,
       });
+      if (!res.success) {
+        return { success: false, error: res.error || 'No se pudo dejar la recolección en Mis entregas.' };
+      }
       onRouteTasks = res.created || 0;
+      const skipped = new Set((res.skipped || []).map((s) => s.numeroTF));
+      onRouteList.forEach((b) => {
+        if (!skipped.has(b.numeroTF)) b.transferIds.forEach((id) => lockedIds.add(id));
+      });
     }
 
     const cajonList = Array.from(cajonBuckets.values()).filter((b) => b.numeroTF);
@@ -650,14 +658,18 @@ export async function routeCollectedTransfersAfterFreeCollection(input: {
         collectionLogId: input.collectionLogId,
         actor,
       });
+      if (!res.success) {
+        return { success: false, error: res.error || 'No se pudo dejar la recolección en Mis entregas.' };
+      }
       cajonTasks = res.created || 0;
+      const skipped = new Set((res.skipped || []).map((s) => s.numeroTF));
+      cajonList.forEach((b) => {
+        if (!skipped.has(b.numeroTF)) b.transferIds.forEach((id) => lockedIds.add(id));
+      });
     }
 
-    // Marcar líneas que quedaron en Mis entregas (bloqueo supervisor).
-    const pendingIds = [
-      ...Array.from(onRouteBuckets.values()).flatMap((b) => b.transferIds),
-      ...Array.from(cajonBuckets.values()).flatMap((b) => b.transferIds),
-    ];
+    // Solo se bloquea supervisor si sí quedó tarea abierta en Mis entregas.
+    const pendingIds = Array.from(lockedIds);
     for (let i = 0; i < pendingIds.length; i += 400) {
       const batch = writeBatch(firestore);
       pendingIds.slice(i, i + 400).forEach((id) => {
@@ -711,6 +723,42 @@ export async function getTransfersInCajon(): Promise<{ data?: Array<DocumentData
     return { data };
   } catch (error: any) {
     return { error: error.message || 'No se pudieron cargar las TF del cajón.' };
+  }
+}
+
+/**
+ * Recolectado en Ruta + misEntregasTaskOpen sin tarea abierta = limbo (no sale en supervisor ni en Mis entregas).
+ * Quita el candado. Lecturas: 1 query Recolectado + 1 `openKey in` por cada 30 TF con candado.
+ */
+export async function releaseOrphanMisEntregasLocks(): Promise<{ released: number; error?: string }> {
+  try {
+    const snap = await getDocs(query(collection(firestore, 'transfers'), where('misEntregasTaskOpen', '==', true)));
+    const locked = snap.docs.filter((d) => d.data().status === 'Recolectado en Ruta');
+    if (!locked.length) return { released: 0 };
+    const tfs = Array.from(new Set(locked.map((d) => String(d.data().numeroTF || '').trim()).filter(Boolean)));
+    const open = new Set<string>();
+    for (let i = 0; i < tfs.length; i += 30) {
+      const openSnap = await getDocs(query(collection(firestore, TASKS), where('openKey', 'in', tfs.slice(i, i + 30))));
+      openSnap.docs.forEach((d) => {
+        const key = String(d.data().openKey || '').trim();
+        if (key) open.add(key);
+      });
+    }
+    const orphans = locked.filter((d) => !open.has(String(d.data().numeroTF || '').trim()));
+    for (let i = 0; i < orphans.length; i += 400) {
+      const batch = writeBatch(firestore);
+      orphans.slice(i, i + 400).forEach((d) => {
+        batch.update(d.ref, {
+          misEntregasTaskOpen: deleteField(),
+          misEntregasSource: deleteField(),
+          misEntregasAt: deleteField(),
+        });
+      });
+      await batch.commit();
+    }
+    return { released: orphans.length };
+  } catch (error: any) {
+    return { released: 0, error: error.message || 'No se pudieron liberar TF en limbo.' };
   }
 }
 
@@ -1630,6 +1678,7 @@ export async function adminMoveTransfersToCajon(input: {
       tasksClosed = 0;
       platformIds.length = 0;
       const freshLines = await Promise.all(lineSnaps.map((l) => tx.get(l.ref)));
+      const taskSnaps = await Promise.all(openTasks.map((t) => tx.get(doc(firestore, TASKS, t.id))));
       const lineRows = freshLines
         .filter((s) => s.exists())
         .map((s) => ({ id: s.id, ref: s.ref, data: s.data()! }));
@@ -1637,7 +1686,6 @@ export async function adminMoveTransfersToCajon(input: {
       transfersMoved = moved.moved;
       platformIds.push(...moved.platformIds);
 
-      const taskSnaps = await Promise.all(openTasks.map((t) => tx.get(doc(firestore, TASKS, t.id))));
       taskSnaps.forEach((s) => {
         if (!s.exists()) return;
         const d = s.data()!;

@@ -17,10 +17,13 @@ service firebase.storage {
       return signedIn() && role() in ['conductor', 'admin', 'supervisor', 'operator', 'office'];
     }
 
+    function userData() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
     function isBodviStore() {
       return signedIn()
-        && role() == 'tiendas'
-        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.storeCode.upper() == 'BODVI';
+        && userData().storeCode.upper() == 'BODVI'
+        && role() in ['tiendas', 'operator', 'admin', 'supervisor', 'office'];
     }
 
     // Hojas del despacho ecommerce de BODVI. No van en entregas/ (ese prefijo se borra a los 210 días por su propia regla).

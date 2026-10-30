@@ -24,6 +24,7 @@ import { WarehouseStockSummaryButton } from './WarehouseStockSummaryDialog';
 import { DeliveryStoresView, QuickLegacyCard, StoreUsersCard } from './DeliveryStoresView';
 import { DriverUserSelect } from './DriverUserSelect';
 import { RouteTasksAssignView } from './RouteTasksAssignView';
+import { releaseOrphanMisEntregasLocks } from '@/app/routeTaskActions';
 import { compressImage, uploadPhotosNow } from '@/lib/podQueue';
 import { getAllUserProfiles } from '@/app/reception/actions';
 import { parseFlexibleDate } from '@/lib/parsingUtils';
@@ -1281,6 +1282,23 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
     const { user, userName } = useAuth();
     const { toast } = useToast();
     const actor = useMemo(() => toTransferActor(user, userName), [user, userName]);
+
+    useEffect(() => {
+        let alive = true;
+        void releaseOrphanMisEntregasLocks().then((r) => {
+            if (!alive || !r.released) return;
+            toast({
+                title: 'TF en limbo recuperadas',
+                description: `${r.released} TF recolectadas sin tarea abierta volvieron a Validación supervisor.`,
+            });
+            onRefresh();
+        });
+        return () => {
+            alive = false;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     const isAdmin = role === 'admin' || role === 'supervisor';
     const isBulkStatusAdmin = role === 'admin';
     const [manifests, setManifests] = useState<DeliveryManifest[]>([]);

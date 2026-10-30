@@ -195,8 +195,15 @@ export function EcommerceDispatchCard({ canCreate, canBackup }: { canCreate: boo
       setCarrier('');
       setOpenId(null);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'No se pudieron subir las fotos.';
-      toast({ variant: 'destructive', title: 'Fotos', description: message });
+      const raw = error instanceof Error ? error.message : String(error || '');
+      const unauthorized = /storage\/unauthorized|does not have permission/i.test(raw);
+      toast({
+        variant: 'destructive',
+        title: 'Fotos',
+        description: unauthorized
+          ? 'No hay permiso para subir las fotos de despacho. Entre con el usuario de BODVI (tienda) o pida a un admin publicar las reglas de Storage.'
+          : raw || 'No se pudieron subir las fotos.',
+      });
     } finally {
       setBusy(false);
     }
