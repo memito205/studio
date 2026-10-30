@@ -7085,7 +7085,7 @@ export async function createDeliveryManifest(
             }
         }
 
-        const { isTransferLockedInRoute, transferLockedInRouteMessage } = await import('@/lib/transferRouteLock');
+        const { isCajonNorteLocation, isTransferLockedInRoute, transferLockedInRouteMessage } = await import('@/lib/transferRouteLock');
         const MANIFEST_ELIGIBLE: TransferStatus[] = ['Recibido en Bodega', 'Validado Supervisor'];
         for (let i = 0; i < transferIds.length; i += 30) {
             const chunk = transferIds.slice(i, i + 30);
@@ -7102,6 +7102,13 @@ export async function createDeliveryManifest(
                 const data = d.data();
                 if (isTransferLockedInRoute(data)) {
                     return { success: false, error: transferLockedInRouteMessage({ ...data, id: d.id }) };
+                }
+                if (isCajonNorteLocation(data.ubicacion)) {
+                    const tf = String(data.numeroTF || d.id);
+                    return {
+                        success: false,
+                        error: `La TF ${tf} está en CAJÓN NORTE. Sáquela de “TF en cajón” (asignar al mensajero), no la meta en una relación de camión.`,
+                    };
                 }
                 if (!MANIFEST_ELIGIBLE.includes(data.status as TransferStatus)) {
                     const tf = String(data.numeroTF || d.id);
@@ -8315,6 +8322,7 @@ export async function closeVerificationDispatch(
         }
 
         const eligible: TransferStatus[] = ['Recibido en Bodega', 'Validado Supervisor'];
+        const { isCajonNorteLocation } = await import('@/lib/transferRouteLock');
         const transferIds = new Set<string>();
         const destinations: Record<string, number> = {};
         let totalUnits = 0;
@@ -8329,7 +8337,9 @@ export async function closeVerificationDispatch(
                 skipped.push({ ...l, reason: 'TF no encontrada en transferencias' });
                 return;
             }
-            const ok = lines.filter((line) => eligible.includes(line.data.status));
+            const ok = lines.filter(
+                (line) => eligible.includes(line.data.status) && !isCajonNorteLocation(line.data.ubicacion)
+            );
             if (ok.length === 0) {
                 const states = Array.from(new Set(lines.map((line) => line.data.status))).join(', ');
                 skipped.push({ ...l, reason: `Estado ${states}` });

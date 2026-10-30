@@ -709,12 +709,23 @@ export async function getTransfersInCajon(): Promise<{ data?: Array<DocumentData
       query(collection(firestore, 'transfers'), where('status', '==', 'Recibido en Bodega'), where('ubicacion', '==', CAJON_POINT))
     );
     const tfs = Array.from(new Set(snap.docs.map((d) => String(d.data().numeroTF || '').trim()).filter(Boolean)));
+    const liveByTf = new Map<string, Set<string>>();
+    snap.docs.forEach((d) => {
+      const tf = String(d.data().numeroTF || '').trim();
+      const set = liveByTf.get(tf) || new Set<string>();
+      set.add(d.id);
+      liveByTf.set(tf, set);
+    });
     const busy = new Set<string>();
     for (let i = 0; i < tfs.length; i += 30) {
       const open = await getDocs(query(collection(firestore, TASKS), where('openKey', 'in', tfs.slice(i, i + 30))));
       open.docs.forEach((d) => {
+        const st = String(d.data().status || '');
+        if (st !== 'por_recoger' && st !== 'por_entregar') return;
         const key = String(d.data().openKey || '').trim();
-        if (key) busy.add(key);
+        const ids = (Array.isArray(d.data().transferIds) ? d.data().transferIds : []).map(String);
+        const live = liveByTf.get(key);
+        if (key && (ids.length === 0 || ids.some((id) => live?.has(id)))) busy.add(key);
       });
     }
     const data = snap.docs
@@ -1691,7 +1702,8 @@ export async function adminMoveTransfersToCajon(input: {
         const d = s.data()!;
         if (!['por_recoger', 'por_entregar'].includes(String(d.status || ''))) return;
         const ids = (Array.isArray(d.transferIds) ? d.transferIds : []).map(String);
-        if (!ids.some((id) => transferIds.includes(id))) return;
+        const sameTf = tfs.includes(String(d.numeroTF || d.openKey || '').trim());
+        if (!sameTf && !ids.some((id) => transferIds.includes(id))) return;
         tasksClosed++;
         tx.update(
           s.ref,

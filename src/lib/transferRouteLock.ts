@@ -1,3 +1,14 @@
+/** Ubicación Cajón Norte (con o sin tilde). Estas TF no salen en relación de camión. */
+export function isCajonNorteLocation(ubicacion?: string | null): boolean {
+  const folded = String(ubicacion || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+  return folded.includes('CAJON NORTE');
+}
+
 /**
  * TF en ruta / Mis entregas sin legalizar.
  * No debe cambiarse el estado a mano hasta entrega, no entrega, cajón o dejar en bodega.

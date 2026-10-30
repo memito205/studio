@@ -51,7 +51,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { buildTransferLabelsPdf, labelDayDate, openPdfForPrint, type TransferLabelData } from '@/lib/labelPdf';
 import { cn } from '@/lib/utils';
-import { isTransferLockedInRoute, transferLockedInRouteMessage } from '@/lib/transferRouteLock';
+import { isCajonNorteLocation, isTransferLockedInRoute, transferLockedInRouteMessage } from '@/lib/transferRouteLock';
 import { CollectionLogDetailsDialog } from './CollectionLogDetailsDialog';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from './ui/collapsible';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -1835,7 +1835,11 @@ const AdminView: React.FC<AdminViewProps> = ({ transfers, operationalTransfers, 
 
 
     const transfersForManifest = useMemo(() => {
-        return operationalTransfers.filter(t => t.status === 'Recibido en Bodega' || t.status === 'Validado Supervisor');
+        return operationalTransfers.filter(
+            (t) =>
+                (t.status === 'Recibido en Bodega' || t.status === 'Validado Supervisor') &&
+                !isCajonNorteLocation(t.ubicacion)
+        );
     }, [operationalTransfers]);
     
     const filteredTransfersForManifest = useMemo(() => {
