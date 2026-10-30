@@ -9,10 +9,9 @@ import { Progress } from '@/components/ui/progress';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import { geocodeMetroAddresses, resolveMetroStores, routeMetroDistances } from '@/app/metroDispatchActions';
+import { MetroStreetMap } from '@/components/metro-dispatch/MetroStreetMap';
 import {
   VALLE_ABURRA,
-  VALLE_CENTROIDS,
-  VALLE_PLOT,
   addressCacheKey,
   buildAddressQuery,
   chunkList,
@@ -35,6 +34,7 @@ type OrderPoint = {
   storeCode: string;
   storeName: string;
   ciudadExcel: string;
+  barrio: string;
   lat: number | null;
   lng: number | null;
   municipio: string;
@@ -61,13 +61,6 @@ function pick(row: Record<string, unknown>, key: string): string {
 function formatKm(value: number | null): string {
   if (value == null) return '—';
   return value.toLocaleString('es-CO', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-}
-
-function plotPercent(lat: number, lng: number): { x: number; y: number } | null {
-  const x = (lng - VALLE_PLOT.minLng) / (VALLE_PLOT.maxLng - VALLE_PLOT.minLng);
-  const y = (VALLE_PLOT.maxLat - lat) / (VALLE_PLOT.maxLat - VALLE_PLOT.minLat);
-  if (x < -0.02 || x > 1.02 || y < -0.02 || y > 1.02) return null;
-  return { x: Math.min(98, Math.max(2, x * 100)), y: Math.min(96, Math.max(4, y * 100)) };
 }
 
 export function MetroDispatchModule({ onReturnToSuite }: { onReturnToSuite: () => void }) {
@@ -109,6 +102,25 @@ export function MetroDispatchModule({ onReturnToSuite }: { onReturnToSuite: () =
         median: median(rowKm),
       };
     }).filter((row) => row.count > 0);
+    const barrioMap = new Map<string, { barrio: string; municipio: string; count: number; kms: number[] }>();
+    valley.forEach((order) => {
+      const barrio = order.barrio || 'Sin barrio';
+      const municipio = order.valle || order.municipio || '';
+      const key = `${foldPlace(barrio)}|${municipio}`;
+      const current = barrioMap.get(key) || { barrio, municipio, count: 0, kms: [] };
+      current.count += 1;
+      if (order.km != null) current.kms.push(order.km);
+      barrioMap.set(key, current);
+    });
+    const byBarrio = [...barrioMap.values()]
+      .map((row) => ({
+        barrio: row.barrio,
+        municipio: row.municipio,
+        count: row.count,
+        pct: valley.length ? (row.count / valley.length) * 100 : 0,
+        avg: row.kms.length ? row.kms.reduce((a, b) => a + b, 0) / row.kms.length : null,
+      }))
+      .sort((a, b) => b.count - a.count);
     const outsideMap = new Map<string, number>();
     outside.forEach((o) => {
       const label = o.municipio || o.ciudadExcel || 'Sin municipio';
@@ -128,28 +140,11 @@ export function MetroDispatchModule({ onReturnToSuite }: { onReturnToSuite: () =
       over20: kms.filter((n) => n > 20).length,
       withKm: withKm.length,
       byMunicipio,
+      byBarrio,
       outsideRows,
       heat: valley.filter((o) => o.lat != null && o.lng != null),
     };
   }, [filtered]);
-
-  const heatCells = useMemo(() => {
-    const cols = 14;
-    const rows = 16;
-    const counts = new Array(cols * rows).fill(0);
-    summary.heat.forEach((order) => {
-      const lat = order.lat as number;
-      const lng = order.lng as number;
-      const x = (lng - VALLE_PLOT.minLng) / (VALLE_PLOT.maxLng - VALLE_PLOT.minLng);
-      const y = (VALLE_PLOT.maxLat - lat) / (VALLE_PLOT.maxLat - VALLE_PLOT.minLat);
-      if (x < 0 || x > 1 || y < 0 || y > 1) return;
-      const col = Math.min(cols - 1, Math.floor(x * cols));
-      const row = Math.min(rows - 1, Math.floor(y * rows));
-      counts[row * cols + col] += 1;
-    });
-    const max = Math.max(1, ...counts);
-    return { cols, rows, counts, max };
-  }, [summary.heat]);
 
   const storePins = useMemo(() => {
     const codes = new Set(filtered.map((o) => o.storeCode));
@@ -177,6 +172,7 @@ export function MetroDispatchModule({ onReturnToSuite }: { onReturnToSuite: () =
             storeCode,
             storeLabel: pick(row, 'NOMBRE'),
             ciudadExcel: ciudad,
+            barrio,
             query,
             key: addressCacheKey(query),
           };
@@ -235,6 +231,7 @@ export function MetroDispatchModule({ onReturnToSuite }: { onReturnToSuite: () =
           storeCode: store?.code || row.storeCode,
           storeName: store?.name || row.storeLabel || row.storeCode,
           ciudadExcel: row.ciudadExcel,
+          barrio: row.barrio,
           lat: geo?.lat ?? null,
           lng: geo?.lng ?? null,
           municipio: geo?.municipio || row.ciudadExcel,
@@ -385,56 +382,30 @@ export function MetroDispatchModule({ onReturnToSuite }: { onReturnToSuite: () =
             <Kpi label="Con kilómetro" value={summary.withKm.toLocaleString('es-CO')} hint={`De ${summary.valley.toLocaleString('es-CO')} en el área`} />
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-            <Card>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card className="lg:col-span-2">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <MapPinned className="h-5 w-5" />
                   Valle de Aburrá
                 </CardTitle>
-                <CardDescription>El color más oscuro concentra más pedidos. El cuadro marca la tienda.</CardDescription>
+                <CardDescription>Callejero gratuito. El punto negro es la tienda y el naranja concentra los pedidos.</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="relative aspect-[4/5] overflow-hidden rounded-lg border bg-slate-100">
-                  <div
-                    className="absolute inset-0 grid"
-                    style={{ gridTemplateColumns: `repeat(${heatCells.cols}, 1fr)`, gridTemplateRows: `repeat(${heatCells.rows}, 1fr)` }}
-                  >
-                    {heatCells.counts.map((count, index) => (
-                      <div
-                        key={index}
-                        title={count ? `${count} pedidos` : ''}
-                        style={{ background: count ? `rgba(180, 40, 20, ${0.12 + (count / heatCells.max) * 0.85})` : 'transparent' }}
-                      />
-                    ))}
-                  </div>
-                  {VALLE_ABURRA.map((name) => {
-                    const pos = plotPercent(VALLE_CENTROIDS[name].lat, VALLE_CENTROIDS[name].lng);
-                    if (!pos) return null;
-                    const count = summary.byMunicipio.find((row) => row.name === name)?.count || 0;
-                    return (
-                      <span
-                        key={name}
-                        className="absolute -translate-x-1/2 -translate-y-1/2 text-[10px] font-medium text-slate-900"
-                        style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
-                      >
-                        {name}{count ? ` ${count}` : ''}
-                      </span>
-                    );
-                  })}
-                  {storePins.map((store) => {
-                    const pos = plotPercent(store.lat as number, store.lng as number);
-                    if (!pos) return null;
-                    return (
-                      <span
-                        key={store.code}
-                        title={store.name}
-                        className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rotate-45 border-2 border-white bg-slate-900"
-                        style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
-                      />
-                    );
-                  })}
-                </div>
+                <MetroStreetMap
+                  orders={summary.heat.map((order) => ({
+                    lat: order.lat as number,
+                    lng: order.lng as number,
+                    barrio: order.barrio,
+                    municipio: order.valle || order.municipio,
+                    km: order.km,
+                  }))}
+                  stores={storePins.map((store) => ({
+                    name: store.name,
+                    lat: store.lat as number,
+                    lng: store.lng as number,
+                  }))}
+                />
               </CardContent>
             </Card>
 
@@ -466,6 +437,39 @@ export function MetroDispatchModule({ onReturnToSuite }: { onReturnToSuite: () =
                 </Table>
               </CardContent>
             </Card>
+
+            <Card>
+            <CardHeader>
+              <CardTitle>Por barrio</CardTitle>
+              <CardDescription>Sale de la columna PED_BARRIO. Sigue el filtro de la tienda y solo cuenta el Valle de Aburrá.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="max-h-[420px] overflow-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Barrio</TableHead>
+                      <TableHead>Municipio</TableHead>
+                      <TableHead className="text-right">Pedidos</TableHead>
+                      <TableHead className="text-right">%</TableHead>
+                      <TableHead className="text-right">Km prom.</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {summary.byBarrio.map((row) => (
+                      <TableRow key={`${row.municipio}-${row.barrio}`}>
+                        <TableCell>{row.barrio}</TableCell>
+                        <TableCell>{row.municipio}</TableCell>
+                        <TableCell className="text-right">{row.count.toLocaleString('es-CO')}</TableCell>
+                        <TableCell className="text-right">{row.pct.toFixed(1)}</TableCell>
+                        <TableCell className="text-right">{formatKm(row.avg)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              </CardContent>
+          </Card>
           </div>
 
           {summary.outsideRows.length ? (
