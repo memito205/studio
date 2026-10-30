@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input';
 import { ecomOrderFingerprint } from '@/lib/ecommerceIndex';
 import { ECOM_GUIDE_HEADER_ALIASES, ecommerceGuideText, normalizeEcommerceGuide } from '@/lib/ecommerceDispatch';
 import { saveEcommerceOrders, loadEcommerceOrders, loadEcommerceOrdersByIds, getEcommerceOrderIndex, updateEcommerceOrderIndex, getDelayedOrderLogs, upsertDelayedOrderLog, addJustificationToLog, resolveDelayedOrderLog, batchResolveDelayedOrderLogs, batchUpsertDelayedOrderLogs } from '@/app/actions';
+import { getEcommerceDashboardStamp, saveEcommerceDashboardStamp } from '@/app/ecommerceDashboardCache';
 import type { EcommerceOrder, FilterCategory, DelayedOrderLog, Justification, Filters } from '@/types';
 import { excelSerialDateToJSDate, findCaseInsensitiveKey, parseFlexibleDate, calculateSlaHours, parseRobustNumber } from '@/lib/parsingUtils';
 import {
@@ -415,6 +416,7 @@ export const EcommerceDashboard: React.FC<EcommerceDashboardProps> = ({ onReturn
   const { toast } = useToast();
   const { user, role } = useAuth();
   const isOfficeUser = role === 'office';
+  const [lastStamp, setLastStamp] = useState<{ at?: string; byName?: string } | null>(null);
   
   const [newFileLoaded, setNewFileLoaded] = useState(false);
   const reportContentRef = useRef<HTMLDivElement>(null);
@@ -506,6 +508,8 @@ export const EcommerceDashboard: React.FC<EcommerceDashboardProps> = ({ onReturn
 
         // Evita segunda lectura completa de ecommerceOrders (antes: load + onRefresh volvía a cargar).
         await onRefresh({ ordersAlready: filteredOrders });
+        await saveEcommerceDashboardStamp((user?.displayName || user?.email || role || 'admin') as string);
+        setLastStamp({ at: new Date().toISOString(), byName: user?.displayName || user?.email || 'admin' });
         setIsGenerated(true);
         setNewFileLoaded(false);
         setAnalysisDate(referenceDate);
@@ -514,14 +518,19 @@ export const EcommerceDashboard: React.FC<EcommerceDashboardProps> = ({ onReturn
     } finally {
         setIsUploading(false);
     }
-}, [isCurrentlyDelayed, toast, onRefresh]);
+}, [isCurrentlyDelayed, toast, onRefresh, user, role]);
 
   useEffect(() => {
-    // This effect ensures that once data is loaded initially, 'isGenerated' is set to true.
     if (!isDataLoading && orders.length > 0) {
         setIsGenerated(true);
     }
   }, [isDataLoading, orders]);
+
+  useEffect(() => {
+    void getEcommerceDashboardStamp().then((s) => {
+      if (s.at || s.byName) setLastStamp({ at: s.at, byName: s.byName });
+    });
+  }, []);
 
   useEffect(() => {
     if (newFileLoaded) {
@@ -1130,7 +1139,14 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
                   <div>
                     <CardTitle>Análisis de Pedidos Ecommerce</CardTitle>
                     <CardDescription>
-                      {isGenerated ? `Mostrando datos actualizados al ${analysisDate ? format(analysisDate, 'PPP p', {locale: es}) : 'ahora'}.` : 'Sincronice sus pedidos y genere el análisis para gestionar atrasos y medir la eficiencia.'}
+                      {isGenerated
+                        ? `Mostrando datos actualizados al ${analysisDate ? format(analysisDate, 'PPP p', {locale: es}) : 'ahora'}.`
+                        : isOfficeUser
+                          ? 'Consulta el último tablero. Un admin genera el análisis; office solo lo ve.'
+                          : 'Sincronice sus pedidos y genere el análisis para gestionar atrasos y medir la eficiencia.'}
+                      {lastStamp?.at
+                        ? ` Último análisis generado${lastStamp.byName ? ` por ${lastStamp.byName}` : ''}: ${format(new Date(lastStamp.at), 'PPP p', { locale: es })}.`
+                        : ''}
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-2">
@@ -1267,8 +1283,15 @@ const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
             {isDataLoading && !isGenerated && (
                 <div className="flex justify-center items-center h-64">
                     <Loader2 className="h-12 w-12 animate-spin text-primary"/>
-                    <p className="ml-4 text-muted-foreground">Analizando datos...</p>
+                    <p className="ml-4 text-muted-foreground">{isOfficeUser ? 'Cargando el último tablero...' : 'Analizando datos...'}</p>
                 </div>
+            )}
+            {!isDataLoading && !isGenerated && isOfficeUser && (
+                <Card>
+                    <CardContent className="py-10 text-center text-muted-foreground">
+                        Aún no hay pedidos cargados en el tablero. Un admin debe sincronizar el Excel y pulsar Generar análisis.
+                    </CardContent>
+                </Card>
             )}
             
             {!isDataLoading && isGenerated && (

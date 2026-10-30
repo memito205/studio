@@ -1781,6 +1781,7 @@ interface DashboardsModuleProps {
 export const DashboardsModule: React.FC<DashboardsModuleProps> = ({ onReturnToSuite }) => {
   const [holidays, setHolidays] = useState<Date[]>([]);
   const { role } = useAuth();
+  const isOfficeUser = role === 'office';
   
   const [allOrders, setAllOrders] = useState<EcommerceOrder[]>([]);
   const [delayedLogs, setDelayedLogs] = useState<DelayedOrderLog[]>([]);
@@ -1825,16 +1826,18 @@ export const DashboardsModule: React.FC<DashboardsModuleProps> = ({ onReturnToSu
   }, [toast, isFullHistoryLoaded]);
   
   useEffect(() => {
-    // We only load holidays on mount. Orders/Logs are now manual via "Generar Análisis"
-    // to save Firebase reads as requested by user.
+    // Admin: solo festivos al entrar. El análisis se genera a mano (menos lecturas).
+    // Office: no puede generar; carga el último tablero (pedidos 60 días + atrasos).
     const loadInitialMeta = async () => {
         const holidaysResult = await loadHolidays();
         if (holidaysResult.success && holidaysResult.data) {
             setHolidays(holidaysResult.data);
         }
+        if (isOfficeUser) await fetchAllData();
     };
-    loadInitialMeta();
-  }, []);
+    void loadInitialMeta();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOfficeUser]);
   
   const handleHolidaysChange = useCallback(async (dates: Date[] | undefined) => {
     const safeDates = dates || [];
@@ -1864,6 +1867,8 @@ export const DashboardsModule: React.FC<DashboardsModuleProps> = ({ onReturnToSu
                         {isFullHistoryLoaded ? 'Historial Completo' : 'Últimos 60 días'}
                     </span>
                 </div>
+                {!isOfficeUser && (
+                  <>
                 <div className="h-8 w-px bg-slate-200 dark:bg-slate-800 mx-2" />
                 <Button 
                     variant={isFullHistoryLoaded ? "secondary" : "default"}
@@ -1873,6 +1878,8 @@ export const DashboardsModule: React.FC<DashboardsModuleProps> = ({ onReturnToSu
                 >
                     {isFullHistoryLoaded ? 'Cambiar a Recientes' : 'Cargar Todo'}
                 </Button>
+                  </>
+                )}
             </div>
         </div>
 
