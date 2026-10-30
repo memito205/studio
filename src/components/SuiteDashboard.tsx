@@ -2,7 +2,7 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle, Timer, ClipboardList, ClipboardCheck, Store, Warehouse, ScanLine, Scale } from 'lucide-react';
+import { Archive, Building, ShoppingBag, Truck, Settings, Tags, PackagePlus, Calculator, FileBarChart, Printer, Ship, LayoutDashboard, Beaker, ArrowDownUp, Bot, Users, Factory, Play, Square, Lock, Tv, Loader2, RefreshCcw, ArrowRightLeft, AlertCircle, Timer, ClipboardList, ClipboardCheck, Store, Warehouse, ScanLine, Scale, MapPinned } from 'lucide-react';
 import { useSuitePulse } from '@/hooks/useSuitePulse';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -70,6 +70,7 @@ interface SuiteDashboardProps {
     onNavigateToCyclicInventory: () => void;
     onNavigateToStoreCapacity: () => void;
     onNavigateToTalladoMercancia: () => void;
+    onNavigateToMetroDispatch: () => void;
     onNavigateToDriverDeliveries?: () => void;
     onNavigateToPodAdmin?: () => void;
 }
@@ -101,6 +102,7 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
     onNavigateToCyclicInventory,
     onNavigateToStoreCapacity,
     onNavigateToTalladoMercancia,
+    onNavigateToMetroDispatch,
     onNavigateToDriverDeliveries,
     onNavigateToPodAdmin,
 }) => {
@@ -175,6 +177,15 @@ export const SuiteDashboard: React.FC<SuiteDashboardProps> = ({
             actionText: "Acceder",
             onAction: onNavigateToStoreCapacity,
             roles: ['admin', 'supervisor', 'office']
+        },
+        {
+            key: 'metro_dispatch',
+            icon: MapPinned,
+            title: "Mapa de despachos",
+            description: "Suba el Excel de pedidos y vea, por tienda, municipios del Valle de Aburrá y kilómetros de manejo.",
+            actionText: "Acceder",
+            onAction: onNavigateToMetroDispatch,
+            roles: ['admin', 'office']
         },
         {
             key: 'tallado_mercancia',

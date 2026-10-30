@@ -85,6 +85,7 @@ const TransferNovelties = dynamic(() => import('@/components/TransferNovelties')
 const RemisionModule = dynamic(() => import('./RemisionModule').then(mod => mod.RemisionModule), { loading: () => <LoadingSpinner /> });
 const CyclicInventoryModule = dynamic(() => import('@/components/CyclicInventoryModule').then(mod => mod.CyclicInventoryModule), { loading: () => <LoadingSpinner /> });
 const StoreCapacityModule = dynamic(() => import('@/components/store-capacity/StoreCapacityModule').then(mod => mod.StoreCapacityModule), { loading: () => <LoadingSpinner /> });
+const MetroDispatchModule = dynamic(() => import('@/components/metro-dispatch/MetroDispatchModule').then(mod => mod.MetroDispatchModule), { loading: () => <LoadingSpinner /> });
 const TalladoMercanciaModule = dynamic(() => import('@/components/tallado-mercancia/TalladoMercanciaModule').then(mod => mod.TalladoMercanciaModule), { loading: () => <LoadingSpinner /> });
 const GastosTransporte = dynamic(() => import('@/components/gastos-transporte/GastosTransporte'), { loading: () => <LoadingSpinner /> });
 
@@ -749,6 +750,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
   const handleNavigateToRemisionModule = () => setAppStep('remision');
   const handleNavigateToCyclicInventory = () => setAppStep('cyclic_inventory');
   const handleNavigateToStoreCapacity = () => setAppStep('store_capacity');
+  const handleNavigateToMetroDispatch = () => setAppStep('metro_dispatch');
   const handleNavigateToTalladoMercancia = () => setAppStep('tallado_mercancia');
   const handleNavigateToDriverDeliveries = () => setAppStep('driver_deliveries');
   const handleNavigateToPodAdmin = () => setAppStep('pod_admin');
@@ -915,6 +917,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToRemisionModule={handleNavigateToRemisionModule}
                 onNavigateToCyclicInventory={handleNavigateToCyclicInventory}
                 onNavigateToStoreCapacity={handleNavigateToStoreCapacity}
+                onNavigateToMetroDispatch={handleNavigateToMetroDispatch}
                 onNavigateToTalladoMercancia={handleNavigateToTalladoMercancia}
                 onNavigateToDriverDeliveries={handleNavigateToDriverDeliveries}
                 onNavigateToPodAdmin={handleNavigateToPodAdmin}
@@ -965,6 +968,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
           case 'remision': return <RemisionModule onReturn={handleReturnToSuite} />;
           case 'cyclic_inventory': return <CyclicInventoryModule onReturnToSuite={handleReturnToSuite} />;
           case 'store_capacity': return <StoreCapacityModule onReturnToSuite={handleReturnToSuite} />;
+          case 'metro_dispatch': return <MetroDispatchModule onReturnToSuite={handleReturnToSuite} />;
           case 'tallado_mercancia': return <TalladoMercanciaModule onReturnToSuite={handleReturnToSuite} />;
           case 'driver_deliveries': return <DriverDeliveriesModule onReturn={handleReturnToSuite} />;
           case 'pod_admin': return <PodAdminModule onReturn={handleReturnToSuite} />;
@@ -1025,6 +1029,7 @@ export const SuiteApp: React.FC<SuiteAppProps> = ({ theme = 'light' }) => {
                 onNavigateToRemisionModule={handleNavigateToRemisionModule}
                 onNavigateToCyclicInventory={handleNavigateToCyclicInventory}
                 onNavigateToStoreCapacity={handleNavigateToStoreCapacity}
+                onNavigateToMetroDispatch={handleNavigateToMetroDispatch}
                 onNavigateToTalladoMercancia={handleNavigateToTalladoMercancia}
                 onNavigateToDriverDeliveries={handleNavigateToDriverDeliveries}
                 onNavigateToPodAdmin={handleNavigateToPodAdmin}
