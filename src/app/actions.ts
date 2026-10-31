@@ -4467,7 +4467,10 @@ async function flagReceivedNotInBase(incoming: Array<{ numeroTF: unknown; bodega
     }
 }
 
-export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | 'status'>[]): Promise<{ success: boolean; error?: string; summary?: { added: number, updated: number, removed: number, altLinked?: number, altPending?: number, fueraBase?: number, altYaEnRuta?: number } }> {
+export async function saveTransfers(
+    transfersInput: Omit<TransferEntry, 'id' | 'status'>[],
+    actor?: { userId: string; displayName: string }
+): Promise<{ success: boolean; error?: string; summary?: { added: number, updated: number, removed: number, altLinked?: number, altPending?: number, fueraBase?: number, altYaEnRuta?: number } }> {
     const transfersCollection = collection(firestore, 'transfers');
     const transfers = transfersInput.map((t) => {
         const alt = normalizeAltCode(t.codigoAlterno);
@@ -4554,11 +4557,8 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
         // Una línea que ya está en una relación no cambia de destino: la ruta nueva sale aparte.
         const newTransCounts: Record<string, number> = {};
         for (const incoming of transfers) {
-            if (isUnnumberedTransfer(incoming.numeroTF) && normalizeAltCode(incoming.codigoAlterno)) {
-                const known = linesByAlt.get(normalizeAltCode(incoming.codigoAlterno)) || [];
-                if (known.length > 0) continue;
-                const dest = (incoming.bodegaDestino || 'UNKNOWN').trim().toUpperCase();
-                newTransCounts[dest] = (newTransCounts[dest] || 0) + 1;
+            if (isUnnumberedTransfer(incoming.numeroTF)) {
+                // Sin número de TF no se reserva consecutivo ni se crea línea. El alterno, si ya existe, se actualiza abajo.
                 continue;
             }
             const docs = existingTransfersByKey.get(transferBrandKey(incoming)) || [];
@@ -4590,6 +4590,8 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
                     altYaEnRuta++;
                     continue;
                 }
+                // No crear una TF "N/A". Un archivo sin la columna de número dejaba cientos de copias.
+                continue;
             }
             const docs =
                 isUnnumberedTransfer(incoming.numeroTF) && normalizeAltCode(incoming.codigoAlterno)
@@ -4615,8 +4617,12 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
                     statusHistory: [{
                         status: 'Recibido en Bodega',
                         at: Timestamp.now(),
-                        userName: 'Base de transferencias: otro destino, la línea anterior ya está en una relación',
+                        userId: actor?.userId || '',
+                        userName: actor?.displayName
+                            ? `${actor.displayName}. Otro destino: la línea anterior ya está en una relación`
+                            : 'Base de transferencias: otro destino, la línea anterior ya está en una relación',
                     }],
+                    ...(actor?.userId ? { createdBy: actor.userId, createdByName: actor.displayName } : {}),
                 });
                 destOrderIndices[dest] = idx + 1;
                 added++;
@@ -4646,7 +4652,8 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
                 batch.set(docRef, { 
                     ...convertDatesToTimestamps(incoming), 
                     status: 'En Tránsito',
-                    storageOrder: destOrders[idx] || 'N/A'
+                    storageOrder: destOrders[idx] || 'N/A',
+                    ...(actor?.userId ? { createdBy: actor.userId, createdByName: actor.displayName } : {}),
                 });
                 
                 destOrderIndices[dest] = idx + 1;
@@ -4655,6 +4662,19 @@ export async function saveTransfers(transfersInput: Omit<TransferEntry, 'id' | '
         }
         
         await batch.commit();
+        if (actor?.userId) {
+            await createActivityLog({
+                user_id: actor.userId,
+                action_type: 'transfers_excel_upload',
+                details: {
+                    displayName: actor.displayName,
+                    filas: transfers.length,
+                    added,
+                    updated,
+                    removed,
+                },
+            });
+        }
         const fueraBase = await flagReceivedNotInBase(transfers);
         const altLink = await linkPendingAltCodeReceipts();
         return { success: true, summary: { added, updated, removed, altLinked: altLink.linked, altPending: altLink.pending, fueraBase, altYaEnRuta } };

@@ -3810,7 +3810,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
     const [filters, setFilters] = useState<TransferSearchFilters>({ numeroTF: '', codigoAlterno: '', bodegaOrigen: '', bodegaDestino: '', placa: '', status: 'all', startDate: '', endDate: '' });
     const [isLoading, setIsLoading] = useState(false);
     const { toast } = useToast();
-    const { role } = useAuth();
+    const { role, user, userName } = useAuth();
     const isAdminOrSupervisor = role === 'admin' || role === 'supervisor';
     const isAdmin = role === 'admin' || role === 'supervisor'; // Re-using logic but semantic
     const canSeeAdminView = isAdminOrSupervisor || role === 'operator';
@@ -4060,13 +4060,20 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
                   ).trim() || undefined,
               } as Omit<TransferEntry, 'id' | 'status'>;
           }).filter((r): r is Omit<TransferEntry, 'id' | 'status'> => r !== null);
-          
-          if(newRoutes.length === 0) {
+
+          if (newRoutes.length === 0) {
             throw new Error("No se encontraron transferencias válidas para operación en el archivo.");
+          }
+          const skippedUnnumbered = newRoutes.filter((r) => isUnnumberedTransfer(r.numeroTF)).length;
+          const validRoutes = newRoutes.filter((r) => !isUnnumberedTransfer(r.numeroTF));
+          if (validRoutes.length === 0) {
+            throw new Error(
+              `El archivo no trae número de TF (${skippedUnnumbered} fila(s) quedaron como N/A). No se cargó nada. Revise que la columna se llame "Numero TF".`
+            );
           }
 
           // Misma data normalizada para Analizador + operativo (evita desfase de columnas).
-          const analysisRows = newRoutes.map((r) => ({
+          const analysisRows = validRoutes.map((r) => ({
             'Numero TF': r.numeroTF,
             numeroTF: r.numeroTF,
             'Bodega Origen': r.bodegaOrigen,
@@ -4093,12 +4100,21 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
             );
           }
           
-          const result = await saveTransfers(newRoutes);
+          const result = await saveTransfers(
+            validRoutes,
+            user?.uid
+              ? { userId: user.uid, displayName: (userName || user.displayName || user.email || 'Usuario').trim() }
+              : undefined
+          );
   
           if(result.summary) {
               toast({ 
                   title: "Sincronización Completa", 
                   description: `Analizador: ${analysisResult.count || 0} TFs. Operación: ${result.summary.added} nuevas / ${result.summary.updated} actualizadas.${
+                    skippedUnnumbered
+                      ? ` ${skippedUnnumbered} fila(s) sin número de TF no se cargaron.`
+                      : ''
+                  }${
                     result.summary.altLinked || result.summary.altPending
                       ? ` Código alterno: ${result.summary.altLinked || 0} enlazadas · ${result.summary.altPending || 0} pendientes sin TF.`
                       : ''
@@ -4127,7 +4143,7 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
           setIsLoading(false);
           if (e.target) e.target.value = '';
       }
-    }, [fetchData, toast]);
+    }, [fetchData, toast, user, userName]);
 
     useEffect(() => {
         if (role === 'conductor') return;
