@@ -28,6 +28,7 @@ import {
   normalizeScanCode,
   resolveOutOfPlanCode,
 } from '@/components/dispatch-manager/utils/verificationScan';
+import { isUnnumberedTransfer } from '@/lib/transferRouteKey';
 import {
   downloadStoreSummaryPdfs,
   verificationItemsToSummaryRows,
@@ -246,6 +247,15 @@ const VerificationCargue: React.FC<{
       }
       if (match && 'index' in match) {
         const item = data[match.index];
+        if (isUnnumberedTransfer(item.tftCruce) || isUnnumberedTransfer(item.tfOriginal)) {
+          setLastScan({
+            type: 'error',
+            message: 'SIN NÚMERO DE TF — NO SE CARGA',
+            code: item.codigo,
+            detail: 'No entra en la relación. Déjela en la ubicación y no la suba al camión.',
+          });
+          return;
+        }
         if (scanByCode.has(item.codigo)) {
           setLastScan({ type: 'duplicate', message: 'YA ESTÁ CARGADA EN EL CAMIÓN', code: item.codigo });
           return;
@@ -311,6 +321,17 @@ const VerificationCargue: React.FC<{
       ...(cls === 'solo_alistamiento' ? { notLoadedReason: reasons[item.codigo] } : {}),
     }));
     const loadedRows = rows.filter((r) => r.loaded);
+    const unnumberedLoaded = loadedRows.filter((r) => isUnnumberedTransfer(r.tftCruce) || isUnnumberedTransfer(r.tfOriginal));
+    if (unnumberedLoaded.length > 0) {
+      setIsClosing(false);
+      toast({
+        variant: 'destructive',
+        title: 'Hay cajas sin TF marcadas en el camión',
+        description: `${unnumberedLoaded.length} lectura(s) no tienen número de TF. Quítelas del cargue y baje la caja antes de cerrar: ${unnumberedLoaded.slice(0, 5).map((r) => r.codigo).join(', ')}.`,
+        duration: 15000,
+      });
+      return;
+    }
     const stats = {
       total: results.length,
       scanned: results.filter((i) => i.scanned).length,

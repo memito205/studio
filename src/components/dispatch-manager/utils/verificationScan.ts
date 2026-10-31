@@ -85,7 +85,16 @@ export async function resolveOutOfPlanCode(
   }
   if (res.groups.length === 0) return { ok: false, type: 'error', message: '¡CÓDIGO NO ENCONTRADO!' };
 
-  const received = res.groups.filter((g) => g.statuses.includes('Recibido en Bodega'));
+  const received = res.groups.filter((g) => g.statuses.includes('Recibido en Bodega') && !isUnnumberedTransfer(g.numeroTF));
+  const onlyUnnumbered = res.groups.some((g) => g.statuses.includes('Recibido en Bodega') && isUnnumberedTransfer(g.numeroTF));
+  if (received.length === 0 && onlyUnnumbered) {
+    return {
+      ok: false,
+      type: 'error',
+      message: 'SIN NÚMERO DE TF — NO SE DESPACHA',
+      detail: 'Esta caja no puede entrar en una relación. Déjela en su ubicación hasta que tenga número de TF.',
+    };
+  }
   if (received.length === 0) {
     const states = Array.from(new Set(res.groups.flatMap((g) => g.statuses))).join(', ');
     return { ok: false, type: 'error', message: 'TF NO ESTÁ EN RECIBIDO EN BODEGA', detail: `Estado actual: ${states}.` };

@@ -24,6 +24,7 @@ import { firestore } from '@/services/firebase';
 import { buildStoreMatcher, DEFAULT_STORE_RADIUS_M, sameDeliveryDestination } from '@/lib/deliveryStores';
 import { getDeliveryStoresCached } from '@/lib/deliveryStoresCache';
 import { MAX_DELIVERY_PHOTOS, POD_START_AT, STORE_RECEPTION_START_AT, storeStopId } from '@/lib/pod';
+import { isUnnumberedTransfer } from '@/lib/transferRouteKey';
 
 const PLATFORM_COLLECTION = 'tf_platform_status';
 const platformTf = (v: unknown) => {
@@ -1731,9 +1732,33 @@ export async function receiveAtStore(input: {
       };
     }
 
-    const pendingDocs = mine.filter((d) => d.data().status !== 'Entregado en Tienda');
-    const unidades = mine.reduce((n, d) => n + (Number(d.data().cantidad || 0) || 0), 0);
-    const unconfirmed = mine.filter((d) => !d.data().storeReceivedAt);
+    const deliverable = mine.filter((d) => {
+      const t = d.data();
+      return t.status === 'Enviado a Destino' && !isUnnumberedTransfer(t.numeroTF);
+    });
+    const blocked = mine.filter((d) => d.data().status !== 'Entregado en Tienda' && !deliverable.includes(d));
+    if (deliverable.length === 0 && blocked.length > 0) {
+      await log({
+        result: 'sin_relacion',
+        numeroTF,
+        codigoAlterno: altCode,
+        transferIds: blocked.map((d) => d.id),
+        previousStatuses: Array.from(new Set(blocked.map((d) => String(d.data().status || '')))),
+      });
+      return {
+        result: 'error',
+        numeroTF,
+        codigoAlterno: altCode,
+        message: `No se recibió. ${numeroTF || code} no está en una relación de entrega, así que no puede quedar Entregado en Tienda.`,
+      };
+    }
+
+    const pendingDocs = deliverable;
+    const counted = pendingDocs.length > 0
+      ? pendingDocs
+      : mine.filter((d) => d.data().status === 'Entregado en Tienda' && !isUnnumberedTransfer(d.data().numeroTF));
+    const unidades = counted.reduce((n, d) => n + (Number(d.data().cantidad || 0) || 0), 0);
+    const unconfirmed = counted.filter((d) => !d.data().storeReceivedAt);
     if (pendingDocs.length === 0 && unconfirmed.length > 0) {
       const deliveredBy = unconfirmed[0].data().entregadoTiendaByName as string | undefined;
       await Promise.all(
@@ -1800,7 +1825,7 @@ export async function receiveAtStore(input: {
     });
 
     const lines = new Map<string, PlatformLine>();
-    mine.forEach((d) => {
+    pendingDocs.forEach((d) => {
       const t = d.data() as any;
       const id = platformDocId(t.numeroTF, t.bodegaDestino);
       const cur = lines.get(id) || {

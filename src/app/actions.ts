@@ -4470,7 +4470,7 @@ async function flagReceivedNotInBase(incoming: Array<{ numeroTF: unknown; bodega
 export async function saveTransfers(
     transfersInput: Omit<TransferEntry, 'id' | 'status'>[],
     actor?: { userId: string; displayName: string }
-): Promise<{ success: boolean; error?: string; summary?: { added: number, updated: number, removed: number, altLinked?: number, altPending?: number, fueraBase?: number, altYaEnRuta?: number } }> {
+): Promise<{ success: boolean; error?: string; summary?: { added: number, updated: number, removed: number, altLinked?: number, altPending?: number, fueraBase?: number, altYaEnRuta?: number, altLugar?: number } }> {
     const transfersCollection = collection(firestore, 'transfers');
     const transfers = transfersInput.map((t) => {
         const alt = normalizeAltCode(t.codigoAlterno);
@@ -4518,25 +4518,27 @@ export async function saveTransfers(
         let updated = 0;
         let removed = 0;
         let altYaEnRuta = 0;
+        let altLugar = 0;
 
-        // Filas sin número de TF se identifican por código alterno, no por la clave N/A+marca+grupo.
-        // Si ese sticker ya está en una TF numerada, no se crea otra línea.
-        const unnumberedAlts = Array.from(
-            new Set(
-                transfers
-                    .filter((t) => isUnnumberedTransfer(t.numeroTF))
-                    .map((t) => normalizeAltCode(t.codigoAlterno))
-                    .filter(Boolean)
-            )
-        );
-        const linesByAlt = unnumberedAlts.length > 0 ? await findTransfersByAltCodes(unnumberedAlts) : new Map<string, Array<{ id: string; data: any }>>();
+        // Cada código alterno se busca una vez. Si ya está en otra TF, destino o ubicación, no se copia.
+        const incomingAlts = Array.from(new Set(transfers.map((t) => normalizeAltCode(t.codigoAlterno)).filter(Boolean)));
+        const linesByAlt = incomingAlts.length > 0 ? await findTransfersByAltCodes(incomingAlts) : new Map<string, Array<{ id: string; data: any }>>();
+
+        const keepAlt = (incoming: { numeroTF?: unknown; bodegaDestino?: unknown; ubicacion?: unknown; codigoAlterno?: unknown }, ignoreIds?: Set<string>) => {
+            const alt = normalizeAltCode(incoming.codigoAlterno);
+            if (!alt) return false;
+            const conflict = altCodePlaceConflict(incoming, linesByAlt.get(alt) || [], ignoreIds);
+            if (!conflict) return true;
+            altLugar++;
+            return false;
+        };
 
         const applyIncomingUpdate = (lineId: string, incoming: Omit<TransferEntry, 'id' | 'status'>, keepNumeroTF: boolean) => {
             const updates: Record<string, any> = { ...convertDatesToTimestamps(incoming) };
             delete updates.status;
             delete updates.statusHistory;
             if (keepNumeroTF) delete updates.numeroTF;
-            if (!normalizeAltCode(incoming.codigoAlterno)) delete updates.codigoAlterno;
+            if (!keepAlt(incoming, new Set([lineId]))) delete updates.codigoAlterno;
             batch.update(doc(transfersCollection, lineId), updates);
             updated++;
         };
@@ -4583,6 +4585,11 @@ export async function saveTransfers(
                 }
                 const openGhost = known.find((l) => !isTransferCommittedToRoute(l.data));
                 if (openGhost) {
+                    const samePlace = normalizeDestination(String(incoming.bodegaDestino || '')) === normalizeDestination(String(openGhost.data.bodegaDestino || ''));
+                    if (!samePlace) {
+                        altLugar++;
+                        continue;
+                    }
                     applyIncomingUpdate(openGhost.id, incoming, true);
                     continue;
                 }
@@ -4608,7 +4615,7 @@ export async function saveTransfers(
                 const idx = destOrderIndices[dest] || 0;
                 const sibling = target.sibling.data;
                 const ubicacion = String(incoming.ubicacion || sibling.ubicacion || '').trim();
-                batch.set(docRef, {
+                const payload: Record<string, any> = {
                     ...convertDatesToTimestamps(incoming),
                     status: 'Recibido en Bodega',
                     ...(ubicacion ? { ubicacion } : {}),
@@ -4623,7 +4630,9 @@ export async function saveTransfers(
                             : 'Base de transferencias: otro destino, la línea anterior ya está en una relación',
                     }],
                     ...(actor?.userId ? { createdBy: actor.userId, createdByName: actor.displayName } : {}),
-                });
+                };
+                if (!keepAlt(incoming)) delete payload.codigoAlterno;
+                batch.set(docRef, payload);
                 destOrderIndices[dest] = idx + 1;
                 added++;
                 continue;
@@ -4641,6 +4650,7 @@ export async function saveTransfers(
                 delete updates.statusHistory;
                 // El Excel no trae alterno para TF de operadores externos (vienen del plano): no borrarlo.
                 if (!normalizeAltCode(incoming.codigoAlterno) && existing.data.codigoAlterno) delete updates.codigoAlterno;
+                if (!keepAlt(incoming, new Set([existing.id]))) delete updates.codigoAlterno;
                 batch.update(docRef, updates);
                 updated++;
             } else {
@@ -4648,13 +4658,14 @@ export async function saveTransfers(
                 const docRef = doc(transfersCollection); 
                 const destOrders = newOrdersMap[dest] || [];
                 const idx = destOrderIndices[dest] || 0;
-                
-                batch.set(docRef, { 
+                const payload: Record<string, any> = { 
                     ...convertDatesToTimestamps(incoming), 
                     status: 'En Tránsito',
                     storageOrder: destOrders[idx] || 'N/A',
                     ...(actor?.userId ? { createdBy: actor.userId, createdByName: actor.displayName } : {}),
-                });
+                };
+                if (!keepAlt(incoming)) delete payload.codigoAlterno;
+                batch.set(docRef, payload);
                 
                 destOrderIndices[dest] = idx + 1;
                 added++;
@@ -4677,7 +4688,7 @@ export async function saveTransfers(
         }
         const fueraBase = await flagReceivedNotInBase(transfers);
         const altLink = await linkPendingAltCodeReceipts();
-        return { success: true, summary: { added, updated, removed, altLinked: altLink.linked, altPending: altLink.pending, fueraBase, altYaEnRuta } };
+        return { success: true, summary: { added, updated, removed, altLinked: altLink.linked, altPending: altLink.pending, fueraBase, altYaEnRuta, altLugar } };
 
     } catch (error: any) {
         console.error("Error guardando transferencias (Composite Sync):", error);
@@ -6078,6 +6089,43 @@ const TRANSFER_FINAL_STATUSES: TransferStatus[] = ['Enviado a Destino', 'Entrega
 
 const normalizeAltCode = (value: unknown): string => String(value ?? '').trim().toUpperCase().replace(/\s+/g, '');
 
+/** Un código alterno es una caja. No puede vivir en otro destino, otra TF o otra ubicación. */
+function altCodePlaceConflict(
+    incoming: { numeroTF?: unknown; bodegaDestino?: unknown; ubicacion?: unknown },
+    lines: Array<{ id?: string; data: any }>,
+    ignoreIds: Set<string> = new Set()
+): string | null {
+    const relevant = lines.filter((l) => !l.id || !ignoreIds.has(l.id));
+    if (relevant.length === 0) return null;
+    const destOf = (value: unknown) => normalizeDestination(String(value || ''));
+    const tfOf = (value: unknown) => {
+        const raw = String(value ?? '').trim();
+        if (!raw || isUnnumberedTransfer(raw)) return '';
+        return /^\d+$/.test(raw) ? String(Number(raw)) : raw.toUpperCase();
+    };
+    const dests = Array.from(new Set(relevant.map((l) => destOf(l.data?.bodegaDestino)).filter((d) => d && d !== 'SIN DESTINO')));
+    const incomingDest = destOf(incoming.bodegaDestino);
+    if (dests.length > 1) return `El código ya está en varios destinos (${dests.join(', ')}).`;
+    if (dests.length === 1 && incomingDest && incomingDest !== 'SIN DESTINO' && dests[0] !== incomingDest) {
+        return `El código ya pertenece a ${dests[0]}, no a ${incomingDest}.`;
+    }
+    const incomingTf = tfOf(incoming.numeroTF);
+    if (incomingTf) {
+        const otherTfs = Array.from(new Set(relevant.map((l) => tfOf(l.data?.numeroTF)).filter((tf) => tf && tf !== incomingTf)));
+        const loose = relevant.some((l) => isUnnumberedTransfer(l.data?.numeroTF));
+        if (otherTfs.length || loose) {
+            const where = [...otherTfs, ...(loose ? ['una caja sin número de TF'] : [])].join(', ');
+            return `El código ya está en ${where}.`;
+        }
+    }
+    const incomingUbic = String(incoming.ubicacion || '').trim().toUpperCase();
+    if (incomingUbic) {
+        const otherUbic = Array.from(new Set(relevant.map((l) => String(l.data?.ubicacion || '').trim().toUpperCase()).filter(Boolean))).find((u) => u !== incomingUbic);
+        if (otherUbic) return `El código ya está en la ubicación ${otherUbic}, no en ${incomingUbic}.`;
+    }
+    return null;
+}
+
 const tsToIso = (value: any): string | undefined =>
     value?.toDate ? value.toDate().toISOString() : value instanceof Date ? value.toISOString() : typeof value === 'string' ? value : undefined;
 
@@ -6223,8 +6271,17 @@ export async function linkPendingAltCodeReceipts(): Promise<{ success: boolean; 
         let linked = 0;
         receipts.forEach((r) => {
             const code = normalizeAltCode(r.data.codigoAlterno);
-            const lines = preferNumberedAltLines(matches.get(code) || []);
-            if (lines.length === 0 || usedCodes.has(code)) return;
+            const all = matches.get(code) || [];
+            const lines = preferNumberedAltLines(all);
+            const conflict = altCodePlaceConflict(
+                {
+                    numeroTF: lines[0]?.data?.numeroTF,
+                    bodegaDestino: r.data.destinoHint || lines[0]?.data?.bodegaDestino,
+                    ubicacion: r.data.ubicacion,
+                },
+                all
+            );
+            if (lines.length === 0 || usedCodes.has(code) || conflict) return;
             usedCodes.add(code);
             writes.push(...buildAltCodeLinkWrites(r.id, r.data, lines));
             linked++;
@@ -6308,7 +6365,10 @@ async function analyzeAltCodeBulk(
             };
         }
 
-        let lines = preferNumberedAltLines(matches.get(code) || []);
+        let lines = matches.get(code) || [];
+        const conflict = altCodePlaceConflict({ bodegaDestino: destino, ubicacion }, lines);
+        if (conflict) return { ...base, action: 'ya_registrado', nota: conflict };
+        lines = preferNumberedAltLines(lines);
         if (destino && lines.length > 0) {
             const byDest = lines.filter((l) => normalizeDestination(String(l.data.bodegaDestino || '')) === normalizeDestination(destino));
             if (byDest.length > 0) lines = byDest;
@@ -6443,6 +6503,13 @@ export async function registerAltCodeReceipt(
         const duplicate = await findActiveAltCodeReceipt(code);
         if (duplicate) return { success: false, duplicate, error: 'Código ya registrado.' };
 
+        const known = (await findTransfersByAltCodes([code])).get(code) || [];
+        const conflict = altCodePlaceConflict(
+            { bodegaDestino: input.destinoHint, ubicacion: input.ubicacion },
+            known
+        );
+        if (conflict) return { success: false, error: `${code}: ${conflict} No se creó otro registro.` };
+
         const ref = doc(collection(firestore, ALT_CODE_RECEIPTS));
         const data: Record<string, unknown> = {
             codigoAlterno: code,
@@ -6457,8 +6524,7 @@ export async function registerAltCodeReceipt(
         };
         await setDoc(ref, data);
 
-        const matches = await findTransfersByAltCodes([code]);
-        const lines = preferNumberedAltLines(matches.get(code) || []);
+        const lines = preferNumberedAltLines(known);
         if (lines.length > 0) {
             // Si la TF ya existía al digitar el código, el operario lo registró tarde.
             const late = lines.some((l) => !TRANSFER_FINAL_STATUSES.includes(l.data.status) && l.data.status !== 'Recibido en Bodega');
@@ -6514,6 +6580,12 @@ export async function correctAltCodeReceipt(receiptId: string, newCode: string):
         if (snap.data().status !== 'pending') return { success: false, error: 'Solo se pueden corregir registros pendientes.' };
         const duplicate = await findActiveAltCodeReceipt(code, receiptId);
         if (duplicate) return { success: false, error: `El código ${code} ya está registrado (${duplicate.ubicacion || 'sin ubicación'}).` };
+        const known = (await findTransfersByAltCodes([code])).get(code) || [];
+        const conflict = altCodePlaceConflict(
+            { bodegaDestino: snap.data().destinoHint, ubicacion: snap.data().ubicacion },
+            known
+        );
+        if (conflict) return { success: false, error: `${code}: ${conflict}` };
         await updateDoc(ref, { codigoAlterno: code });
         const lines = preferNumberedAltLines((await findTransfersByAltCodes([code])).get(code) || []);
         if (lines.length > 0) {
@@ -6549,6 +6621,12 @@ export async function manualLinkAltCodeReceipt(
         }
         if (lines.length === 0) return { success: false, error: `La TF ${tf} no tiene líneas para el destino ${dest}.` };
         const code = normalizeAltCode(snap.data().codigoAlterno);
+        const known = (await findTransfersByAltCodes([code])).get(code) || [];
+        const conflict = altCodePlaceConflict(
+            { numeroTF: tf, bodegaDestino: lines[0].data.bodegaDestino, ubicacion: snap.data().ubicacion },
+            known
+        );
+        if (conflict) return { success: false, error: `${code}: ${conflict}` };
         await commitWrites(buildAltCodeLinkWrites(receiptId, snap.data(), lines, { codigoAlterno: code }));
         return { success: true };
     } catch (error: any) {
@@ -8428,6 +8506,15 @@ export async function closeVerificationDispatch(
         let totalUnits = 0;
         const skipped: Array<{ codigo: string; tf: string; destino: string; reason: string }> = [];
         const altMap = new Map<string, { codigoAlterno: string; numeroTF: string; destino: string; cantidad: number }>();
+
+        const unnumberedLoaded = payload.loaded.filter((l) => isUnnumberedTransfer(l.tf));
+        if (unnumberedLoaded.length > 0) {
+            return {
+                success: false,
+                skipped: unnumberedLoaded.map((l) => ({ ...l, reason: 'Sin número de TF: no entra en la relación de despacho.' })),
+                error: `${unnumberedLoaded.length} caja(s) sin número de TF están marcadas como cargadas. Quítelas del cargue antes de cerrar. No se creó la relación.`,
+            };
+        }
 
         payload.loaded.forEach((l) => {
             if (isUnnumberedTransfer(l.tf)) {

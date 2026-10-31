@@ -32,6 +32,7 @@ import {
 import { saveVerificationSession, loadVerificationSessions, updateVerificationSession, startVerificationCargue, saveVerificationPickProgress } from '@/app/actions';
 import { mergeRemotePicks, useLiveVerificationSession } from '@/components/dispatch-manager/utils/liveSession';
 import { arrivalLabel, findItemForCode, normalizeScanCode, resolveOutOfPlanCode } from '@/components/dispatch-manager/utils/verificationScan';
+import { isUnnumberedTransfer } from '@/lib/transferRouteKey';
 import { Checkbox } from '@/components/ui/checkbox';
 import VerificationCargue from './VerificationCargue';
 import { DriverUserSelect } from '@/components/DriverUserSelect';
@@ -343,6 +344,13 @@ const ScanningInterface: React.FC<{
       });
     } else if (index === -1) {
       await handleCodeNotInPlan(code);
+    } else if (isUnnumberedTransfer(data[index].tftCruce) || isUnnumberedTransfer(data[index].tfOriginal)) {
+      setLastScanStatus({
+        type: 'error',
+        message: 'SIN NÚMERO DE TF — NO SE ALISTA',
+        code,
+        detail: 'Esta caja no puede entrar en una relación. Déjela en su ubicación.',
+      });
     } else if (data[index].scanned) {
       setLastScanStatus({ type: 'duplicate', message: '¡CÓDIGO YA ESCANEADO!', code });
       toast({

@@ -228,6 +228,8 @@ export default function DispatchManager({ onReturnToSuite }: DispatchManagerProp
         };
 
         receivedInWarehouseTransfers.forEach(t => {
+            // Sin número de TF no hay relación posible. Si entra al plan, se carga y el cierre la deja por fuera.
+            if (isUnnumberedTransfer(t.numeroTF)) return;
             const key = dispatchLineKey(t);
             if (!key) return;
             upsertWarehouse(warehouseByTfDest, key, t);

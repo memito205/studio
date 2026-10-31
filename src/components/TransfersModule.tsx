@@ -4122,6 +4122,10 @@ export const TransfersModule: React.FC<{ onReturnToSuite: () => void; }> = ({ on
                     result.summary.altYaEnRuta
                       ? ` ${result.summary.altYaEnRuta} código(s) ya tenían TF en una relación y no se duplicaron.`
                       : ''
+                  }${
+                    result.summary.altLugar
+                      ? ` ${result.summary.altLugar} código(s) alternos no se copiaron: ya pertenecen a otra TF, destino o ubicación.`
+                      : ''
                   }`, 
               });
               if (result.summary.fueraBase) {
